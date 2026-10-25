@@ -27,7 +27,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from wscanner import __version__, check, check_machine, check_supply, db, distros, editors, external, feeds  # noqa: E402
-from wscanner import harnesses, malicious, net, osv, repos, report, versions  # noqa: E402
+from wscanner import harnesses, leaks, malicious, net, osv, repos, report, versions  # noqa: E402
 from wscanner.db import Cache  # noqa: E402
 
 BIN = HERE / "bin"
@@ -481,7 +481,7 @@ class Contract(Isolated):
         boom = mock.Mock(side_effect=AssertionError("machine check ran"))
         with mock.patch.object(check_machine, "inventory", boom), mock.patch.object(check_supply, "extensions", boom), \
                 mock.patch.object(check_supply, "bundles", boom), mock.patch.object(check_supply, "_breach", boom), \
-                mock.patch("wscanner.apps.running_images", boom):
+                mock.patch("wscanner.apps.running_images", boom), mock.patch.object(leaks, "scan", return_value=[]):
             code, out, _ = self.project_run("--json")
         self.assertEqual(code, 0, out)
         unpinned = [f["component"] for f in json.loads(out)["findings"] if f["vuln_id"] == "UNPINNED"]

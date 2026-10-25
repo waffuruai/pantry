@@ -1,0 +1,132 @@
+name: Issue
+description: Report a bug, suggest a feature, ask for coverage, or start a discussion.
+title: "[type]: <one-sentence summary>"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file. A few seconds spent on
+        structure here saves a lot of round-trips during triage —
+        and lets AI agents reading the issue stream pick up the
+        relevant signal without scraping freeform prose.
+
+        **Before filing:**
+        - Search [existing issues](https://github.com/waffuruai/wscanner/issues?q=is%3Aissue) to avoid duplicates.
+        - For features: check the [Roadmap](https://github.com/orgs/waffuruai/projects/1) and [specs/](https://github.com/waffuruai/wscanner/tree/dev/specs) — it may already be planned.
+        - For bugs: try `main` HEAD; many issues are already fixed.
+        - **A vulnerability in wscanner itself does not go here.** Follow [SECURITY.md](https://github.com/waffuruai/wscanner/blob/main/SECURITY.md).
+
+  - type: checkboxes
+    id: type
+    attributes:
+      label: Type
+      description: What is this issue about? Check all that apply.
+      options:
+        - label: "🐛 Bug — something doesn't work as documented"
+        - label: "✨ Feature — new capability or CLI surface"
+        - label: "🧩 Coverage — a package manager, lockfile, distro or feed we don't check yet"
+        - label: "🚀 Performance — slower than expected, or an optimization opportunity"
+        - label: "💭 Discussion / idea — design conversation, RFC, brainstorm"
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: |
+        One paragraph of context. What are you trying to do, what
+        happened (or what should happen), why does it matter?
+      placeholder: |
+        `wscanner --path ~/code/app --no-machine` reports nothing for a
+        `pnpm-lock.yaml` v9 that pins vite 8.2.1, which OSV lists as
+        affected by GHSA-xxxx-xxxx-xxxx (fixed in 8.2.3).
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Reproduction / proposal / details
+      description: |
+        - **Bug**: minimum reproducer (the command, and the smallest
+          lockfile or config that shows it, with private names
+          removed). Expected vs actual behavior.
+        - **Coverage**: the ecosystem, file format or distro, a public
+          sample file, and the OSV ecosystem string or feed it maps to.
+        - **Feature / perf**: the change, the spec section and criteria
+          it serves (`specs/01-rust-port.md#functionality`, F4), and
+          the acceptance check. Prior art links welcome.
+        - **Discussion**: the question or idea, plus what you've
+          already considered.
+      placeholder: |
+        ```bash
+        wscanner check --path /tmp/repro --no-machine --json --no-input | jq '.findings[] | select(.kind == "project")'
+        # → nothing
+        ```
+
+        Expected: a `project` finding for vite 8.2.1, fixed in 8.2.3.
+        Actual: `checked` shows 0 project dependencies.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Required for bugs / perf issues. Optional for features and
+        discussions. Paste `wscanner version`, `wscanner tools` and your
+        OS. Never paste scan output, paths or email addresses from your
+        machine.
+      render: shell
+      placeholder: |
+        wscanner 0.1.0 (python, schema 1)
+        macOS 26.1 (M2) / Debian 13 / Alpine 3.22
+        osv-scanner 2.7.0, gitleaks 8.30.1, Python 3.9.6
+    validations:
+      required: false
+
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues and PRs
+      description: |
+        What this is blocked by, what it blocks, and related PRs. Use full
+        URLs for anything in another repository so they cross-link.
+      placeholder: |
+        Spec: specs/01-rust-port.md#functionality (F4)
+        Blocked by: https://github.com/waffuruai/ops/issues/95
+        Blocks: #12
+        PRs: #21
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ai_usage
+    attributes:
+      label: AI assistance disclosure
+      description: |
+        Did you use AI to write this issue? Check each category that
+        applies — or "No AI used" if it's hand-written. This is
+        transparency, not gatekeeping. Agentic issues are welcome.
+      options:
+        - label: "🔍 Research — searching docs, finding related issues, understanding APIs"
+        - label: "💡 Ideation — brainstorming the design, weighing trade-offs"
+        - label: "⌨️ Implementation — writing code snippets / reproducers or updating documentation"
+        - label: "🧪 Testing — running test cases to verify the bug or proposal"
+        - label: "📚 Documentation — writing this issue's content"
+        - label: "✋ No AI used — this is hand-written"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched for duplicate issues.
+          required: true
+        - label: I read [`CONTRIBUTING.md`](https://github.com/waffuruai/wscanner/blob/main/CONTRIBUTING.md).
+          required: true

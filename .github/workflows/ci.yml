@@ -1,0 +1,78 @@
+name: CI
+
+# The Python scanner's offline tests on the oldest (3.9, what a fresh Mac
+# has) and a current Python, on Linux and macOS, plus shell and workflow lint.
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so a new actionlint release cannot turn a green branch red.
+  ACTIONLINT_VERSION: 1.7.12
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # macOS's own /usr/bin/python3 is 3.9: test that one rather than a
+      # download, since it's what a fresh Mac runs wscanner with.
+      - if: ${{ !(runner.os == 'macOS' && matrix.python == '3.9') }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: unittest
+        env:
+          PY: ${{ (runner.os == 'macOS' && matrix.python == '3.9') && '/usr/bin/python3' || 'python' }}
+        run: |
+          "$PY" -c 'import sys; v = "${{ matrix.python }}"; assert "%d.%d" % sys.version_info[:2] == v, sys.version'
+          "$PY" -m unittest discover -s python -p 'test_*.py'
+
+      - name: CA trust test
+        if: ${{ matrix.python == '3.12' }}
+        run: python/test-ca-trust.sh
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: bash -n
+        run: |
+          for f in python/bin/wscanner python/*.sh; do
+            bash -n "$f"
+          done
+          echo "✓ syntax"
+
+      - name: shellcheck
+        # Preinstalled on the runner image. `-x` follows `source ca-common.sh`;
+        # .shellcheckrc resolves it relative to each script.
+        run: shellcheck -x python/bin/wscanner python/*.sh
+
+      - name: actionlint
+        run: |
+          # Official installer, pinned to the version above. actionlint lints
+          # every `run:` block with shellcheck too.
+          curl -fsSL \
+            "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
+            | bash -s -- "$ACTIONLINT_VERSION"
+          ./actionlint -color

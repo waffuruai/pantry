@@ -1,4 +1,4 @@
-"""Secrets committed to our repos' history, found with gitleaks.
+"""Secrets committed to the scanned repos' history, found with gitleaks.
 
 Each repo's full history is scanned once per new HEAD (and when gitleaks,
 the config or the repo's .gitleaksignore changes), then cached. Findings are
@@ -21,14 +21,15 @@ from .system import fingerprint, run
 GENERIC = {"generic-api-key", "generic-secret", "hashicorp-tf-password", "curl-auth-header", "curl-auth-user"}
 
 
-def scan(cache, repo: Path, org_config: Path, refresh=False, offline=False):
-    """[{rule, file, line, commit, fingerprint, description}] for one repo."""
+def scan(cache, repo: Path, default_config: Path, refresh=False, offline=False):
+    """[{rule, file, line, commit, fingerprint, description}] for one repo.
+    The repo's own .gitleaks.toml replaces `default_config`."""
     exe = shutil.which("gitleaks")
     if not exe:
         raise Missing("gitleaks")
     head = run(["git", "-C", str(repo), "rev-parse", "HEAD"]).strip()
     own = repo / ".gitleaks.toml"
-    config = own if own.is_file() else org_config
+    config = own if own.is_file() else default_config
     fp = f"{head}:{run([exe, 'version']).strip()}:{fingerprint([config, repo / '.gitleaksignore'])}"
 
     def gitleaks():

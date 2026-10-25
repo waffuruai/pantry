@@ -7,7 +7,9 @@ import json
 import urllib.error
 import urllib.request
 
-USER_AGENT = "waffuru-ops-security/1 (+https://github.com/waffuruai/ops)"
+from . import __version__
+
+USER_AGENT = f"wscanner/{__version__} (+https://github.com/waffuruai/wscanner)"
 TIMEOUT = 30
 
 

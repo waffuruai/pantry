@@ -1,4 +1,4 @@
-"""The scanners we delegate to rather than reimplement: osv-scanner (our
+"""The scanners we delegate to rather than reimplement: osv-scanner (the
 repos' lockfiles, Linux OS packages, container images, and the lockfiles
 inside plugins, skills and extensions) and `brew vulns` (Homebrew
 formulae). Each reruns only when what it scans changed or a day passed."""
@@ -74,7 +74,7 @@ def source(cache, key, targets, files, refresh=False, offline=False, licenses=()
             if not lic or "--licenses" not in str(e):
                 raise
             # A bad allowlist entry shouldn't cost us the vulnerability scan.
-            print(f"  ⚠ {e} (security/licenses.txt); scanning without it")
+            print(f"  ⚠ {e} (the licenses allowlist, --licenses); scanning without it")
             return _osv_scanner(cache, ["scan", "source", *extra, *map(str, targets)])
     return cache.memo(key, scan, fingerprint=fingerprint(files), refresh=refresh, offline=offline)
 

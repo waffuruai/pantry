@@ -1,6 +1,7 @@
-# Licenses our repos' dependencies may use without review (SPDX ids). make
-# secure warns on any other license osv-scanner finds; dependencies with no
-# known license (our own unpublished crates, mostly) are only counted.
+# Licenses repo dependencies may use without review (SPDX ids), wscanner's
+# default (replace it with --licenses FILE). wscanner warns on any other
+# license osv-scanner finds; dependencies with no known license (unpublished
+# workspace crates, mostly) are only counted.
 # Copyleft (GPL, LGPL, AGPL, SSPL, EUPL) is left out on purpose: review it.
 0BSD
 Apache-2.0

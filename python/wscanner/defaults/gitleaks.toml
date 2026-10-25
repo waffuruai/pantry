@@ -1,4 +1,4 @@
-# Org defaults for gitleaks, used by the pre-commit hook and `make secure`.
+# wscanner's default gitleaks config (replace it with --gitleaks-config FILE).
 # A repo's own .gitleaks.toml replaces this; its .gitleaksignore lists the
 # fingerprints of reviewed false positives (gitleaks prints them).
 

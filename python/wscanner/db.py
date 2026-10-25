@@ -4,7 +4,7 @@ It holds OSV records for what this machine has (never a mirror of OSV), the
 answers to "which advisories affect package P at version V" with when we last
 asked, the latest scan's findings, and the small side feeds (KEV, end-of-life
 dates, the cask catalog). A full-text index over the records lets agents
-search and rank them (`secure.py search`)."""
+search and rank them (`wscanner search`)."""
 
 from __future__ import annotations
 
@@ -42,8 +42,10 @@ CREATE INDEX IF NOT EXISTS malicious_name ON malicious (ecosystem, name);
 
 
 def path() -> Path:
+    """WSCANNER_DB, else $XDG_CACHE_HOME/wscanner/wscanner.db, else
+    ~/.cache/wscanner/wscanner.db. The malicious-packages clone sits beside it."""
     base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return Path(os.environ.get("WAFFURU_SECURITY_DB") or Path(base) / "waffuru" / "security.db")
+    return Path(os.environ.get("WSCANNER_DB") or Path(base) / "wscanner" / "wscanner.db")
 
 
 class Cache:

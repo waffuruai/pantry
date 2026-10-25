@@ -2,23 +2,23 @@
 and turn the answers into findings. Areas live in check_machine.py and
 check_supply.py; report.py prints the findings and the update plan.
 
-A finding fails when it applies to something on this machine or in our repos
-and a released version fixes it, when the component is past end of life, or
+A finding fails when it applies to something on this machine or in a scanned
+repo and a released version fixes it, when the component is past end of life, or
 when it's a known malicious package (whose fix is removing it). Everything
 else that applies is a warning. A source that can't be reached is reported
 "not checked", never clean. Nothing that isn't installed is reported."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import feeds, osv, versions
+from . import feeds, osv, repos, versions
 from .db import Cache, severity_of
 from .net import Offline
 from .system import Component
 
-HERE = Path(__file__).resolve().parent.parent
+DEFAULTS = Path(__file__).resolve().parent / "defaults"
 REMOVE = "Remove {} now, then rotate any credentials this machine holds"
 
 
@@ -38,10 +38,19 @@ class Finding:
     fix_auto: bool = False
 
 
-def listed(name: str):
-    """Entries of a one-per-line list in security/ (comments start with #)."""
+@dataclass
+class Policy:
+    """The policy files a scan reads; the bundled defaults unless the caller
+    passes its own (--gitleaks-config, --licenses, --install-scripts)."""
+    gitleaks_config: Path = field(default_factory=lambda: DEFAULTS / "gitleaks.toml")
+    licenses: Path = field(default_factory=lambda: DEFAULTS / "licenses.txt")
+    install_scripts: Path = field(default_factory=lambda: DEFAULTS / "install-scripts.txt")
+
+
+def listed(path: Path):
+    """Entries of a one-per-line list file (comments start with #)."""
     try:
-        lines = (HERE / name).read_text().splitlines()
+        lines = Path(path).read_text().splitlines()
     except OSError:
         return []
     return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
@@ -71,9 +80,17 @@ def fill(cmd: str, safe: str) -> str:
 
 
 class Scan:
-    def __init__(self, ops: Path, refresh=False, offline=False, ask=True, log=print):
-        self.ops, self.refresh, self.offline, self.ask, self.log = ops, refresh, offline, ask, log
+    """One scan. `paths` limits the repo checks to those directories (None:
+    every git repo under $HOME); `machine=False` skips everything that isn't
+    a repo check (the inventory, apps, OS, Homebrew, editors, harness
+    configs, running containers and the breach check)."""
+
+    def __init__(self, paths=None, machine=True, policy: Policy = None, refresh=False, offline=False, ask=True,
+                 log=print):
+        self.paths, self.machine, self.policy = paths, machine, policy or Policy()
+        self.refresh, self.offline, self.ask, self.log = refresh, offline, ask, log
         self.cache = Cache()
+        self.repos: list = []
         self.findings: list = []
         self.counts: dict = {}
         self.unfixed = 0
@@ -119,11 +136,15 @@ class Scan:
         from . import check_machine, check_supply  # the areas; they import this module
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", lambda: feeds.kev(self.cache, self.offline),
                               set())
-        found = check_machine.inventory(self)
-        check_machine.components(self, found)
-        check_machine.apps(self)
-        check_machine.os_updates(self)
-        check_machine.brew(self)
+        self.repos = repos.scope(self.paths, self.log)
+        self.count("git repos", sum(1 for _, r in self.repos if repos.is_git(r)))
+        found = []
+        if self.machine:
+            found = check_machine.inventory(self)
+            check_machine.components(self, found)
+            check_machine.apps(self)
+            check_machine.os_updates(self)
+            check_machine.brew(self)
         check_supply.run(self, found)
         self.cache.replace_findings(self.findings)
         self.cache.close()

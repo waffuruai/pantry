@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
 # Fail when a trust store on this machine still trusts an intermediate CA in
-# security/distrusted-ca/ (today: the eMudhra intermediates whose private keys
-# leaked, https://emudhra.we-have-a-problem.com/). Run by `make install` and
-# `make doctor` through security/secure.
+# distrusted-ca/ (today: the eMudhra intermediates whose private keys leaked,
+# https://emudhra.we-have-a-problem.com/). bin/wscanner runs it before every
+# machine scan.
 #
 # A store fails when openssl can build a path from one of those intermediates
 # to a root it holds, which is the trust decision every OpenSSL-, LibreSSL-,
 # pip- or Node-based client makes. Rust crates that embed roots (webpki-roots)
-# are covered by the CVE scan, security/secure.py.
+# are covered by the CVE scan, bin/wscanner.py.
 #
 # Usage: check-ca-trust.sh [--bundle FILE]   (--bundle checks one PEM bundle)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../scripts/lib.sh
-source "$SCRIPT_DIR/../scripts/lib.sh"
+# shellcheck source=ca-common.sh
+source "$SCRIPT_DIR/ca-common.sh"
 
 CA_DIR="$SCRIPT_DIR/distrusted-ca"
 
@@ -86,13 +86,13 @@ check_bundle() {
   fi
 }
 
-print_header "CA trust (distrusted CAs in security/distrusted-ca/)"
+print_header "CA trust (distrusted CAs in $CA_DIR)"
 
 if is_macos; then
-  check_bundle "system" /etc/ssl/cert.pem /etc/ssl/cert.pem "Run: make fix-ca-trust"
+  check_bundle "system" /etc/ssl/cert.pem /etc/ssl/cert.pem "Run: $SCRIPT_DIR/fix-ca-trust.sh"
 else
   for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem /etc/ssl/certs; do
-    check_bundle "system" "$f" "$f" "Update the ca-certificates package, or run: make fix-ca-trust"
+    check_bundle "system" "$f" "$f" "Update the ca-certificates package, or run: $SCRIPT_DIR/fix-ca-trust.sh"
   done
 fi
 

@@ -1,23 +1,55 @@
 #!/usr/bin/env bash
 #
-# make secure: the CA trust check, then the CVE scan (secure.py). Both always
-# run; exits non-zero if either fails. Flags go to secure.py:
+# wscanner: on a machine scan, the CA trust check (check-ca-trust.sh), then
+# the scan (wscanner.py). Both run; the exit status is the worse of the two.
+# Other subcommands, --help and --no-machine runs go straight to wscanner.py.
 #
-#   security/secure                     report what this machine is exposed to
-#   security/secure --update            also apply the unattended fixes
-#   security/secure --update --dryrun   print the update plan, change nothing
+#   wscanner                                 scan this computer
+#   wscanner --path ~/code/app --no-machine  scan one project
+#   wscanner --update --dryrun               print the update plan, change nothing
+#
+# Exit codes (specs/cli-contract.md): 0 clean, 1 something fails, 2 usage
+# error, 3 internal error.
 
 set -uo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$BIN")"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "✗ python3 (3.9 or later) is required (macOS: xcode-select --install)" >&2
+  exit 3
+fi
+
+ca=1
+json=0
+case "${1:-}" in
+  search | export | breach | version | tools | skill | -h | --help) ca=0 ;;
+esac
+for arg in "$@"; do
+  case "$arg" in
+    --no-machine | -h | --help) ca=0 ;;
+    --json) json=1 ;;
+  esac
+done
 
 status=0
-"$DIR/check-ca-trust.sh" || status=1
-
-if command -v python3 >/dev/null 2>&1; then
-  python3 "$DIR/secure.py" check "$@" || status=1
-else
-  echo "✗ python3 is required for the CVE scan (macOS: xcode-select --install)" >&2
-  status=1
+if [ "$ca" -eq 1 ]; then
+  # Keep stdout pure JSON under --json: the trust check reports on stderr.
+  if [ "$json" -eq 1 ]; then
+    "$ROOT/check-ca-trust.sh" >&2 || status=1
+  else
+    "$ROOT/check-ca-trust.sh" || status=1
+  fi
 fi
-exit "$status"
+
+python3 "$BIN/wscanner.py" "$@"
+rc=$?
+# A usage or internal error outranks a failing finding.
+if [ "$rc" -ge 2 ]; then
+  exit "$rc"
+fi
+if [ "$rc" -ne 0 ] || [ "$status" -ne 0 ]; then
+  exit 1
+fi
+exit 0

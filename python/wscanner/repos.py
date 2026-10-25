@@ -1,13 +1,17 @@
-"""Our org repos: where they're cloned, their lockfiles, the container images
-their Dockerfiles and compose files name, and the dependencies that run code
-when installed."""
+"""The repos a scan covers: every git checkout found by a bounded walk of
+$HOME (or of each --path), their lockfiles, the container images their
+Dockerfiles and compose files name, and the dependencies that run code when
+installed."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 from pathlib import Path
+
+from .system import short
 
 LOCKFILES = {
     "Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "deno.lock",
@@ -17,23 +21,78 @@ LOCKFILES = {
 }
 PRUNE = {".git", "node_modules", "target", ".build", "vendor", ".cache", "dist", "build",
          ".venv", "venv", "__pycache__", ".next"}
+# The repo search also skips caches, toolchains and app data that hold other
+# people's checkouts (crate sources, Go modules, npm stores) or are huge.
+DISCOVER_PRUNE = PRUNE | {"Library", ".Trash", ".rustup", ".npm", ".pnpm-store"}
+DISCOVER_PRUNE_PAIRS = {("go", "pkg"), (".cargo", "registry"), (".cargo", "git"), (".local", "share")}  # (parent, dir)
+DISCOVER_DEPTH = 6  # ~/a/b/c/d/e/f/.git is the deepest repo found
 DOCKERFILE = re.compile(r"^(Dockerfile|Containerfile)(\..+)?$|.+\.(dockerfile|containerfile)$", re.I)
 COMPOSE = re.compile(r"^(docker-)?compose(\..+)?\.ya?ml$", re.I)
 
 
-def org_repos(ops: Path):
-    """[(name, path)] for every org repo cloned next to ops or in WAFFURU_HOME."""
-    try:
-        names = re.search(r"WAFFURU_REPOS=\(([^)]*)\)", (ops / "scripts" / "lib.sh").read_text()).group(1).split()
-    except (OSError, AttributeError):
-        names = []
-    homes = [Path(os.environ.get("WAFFURU_HOME", "~/waffuru")).expanduser(), ops.parent]
-    out = []
-    for n in names:
-        p = next((h / n for h in homes if (h / n / ".git").exists()), None)
-        if p:
-            out.append((n, p))
-    return out
+def _skip(parent: str, name: str) -> bool:
+    return name in DISCOVER_PRUNE or name.endswith(".app") or (parent, name) in DISCOVER_PRUNE_PAIRS
+
+
+def discover(root: Path, depth=DISCOVER_DEPTH):
+    """Every git repo at or under root, sorted. A directory holding a `.git`
+    directory is a repo and is not descended into: the repo is the unit. A
+    `.git` file (a linked worktree or a submodule) also ends the descent, but
+    only counts when it is root itself, so a repo's worktrees aren't each
+    scanned again. Symlinks are not followed, and only directory entries are
+    looked at, so the walk stays cheap even over a whole home directory."""
+    found = []
+
+    def visit(d: str, level: int):
+        try:
+            with os.scandir(d) as it:
+                entries = list(it)
+        except OSError:  # unreadable or vanished: nothing here
+            return
+        git = next((e for e in entries if e.name == ".git"), None)
+        if git is not None:
+            if level == 0 or git.is_dir(follow_symlinks=False):
+                found.append(Path(d))
+            return
+        if level >= depth:
+            return
+        parent = os.path.basename(d)
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False) and not _skip(parent, e.name):
+                    visit(e.path, level + 1)
+            except OSError:
+                continue
+
+    visit(str(root), 0)
+    return sorted(found)
+
+
+def scope(paths=None, log=print, note=None):
+    """[(name, path)] for the repos a scan covers. With no paths, every git
+    checkout under $HOME. With paths, the checkouts at or under each one; a
+    path holding no checkout is scanned as one project (without the git
+    history checks). Missing paths are skipped with a one-line note."""
+    note = note or (lambda msg: print(msg, file=sys.stderr))
+    roots = [Path(os.path.expanduser("~"))] if paths is None else []
+    for p in paths or []:
+        p = Path(p).expanduser()
+        if p.is_dir():
+            roots.append(p.resolve())
+        else:
+            note(f"· skipping --path {p}: no such directory")
+    found = []
+    for root in roots:
+        repos = discover(root)
+        found += repos or ([root] if paths is not None else [])
+    unique = sorted(set(found))
+    where = "under " + ", ".join(short(str(r)) for r in roots) if roots else "(no paths to search)"
+    log(f"  found {sum(1 for r in unique if is_git(r))} git repos {where}")
+    return [(short(str(r)), r) for r in unique]
+
+
+def is_git(path: Path) -> bool:
+    return (Path(path) / ".git").exists()
 
 
 def walk(root: Path, depth=5):
@@ -50,8 +109,8 @@ def lockfiles(root: Path):
 
 
 def repo_images(repos):
-    """[(image ref, file)]: the base images our Dockerfiles build FROM and the
-    images our compose files run."""
+    """[(image ref, file)]: the base images the repos' Dockerfiles build FROM
+    and the images their compose files run."""
     out = []
     for _, root in repos:
         for d, files in walk(root):

@@ -1,20 +1,39 @@
-"""Offline tests for the security scanner: version ordering, fix selection,
-the cache and search, and the update plan. Run with `make test`."""
+"""Offline tests for wscanner: version ordering, fix selection, the cache
+and search, the update plan, the scan's scope, and the CLI contract (the JSON
+envelope, exit codes, version/tools/skill). Run from the repo root:
+
+    python3 -m unittest discover -s python -p 'test_*.py'
+"""
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
+import importlib.util
+import io
+import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
-from wscanner import check, check_supply, distros, editors, feeds, harnesses, malicious, osv, repos, report, versions  # noqa: E402
+from wscanner import __version__, check, check_machine, check_supply, db, distros, editors, external, feeds  # noqa: E402
+from wscanner import harnesses, malicious, net, osv, repos, report, versions  # noqa: E402
 from wscanner.db import Cache  # noqa: E402
+
+BIN = HERE / "bin"
+_spec = importlib.util.spec_from_file_location("wscanner_cli", BIN / "wscanner.py")
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
 
 GIT = "https://github.com/python/cpython.git"
 
@@ -226,7 +245,7 @@ class Malicious(unittest.TestCase):
 
     def test_index_lookup_normalises_names(self):
         with tempfile.TemporaryDirectory() as d:
-            os.environ["WAFFURU_SECURITY_DB"] = str(Path(d, "s.db"))
+            os.environ["WSCANNER_DB"] = str(Path(d, "s.db"))
             try:
                 c = Cache()
                 c.conn.executemany("INSERT INTO malicious VALUES (?, ?, ?)",
@@ -238,16 +257,16 @@ class Malicious(unittest.TestCase):
                 self.assertEqual(malicious.reports(c, "npm", "@bad/scope", "2.0.0"), [])
                 c.close()
             finally:
-                os.environ.pop("WAFFURU_SECURITY_DB", None)
+                os.environ.pop("WSCANNER_DB", None)
 
 
 class CacheAndSearch(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ["WAFFURU_SECURITY_DB"] = str(Path(self.tmp.name, "s.db"))
+        os.environ["WSCANNER_DB"] = str(Path(self.tmp.name, "s.db"))
 
     def tearDown(self):
-        os.environ.pop("WAFFURU_SECURITY_DB", None)
+        os.environ.pop("WSCANNER_DB", None)
         self.tmp.cleanup()
 
     def test_candidates_from_cached_tags(self):
@@ -327,6 +346,220 @@ class Plan(unittest.TestCase):
                          "cd /w/butter/rust && cargo update -p webpki-roots --precise 1.0.10")
         p = {"source": "/w/docs/pnpm-lock.yaml", "ecosystem": "npm", "name": "vite"}
         self.assertEqual(check_supply.project_fix(p, "8.2.3"), "cd /w/docs && pnpm update vite@8.2.3")
+
+
+def git_repo(path: Path, worktree=False) -> Path:
+    """A directory that looks like a checkout (a .git dir, or a worktree's .git file)."""
+    path.mkdir(parents=True, exist_ok=True)
+    if worktree:
+        (path / ".git").write_text("gitdir: /elsewhere\n")
+    else:
+        (path / ".git").mkdir()
+    return path
+
+
+class Isolated(unittest.TestCase):
+    """A temp HOME and cache, so no test reads the real machine's home
+    directory or writes its cache."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name, "home")
+        self.home.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "WSCANNER_DB": str(Path(self.tmp.name, "w.db"))})
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def cli(self, *argv):
+        """(exit code, stdout, stderr) of the CLI run in-process."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+
+class Scope(Isolated):
+    def test_default_scope_walks_home_and_prunes_caches(self):
+        h = self.home
+        wanted = [git_repo(h / "code" / "app"), git_repo(h / "a" / "b" / "c" / "d" / "e" / "f"), git_repo(h / ".dotfiles")]
+        git_repo(h / "code" / "app" / "vendored" / "inner")       # inside a repo: the repo is the unit
+        git_repo(h / "code" / "app-feature", worktree=True)       # a linked worktree of a repo
+        for pruned in ("Library/x", ".Trash/x", "go/pkg/mod/x", ".cargo/registry/x", ".cargo/git/x", ".rustup/x",
+                       ".npm/x", ".pnpm-store/x", ".cache/x", ".local/share/x", "code/node_modules/x", "Foo.app/x",
+                       "a/b/c/d/e/f2/g"):                          # the last is past the depth limit
+            git_repo(h / pruned)
+        outside = git_repo(Path(self.tmp.name, "outside"))
+        (h / "link").symlink_to(outside)                           # symlinks are not followed
+        lines = []
+        got = repos.scope(None, log=lines.append)
+        self.assertEqual([p for _, p in got], sorted(wanted))
+        self.assertEqual(got[0][0], str(sorted(wanted)[0]))  # named by path
+        self.assertIn("found 3 git repos", lines[0])
+
+    def test_path_scopes_to_those_dirs_and_skips_missing_ones(self):
+        a, b = git_repo(self.home / "a"), git_repo(self.home / "w" / "b")
+        git_repo(self.home / "elsewhere")
+        notes = []
+        got = repos.scope([self.home / "w", a, a / "..", self.home / "missing"], log=lambda *_: 0, note=notes.append)
+        self.assertEqual(sorted(p for _, p in got), sorted({a.resolve(), b.resolve(), (self.home / "elsewhere").resolve()}))
+        self.assertEqual(len(notes), 1)
+        self.assertIn("missing", notes[0])
+        only = repos.scope([self.home / "w"], log=lambda *_: 0)
+        self.assertEqual([p for _, p in only], [b.resolve()])
+
+    def test_explicit_worktree_and_plain_project_paths(self):
+        wt = git_repo(self.home / "wt", worktree=True)
+        plain = self.home / "plain"
+        plain.mkdir()
+        got = repos.scope([wt, plain], log=lambda *_: 0)
+        self.assertEqual([p for _, p in got], [plain.resolve(), wt.resolve()])
+        self.assertTrue(repos.is_git(wt))
+        self.assertFalse(repos.is_git(plain))  # scanned for lockfiles, not for secrets
+
+    def test_policy_files_replace_the_bundled_defaults(self):
+        for f in dataclasses.astuple(check.Policy()):
+            self.assertTrue(Path(f).is_file(), f)
+        proj = self.home / "p"
+        proj.mkdir()
+        lock = proj / "package-lock.json"
+        lock.write_text('{"packages": {"node_modules/esbuild": {"hasInstallScript": true},'
+                        ' "node_modules/foo": {"hasInstallScript": true}}}')
+        allow = Path(self.tmp.name, "allow.txt")
+        allow.write_text("# ours\nfoo\n")
+        scan = check.Scan(paths=[proj], policy=check.Policy(install_scripts=allow))
+        check_supply.install_scripts(scan, [("p", proj)], [])
+        scan.cache.close()
+        self.assertEqual([f.component for f in scan.findings], ["esbuild"])  # bundled list allows it; this one doesn't
+        self.assertIn("(--install-scripts)", scan.findings[0].fix_cmd)
+
+
+class Paths(Isolated):
+    def test_cache_location(self):
+        self.assertEqual(db.path(), Path(os.environ["WSCANNER_DB"]))
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": "/x"}):
+            os.environ.pop("WSCANNER_DB")
+            self.assertEqual(db.path(), Path("/x/wscanner/wscanner.db"))
+            os.environ.pop("XDG_CACHE_HOME")
+            self.assertEqual(db.path(), self.home / ".cache" / "wscanner" / "wscanner.db")
+
+    def test_user_agent_names_the_project(self):
+        self.assertEqual(net.USER_AGENT, f"wscanner/{__version__} (+https://github.com/waffuruai/wscanner)")
+
+
+ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
+FINDING = {"kind": str, "component": str, "version": str, "location": str, "vuln_id": str, "status": str,
+           "fixed": str, "kev": bool, "severity": str, "note": str, "fix_cmd": str, "fix_auto": bool}
+
+
+def finding(status="fail", **kw):
+    return check.Finding(**dict(dict(kind="tool", component="x", version="1", location="", vuln_id="CVE-1",
+                                     status=status), **kw))
+
+
+class Contract(Isolated):
+    def project_run(self, *extra):
+        return self.cli("--no-machine", "--path", str(self.home), "--offline", "--no-input", *extra)
+
+    def test_json_envelope(self):
+        git_repo(self.home / "app")
+        code, out, _ = self.project_run("--json")
+        env = json.loads(out)
+        self.assertEqual(set(env), ENVELOPE)
+        self.assertEqual((env["schema"], env["impl"], env["version"]), (1, "python", __version__))
+        self.assertEqual(env["checked"]["git repos"], 1)
+        self.assertTrue(env["findings"])  # offline: the unreachable sources are reported, never clean
+        for f in env["findings"]:
+            self.assertEqual({k: type(v) for k, v in f.items()}, FINDING)
+        self.assertEqual({fl.name for fl in dataclasses.fields(check.Finding)}, set(FINDING))
+
+    def test_no_machine_runs_only_repo_checks(self):
+        (self.home / ".cursor").mkdir()
+        (self.home / ".cursor/mcp.json").write_text('{"mcpServers": {"x": {"command": "npx", "args": ["x-mcp"]}}}')
+        git_repo(self.home / "app")
+        (self.home / "app/.mcp.json").write_text('{"mcpServers": {"y": {"command": "npx", "args": ["y-mcp"]}}}')
+        boom = mock.Mock(side_effect=AssertionError("machine check ran"))
+        with mock.patch.object(check_machine, "inventory", boom), mock.patch.object(check_supply, "extensions", boom), \
+                mock.patch.object(check_supply, "bundles", boom), mock.patch.object(check_supply, "_breach", boom), \
+                mock.patch("wscanner.apps.running_images", boom):
+            code, out, _ = self.project_run("--json")
+        self.assertEqual(code, 0, out)
+        unpinned = [f["component"] for f in json.loads(out)["findings"] if f["vuln_id"] == "UNPINNED"]
+        self.assertEqual(unpinned, ["y-mcp (project: y)"])  # the repo's server, not the harness config's
+
+    def test_default_scope_is_the_home_directory(self):
+        git_repo(self.home / "one")
+        git_repo(self.home / "deep" / "two")
+        code, out, _ = self.cli("--no-machine", "--offline", "--json")
+        self.assertEqual(json.loads(out)["checked"]["git repos"], 2)
+
+    def test_exit_0_when_only_warnings_and_unchecked(self):
+        code, out, _ = self.project_run()
+        self.assertEqual(code, 0)
+        self.assertIn("not checked", out)
+
+    def test_exit_1_on_a_failing_finding(self):
+        with mock.patch.object(check.Scan, "run", return_value=[finding()]):
+            self.assertEqual(self.project_run("--json")[0], 1)
+            self.assertEqual(self.project_run()[0], 1)
+        with mock.patch.object(check.Scan, "run", return_value=[finding("warn")]):
+            self.assertEqual(self.project_run()[0], 0)
+
+    def test_exit_1_when_an_unattended_fix_fails_even_if_the_recheck_is_clean(self):
+        broken = finding("warn", fix_cmd="false", fix_auto=True)
+        with mock.patch.object(check.Scan, "run", side_effect=[[broken], []]):
+            code, out, _ = self.project_run("--update")
+        self.assertEqual(code, 1)
+        self.assertIn("failed: false", out)
+        with mock.patch.object(check.Scan, "run", side_effect=[[broken]]):
+            self.assertEqual(self.project_run("--update", "--dryrun")[0], 0)  # a dry run changes nothing
+
+    def test_exit_2_on_usage_errors(self):
+        self.assertEqual(self.cli("--bogus")[0], 2)
+        self.assertEqual(self.cli("check", "--licenses", str(self.home / "nope.txt"))[0], 2)
+        self.assertEqual(self.cli("search")[0], 2)
+        self.assertEqual(self.cli("--help")[0], 0)
+
+    def test_exit_3_when_the_cache_cant_be_opened(self):
+        with mock.patch.dict(os.environ, {"WSCANNER_DB": "/dev/null/w.db"}):
+            code, _, err = self.cli("search", "x")
+            self.assertEqual(code, 3)
+            self.assertIn("wscanner:", err)
+            self.assertEqual(self.project_run("--json")[0], 3)
+
+    def test_exit_3_on_a_crash(self):
+        with mock.patch.object(check.Scan, "run", side_effect=KeyError("bug")):
+            code, _, err = self.project_run()
+        self.assertEqual(code, 3)
+        self.assertIn("KeyError", err)
+
+    def test_version(self):
+        code, out, _ = self.cli("version", "--json")
+        self.assertEqual((code, json.loads(out)), (0, {"version": __version__, "impl": "python", "schema": 1}))
+        self.assertIn(__version__, self.cli("version")[1])
+
+    def test_tools(self):
+        code, out, _ = self.cli("tools", "--json")
+        got = json.loads(out)
+        self.assertEqual([t["name"] for t in got["tools"]], ["osv-scanner", "gitleaks", "git", "openssl", "brew", "docker"])
+        for t in got["tools"]:
+            self.assertEqual(set(t), {"name", "required", "found", "path", "version", "purpose"})
+            self.assertEqual(t["found"], bool(shutil.which(t["name"])))
+        missing = any(t["required"] and not t["found"] for t in got["tools"])
+        self.assertEqual(code, 1 if missing else 0)
+        with mock.patch("shutil.which", return_value=None):
+            self.assertTrue(all(not t["found"] and not t["version"] for t in external.tools()))
+            self.assertEqual(self.cli("tools")[0], 1)
+
+    def test_skill(self):
+        code, out, _ = self.cli("skill")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("---\nname: wscanner\n"))
+
+    @unittest.skipUnless(shutil.which("bash"), "no bash")
+    def test_shell_entry_passes_subcommands_straight_through(self):
+        p = subprocess.run(["bash", str(BIN / "wscanner"), "version", "--json"], capture_output=True, text=True)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["impl"]), (0, "python"))
 
 
 if __name__ == "__main__":

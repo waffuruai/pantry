@@ -1,7 +1,7 @@
 """Opt-in: is the developer's email in known breach data?
 
 This is the one check that sends personal data off the machine, so it never
-runs until the user says yes (asked once on a terminal, or `secure.py breach
+runs until the user says yes (asked once on a terminal, or `wscanner breach
 --enable`), and the answer is remembered. Have I Been Pwned is used when
 HIBP_API_KEY is set (its email lookup is paid); otherwise XposedOrNot's free
 lookup. Results are cached for a week."""

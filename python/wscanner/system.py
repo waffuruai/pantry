@@ -28,7 +28,7 @@ class Component:
     osv: tuple = ()     # (ecosystem, package, version as OSV knows it)
     eol: tuple = ()     # (endoflife.date product, cycle)
     fix: str = ""       # the command (or step) that updates it; "{safe}" is the fixed version
-    auto: bool = False  # `make secure UPDATE=1` may run `fix` unattended
+    auto: bool = False  # `wscanner --update` may run `fix` unattended
     extra: dict = field(default_factory=dict)
 
 

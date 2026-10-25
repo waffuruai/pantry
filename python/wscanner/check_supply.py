@@ -1,5 +1,5 @@
-"""Supply-chain checks: our repos' dependencies, licenses and install
-scripts, container images, editor extensions, what AI harnesses load (MCP
+"""Supply-chain checks: the scanned repos' dependencies, licenses, install
+scripts and committed secrets, container images, editor extensions, what AI harnesses load (MCP
 servers, plugins, skills), every package name against the malicious-package
 index, and the opt-in breach check."""
 
@@ -10,29 +10,37 @@ from pathlib import Path
 
 from . import apps as apps_mod
 from . import breach, editors, feeds, harnesses, leaks, malicious, repos, scanners, versions
-from .check import HERE, REMOVE, listed
+from .check import REMOVE, listed
 from .system import Component, brew_prefix, short
 from .system import run as sh
 
+OSV_SCANNER_INSTALL = "https://google.github.io/osv-scanner/installation/"
+GITLEAKS_INSTALL = "https://github.com/gitleaks/gitleaks#installing"
+# How the report names the policy files (their paths vary; the flag doesn't).
+LICENSES = "the licenses allowlist (--licenses)"
+INSTALL_SCRIPTS = "the install-scripts allowlist (--install-scripts)"
 
 def run(scan, found):
-    org = repos.org_repos(scan.ops)
-    projects(scan, org)
-    secrets(scan, org)
-    install_scripts(scan, org, found)
-    images(scan, org)
-    exts = extensions(scan)
-    refs = mcp(scan, org)
-    bundles(scan, exts)
+    """The repo checks always; the editor, harness and breach checks only on
+    a machine scan (scan.machine)."""
+    projects(scan, scan.repos)
+    secrets(scan, [(n, r) for n, r in scan.repos if repos.is_git(r)])
+    install_scripts(scan, scan.repos, found)
+    images(scan, scan.repos)
+    exts = extensions(scan) if scan.machine else []
+    refs = mcp(scan, scan.repos)
+    if scan.machine:
+        bundles(scan, exts)
     sweep(scan, found, exts, refs)
-    _breach(scan)
+    if scan.machine:
+        _breach(scan)
 
 
 def _missing_osv_scanner(scan, what):
     has_brew = bool(brew_prefix())
     scan.add(kind="tool", component="osv-scanner", version="", location="", vuln_id="MISSING", status="fail",
              note=f"{what} can't be checked", fix_auto=has_brew,
-             fix_cmd="brew install osv-scanner" if has_brew else "make install-osv-scanner")
+             fix_cmd="brew install osv-scanner" if has_brew else f"Install osv-scanner: {OSV_SCANNER_INSTALL}")
 
 
 def _osv_source(scan, what, key, targets, files, **kw):
@@ -45,7 +53,7 @@ def _osv_source(scan, what, key, targets, files, **kw):
     return None
 
 
-# Our repos -----------------------------------------------------------------
+# The scanned repos ---------------------------------------------------------
 
 def project_fix(p, safe):
     lock = Path(p["source"])
@@ -65,29 +73,30 @@ def project_fix(p, safe):
 
 def projects(scan, org):
     files = [f for _, r in org for f in repos.lockfiles(r)]
-    res = _osv_source(scan, "our repos' dependencies", "osv-scanner:repos", sorted({f.parent for f in files}),
-                      files + [HERE / "licenses.txt"], licenses=listed("licenses.txt")) if files else None
+    lic = scan.policy.licenses
+    res = _osv_source(scan, "repo dependencies", "osv-scanner:repos", sorted({f.parent for f in files}),
+                      files + [lic], licenses=listed(lic)) if files else None
     if not res:
         return
     scan.scanned(res, "project", project_fix, what="project dependencies")
     for v in res.get("licenses", []):
         scan.add(kind="license", component=v["name"], version=v["version"], location=v["source"], vuln_id="LICENSE",
-                 status="warn", note=f"license {', '.join(v['violations'])} isn't in security/licenses.txt",
-                 fix_cmd=f"Review {v['name']}: replace it, or approve its license in security/licenses.txt")
+                 status="warn", note=f"license {', '.join(v['violations'])} isn't in {LICENSES}",
+                 fix_cmd=f"Review {v['name']}: replace it, or approve its license in {LICENSES}")
     scan.unknown_licenses = res.get("unknown_licenses", 0)
 
 
 def secrets(scan, org):
-    """Secrets committed anywhere in our repos' history. A provider-specific
+    """Secrets committed anywhere in the repos' history. A provider-specific
     rule (AWS, GitHub, OpenAI, …) fails; a generic one asks for review."""
     for name, root in org:
         try:
-            found = leaks.scan(scan.cache, root, HERE / "gitleaks.toml", scan.refresh, scan.offline)
+            found = leaks.scan(scan.cache, root, scan.policy.gitleaks_config, scan.refresh, scan.offline)
         except scanners.Missing:
             has_brew = bool(brew_prefix())
             scan.add(kind="tool", component="gitleaks", version="", location="", vuln_id="MISSING", status="fail",
-                     note="secrets in our repos (and staged commits) can't be checked", fix_auto=has_brew,
-                     fix_cmd="brew install gitleaks" if has_brew else "make install-gitleaks")
+                     note="secrets in the repos' history can't be checked", fix_auto=has_brew,
+                     fix_cmd="brew install gitleaks" if has_brew else f"Install gitleaks: {GITLEAKS_INSTALL}")
             return
         except Exception as e:  # noqa: BLE001  (Offline, RuntimeError: report, don't crash)
             scan.unchecked(f"secrets in {name}'s history (gitleaks)", e)
@@ -105,12 +114,12 @@ def secrets(scan, org):
 def install_scripts(scan, org, found):
     """Dependencies that run code at install time, and whether npm runs them
     by default on this machine."""
-    allowed = set(listed("install-scripts.txt"))
+    allowed = set(listed(scan.policy.install_scripts))
     for where, name in repos.install_scripts([f for _, r in org for f in repos.lockfiles(r)]):
         if name not in allowed:
             scan.add(kind="install-script", component=name, version="", location=str(where),
                      vuln_id="INSTALL-SCRIPT", status="warn", note="runs code when installed",
-                     fix_cmd=f"Check what {name}'s install script does; then allow it in security/install-scripts.txt, "
+                     fix_cmd=f"Check what {name}'s install script does; then allow it in {INSTALL_SCRIPTS}, "
                              "or drop it from the build allowlist")
     npm = next((c.path for c in found if c.name == "npm" and c.path), "")
     if npm and sh([npm, "config", "get", "ignore-scripts"]).strip().endswith("false"):
@@ -120,9 +129,11 @@ def install_scripts(scan, org, found):
 
 
 def images(scan, org):
-    """Images behind running containers, and the ones our repos build from or
-    run, when they exist locally (pulling is left to the user)."""
-    refs = {r: f"docker pull {r}, then recreate its containers" for r in apps_mod.running_images()}
+    """Images behind running containers (machine scans), and the ones the
+    repos build from or run, when they exist locally (pulling is left to the
+    user)."""
+    running = apps_mod.running_images() if scan.machine else []
+    refs = {r: f"docker pull {r}, then recreate its containers" for r in running}
     for ref, f in repos.repo_images(org):
         refs.setdefault(ref, f"docker pull {ref} (the tag may already carry the fixes); if not, bump it in "
                              f"{short(str(f))}; then rebuild")
@@ -187,7 +198,7 @@ def mcp(scan, org):
     """MCP servers the harnesses start through a package runner. Pinned ones
     are checked like any package; unpinned ones run whatever is latest on
     every launch, so they warn (and fail if the name is known malicious)."""
-    servers = harnesses.mcp_servers(org)
+    servers = harnesses.mcp_servers(org, machine=scan.machine)
     scan.count("MCP servers", len(servers))
     refs = []
     for s in servers:
@@ -206,7 +217,8 @@ def mcp(scan, org):
     for c in refs:
         if c.osv:
             scan.advisories(c, answers.get(c.osv, []))
-    scan.count("harness skills", len(harnesses.skill_dirs()))
+    if scan.machine:
+        scan.count("harness skills", len(harnesses.skill_dirs()))
     return refs
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Distrust the roots in security/distrusted-ca/roots.pem in the system trust
+# Distrust the roots in distrusted-ca/roots.pem in the system trust
 # store, the advisory's workaround (https://emudhra.we-have-a-problem.com/)
 # matched by fingerprint. Needs root (uses sudo). Updating the OS's
 # ca-certificates package is the real fix; this is for until it ships.
@@ -8,7 +8,7 @@
 #   macOS   rewrites /etc/ssl/cert.pem, which OpenSSL and LibreSSL tools read
 #           and macOS updates have not fixed. The original is kept once as
 #           cert.pem.orig; a macOS update may restore the file, so re-run
-#           after one (`make doctor` says).
+#           after one (wscanner says).
 #   Linux   uses the distro's own mechanism, so its next trust store rebuild
 #           keeps the roots out: `!` lines in /etc/ca-certificates.conf
 #           (Debian, Ubuntu, Alpine) or the p11-kit blocklist (Fedora, RHEL,
@@ -20,8 +20,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../scripts/lib.sh
-source "$SCRIPT_DIR/../scripts/lib.sh"
+# shellcheck source=ca-common.sh
+source "$SCRIPT_DIR/ca-common.sh"
 
 CA_DIR="$SCRIPT_DIR/distrusted-ca"
 

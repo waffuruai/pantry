@@ -4,7 +4,7 @@ plugins and desktop extensions that bundle npm packages, and skills.
 
 Covers Claude Code and Claude Desktop, Codex, Cursor, Windsurf, VS Code,
 Gemini CLI, Antigravity, Kiro, opencode, OpenClaw, pi and Hermes, plus the
-project-level MCP files our repos carry. The harness binaries themselves are
+project-level MCP files the scanned repos carry. The harness binaries themselves are
 in catalog.TOOLS (or the npm and pipx listings)."""
 
 from __future__ import annotations
@@ -56,12 +56,12 @@ SKILL_DIRS = (
 )
 
 
-def mcp_servers(repos=()):
+def mcp_servers(repos=(), machine=True):
     """[{harness, name, file, command, args}] for every locally run MCP server
-    configured on this machine or in our repos (remote URL servers run
-    nothing here)."""
+    configured in the repos and, when `machine`, in the harnesses' own
+    configs (remote URL servers run nothing here)."""
     out = []
-    configs = [(h, f, fmt, keys) for h, g, fmt, keys in MCP_CONFIGS for f in expand([g])]
+    configs = [(h, f, fmt, keys) for h, g, fmt, keys in MCP_CONFIGS for f in expand([g])] if machine else []
     configs += [("project", str(Path(r, rel)), "json", ("mcpServers", "servers"))
                 for _, r in repos for rel in REPO_MCP_FILES if Path(r, rel).is_file()]
     for harness, path, fmt, keys in configs:

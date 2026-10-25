@@ -1,4 +1,4 @@
-"""Print the findings, and plan or apply the fixes (`make secure UPDATE=1`)."""
+"""Print the findings, and plan or apply the fixes (`wscanner --update`)."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def report(scan, findings, out=print):
     gaps = sum(1 for k in by if k[1] == "unchecked")
     warns = sum(1 for k in by if k[0] == "warn") - gaps
     if scan.unfixed:
-        out(f"  · {scan.unfixed} applicable advisories have no released fix yet (secure.py search --applicable)")
+        out(f"  · {scan.unfixed} applicable advisories have no released fix yet (wscanner search --applicable)")
     if scan.unknown_licenses:
         out(f"  · {scan.unknown_licenses} project dependencies have no license osv-scanner can identify")
     out("")
@@ -67,13 +67,13 @@ def report(scan, findings, out=print):
         if gaps else ""
     if fails:
         out(f"✗ {fails} thing(s) to update ({sum(1 for f in findings if f.status == 'fail')} advisories), "
-            f"{warns} warning(s). See the plan: make secure UPDATE=1 DRYRUN=1{incomplete}")
+            f"{warns} warning(s). See the plan: wscanner --update --dryrun{incomplete}")
     elif gaps:
         out(f"⚠ nothing with a released fix found in what could be checked.{incomplete}")
     elif warns:
         out(f"✓ nothing with a released fix applies; {warns} warning(s) above")
     else:
-        out("✓ nothing with a released fix applies to this machine or our repos")
+        out("✓ nothing with a released fix applies to what was scanned")
     return 1 if fails else 0
 
 
@@ -114,7 +114,7 @@ def _outdated(status, grp, fs, out):
     shown = [f"{f.component.split(' (')[0]} {f.version} → {f.fixed}" for f in fs[:6]]
     out("      " + ", ".join(shown) + (f" and {len(fs) - 6} more" if len(fs) > 6 else ""))
     auto = sum(1 for f in fs if f.fix_auto)
-    out(f"      fix: make secure UPDATE=1 updates {auto} of them" if auto else
+    out(f"      fix: wscanner --update updates {auto} of them" if auto else
         "      fix: update them from their vendors (or their own updaters)")
 
 
@@ -124,7 +124,7 @@ def _license(status, fs, out):
     out(f"  {MARK[status]} license  {fs[0].note.replace('license ', '', 1)}")
     out(f"      {len(names)} packages in {', '.join(where)}: {', '.join(names[:4])}"
         + (f" and {len(names) - 4} more" if len(names) > 4 else ""))
-    out("      fix: replace them, or approve the license in security/licenses.txt")
+    out("      fix: replace them, or approve the license in the licenses allowlist (--licenses)")
 
 
 def plan(findings):

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Cover security/check-ca-trust.sh --bundle and security/fix-ca-trust.sh against
+# Cover check-ca-trust.sh --bundle and fix-ca-trust.sh against
 # a bundle that still holds the distrusted roots and one that never did.
 #
-# Run with `make test` or directly.
+# Run directly; CI runs it on Linux and macOS.
 
 set -euo pipefail
 

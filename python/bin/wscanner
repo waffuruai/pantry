@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# make secure: the CA trust check, then the CVE scan (secure.py). Both always
+# run; exits non-zero if either fails. Flags go to secure.py:
+#
+#   security/secure                     report what this machine is exposed to
+#   security/secure --update            also apply the unattended fixes
+#   security/secure --update --dryrun   print the update plan, change nothing
+
+set -uo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+status=0
+"$DIR/check-ca-trust.sh" || status=1
+
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$DIR/secure.py" check "$@" || status=1
+else
+  echo "✗ python3 is required for the CVE scan (macOS: xcode-select --install)" >&2
+  status=1
+fi
+exit "$status"

@@ -13,7 +13,15 @@
 
 set -uo pipefail
 
-BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks (ops links this into ~/.local/bin) so BIN is python/bin
+# in the checkout, wherever the link lives. readlink -f is not on every macOS.
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  dir="$(cd "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$dir/$self" ;; esac
+done
+BIN="$(cd "$(dirname "$self")" && pwd)"
 ROOT="$(dirname "$BIN")"
 
 if ! command -v python3 >/dev/null 2>&1; then

@@ -564,3 +564,18 @@ class Contract(Isolated):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Wrapper(unittest.TestCase):
+    """python/bin/wscanner finds wscanner.py through a symlink (ops links it into ~/.local/bin)."""
+
+    def test_runs_through_a_symlink(self):
+        import subprocess, tempfile
+        here = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as d:
+            link = Path(d) / "bin" / "wscanner"
+            link.parent.mkdir()
+            link.symlink_to(here / "bin" / "wscanner")
+            out = subprocess.run([str(link), "version", "--json"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout)["impl"], "python")

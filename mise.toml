@@ -3,8 +3,8 @@
 # The scanner itself only needs the Python 3.9+ a fresh Mac ships, so this file
 # is for contributors and CI, not users. Keep the pins equal to ops' Makefile.
 [tools]
-python = "3.12"
+python = "3.15.1"
 osv-scanner = "2.7.0"
 gitleaks = "8.30.1"
-shellcheck = "0.10.0"
+shellcheck = "0.11.0"
 actionlint = "1.7.12"

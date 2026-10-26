@@ -49,6 +49,13 @@ wscanner --update                              # apply the unattended fixes, the
 
 **Agents.** `wscanner skill` prints the agent skill ([python/skill/wscanner/SKILL.md](python/skill/wscanner/SKILL.md)).
 
+## Who uses it
+
+- **ops**: `make secure` runs it on every Waffuru machine at install and in `make doctor`, with the org's policy files.
+- **wsentinel**: the scan engine behind Sentinel's inventory, advisory and secret findings.
+- **wci**: checks every pull request for security issues before it runs; **wrunner** and wci vet workloads before they run on someone else's machine (planned).
+- **wOS** and wOS Server: baked into the OS image as a system service (planned). The same binary runs on its own on macOS, Linux and Windows.
+
 ## Development
 
 ```bash

@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ["3.9", "3.12"]
+        python: ["3.9", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -42,7 +42,7 @@ jobs:
           "$PY" -m unittest discover -s python -p 'test_*.py'
 
       - name: CA trust test
-        if: ${{ matrix.python == '3.12' }}
+        if: ${{ matrix.python == '3.15' }}
         run: python/test-ca-trust.sh
 
   lint:

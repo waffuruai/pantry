@@ -68,6 +68,61 @@ jobs:
         if: ${{ matrix.python == '3.15' }}
         run: PATH="$TASK_PATH" mise run test ca-trust
 
+  # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
+  # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
+  # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
+  # the layer has one source, until ops publishes the image; bump OPS_REF by
+  # PR. ops is private, so OPS_DEPLOY_KEY is a read-only deploy key on it.
+  container:
+    name: Test (ops bootstrap container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPS_REF: 114e448408e659aa33930ee0a95950353e6738d4
+      IMAGE: waffuru-bootstrap:ci
+    steps:
+      - name: Check for the ops deploy key
+        env:
+          OPS_DEPLOY_KEY: ${{ secrets.OPS_DEPLOY_KEY }}
+        run: |
+          [ -n "$OPS_DEPLOY_KEY" ] || {
+            echo "::error::OPS_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's OPS_DEPLOY_KEY secret"
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wscanner
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: waffuruai/ops
+          ref: ${{ env.OPS_REF }}
+          path: ops
+          ssh-key: ${{ secrets.OPS_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The image's last step is ops' `mise run doctor` for the container role.
+      - name: Build the ops bootstrap image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ops
+          file: ops/containers/Dockerfile.bootstrap
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha,scope=ops-bootstrap
+          cache-to: type=gha,mode=max,scope=ops-bootstrap
+
+      # The checkout goes in the image's workspace, which mise trusts; the
+      # image installs nothing behind a task's back, so python comes first.
+      - name: mise run test
+        run: |
+          docker run --rm -v "$PWD/wscanner:/home/waffuru/waffuru/wscanner" \
+            -w /home/waffuru/waffuru/wscanner "$IMAGE" \
+            bash -ec 'mise install python && mise run test'
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

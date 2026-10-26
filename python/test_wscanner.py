@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -27,7 +28,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from wscanner import __version__, check, check_machine, check_supply, db, distros, editors, external, feeds  # noqa: E402
-from wscanner import harnesses, leaks, malicious, net, osv, repos, report, versions  # noqa: E402
+from wscanner import harnesses, leaks, malicious, net, osv, repos, report, tools, versions  # noqa: E402
+from wscanner.catalog import MISE_FIX, TOOLS  # noqa: E402
 from wscanner.db import Cache  # noqa: E402
 
 BIN = HERE / "bin"
@@ -564,6 +566,84 @@ class Contract(Isolated):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Mise(Isolated):
+    """mise is foundational infrastructure: checked against OSV and its latest
+    release, and never updated by wscanner."""
+
+    MISE = next(t for t in TOOLS if t.name == "mise")
+    OUT = "2026.10.19 macos-arm64 (2026-10-24)"
+
+    def component(self, version="2026.10.19"):
+        return check.Component("manager", "mise", version, str(self.home / ".local/bin/mise"), fix=MISE_FIX)
+
+    def latest(self, answer):
+        """Findings of the latest-release check with GitHub stubbed."""
+        scan = check.Scan(log=lambda *_: 0)
+        self.addCleanup(scan.cache.close)
+        get = mock.patch.object(net, "get_json", **({"side_effect": answer} if isinstance(answer, Exception)
+                                                     else {"return_value": answer}))
+        with get as stub:
+            check_machine.mise(scan, self.component())
+        return scan.findings, stub
+
+    def test_version_and_tag(self):
+        v = re.search(self.MISE.pattern, self.OUT, re.M).group(1)
+        self.assertEqual(v, "2026.10.19")
+        self.assertEqual(tools.tag(self.MISE.osv[2], v), "v2026.10.19")
+        self.assertEqual(self.MISE.osv[1], "https://github.com/jdx/mise.git")
+
+    def test_found_in_local_bin_and_never_unattended(self):
+        exe = self.home / ".local/bin/mise"
+        exe.parent.mkdir(parents=True)
+        exe.write_text(f"#!/bin/sh\necho '{self.OUT}'\n")
+        exe.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            (c,) = tools.find(self.MISE)
+        self.assertEqual((c.version, c.path, c.fix, c.auto), ("2026.10.19", str(exe), MISE_FIX, False))
+        self.assertEqual(c.osv, ("GIT", "https://github.com/jdx/mise.git", "v2026.10.19"))
+
+    def test_behind_latest_release_warns(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t"}):
+            fs, stub = self.latest({"tag_name": "v2026.10.21"})
+        (f,) = fs
+        self.assertEqual((f.vuln_id, f.status, f.fixed, f.fix_cmd, f.fix_auto),
+                         ("OUTDATED", "warn", "2026.10.21", MISE_FIX, False))
+        self.assertEqual(f.note, "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: "
+                                 "bump MISE_VERSION in ops and run make install-mise; wscanner never updates it.")
+        self.assertEqual(stub.call_args[0][0], "https://api.github.com/repos/jdx/mise/releases/latest")
+        self.assertEqual(stub.call_args[1]["headers"]["Authorization"], "Bearer t")
+
+    def test_latest_release_is_quiet_and_cached(self):
+        self.assertEqual(self.latest({"tag_name": "v2026.10.19"})[0], [])
+        fs, stub = self.latest(net.Offline("down"))  # a day's cache answers; GitHub isn't asked again
+        self.assertEqual((fs, stub.called), ([], False))
+
+    def test_unreachable_api_is_unchecked_not_clean(self):
+        fs, _ = self.latest(net.Offline("api.github.com: HTTP 403"))
+        self.assertEqual([(f.kind, f.component) for f in fs], [("unchecked", "latest mise release (GitHub)")])
+
+    def test_update_never_upgrades_mise(self):
+        fs = [finding(component="mise", fix_cmd="brew upgrade mise", fix_auto=True),
+              finding(component="node", fix_cmd="mise install node@24.11.1", fix_auto=True),
+              finding("warn", component="all", fix_cmd="brew upgrade", fix_auto=True)]
+        auto, manual, optional = report.plan(fs)
+        self.assertEqual((auto, manual, optional), (["mise install node@24.11.1"], [MISE_FIX], []))
+        lines = []
+        report.apply(fs, dryrun=True, out=lines.append)
+        self.assertIn(f"    • {MISE_FIX}", lines)
+        self.assertNotIn("brew upgrade mise", "\n".join(lines))
+
+    def test_brew_vulns_finding_for_mise_stays_manual(self):
+        scan = check.Scan(log=lambda *_: 0)
+        self.addCleanup(scan.cache.close)
+        res = {"checked": 1, "findings": [{"formula": "mise", "version": "2026.1.0", "vulnerabilities": [
+            {"id": "GHSA-x", "aliases": ["CVE-2026-9"], "fixed_versions": ["2026.2.0"], "summary": "s"}]}]}
+        with mock.patch("wscanner.scanners.brew_vulns", return_value=res):
+            check_machine.brew(scan)
+        (f,) = scan.findings
+        self.assertEqual((f.status, f.fix_cmd, f.fix_auto), ("fail", MISE_FIX, False))
 
 
 class Wrapper(unittest.TestCase):

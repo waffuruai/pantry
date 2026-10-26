@@ -64,6 +64,8 @@ def find(t, extra_dirs=()):
                 fix, auto = f"brew upgrade {real.split('/Cellar/')[1].split('/')[0]}", True
             elif who == "app":
                 fix, auto = f"Update {re.search(r'([^/]+)[.]app/', real).group(1)}", False
+            if t.fix:
+                fix, auto = t.fix, False
             c = Component(t.kind, t.name, v, shown, fix=fix, auto=auto)
             if t.osv:
                 c.osv = (t.osv[0], t.osv[1], tag(t.osv[2], v))

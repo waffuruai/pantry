@@ -40,7 +40,7 @@ subsystem. Skip mechanical things (whitespace, lint). -->
 
 <!-- How you verified this works. Required for behavior changes. -->
 
-- [ ] `python3 -m unittest discover -s python -p 'test_*.py'` passes locally
+- [ ] `mise run test` and `mise run lint` pass locally
 - [ ] Added/updated tests in `python/test_wscanner.py`
 - [ ] Manual verification (describe below)
 

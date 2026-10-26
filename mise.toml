@@ -1,10 +1,52 @@
-# Development toolchain, pinned. `mise install` fetches all of it (checksummed
-# through mise's aqua registry); `mise exec -- wscanner` runs with it on PATH.
-# The scanner itself only needs the Python 3.9+ a fresh Mac ships, so this file
-# is for contributors and CI, not users. Keep the pins equal to ops' Makefile.
+# Development toolchain, pinned, and the tasks that use it. `mise bootstrap` installs all of it
+# (checksummed through mise's aqua registry) and runs the `bootstrap` task; `mise run test` runs the
+# suites; `mise tasks ls` lists the rest. CI installs the same pins with jdx/mise-action and runs the
+# same tasks. The scanner itself only needs the Python 3.9+ a fresh Mac ships, so this file is for
+# contributors and CI, not users. Keep the pins equal to ops' mise.toml.
+# See ops planning/specs/02-mise-bootstrap.md.
 [tools]
 python = "3.15.1"
 osv-scanner = "2.7.0"
 gitleaks = "8.30.1"
 shellcheck = "0.11.0"
 actionlint = "1.7.12"
+
+[tasks.bootstrap]
+description = "Setup after mise installs [tools]: confirm wscanner finds them (wscanner tools)"
+run = "python/bin/wscanner tools"
+
+[tasks.test]
+description = "Test suites; `all` (the default) is the offline unit tests, then the CA trust test"
+usage = '''
+arg "[suite]" default="all" help="all, unit or ca-trust" {
+  choices "all" "unit" "ca-trust"
+}
+'''
+# The unit tests run with the pinned python3 unless WSCANNER_PYTHON names another interpreter, as
+# CI's 3.9 leg does with the one a fresh Mac ships.
+env = { WSCANNER_PYTHON = "{{ env.WSCANNER_PYTHON | default(value='python3') }}" }
+run = '''
+unit() { "$WSCANNER_PYTHON" -m unittest discover -s python -p 'test_*.py'; }
+case "${usage_suite:-all}" in
+  all) unit; python/test-ca-trust.sh ;;
+  unit) unit ;;
+  ca-trust) exec python/test-ca-trust.sh ;;
+esac
+'''
+
+[tasks.lint]
+description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"
+run = [
+  'for f in python/bin/wscanner python/*.sh; do bash -n "$f"; done',
+  # -x follows `source ca-common.sh`; .shellcheckrc resolves it relative to each script.
+  "shellcheck -x python/bin/wscanner python/*.sh",
+  "actionlint",
+]
+
+[tasks.check]
+description = "Run wscanner check with the pinned tools; more flags after --, such as -- --json --no-input"
+usage = 'arg "[args]" var=#true help="wscanner check flags"'
+run = '''
+eval "set -- ${usage_args:-}"
+exec python/bin/wscanner check "$@"
+'''

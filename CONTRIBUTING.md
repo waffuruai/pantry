@@ -4,6 +4,8 @@ Contributions are welcome under the [Apache-2.0](LICENSE) license.
 
 Start with the [README](README.md) for what wscanner is, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned. We write issues, PRDs and pull requests by the rules in [waffuruai/ops `.agents`](https://github.com/waffuruai/ops/tree/dev/.agents): open an issue first, keep a PR to one change, and say in its description which spec it updated or "no PRD impact".
 
+Tooling comes from [mise](https://mise.jdx.dev): `mise install` in the checkout gets the pinned Python, osv-scanner, gitleaks, shellcheck and actionlint from [`mise.toml`](mise.toml), and `mise exec -- <command>` runs with them on PATH. Without mise, install osv-scanner and gitleaks yourself; `wscanner tools` says what is missing.
+
 Before opening a pull request, run:
 
 ```bash

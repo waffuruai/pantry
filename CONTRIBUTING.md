@@ -4,15 +4,14 @@ Contributions are welcome under the [Apache-2.0](LICENSE) license.
 
 Start with the [README](README.md) for what wscanner is, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned. We write issues, PRDs and pull requests by the rules in [waffuruai/ops `.agents`](https://github.com/waffuruai/ops/tree/dev/.agents): open an issue first, keep a PR to one change, and say in its description which spec it updated or "no PRD impact".
 
-Tooling comes from [mise](https://mise.jdx.dev): `mise install` in the checkout gets the pinned Python, osv-scanner, gitleaks, shellcheck and actionlint from [`mise.toml`](mise.toml), and `mise exec -- <command>` runs with them on PATH. CI's lint job installs shellcheck and actionlint from the same file, so bumping a pin there bumps it everywhere. Without mise, install osv-scanner and gitleaks yourself; `wscanner tools` says what is missing.
-
-Before opening a pull request, run:
+Tooling comes from [mise](https://mise.jdx.dev). Set up and test with:
 
 ```bash
-python3 -m unittest discover -s python -p 'test_*.py'
-python/test-ca-trust.sh
-bash -n python/bin/wscanner python/*.sh && shellcheck -x python/bin/wscanner python/*.sh
+mise bootstrap
+mise run test
 ```
+
+`mise bootstrap` installs the pinned Python, osv-scanner, gitleaks, shellcheck and actionlint from [`mise.toml`](mise.toml) and runs `wscanner tools` to confirm them. `mise run test` runs the offline unit tests and the CA trust test; `mise tasks ls` lists the rest (`lint`, `check`). CI runs the same tasks from the same file, so bumping a pin there bumps it everywhere; its 3.9 leg runs the unit tests with `WSCANNER_PYTHON` set to the 3.9 interpreter. Without mise, install osv-scanner and gitleaks yourself; `wscanner tools` says what is missing. Before opening a pull request, run `mise run test` and `mise run lint`.
 
 A change to the CLI, the JSON output, the exit codes or the cache schema updates [specs/cli-contract.md](specs/cli-contract.md) in the same PR and follows its change rule: additive only, or bump `schema`. A new check needs a test that runs offline. Python stays standard-library only and runs on 3.9.
 

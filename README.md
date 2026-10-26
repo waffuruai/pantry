@@ -25,7 +25,7 @@ git clone https://github.com/waffuruai/wscanner.git
 wscanner/python/bin/wscanner tools      # which external tools it found
 ```
 
-`osv-scanner` and `gitleaks` are required for the repo checks and come with the checkout: `mise install` installs the versions [`mise.toml`](mise.toml) pins and `python/bin/wscanner` puts them on its PATH (without mise, install them yourself; `wscanner tools` says what is missing). `brew` and `docker` are used when present. A Rust binary is coming: see [specs/01-rust-port.md](specs/01-rust-port.md).
+`osv-scanner` and `gitleaks` are required for the repo checks and come with the checkout: `mise bootstrap` installs the versions [`mise.toml`](mise.toml) pins and `python/bin/wscanner` puts them on its PATH (without mise, install them yourself; `wscanner tools` says what is missing). `brew` and `docker` are used when present. A Rust binary is coming: see [specs/01-rust-port.md](specs/01-rust-port.md).
 
 ## Usage
 
@@ -59,9 +59,11 @@ wscanner --update                              # apply the unattended fixes, the
 ## Development
 
 ```bash
-python3 -m unittest discover -s python -p 'test_*.py'   # offline
-python/test-ca-trust.sh
+mise bootstrap   # the pinned tools, then `wscanner tools` to confirm them
+mise run test    # offline unit tests, then the CA trust test
 ```
+
+`mise tasks ls` lists the rest: `mise run test unit`, `mise run test ca-trust`, `mise run lint`, and `mise run check` (`wscanner check` with the pinned tools; flags after `--`).
 
 The CLI contract every implementation keeps is [specs/cli-contract.md](specs/cli-contract.md); all specs are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

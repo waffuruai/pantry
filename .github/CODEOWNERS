@@ -1,0 +1,5 @@
+# mise tasks run arbitrary code on every machine that runs `mise bootstrap` or
+# `mise run`, so changes to them need an owner's review (ops PRD 02, S9).
+/mise*.toml @waffuruai/owners
+/mise.lock @waffuruai/owners
+/mise-tasks/ @waffuruai/owners

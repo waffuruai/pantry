@@ -25,7 +25,7 @@ git clone https://github.com/waffuruai/wscanner.git
 wscanner/python/bin/wscanner tools      # which external tools it found
 ```
 
-`osv-scanner` and `gitleaks` are required for the repo checks (`brew install osv-scanner gitleaks`); `brew` and `docker` are used when present. A Rust binary is coming: see [specs/01-rust-port.md](specs/01-rust-port.md).
+`osv-scanner` and `gitleaks` are required for the repo checks: `mise install` in the checkout pins both ([`mise.toml`](mise.toml)), or `brew install osv-scanner gitleaks`; `brew` and `docker` are used when present. A Rust binary is coming: see [specs/01-rust-port.md](specs/01-rust-port.md).
 
 ## Usage
 

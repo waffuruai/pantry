@@ -1,6 +1,6 @@
 """Side feeds: CISA KEV, endoflife.date, the Homebrew cask catalog, the
-Chrome and Firefox release feeds, PostgreSQL's security table and the Arch
-tracker. Each is cached and refetched only when stale (with an ETag where the
+Chrome and Firefox release feeds, PostgreSQL's security table, the Arch
+tracker and GitHub's latest releases. Each is cached and refetched only when stale (with an ETag where the
 server supports one). A feed that can't be reached and has nothing cached
 raises net.Offline, so the caller reports it unchecked instead of clean."""
 
@@ -24,6 +24,7 @@ ARCH_URL = "https://security.archlinux.org/issues/all.json"
 VSCODE_LISTS = "https://main.vscode-cdn.net/extensions/marketplace.json"
 MARKETPLACE = "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
 OPENVSX = "https://open-vsx.org/api/{}/{}/latest"
+GITHUB_LATEST = "https://api.github.com/repos/{}/releases/latest"
 
 
 def _etag_fetch(cache, url, key, max_age, offline):
@@ -137,6 +138,17 @@ def firefox(cache, offline=False):
         esr = [v[k].replace("esr", "") for k in v if k.startswith("FIREFOX_ESR") and v[k]]
         return {"latest": v.get("LATEST_FIREFOX_VERSION", ""), "esr": esr, "dates": dates}
     return cache.memo("firefox", fetch, offline=offline)
+
+
+def github_latest(cache, repo, offline=False):
+    """The version of `repo`'s latest GitHub release (its tag without a
+    leading v), refreshed daily."""
+    def fetch():
+        tag = (net.get_json(GITHUB_LATEST.format(repo), headers=net.github_headers()) or {}).get("tag_name", "")
+        if not tag:
+            raise net.Offline(f"{repo} has no latest release")
+        return re.sub(r"^v(?=\d)", "", tag)
+    return cache.memo(f"github-latest:{repo}", fetch, offline=offline)
 
 
 def postgres(cache, offline=False):

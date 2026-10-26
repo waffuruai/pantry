@@ -7,11 +7,13 @@ import time
 
 from . import apps as apps_mod
 from . import distros, feeds, osv, packages, scanners, tools, versions
+from .catalog import MISE_REPO, TOOLS
 from .check import REMOVE, display_id, fill, is_kev, is_malicious
 from .db import severity_of
 from .system import MACOS, Component, brew_casks, os_family, os_release
 
 GRACE = 3 * 86400  # a browser release younger than this only warns
+MANUAL = {t.name: t.fix for t in TOOLS if t.fix}  # formulae `--update` must not upgrade either
 
 
 def inventory(scan):
@@ -46,8 +48,21 @@ def components(scan, found):
         failing = scan.advisories(c, answers.get(c.osv, []) if c.osv else [], newer.get(c.osv))
         if c.name == "postgres":
             failing = postgres(scan, c, pg) or failing
+        if c.name == "mise":
+            mise(scan, c)
         if c.eol:
             scan.eol(c, failing)
+
+
+def mise(scan, c):
+    """A newer mise release only warns (OSV decides failures): a human bumps
+    it in ops, so the fix is never unattended."""
+    latest = scan.guard("latest mise release (GitHub)",
+                        lambda: feeds.github_latest(scan.cache, MISE_REPO, scan.offline), "")
+    if latest and not versions.same_or_newer(c.version, latest):
+        scan.add(c, vuln_id="OUTDATED", status="warn", fixed=latest, fix_cmd=c.fix, fix_auto=False,
+                 note=f"mise {c.version} is behind {latest}. mise is foundational infrastructure: bump "
+                      "MISE_VERSION in ops and run make install-mise; wscanner never updates it.")
 
 
 def postgres(scan, c, advisories):
@@ -204,7 +219,8 @@ def brew(scan):
         return
     scan.count("Homebrew formulae", res.get("checked", 0))
     for f in res.get("findings", []):
-        c = Component("brew", f["formula"], f["version"], "Homebrew", fix=f"brew upgrade {f['formula']}", auto=True)
+        fix, auto = (MANUAL[f["formula"]], False) if f["formula"] in MANUAL else (f"brew upgrade {f['formula']}", True)
+        c = Component("brew", f["formula"], f["version"], "Homebrew", fix=fix, auto=auto)
         for v in f.get("vulnerabilities", []):
             rec = {"id": v["id"], "aliases": v.get("aliases", [])}
             fixes = [x for x in v.get("fixed_versions") or [] if osv.released(x)]
@@ -217,4 +233,4 @@ def brew(scan):
                 scan.add(c, vuln_id=display_id(rec), status="fail", kev=is_kev(rec, scan.kev),
                          fixed=versions.pick_safe(f["version"], fixes) or fixes[0],
                          severity=(v.get("severity") or "").upper() or severity_of(rec),
-                         note=v.get("summary", ""), fix_cmd=c.fix, fix_auto=True)
+                         note=v.get("summary", ""), fix_cmd=c.fix, fix_auto=c.auto)

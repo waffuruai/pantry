@@ -26,6 +26,7 @@ class Tool:
     eol: tuple = ()       # (endoflife.date product, cycle format)
     always: bool = False  # check it even when Homebrew or an app installed it (no one else does)
     paths: tuple = ()     # where version managers keep other installs, besides PATH
+    fix: str = ""         # how to update it, overriding the detected way; never run unattended
 
 
 def major(v): return v.split(".")[0]
@@ -47,6 +48,8 @@ RUBY_DIRS = ("~/.rbenv/versions/*/bin", "~/.rvm/rubies/*/bin", "~/.asdf/installs
              "~/.local/share/mise/installs/ruby/*/bin")
 GO_DIRS = ("/usr/local/go/bin", "~/sdk/go*/bin", "~/.asdf/installs/golang/*/go/bin",
            "~/.local/share/mise/installs/go/*/bin")
+MISE_REPO = "jdx/mise"
+MISE_FIX = "mise: manual, see ops MISE_VERSION (make install-mise)"
 JAVA_DIRS = ("~/.sdkman/candidates/java/*/bin", "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin")
 
 TOOLS = (
@@ -82,7 +85,10 @@ TOOLS = (
     Tool("pyenv", "manager", ("pyenv",), ("--version",), r"pyenv (\d+\.\d+\.\d+)",
          ("GIT", github("pyenv/pyenv"), "v{v}"), paths=("~/.pyenv/bin",)),
     Tool("asdf", "manager", ("asdf",), ("--version",), r"v?(\d+\.\d+\.\d+)", ("GIT", github("asdf-vm/asdf"), "v{v}")),
-    Tool("mise", "manager", ("mise",), ("--version",), r"^(\d+\.\d+\.\d+)", ("GIT", github("jdx/mise"), "v{v}")),
+    # mise is foundational infrastructure: ops pins it (MISE_VERSION) and a
+    # human bumps it, so it is checked wherever it came from and never updated.
+    Tool("mise", "manager", ("mise",), ("--version",), r"^(\d+\.\d+\.\d+)", ("GIT", github(MISE_REPO), "v{v}"),
+         always=True, paths=("~/.local/bin",), fix=MISE_FIX),
     Tool("rustup", "manager", ("rustup",), ("--version",), r"rustup (\d+\.\d+\.\d+)",
          ("GIT", github("rust-lang/rustup"), "{v}"), paths=("~/.cargo/bin",)),
     Tool("conda", "manager", ("conda",), ("--version",), r"conda (\d+\.\d+\.\d+)",

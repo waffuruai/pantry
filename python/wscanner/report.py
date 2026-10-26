@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from . import versions
+from .catalog import MISE_FIX
 from .db import path as db_path
 from .system import short
 
@@ -82,7 +83,8 @@ def _entry(status, kind, head, loc, fs, out):
     shown = sorted(fs, key=lambda f: (not f.kev, f.vuln_id))
     for f in shown[:4]:
         tags = " ".join(t for t in ("KEV" if f.kev and f.severity != "MALICIOUS" else "", f.severity) if t)
-        out(f"      {f.vuln_id}{' ' + tags if tags else ''}  {f.note[:90]}")
+        note = f.note if f.vuln_id == "OUTDATED" else f.note[:90]  # our own notes print whole
+        out(f"      {f.vuln_id}{' ' + tags if tags else ''}  {note}")
     if len(shown) > 4:
         out(f"      … and {len(shown) - 4} more")
     fixed = covering(fs).fixed
@@ -136,11 +138,24 @@ def plan(findings):
     seen, auto, manual, optional = set(), [], [], []
     for fs in sorted(groups.values(), key=lambda fs: min(f.status != "fail" for f in fs)):
         f = covering(fs)
-        if not f.fix_cmd or f.fix_cmd in seen:
+        cmd, unattended = (MISE_FIX, False) if upgrades_mise(f.fix_cmd) else (f.fix_cmd, f.fix_auto)
+        if not cmd or cmd in seen:
             continue
-        seen.add(f.fix_cmd)
-        (auto if f.fix_auto else manual if any(x.status == "fail" for x in fs) else optional).append(f.fix_cmd)
+        seen.add(cmd)
+        (auto if unattended else manual if any(x.status == "fail" for x in fs) else optional).append(cmd)
     return auto, manual, optional
+
+
+def upgrades_mise(cmd: str) -> bool:
+    """Whether a fix would update mise, which only a human bumps (ops pins
+    MISE_VERSION): `brew upgrade` naming it, or upgrading everything, or
+    `mise self-update`."""
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    return (words[:2] == ["brew", "upgrade"] and ("mise" in words[2:] or not words[2:])
+            or words[:2] == ["mise", "self-update"])
 
 
 def apply(findings, dryrun: bool, out=print):

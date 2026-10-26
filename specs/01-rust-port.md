@@ -80,7 +80,7 @@ The Python tool works and has just been frozen into a contract (schema 1), so th
 - F8. OSV client: `querybatch` paged at 1000 queries per request with `next_page_token` followed; per-vuln fetch at most 8 in parallel with ETag; a record is refetched only when `modified` changed; aliases grouped into one finding per vulnerability. Evidence: not evidence yet. Issue: pending.
 - F9. `fixed_versions` and `pick_safe` behave as in Python, using the Python test vectors. Evidence: not evidence yet. Issue: pending.
 - F10. Version comparators for semver, PEP 440, Go, dpkg, apk and rpmvercmp, each tested against its upstream's own vectors. Evidence: not evidence yet. Issue: pending.
-- F11. Feeds, KEV, EOL, `brew vulns`, gitleaks, the malicious-package index, harnesses and editors are ported 1:1: the same inputs give the same findings (F3). Evidence: not evidence yet. Issue: pending.
+- F11. Feeds, KEV, EOL, `brew vulns`, mise, gitleaks, the malicious-package index, harnesses and editors are ported 1:1: the same inputs give the same findings (F3). Evidence: not evidence yet. Issue: pending.
 - F12. Container images (phase 2): `docker|podman create` then `export` to a temp directory, scanned by the same extractors; no layer attribution; the container and temp directory are removed even on error. Evidence: not evidence yet. Issue: pending.
 
 ### Performance

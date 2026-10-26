@@ -54,6 +54,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 |---|---|
 | `WSCANNER_DB` | Cache file. Default `$XDG_CACHE_HOME/wscanner/wscanner.db`, else `~/.cache/wscanner/wscanner.db`. The malicious-packages clone sits beside it |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
+| `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
 | `NO_COLOR` | Honoured: wscanner never emits ANSI colour, and runs its child tools with `NO_COLOR=1` |
 
 ## Exit codes

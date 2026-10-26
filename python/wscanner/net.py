@@ -4,6 +4,7 @@ decide what an offline machine means for their source."""
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -39,6 +40,15 @@ def request(url: str, data=None, headers=None, etag: str | None = None):
         raise Offline(f"{url}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
         raise Offline(f"{url}: {e}") from e
+
+
+def github_headers() -> dict:
+    """GitHub API headers; a GITHUB_TOKEN, when set, lifts the anonymous
+    rate limit (60 requests an hour)."""
+    h = {"Accept": "application/vnd.github+json"}
+    if os.environ.get("GITHUB_TOKEN"):
+        h["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+    return h
 
 
 def get_json(url: str, headers=None):

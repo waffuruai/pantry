@@ -23,6 +23,17 @@ while [ -L "$self" ]; do
 done
 BIN="$(cd "$(dirname "$self")" && pwd)"
 ROOT="$(dirname "$BIN")"
+REPO="$(dirname "$ROOT")"
+
+# osv-scanner and gitleaks are pinned in the repo's mise.toml. When mise is
+# installed, put those exact versions first on PATH so a checkout is enough:
+# no separate brew or release installs, and the same versions as CI.
+if [ -f "$REPO/mise.toml" ] && command -v mise >/dev/null 2>&1; then
+  if tool_paths="$(mise bin-paths -C "$REPO" 2>/dev/null | paste -sd: -)" && [ -n "$tool_paths" ]; then
+    PATH="$tool_paths:$PATH"
+    export PATH
+  fi
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "✗ python3 (3.9 or later) is required (macOS: xcode-select --install)" >&2

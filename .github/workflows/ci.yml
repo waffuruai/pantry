@@ -75,7 +75,7 @@ jobs:
   # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
   # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
   # the layer has one source, until ops publishes the image; bump OPS_REF by
-  # PR. ops is private, so OPS_DEPLOY_KEY is a read-only deploy key on it.
+  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it.
   container:
     name: Test (ops bootstrap container)
     runs-on: ubuntu-latest
@@ -86,10 +86,10 @@ jobs:
     steps:
       - name: Check for the ops deploy key
         env:
-          OPS_DEPLOY_KEY: ${{ secrets.OPS_DEPLOY_KEY }}
+          WSCANNER_OP_DEPLOY_KEY: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
         run: |
-          [ -n "$OPS_DEPLOY_KEY" ] || {
-            echo "::error::OPS_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's OPS_DEPLOY_KEY secret"
+          [ -n "$WSCANNER_OP_DEPLOY_KEY" ] || {
+            echo "::error::WSCANNER_OP_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's WSCANNER_OP_DEPLOY_KEY secret"
             exit 1
           }
 
@@ -102,7 +102,7 @@ jobs:
           repository: waffuruai/ops
           ref: ${{ env.OPS_REF }}
           path: ops
-          ssh-key: ${{ secrets.OPS_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

@@ -45,7 +45,7 @@ out="$("$CHECK" --bundle "$tmp/clean.pem" 2>&1)" || {
     mkdir "$d/none"
     for c in "$d"/int*.pem; do
       printf '%s: ' "$(basename "$c")"
-      SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent openssl verify -CAfile "$tmp/clean.pem" -CApath "$d/none" -untrusted "$(dirname "$CHECK")/distrusted-ca/issuers.pem" "$c" 2>&1 | tail -1
+      SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent OPENSSL_X509_TEA_DISABLE=1 openssl verify -CAfile "$tmp/clean.pem" -CApath "$d/none" -untrusted "$(dirname "$CHECK")/distrusted-ca/issuers.pem" "$c" 2>&1 | tail -1
     done
     rm -rf "$d"
   } >&2 || true

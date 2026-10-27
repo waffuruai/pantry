@@ -40,14 +40,15 @@ pub const IMPL: &str = "rust";
 /// The CLI contract's JSON schema (`specs/cli-contract.md`).
 pub const SCHEMA: i64 = 1;
 
-/// The agent skill `wscanner skill` prints. It lives with the Python
-/// implementation until that is removed (phase 3), so both print the same.
-pub const SKILL: &str = include_str!("../../../../python/skill/wscanner/SKILL.md");
+/// The agent skill `wscanner skill` prints. A copy of
+/// `python/skill/wscanner/SKILL.md` (tests/assets.rs keeps them equal), so the
+/// published crate carries it; the copy becomes the original in phase 3.
+pub const SKILL: &str = include_str!("../assets/SKILL.md");
 
 /// The bundled policy files, the defaults `--gitleaks-config`, `--licenses`
-/// and `--install-scripts` replace. Shared with the Python implementation.
+/// and `--install-scripts` replace. Copies of `python/wscanner/defaults/`.
 pub mod defaults {
-    pub const GITLEAKS: &str = include_str!("../../../../python/wscanner/defaults/gitleaks.toml");
-    pub const LICENSES: &str = include_str!("../../../../python/wscanner/defaults/licenses.txt");
-    pub const INSTALL_SCRIPTS: &str = include_str!("../../../../python/wscanner/defaults/install-scripts.txt");
+    pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
+    pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
+    pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
 }

@@ -186,6 +186,12 @@ jobs:
       - name: build (release)
         run: cargo build --locked --release
 
+      # The crates must stay publishable: everything they compile in is
+      # inside them, and they build from the packaged sources alone.
+      - name: cargo package
+        if: runner.os == 'Linux'
+        run: cargo package --workspace --locked
+
       - name: contract tests (rust)
         working-directory: .
         env:

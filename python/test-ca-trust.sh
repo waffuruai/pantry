@@ -34,7 +34,20 @@ out="$("$CHECK" --bundle "$tmp/clean.pem" 2>&1)" || {
   # Show what the check said: this has failed on a CI macOS runner where the
   # same test passes locally, and the cause is invisible without its output.
   printf '%s\n' "$out" >&2
-  "$(command -v openssl)" version >&2 || true
+  # Diagnostics for the runner-only failure: which intermediate verified
+  # against a self-signed throwaway root, and with what clock and validity.
+  {
+    openssl version -a | head -3
+    date -u
+    openssl x509 -in "$tmp/clean.pem" -noout -subject -dates
+    d="$(mktemp -d)"
+    awk -v d="$d" '/-----BEGIN CERTIFICATE-----/ { n++; f = sprintf("%s/int%02d.pem", d, n) } f { print > f } /-----END CERTIFICATE-----/ { close(f); f = "" }' "$(dirname "$CHECK")/distrusted-ca/intermediates.pem"
+    for c in "$d"/int*.pem; do
+      printf '%s: ' "$(basename "$c")"
+      SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent openssl verify -CAfile "$tmp/clean.pem" -untrusted "$(dirname "$CHECK")/distrusted-ca/issuers.pem" "$c" 2>&1 | tail -1
+    done
+    rm -rf "$d"
+  } >&2 || true
   fail "a clean bundle should pass"
 }
 echo "✓ a clean bundle passes"

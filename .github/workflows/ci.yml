@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      OPS_REF: 114e448408e659aa33930ee0a95950353e6738d4
+      OPS_REF: a296725712ee48f23b9b79967e431ae53a455250
       IMAGE: waffuru-bootstrap:ci
     steps:
       - name: Check for the ops deploy key

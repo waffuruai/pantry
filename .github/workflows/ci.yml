@@ -35,6 +35,7 @@ jobs:
       # /usr/bin/python3 is 3.9, and Linux gets 3.9 from setup-python. The
       # 3.15 leg tests the python pinned in mise.toml.
       - if: ${{ matrix.python == '3.9' && runner.os != 'macOS' }}
+        id: setup-python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.9"
@@ -47,14 +48,16 @@ jobs:
 
       # Tasks see only mise's tool directories and the base system, so a tool
       # missing from mise.toml fails here; the 3.9 interpreter is named
-      # explicitly through WSCANNER_PYTHON.
+      # explicitly through WSCANNER_PYTHON, by path: mise-action puts the
+      # pinned python ahead of setup-python's on PATH.
       - name: Pick the Python under test and cut PATH
         env:
           WANT: ${{ matrix.python }}
+          SETUP_PYTHON: ${{ steps.setup-python.outputs.python-path }}
         run: |
           case "$WANT/$RUNNER_OS" in
             3.9/macOS) py=/usr/bin/python3 ;;
-            3.9/*) py="$(command -v python)" ;;
+            3.9/*) py="$SETUP_PYTHON" ;;
             *) py="$(mise which python3)" ;;
           esac
           "$py" -c 'import sys, os; v = os.environ["WANT"]; assert "%d.%d" % sys.version_info[:2] == v, sys.version'
@@ -67,6 +70,61 @@ jobs:
       - name: CA trust test
         if: ${{ matrix.python == '3.15' }}
         run: PATH="$TASK_PATH" mise run test ca-trust
+
+  # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
+  # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
+  # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
+  # the layer has one source, until ops publishes the image; bump OPS_REF by
+  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it.
+  container:
+    name: Test (ops bootstrap container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPS_REF: a296725712ee48f23b9b79967e431ae53a455250
+      IMAGE: waffuru-bootstrap:ci
+    steps:
+      - name: Check for the ops deploy key
+        env:
+          WSCANNER_OP_DEPLOY_KEY: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+        run: |
+          [ -n "$WSCANNER_OP_DEPLOY_KEY" ] || {
+            echo "::error::WSCANNER_OP_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's WSCANNER_OP_DEPLOY_KEY secret"
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wscanner
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: waffuruai/ops
+          ref: ${{ env.OPS_REF }}
+          path: ops
+          ssh-key: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The image's last step is ops' `mise run doctor` for the container role.
+      - name: Build the ops bootstrap image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ops
+          file: ops/containers/Dockerfile.bootstrap
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha,scope=ops-bootstrap
+          cache-to: type=gha,mode=max,scope=ops-bootstrap
+
+      # The checkout goes in the image's workspace, which mise trusts; the
+      # image installs nothing behind a task's back, so python comes first.
+      - name: mise run test
+        run: |
+          docker run --rm -v "$PWD/wscanner:/home/waffuru/waffuru/wscanner" \
+            -w /home/waffuru/waffuru/wscanner "$IMAGE" \
+            bash -ec 'mise install python && mise run test'
 
   lint:
     name: Lint

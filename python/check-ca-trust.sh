@@ -35,18 +35,24 @@ awk -v d="$tmp" '
 
 # Empty default locations: openssl verify still reads the system store next to
 # an explicit -CAfile or -CApath (Fedora does), which would blame that store
-# on the one under test. OpenSSL and LibreSSL both honour these variables.
+# on the one under test. OpenSSL honours these variables; LibreSSL (macOS)
+# doesn't, and reads its default file for a missing -CAfile and its default
+# directory for a missing -CApath, so verify is always given both.
 mkdir "$tmp/empty"
 : > "$tmp/empty.pem"
 
 # 0 when the anchors (a PEM bundle, or a hashed directory like /etc/ssl/certs)
-# chain any distrusted intermediate to one of their roots.
+# chain any distrusted intermediate to one of their roots. A directory's
+# certificates are gathered into one file: an empty -CAfile doesn't load.
 bundle_trusts() {
-  local opt="-CAfile" c
-  [ -d "$1" ] && opt="-CApath"
+  local file="$1" c
+  if [ -d "$1" ]; then
+    file="$(mktemp "$tmp/dir.XXXXXX")"
+    cat "$1"/*.[0-9] > "$file" 2>/dev/null || :
+  fi
   for c in "$tmp"/int*.pem; do
     if SSL_CERT_FILE="$tmp/empty.pem" SSL_CERT_DIR="$tmp/empty" SSL_CERT_URI="file:$tmp/empty" \
-      openssl verify "$opt" "$1" -untrusted "$CA_DIR/issuers.pem" "$c" >/dev/null 2>&1; then
+      openssl verify -CAfile "$file" -CApath "$tmp/empty" -untrusted "$CA_DIR/issuers.pem" "$c" >/dev/null 2>&1; then
       return 0
     fi
   done

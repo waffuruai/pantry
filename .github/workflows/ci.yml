@@ -35,6 +35,7 @@ jobs:
       # /usr/bin/python3 is 3.9, and Linux gets 3.9 from setup-python. The
       # 3.15 leg tests the python pinned in mise.toml.
       - if: ${{ matrix.python == '3.9' && runner.os != 'macOS' }}
+        id: setup-python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.9"
@@ -47,14 +48,16 @@ jobs:
 
       # Tasks see only mise's tool directories and the base system, so a tool
       # missing from mise.toml fails here; the 3.9 interpreter is named
-      # explicitly through WSCANNER_PYTHON.
+      # explicitly through WSCANNER_PYTHON, by path: mise-action puts the
+      # pinned python ahead of setup-python's on PATH.
       - name: Pick the Python under test and cut PATH
         env:
           WANT: ${{ matrix.python }}
+          SETUP_PYTHON: ${{ steps.setup-python.outputs.python-path }}
         run: |
           case "$WANT/$RUNNER_OS" in
             3.9/macOS) py=/usr/bin/python3 ;;
-            3.9/*) py="$(command -v python)" ;;
+            3.9/*) py="$SETUP_PYTHON" ;;
             *) py="$(mise which python3)" ;;
           esac
           "$py" -c 'import sys, os; v = os.environ["WANT"]; assert "%d.%d" % sys.version_info[:2] == v, sys.version'

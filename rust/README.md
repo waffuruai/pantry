@@ -32,29 +32,34 @@ CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `contr
 
 ## Where the port stands
 
-Phase 0 is done: the workspace, the contract suite (passing on both implementations), and the CI gates. Phase 1 is mostly in:
+Phases 0–2 are written: the workspace, the contract suite (passing on both implementations) and the CI gates; every lockfile, OS database and comparator; the machine inventory, licenses and images. What remains is evidence and release work that needs network access or the owner (below).
 
 | Area | State |
 |---|---|
 | `version`, `tools`, `skill`, `search`, `export`, `breach`, `--update`/`--dryrun`, exit codes | Ported; same output as Python |
 | The report and progress | New: a live progress line while scanning, and findings grouped by kind, one line per component with its reason and fix |
 | Scope walk (`--path`, `--no-machine`, the default `$HOME` walk) | Ported (F1) |
-| Lockfiles: `Cargo.lock`, `package-lock.json` v1–v3, `pnpm-lock.yaml` v5/v6/v9, `Package.resolved`, `go.mod` (+ `stdlib`), `uv.lock` | Ported, read directly instead of through osv-scanner (F4 first group, F5); golden files in `crates/wscanner/tests/lockfiles/` |
+| Lockfiles: `Cargo.lock`, `package-lock.json` v1–v3, `pnpm-lock.yaml` v5/v6/v9, `Package.resolved`, `go.mod` (+ `stdlib`), `uv.lock`; `requirements*.txt` (with `-r` includes), `yarn.lock` v1/berry, `bun.lock`, `deno.lock` v3–v5, `poetry.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`; `pubspec.lock`, `mix.lock`, `gradle.lockfile`, `pom.xml`, `packages.lock.json` v1–v2, `conan.lock` v0.4–v0.5 | Ported, read directly instead of through osv-scanner (all of F4, F5); golden files in `crates/wscanner/tests/lockfiles/` |
 | OS packages: dpkg (source packages), apk (origins), rpm on SUSE; `os-release` → OSV ecosystem; dnf advisories; the Arch tracker | Ported (F6, F7) |
 | OSV client: querybatch paging, `next_page_token`, 8 parallel record fetches with ETag, alias grouping, daily cache | Ported (F8) |
-| `fixed_versions`, `pick_safe`; semver, PEP 440, Go, dpkg, apk, rpmvercmp comparators | Ported with the Python and upstream vectors (F9, F10) |
+| `fixed_versions`, `pick_safe`; semver, PEP 440, Go, dpkg, apk, rpmvercmp, RubyGems, Maven and Composer comparators | Ported with the Python and upstream vectors (F9, F10) |
 | KEV, endoflife.date, gitleaks, install scripts, project MCP servers, the malicious-package index | Ported |
-| The rest of F4 (`requirements*.txt`, `yarn.lock`, `bun.lock`, `deno.lock`, `poetry.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, then the third group) | Not yet: reported `unchecked` with the files' names |
-| Licenses (deps.dev), container images, and the machine inventory beyond OS packages (tools and runtimes, apps, browsers, macOS updates, Homebrew, editors, harness configs, running containers, CA trust, breach check) | Phase 2: reported `unchecked`, never clean |
+| The machine inventory: tools and runtimes on PATH and in version managers, pip/npm/cargo/pipx/gem globals, apps, browsers and Electron, macOS updates, Homebrew (`brew vulns`), Docker and running containers' images, editor extensions, harness MCP servers, plugins and skills, the CA trust check, the breach check | Ported (F11); the same 118 components as Python on an Ubuntu host, offline |
+| Licenses from deps.dev (`--licenses`, off by default) with SPDX expressions | Ported |
+| Container images: `create` + `export`, read by the same extractors | Ported (F12); real-image tests in CI on Linux |
 
-So a Rust run today is honest but narrower than a Python run: everything it doesn't check yet shows up under "not checked" and makes the report say "Incomplete". Use `python/bin/wscanner` for full coverage until phase 2.
+Not done yet, and why:
+
+- **F3 parity**: the `check --json` diff against Python on the org repos and in Debian, Alpine and openSUSE containers needs api.osv.dev, which the environment the port was written in couldn't reach. Python stays the reference until that diff is empty.
+- **P1, P2**: warm and cold run times on a developer Mac.
+- **Phase 3**: the first tag runs `.github/workflows/release.yml` (the S3 and S4 evidence for every target); then ops pins the artifact and `python/` is deleted. Each step is the owner's call; the playbook is [docs/internal/release.md](../docs/internal/release.md).
 
 ## Known differences from Python
 
 - **The report** groups findings by kind, one line each (`name version (location) - (ID KEV SEVERITY) Description. Fix: …`), then what couldn't be checked; Python prints one block per component. A **progress line** (spinner, current step or file, elapsed time) is drawn on stderr while scanning, only when stderr is a terminal. Neither is part of the contract, which covers `--json`.
 
 - **Ctrl-C** ends the process by the signal instead of exiting 130.
-- **Lockfile packages** are read by wscanner, not osv-scanner. Workspace members (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding.
+- **Lockfile packages** are read by wscanner, not osv-scanner. Workspace members and local packages (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages, path and `file:` dependencies in the other lockfiles, Composer `path` repositories, private Hex organizations, Conan `@user/channel` recipes) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding. `requirements*.txt` counts `==` pins only, where osv-scanner also queries the lower bound of a `>=` range; PyPI names from requirements files and `Pipfile.lock` are PEP 503-normalized.
 - **The fixed version** a finding recommends is chosen with the ecosystem's own comparator (semver, PEP 440, dpkg, …) where Python uses one generic order; they agree except on versions the generic order gets wrong.
 - **`vuln_etag:<id>`** meta keys hold the ETags of downloaded OSV records (an additive cache key).
 - **`tools`** lists `gitleaks`, `git` and `openssl` as required and `brew`, `docker` (or podman) and `rpm` as optional; osv-scanner is not used.

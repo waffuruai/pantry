@@ -1,0 +1,10 @@
+%{
+  "decimal": {:hex, :decimal, "2.1.1", "53cfe5f497ed0e7771ae1a475575603d77425099ba5faef9394932b35020ffcc", [:mix], [], "hexpm", "53cfe5f497ed0e7771ae1a475575603d77425099ba5faef9394932b35020ffcc"},
+  "jason": {:hex, :jason, "1.4.1", "fbb01ecdfd565b56261302f7e1fcc27c4fb8f32d56eab74db621fc154604a7a1", [:mix], [{:decimal, "~> 1.0 or ~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "fbb01ecdfd565b56261302f7e1fcc27c4fb8f32d56eab74db621fc154604a7a1"},
+  "live_reload": {:git, "https://github.com/phoenixframework/phoenix_live_reload.git", "4d2b4d4b0c2b0e1e4d7b0e8a3c1f2a9d8e7f6a5b", [tag: "v1.5.0"]},
+  "mime": {:hex, :mime, "2.0.5", "da0d64a365c45bc9935cc5c8a7fc5e49a0e0f9932a761c55d6c52b142780a05c", [:mix], [], "hexpm", "da0d64a365c45bc9935cc5c8a7fc5e49a0e0f9932a761c55d6c52b142780a05c"},
+  "my_plug": {:hex, :plug, "1.15.3", "cc4365a3c010a56af402e0809208873d113e9c38c401cabd88027ef4f5c01fd2", [:mix], [{:mime, "~> 1.0 or ~> 2.0", [hex: :mime, repo: "hexpm", optional: false]}, {:plug_crypto, "~> 1.1.1 or ~> 1.2 or ~> 2.0", [hex: :plug_crypto, repo: "hexpm", optional: false]}, {:telemetry, "~> 0.4.3 or ~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}], "hexpm", "cc4365a3c010a56af402e0809208873d113e9c38c401cabd88027ef4f5c01fd2"},
+  "plug_crypto": {:hex, :plug_crypto, "2.0.0", "53695bae57cc4e54566d993eb01074e4d894b65a3766f1c43e2c61a1b0f45ea9", [:mix], [], "hexpm", "53695bae57cc4e54566d993eb01074e4d894b65a3766f1c43e2c61a1b0f45ea9"},
+  "private_lib": {:hex, :private_lib, "0.3.0", "0000000000000000000000000000000000000000000000000000000000000000", [:mix], [], "hexpm:acme", "0000000000000000000000000000000000000000000000000000000000000000"},
+  "telemetry": {:hex, :telemetry, "1.2.1", "dad9ce9d8effc621708f99eac538ef1cbe05d6a874dd741de2e689c47feafed5", [:rebar3], [], "hexpm", "dad9ce9d8effc621708f99eac538ef1cbe05d6a874dd741de2e689c47feafed5"},
+}

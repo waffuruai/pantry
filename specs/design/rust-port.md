@@ -44,20 +44,20 @@ Parsers read line by line where the format allows (P5) and never execute or reso
 | `Package.resolved` | `SwiftURL` | v1–v3 | Package is the repository URL without its scheme or `.git` (`github.com/apple/swift-nio`), as osv-scalibr names it (settled) |
 | `go.mod` | `Go` | — | `require` and `replace`; `toolchain goX`, else `go X`, → `stdlib` (F5, as osv-scalibr) |
 | `uv.lock` | `PyPI` | v1 | Editable and virtual sources skipped |
-| `requirements*.txt` | `PyPI` | — | `==` pins only; `-r` includes followed inside the repo |
-| `yarn.lock` | `npm` | v1, berry | Berry is YAML; v1 its own block format |
-| `bun.lock` | `npm` | text (JSONC) | Comments and trailing commas tolerated |
-| `deno.lock` | `npm` | v3–v5 | `npm:` entries; `jsr:` has no OSV ecosystem yet |
-| `poetry.lock` | `PyPI` | v1–v2 | |
-| `Pipfile.lock` | `PyPI` | — | `default` and `develop` |
-| `Gemfile.lock` | `RubyGems` | — | `GEM` `specs:` block |
-| `composer.lock` | `Packagist` | — | `packages` and `packages-dev` |
-| `pubspec.lock` | `Pub` | — | |
-| `mix.lock` | `Hex` | — | `:hex` tuples only |
+| `requirements*.txt` | `PyPI` | — | `==` (and `===`) pins only; `-r` includes followed inside the repo, each once; a missing include or one outside the repo is skipped, as osv-scalibr skips includes it can't open; names PEP 503-normalized (settled) |
+| `yarn.lock` | `npm` | v1, berry | Berry is YAML; v1 its own block format. Berry: `npm:` resolutions and `patch:` resolutions of `npm:` packages (Yarn's built-in patches) count (settled) |
+| `bun.lock` | `npm` | text (JSONC) | Comments and trailing commas tolerated; the binary `bun.lockb` isn't read |
+| `deno.lock` | `npm` | v3–v5 | `npm:` entries; `jsr:` has no OSV ecosystem yet; another lockfile version is reported unchecked (settled) |
+| `poetry.lock` | `PyPI` | v1–v2 | `git`, `directory`, `file` and `url` sources skipped; `legacy` indexes kept (settled) |
+| `Pipfile.lock` | `PyPI` | — | `default` and `develop`; names PEP 503-normalized (settled) |
+| `Gemfile.lock` | `RubyGems` | — | `GEM` `specs:` block; a platform suffix (`-x86_64-linux`) is dropped |
+| `composer.lock` | `Packagist` | — | `packages` and `packages-dev`; `path` repositories and branch versions skipped; versions as written (`v6.4.0`) (settled) |
+| `pubspec.lock` | `Pub` | — | `hosted` packages only |
+| `mix.lock` | `Hex` | — | `:hex` tuples only, under the tuple's package name, from the public `hexpm` repository only (`hexpm:org` is private) (settled) |
 | `gradle.lockfile` | `Maven` | — | `group:artifact:version=configurations` |
-| `pom.xml` | `Maven` | — | Literal versions and same-file properties only; no parent or remote resolution |
-| `packages.lock.json` | `NuGet` | v1–v2 | |
-| `conan.lock` | `ConanCenter` | v0.4–v0.5 | |
+| `pom.xml` | `Maven` | — | Literal versions and same-file properties only; no parent or remote resolution. A missing version comes from the same file's `dependencyManagement`, `[1.2.3]` reads as 1.2.3; ranges, `system` scope, plugin and profile dependencies skipped (settled) |
+| `packages.lock.json` | `NuGet` | v1–v2 | `Project` references skipped |
+| `conan.lock` | `ConanCenter` | v0.4–v0.5 | A `@user/channel` reference is a private recipe, not ConanCenter's, and is skipped (settled) |
 
 ## OS package databases
 
@@ -97,9 +97,10 @@ OSV decides whether a version is affected; the scanner only orders fixed version
 | dpkg | Debian, Ubuntu | `dpkg --compare-versions` cases (epoch, `~`) |
 | apk | Alpine, Wolfi, Chainguard | `apk version -t` cases (`_rc`, `_p`, `-r`) |
 | rpmvercmp | openSUSE, SUSE | `rpmvercmp` test suite (`~`, `^`, epoch) |
-| generic | upstream release tags, apps, everything else | today's `python/wscanner/versions.py` tests |
-
-RubyGems, Maven and Packagist comparators arrive with their lockfiles.
+| RubyGems | RubyGems | rubygems' `test_gem_version.rb` (`Gem::Version#<=>`) |
+| Maven | Maven | maven-artifact's `ComparableVersionTest` (3.9) |
+| Composer | Packagist | composer/semver's `VersionParserTest`, `ComparatorTest`, `SemverTest` (normalize, then PHP's `version_compare`) |
+| generic | ConanCenter, upstream release tags, apps, everything else | today's `python/wscanner/versions.py` tests |
 
 ## OSV client
 

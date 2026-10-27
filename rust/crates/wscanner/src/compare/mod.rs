@@ -9,8 +9,11 @@ use std::cmp::Ordering;
 pub mod apk;
 pub mod dpkg;
 pub mod gover;
+pub mod maven;
+pub mod packagist;
 pub mod pep440;
 pub mod rpm;
+pub mod rubygems;
 pub mod semver;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +24,9 @@ pub enum Comparator {
     Dpkg,
     Apk,
     Rpm,
+    RubyGems,
+    Maven,
+    Packagist,
     Generic,
 }
 
@@ -31,6 +37,9 @@ impl Comparator {
         match base {
             "crates.io" | "npm" | "SwiftURL" | "Pub" | "Hex" | "NuGet" => Comparator::Semver,
             "PyPI" => Comparator::Pep440,
+            "RubyGems" => Comparator::RubyGems,
+            "Maven" => Comparator::Maven,
+            "Packagist" => Comparator::Packagist,
             "Go" => Comparator::Go,
             "Debian" | "Ubuntu" => Comparator::Dpkg,
             "Alpine" | "Wolfi" | "Chainguard" => Comparator::Apk,
@@ -47,6 +56,9 @@ impl Comparator {
             Comparator::Dpkg => dpkg::cmp(a, b),
             Comparator::Apk => apk::cmp(a, b),
             Comparator::Rpm => rpm::cmp(a, b),
+            Comparator::RubyGems => rubygems::cmp(a, b),
+            Comparator::Maven => maven::cmp(a, b),
+            Comparator::Packagist => packagist::cmp(a, b),
             Comparator::Generic => crate::versions::cmp(a, b),
         }
     }
@@ -72,6 +84,10 @@ mod tests {
         assert_eq!(Comparator::for_ecosystem("Alpine:v3.20"), Comparator::Apk);
         assert_eq!(Comparator::for_ecosystem("openSUSE:Leap 15.6"), Comparator::Rpm);
         assert_eq!(Comparator::for_ecosystem("PyPI"), Comparator::Pep440);
+        assert_eq!(Comparator::for_ecosystem("RubyGems"), Comparator::RubyGems);
+        assert_eq!(Comparator::for_ecosystem("Maven"), Comparator::Maven);
+        assert_eq!(Comparator::for_ecosystem("Packagist"), Comparator::Packagist);
+        assert_eq!(Comparator::for_ecosystem("ConanCenter"), Comparator::Generic);
         assert_eq!(Comparator::for_ecosystem("GIT"), Comparator::Generic);
         assert_eq!(Comparator::Semver.cmp("1.0.0-rc.1", "1.0.0"), Ordering::Less);
     }

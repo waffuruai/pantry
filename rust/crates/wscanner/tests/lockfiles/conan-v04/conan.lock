@@ -1,0 +1,48 @@
+{
+ "graph_lock": {
+  "nodes": {
+   "0": {
+    "options": "",
+    "requires": [
+     "1",
+     "3"
+    ],
+    "build_requires": [
+     "4"
+    ],
+    "path": "conanfile.txt",
+    "context": "host"
+   },
+   "1": {
+    "ref": "openssl/3.2.0#02bad7bd13ffcba2a292662a588aeca6",
+    "options": "",
+    "package_id": "d3cb35098bed776c3c7b6c348a6c30ac27a7423b",
+    "requires": [
+     "2"
+    ],
+    "context": "host"
+   },
+   "2": {
+    "ref": "zlib/1.3.1#d068611375ec535292cc6ec30d3dba6d",
+    "options": "",
+    "package_id": "5ab84d6acfe1f23c4fae0ab88f26e3a396351ac9",
+    "context": "host"
+   },
+   "3": {
+    "ref": "mylib/1.0.0@acme/stable#82894598500803f99797e2b7c5cd3c69",
+    "options": "",
+    "package_id": "5ab84d6acfe1f23c4fae0ab88f26e3a396351ac9",
+    "context": "host"
+   },
+   "4": {
+    "ref": "cmake/3.28.1#1401e5c604a37c28e7fc5ca8897d77f0",
+    "options": "",
+    "package_id": "5ab84d6acfe1f23c4fae0ab88f26e3a396351ac9",
+    "context": "host"
+   }
+  },
+  "revisions_enabled": true
+ },
+ "version": "0.4",
+ "profile_host": "[settings]\narch=x86_64\narch_build=x86_64\nbuild_type=Release\ncompiler=gcc\ncompiler.libcxx=libstdc++\ncompiler.version=13\nos=Linux\nos_build=Linux\n[options]\n[build_requires]\n[env]\n"
+}

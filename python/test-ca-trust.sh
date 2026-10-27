@@ -30,7 +30,13 @@ openssl req -x509 -newkey rsa:2048 -nodes -subj "/CN=waffuru test root" -days 1 
 
 # Passes even where the system store still trusts eMudhra: the check must read
 # only the bundle it is given.
-"$CHECK" --bundle "$tmp/clean.pem" >/dev/null || fail "a clean bundle should pass"
+out="$("$CHECK" --bundle "$tmp/clean.pem" 2>&1)" || {
+  # Show what the check said: this has failed on a CI macOS runner where the
+  # same test passes locally, and the cause is invisible without its output.
+  printf '%s\n' "$out" >&2
+  "$(command -v openssl)" version >&2 || true
+  fail "a clean bundle should pass"
+}
 echo "✓ a clean bundle passes"
 
 "$CHECK" --bundle "$ROOTS" >/dev/null && fail "the distrusted roots should fail"

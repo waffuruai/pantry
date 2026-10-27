@@ -37,7 +37,11 @@ awk -v d="$tmp" '
 # an explicit -CAfile or -CApath (Fedora does), which would blame that store
 # on the one under test. OpenSSL honours these variables; LibreSSL (macOS)
 # doesn't, and reads its default file for a missing -CAfile and its default
-# directory for a missing -CApath, so verify is always given both.
+# directory for a missing -CApath, so verify is always given both. Apple's
+# build may also retry a failed verification against the macOS keychain
+# (its Trust Evaluation Agent), which would blame the keychain's trust on
+# the store under test; OPENSSL_X509_TEA_DISABLE=1 turns that off. The
+# keychain is checked on its own below.
 mkdir "$tmp/empty"
 : > "$tmp/empty.pem"
 
@@ -51,7 +55,7 @@ bundle_trusts() {
     cat "$1"/*.[0-9] > "$file" 2>/dev/null || :
   fi
   for c in "$tmp"/int*.pem; do
-    if SSL_CERT_FILE="$tmp/empty.pem" SSL_CERT_DIR="$tmp/empty" SSL_CERT_URI="file:$tmp/empty" \
+    if SSL_CERT_FILE="$tmp/empty.pem" SSL_CERT_DIR="$tmp/empty" SSL_CERT_URI="file:$tmp/empty" OPENSSL_X509_TEA_DISABLE=1 \
       openssl verify -CAfile "$file" -CApath "$tmp/empty" -untrusted "$CA_DIR/issuers.pem" "$c" >/dev/null 2>&1; then
       return 0
     fi

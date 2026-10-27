@@ -34,6 +34,11 @@ case "${usage_suite:-all}" in
 esac
 '''
 
+[tasks.contract]
+description = "The CLI contract suite against WSCANNER (default python/bin/wscanner; rust/target/release/wscanner for the Rust port)"
+env = { WSCANNER = "{{ env.WSCANNER | default(value='python/bin/wscanner') }}", WSCANNER_PYTHON = "{{ env.WSCANNER_PYTHON | default(value='python3') }}" }
+run = '"$WSCANNER_PYTHON" -m unittest discover -s tests/contract'
+
 [tasks.lint]
 description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"
 run = [

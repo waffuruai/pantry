@@ -111,10 +111,14 @@ impl Checker {
         let empty_pem = self.dir.path().join("empty.pem").display().to_string();
         let empty_dir = self.dir.path().join("empty").display().to_string();
         let uri = format!("file:{empty_dir}");
+        // Apple's openssl may retry a failed verification against the macOS
+        // keychain (its Trust Evaluation Agent), blaming the keychain's trust
+        // on this store; the keychain is checked on its own in `check`.
         let env = [
             ("SSL_CERT_FILE", empty_pem.as_str()),
             ("SSL_CERT_DIR", empty_dir.as_str()),
             ("SSL_CERT_URI", uri.as_str()),
+            ("OPENSSL_X509_TEA_DISABLE", "1"),
         ];
         for int in &self.ints {
             let argv = [

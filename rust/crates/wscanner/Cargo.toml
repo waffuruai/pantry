@@ -1,0 +1,20 @@
+[package]
+name = "wscanner"
+description = "Finds the vulnerabilities that apply to this computer and its git repos (library)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["security", "vulnerability", "osv", "lockfile", "scanner"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+ureq.workspace = true
+rustls.workspace = true
+
+[lints]
+workspace = true

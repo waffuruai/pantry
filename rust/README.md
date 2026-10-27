@@ -1,22 +1,83 @@
 # wscanner in Rust
 
-Not started. The plan is [specs/01-rust-port.md](../specs/01-rust-port.md), with detail in [specs/design/rust-port.md](../specs/design/rust-port.md). Until it ships, [`python/`](../python/) is the implementation and [specs/cli-contract.md](../specs/cli-contract.md) is the contract this one must match.
-
-Intended layout:
+The Rust port of wscanner: a `0.x` library crate and the `wscanner` binary, behind the same [CLI contract](../specs/cli-contract.md) as [`python/`](../python/), which stays the reference implementation until this one ships. The plan is [specs/01-rust-port.md](../specs/01-rust-port.md); the detail (extractors, ecosystem strings, comparators, dependencies) is [specs/design/rust-port.md](../specs/design/rust-port.md).
 
 ```
 rust/
-├── rust-toolchain.toml   exact toolchain
-├── Cargo.toml            workspace and release profile
-├── Cargo.lock            committed
+├── rust-toolchain.toml   exact toolchain (S1)
+├── Cargo.toml            workspace, pinned dependencies, release profile (S1, S3)
+├── Cargo.lock            committed; every build is --locked
+├── deny.toml             cargo deny: advisories, sources, licenses (S2)
+├── supply-chain/         cargo vet: audits, imports, exemptions (S2)
 └── crates/
-    ├── wscanner/         library (0.x): scope, extractors, OSV client, comparators, feeds, cache
-    └── wscanner-cli/     the `wscanner` binary
+    ├── wscanner/         library: scope, extractors, OSV client, comparators, feeds, cache, findings
+    └── wscanner-cli/     the `wscanner` binary: argument parsing, report, JSON envelope, exit codes
 ```
 
-Dependency rules:
+## Build and test
 
-- Only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`, FTS5), `ureq` and `rustls`, plus their locked transitives. Anything else needs a decision in the PRD's log first.
-- Every dependency pinned `=x.y.z`; `Cargo.lock` committed; builds use `--locked`.
+```bash
+cd rust
+cargo build --locked --release         # target/release/wscanner
+cargo test --locked                    # unit, golden-file and comparator-vector tests, offline
+cargo clippy --locked --all-targets -- -D warnings && cargo fmt --check
+cargo deny --locked check && cargo vet --locked   # the supply-chain gates (S2): cargo-deny 0.20.2, cargo-vet 0.10.2
+
+# The contract suite, against this binary or the Python one (from the repo root):
+WSCANNER=rust/target/release/wscanner python3 -m unittest discover -s tests/contract
+WSCANNER=python/bin/wscanner mise run contract
+```
+
+CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `contract-python`, `rust-supply-chain`).
+
+## Where the port stands
+
+Phases 0–2 are written: the workspace, the contract suite (passing on both implementations) and the CI gates; every lockfile, OS database and comparator; the machine inventory, licenses and images. What remains is evidence and release work that needs network access or the owner (below).
+
+| Area | State |
+|---|---|
+| `version`, `tools`, `skill`, `search`, `export`, `breach`, `--update`/`--dryrun`, exit codes | Ported; same output as Python |
+| The report and progress | New: a live progress line while scanning, and findings grouped by kind, one line per component with its reason and fix |
+| Scope walk (`--path`, `--no-machine`, the default `$HOME` walk) | Ported (F1) |
+| Lockfiles: `Cargo.lock`, `package-lock.json` v1–v3, `pnpm-lock.yaml` v5/v6/v9, `Package.resolved`, `go.mod` (+ `stdlib`), `uv.lock`; `requirements*.txt` (with `-r` includes), `yarn.lock` v1/berry, `bun.lock`, `deno.lock` v3–v5, `poetry.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`; `pubspec.lock`, `mix.lock`, `gradle.lockfile`, `pom.xml`, `packages.lock.json` v1–v2, `conan.lock` v0.4–v0.5 | Ported, read directly instead of through osv-scanner (all of F4, F5); golden files in `crates/wscanner/tests/lockfiles/` |
+| OS packages: dpkg (source packages), apk (origins), rpm on SUSE; `os-release` → OSV ecosystem; dnf advisories; the Arch tracker | Ported (F6, F7) |
+| OSV client: querybatch paging, `next_page_token`, 8 parallel record fetches with ETag, alias grouping, daily cache | Ported (F8) |
+| `fixed_versions`, `pick_safe`; semver, PEP 440, Go, dpkg, apk, rpmvercmp, RubyGems, Maven and Composer comparators | Ported with the Python and upstream vectors (F9, F10) |
+| KEV, endoflife.date, gitleaks, install scripts, project MCP servers, the malicious-package index | Ported |
+| The machine inventory: tools and runtimes on PATH and in version managers, pip/npm/cargo/pipx/gem globals, apps, browsers and Electron, macOS updates, Homebrew (`brew vulns`), Docker and running containers' images, editor extensions, harness MCP servers, plugins and skills, the CA trust check, the breach check | Ported (F11); the same 118 components as Python on an Ubuntu host, offline |
+| Licenses from deps.dev (`--licenses`, off by default) with SPDX expressions | Ported |
+| Container images: `create` + `export`, read by the same extractors | Ported (F12); real-image tests in CI on Linux |
+
+Not done yet, and why:
+
+- **F3 parity**: the `check --json` diff against Python on the org repos and in Debian, Alpine and openSUSE containers needs api.osv.dev, which the environment the port was written in couldn't reach. Python stays the reference until that diff is empty.
+- **P1, P2**: warm and cold run times on a developer Mac.
+- **Phase 3**: the first tag runs `.github/workflows/release.yml` (the S3 and S4 evidence for every target); then ops pins the artifact and `python/` is deleted. Each step is the owner's call; the playbook is [docs/internal/release.md](../docs/internal/release.md).
+
+## Known differences from Python
+
+- **The report** groups findings by kind, one line each (`name version (location) - (ID KEV SEVERITY) Description. Fix: …`), then what couldn't be checked; Python prints one block per component. A **progress line** (spinner, current step or file, elapsed time) is drawn on stderr while scanning, only when stderr is a terminal. Neither is part of the contract, which covers `--json`.
+
+- **Ctrl-C** ends the process by the signal instead of exiting 130.
+- **Lockfile packages** are read by wscanner, not osv-scanner. Workspace members and local packages (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages, path and `file:` dependencies in the other lockfiles, Composer `path` repositories, private Hex organizations, Conan `@user/channel` recipes) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding. `requirements*.txt` counts `==` pins only, where osv-scanner also queries the lower bound of a `>=` range; PyPI names from requirements files and `Pipfile.lock` are PEP 503-normalized.
+- **The fixed version** a finding recommends is chosen with the ecosystem's own comparator (semver, PEP 440, dpkg, …) where Python uses one generic order; they agree except on versions the generic order gets wrong.
+- **`vuln_etag:<id>`** meta keys hold the ETags of downloaded OSV records, and **`image-packages:<id>`** runs entries an image's packages (Python's `image:<id>` holds osv-scanner's result in another shape, so Rust neither reads nor writes it). Both are additive cache keys.
+- **Missing evidence is never clean.** These differ from Python on purpose, after review on the port's PR; each has a regression test:
+  - An OSV answer older than a day that couldn't be refreshed (OSV down, or `--offline`), and an advisory OSV names but can't serve (404, a body that isn't the record), are reported unchecked; the findings they do give still stand. A `querybatch` answer that isn't an object is an error, not "no advisories". (Python reuses the stale answer and drops the missing record silently.)
+  - A malicious-package report that can't be fetched (offline, or the fetch fails) is reported unchecked and asked again next run; Python caches a made-up record that matches every version. Every interval of a report counts, in the ecosystem's order.
+  - A cached result is reused offline or after a failure only for the same input fingerprint (a changed repo HEAD, Homebrew listing or image doesn't reuse the old answer).
+  - A lockfile that isn't the format it's named as (no `lockfileVersion`, no `module` line, …), or that links outside its repo, is reported unchecked instead of read as empty. `npm-shrinkwrap.json` is read, and wins over a `package-lock.json` beside it, as npm does.
+  - A CA store openssl can't load is reported unchecked, not "doesn't trust the eMudhra CAs".
+  - An advisory whose only fixes are older than the installed version (it came back in a later release) counts as unfixed, not as a fix that would be a downgrade.
+  - An image export cut short is an error, not an image with fewer files.
+  - pip packages are read from each Python's site-packages metadata (`*.dist-info`, `*.egg-info`), with the interpreter run under `-I -S`, so no `.pth` startup hook runs and a Python without pip is still listed; Python runs `python -m pip list`.
+  - A program that leaves a background process holding its output pipes can't hold the scan past its timeout.
+- **`tools`** lists `gitleaks`, `git` and `openssl` as required and `brew`, `docker` (or podman) and `rpm` as optional; osv-scanner is not used.
+
+## Dependency rules
+
+- Only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`, FTS5), `ureq` and `rustls` (`ring`), plus their locked transitives. Anything else needs a decision in the PRD's log first; `crates/wscanner/tests/pins.rs` enforces the list and the `=x.y.z` pins.
+- Every dependency pinned `=x.y.z`, at a release at least two weeks old when pinned unless a security fix needs a newer one (rustls 0.23.46, for the advisories `cargo deny` raised against 0.23.45); `Cargo.lock` committed; builds use `--locked`.
 - `cargo deny` and `cargo vet` gate every merge; the rustls tree is reviewed at every bump.
-- Parsers, comparators, argument parsing and hashing are written here, with golden files and upstream test vectors.
+- Parsers, comparators, argument parsing, SHA-256 and civil dates are written here, with golden files and upstream test vectors (`crates/wscanner/tests/vectors/`).
+- The agent skill and the default policy files are copied into `crates/wscanner/assets/` so the crate packages on its own; `tests/assets.rs` fails when they drift from `python/`, and phase 3 makes `assets/` the only copy.

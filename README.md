@@ -25,7 +25,7 @@ git clone https://github.com/waffuruai/wscanner.git
 wscanner/python/bin/wscanner tools      # which external tools it found
 ```
 
-`osv-scanner` and `gitleaks` are required for the repo checks and come with the checkout: `mise bootstrap` installs the versions [`mise.toml`](mise.toml) pins and `python/bin/wscanner` puts them on its PATH (without mise, install them yourself; `wscanner tools` says what is missing). `brew` and `docker` are used when present. A Rust binary is coming: see [specs/01-rust-port.md](specs/01-rust-port.md).
+`osv-scanner` and `gitleaks` are required for the repo checks and come with the checkout: `mise bootstrap` installs the versions [`mise.toml`](mise.toml) pins and `python/bin/wscanner` puts them on its PATH (without mise, install them yourself; `wscanner tools` says what is missing). `brew` and `docker` are used when present. A Rust binary is in progress in [`rust/`](rust/) (repo checks and Linux OS packages so far; see [rust/README.md](rust/README.md) and [specs/01-rust-port.md](specs/01-rust-port.md)).
 
 ## Usage
 
@@ -41,13 +41,18 @@ wscanner --update                              # apply the unattended fixes, the
 
 (`wscanner` is `python/bin/wscanner`.) Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error.
 
-**Scope.** By default wscanner checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in `python/wscanner/defaults/` and can be replaced with `--gitleaks-config`, `--licenses` and `--install-scripts`.
+**Scope.** By default wscanner checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in `python/wscanner/defaults/` and can be replaced with `--gitleaks-config` and `--install-scripts`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`.
 
 **Cache.** `~/.cache/wscanner/wscanner.db` (or `$XDG_CACHE_HOME/wscanner/`, or `WSCANNER_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 
 **What leaves the machine.** Package names and versions go to OSV; feeds are fetched. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes.
 
 **Agents.** `wscanner skill` prints the agent skill ([python/skill/wscanner/SKILL.md](python/skill/wscanner/SKILL.md)).
+
+## Docs
+
+- [Install and verify a release](docs/public/install.md), and [use wscanner](docs/public/usage.md).
+- For maintainers: the [release playbook](docs/internal/release.md) and [dependency rules](docs/internal/dependencies.md).
 
 ## Who uses it
 
@@ -63,7 +68,7 @@ mise bootstrap   # the pinned tools, then `wscanner tools` to confirm them
 mise run test    # offline unit tests, then the CA trust test
 ```
 
-`mise tasks ls` lists the rest: `mise run test unit`, `mise run test ca-trust`, `mise run lint`, and `mise run check` (`wscanner check` with the pinned tools; flags after `--`).
+`mise tasks ls` lists the rest: `mise run test unit`, `mise run test ca-trust`, `mise run lint`, `mise run contract` (the CLI contract suite against `WSCANNER`, default the Python implementation), and `mise run check` (`wscanner check` with the pinned tools; flags after `--`). The Rust port builds and tests with `cargo` in `rust/` ([rust/README.md](rust/README.md)).
 
 The CLI contract every implementation keeps is [specs/cli-contract.md](specs/cli-contract.md); all specs are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

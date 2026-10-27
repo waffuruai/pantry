@@ -73,9 +73,9 @@ def project_fix(p, safe):
 
 def projects(scan, org):
     files = [f for _, r in org for f in repos.lockfiles(r)]
-    lic = scan.policy.licenses
+    lic = [scan.policy.licenses] if scan.licenses else []  # --licenses opts in
     res = _osv_source(scan, "repo dependencies", "osv-scanner:repos", sorted({f.parent for f in files}),
-                      files + [lic], licenses=listed(lic)) if files else None
+                      files + lic, licenses=listed(lic[0]) if lic else ()) if files else None
     if not res:
         return
     scan.scanned(res, "project", project_fix, what="project dependencies")
@@ -83,7 +83,7 @@ def projects(scan, org):
         scan.add(kind="license", component=v["name"], version=v["version"], location=v["source"], vuln_id="LICENSE",
                  status="warn", note=f"license {', '.join(v['violations'])} isn't in {LICENSES}",
                  fix_cmd=f"Review {v['name']}: replace it, or approve its license in {LICENSES}")
-    scan.unknown_licenses = res.get("unknown_licenses", 0)
+    scan.unknown_licenses = res.get("unknown_licenses", 0) if lic else 0
 
 
 def secrets(scan, org):

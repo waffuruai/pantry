@@ -1,7 +1,9 @@
 name: CI
 
 # The Python scanner's offline tests on the oldest (3.9, what a fresh Mac
-# has) and a current Python, on Linux and macOS, plus shell and workflow lint.
+# has) and a current Python, on Linux and macOS, plus shell and workflow lint;
+# the Rust port's build, tests and supply-chain gates; and the CLI contract
+# suite against both implementations (specs/01-rust-port.md, phase 0).
 on:
   pull_request:
   push:
@@ -150,3 +152,100 @@ jobs:
       # and actionlint.
       - name: lint
         run: PATH="$TASK_PATH" mise run lint
+
+  # The Rust port (rust/): rustfmt, clippy, unit and golden-file tests, the
+  # release build, then the contract suite against the binary it built. The
+  # toolchain is the one rust-toolchain.toml pins; rustup on the runners
+  # installs it.
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --locked
+
+      # F12 against a real engine: the hosted Linux runners have Docker.
+      - name: image scanning (docker)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p wscanner --test image -- --ignored
+
+      - name: build (release)
+        run: cargo build --locked --release
+
+      # The crates must stay publishable: everything they compile in is
+      # inside them, and they build from the packaged sources alone.
+      - name: cargo package
+        if: runner.os == 'Linux'
+        run: cargo package --workspace --locked
+
+      - name: contract tests (rust)
+        working-directory: .
+        env:
+          WSCANNER: rust/target/release/wscanner
+        run: python3 -m unittest discover -s tests/contract -v
+
+  # The same contract suite against the Python implementation, which defines
+  # the contract until the Rust one replaces it.
+  contract-python:
+    name: Contract (python, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: contract tests (python)
+        env:
+          WSCANNER: python/bin/wscanner
+        run: python3 -m unittest discover -s tests/contract -v
+
+  # S2: cargo deny (advisories, crates.io-only sources, license allowlist)
+  # and cargo vet (every dependency audited or explicitly exempted). Either
+  # failing blocks the merge. The tools are installed at exact versions from
+  # their locked sources.
+  rust-supply-chain:
+    name: Rust supply chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+      CARGO_VET_VERSION: 0.10.2
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install cargo-deny and cargo-vet
+        run: cargo install --locked "cargo-deny@$CARGO_DENY_VERSION" "cargo-vet@$CARGO_VET_VERSION"
+
+      - name: cargo deny
+        run: cargo deny --locked check
+
+      - name: cargo vet
+        run: cargo vet --locked

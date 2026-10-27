@@ -1,0 +1,11 @@
+PyPI certifi 2026.10.23
+PyPI charset-normalizer 3.5.2
+PyPI idna 3.20
+PyPI iniconfig 2.3.1
+PyPI jinja2 3.1.2
+PyPI markupsafe 3.0.4
+PyPI packaging 26.3
+PyPI pluggy 1.7.0
+PyPI pytest 7.4.0
+PyPI requests 2.31.0
+PyPI urllib3 1.26.20

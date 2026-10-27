@@ -1,0 +1,2 @@
+SwiftURL github.com/Alamofire/Alamofire 5.4.3
+SwiftURL github.com/apple/swift-argument-parser 1.0.2

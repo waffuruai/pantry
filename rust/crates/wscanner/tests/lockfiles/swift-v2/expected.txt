@@ -1,0 +1,2 @@
+SwiftURL github.com/apple/swift-crypto 3.0.0
+SwiftURL github.com/vapor/vapor 4.89.0

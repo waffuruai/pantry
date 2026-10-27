@@ -1,0 +1,5 @@
+NuGet Newtonsoft.Json 13.0.1
+NuGet Serilog 3.1.0
+NuGet Serilog.Sinks.Console 5.0.0
+NuGet System.Text.Encodings.Web 8.0.0
+NuGet System.Text.Json 8.0.0

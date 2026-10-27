@@ -14,7 +14,7 @@ The command line, its exit codes, its JSON and its cache file are wscanner's onl
 
 ```
 wscanner [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
-                 [--json] [--no-input] [--gitleaks-config FILE] [--licenses FILE] [--install-scripts FILE]
+                 [--json] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
 wscanner search QUERY [--applicable] [--limit N] [--json]
 wscanner export --csv FILE
 wscanner breach [--enable | --disable]
@@ -36,7 +36,8 @@ wscanner skill
 | `--offline` | Cache only; anything never cached is `unchecked` |
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt (the breach-consent question is skipped) |
-| `--gitleaks-config`, `--licenses`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
+| `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
+| `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `breach` | Show or set consent for the opt-in email breach check |
@@ -90,7 +91,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
 | `unfixed` | int | Applicable advisories with no released fix (not in `findings`) |
-| `unknown_licenses` | int | Repo dependencies with no identifiable license |
+| `unknown_licenses` | int | Repo dependencies with no identifiable license; 0 unless `--licenses` |
 | `findings` | array of Finding | Everything that applies, failing or warning |
 
 ### Finding
@@ -114,7 +115,7 @@ A source that couldn't be reached is a finding with `kind == "unchecked"`, `stat
 
 ## `tools --json`
 
-`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. The list is per implementation and may shrink.
+`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. Rust today: `gitleaks`, `git`, `openssl` required; `brew`, `docker`, `rpm` optional. The list is per implementation and may shrink.
 
 ## Cache (SQLite)
 
@@ -122,14 +123,14 @@ One file per machine. Both implementations MUST read and write the same schema, 
 
 | Table | Columns |
 |---|---|
-| `meta` | `key` TEXT PK, `value` TEXT (`breach_consent`, `malicious_at`, `<feed>_at`, `<feed>_etag`, `eol_at:<product>`) |
+| `meta` | `key` TEXT PK, `value` TEXT (`breach_consent`, `malicious_at`, `<feed>_at`, `<feed>_etag`, `eol_at:<product>`, `vuln_etag:<id>`) |
 | `vulns` | `id` TEXT PK, `aliases` TEXT (space-separated), `summary`, `details`, `severity`, `published`, `modified`, `url`, `record` TEXT (full OSV JSON) |
 | `queries` | `ecosystem`, `package`, `version` TEXT (PK together), `checked_at` REAL (Unix time), `vuln_ids` TEXT (space-separated) |
 | `findings` | `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `fixed` TEXT, `kev` INTEGER, `severity`, `note`, `fix_cmd` TEXT, `fix_auto` INTEGER |
 | `kev` | `cve` TEXT PK, `added`, `name` |
 | `eol` | `product`, `cycle` TEXT (PK together), `eol`, `latest` |
 | `casks` | `app` TEXT PK, `token`, `version` |
-| `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>`, `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
+| `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>` (Python), `image-packages:<id>` (Rust), `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |
 

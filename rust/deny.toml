@@ -1,0 +1,48 @@
+# cargo deny (specs/01-rust-port.md S2): advisories, sources and licenses, for the targets we
+# ship. Run from rust/: `cargo deny --locked check`. Failing blocks the merge.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0", # webpki-roots (Mozilla's root store data)
+  "ISC",
+  "MIT",
+  "Unlicense",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+# TLS and crypto come from rustls with ring only (the PRD's decision log).
+deny = [
+  { crate = "openssl" },
+  { crate = "openssl-sys" },
+  { crate = "native-tls" },
+  { crate = "aws-lc-rs" },
+  { crate = "aws-lc-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

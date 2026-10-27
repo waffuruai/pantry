@@ -49,6 +49,11 @@ wscanner --update                              # apply the unattended fixes, the
 
 **Agents.** `wscanner skill` prints the agent skill ([python/skill/wscanner/SKILL.md](python/skill/wscanner/SKILL.md)).
 
+## Docs
+
+- [Install and verify a release](docs/public/install.md), and [use wscanner](docs/public/usage.md).
+- For maintainers: the [release playbook](docs/internal/release.md) and [dependency rules](docs/internal/dependencies.md).
+
 ## Who uses it
 
 - **ops**: `make secure` runs it on every Waffuru machine at install and in `make doctor`, with the org's policy files.

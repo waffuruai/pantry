@@ -138,8 +138,15 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
     let (mut long_name, mut pax_path, mut pax_link): (Option<String>, Option<String>, Option<String>) =
         (None, None, None);
     let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let truncated = || Error::Invalid("the image export is truncated".into());
     loop {
-        if r.read_exact(&mut header).is_err() || header.iter().all(|b| *b == 0) {
+        // Only the end-of-archive block ends the walk: an export cut short
+        // (a partial header, or no end marker) is an error, never an image
+        // with fewer files.
+        if fill(&mut r, &mut header)? < header.len() {
+            return Err(truncated());
+        }
+        if header.iter().all(|b| *b == 0) {
             break;
         }
         let size = octal(&header[124..136]);
@@ -162,7 +169,7 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
                     return Err(Error::Invalid("an oversized tar extension header".into()));
                 }
                 let mut data = vec![0u8; padded as usize];
-                r.read_exact(&mut data)?;
+                r.read_exact(&mut data).map_err(|_| truncated())?;
                 data.truncate(size as usize);
                 match kind {
                     b'x' => {
@@ -178,7 +185,7 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
             b'0' | 0 | b'7' => {
                 if let Some(rel) = inside(&name).filter(|p| wanted(&p.to_string_lossy())).filter(|_| size <= MAX_FILE) {
                     let mut data = vec![0u8; size as usize];
-                    r.read_exact(&mut data)?;
+                    r.read_exact(&mut data).map_err(|_| truncated())?;
                     r.seek_relative((padded - size) as i64)?;
                     let dest = root.join(&rel);
                     if let Some(dir) = dest.parent() {
@@ -215,6 +222,18 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Read until `buf` is full or the stream ends; how many bytes were read.
+fn fill(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..])? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
 }
 
 /// A link target resolved lexically inside the image root.
@@ -333,7 +352,17 @@ pub fn packages(
             .collect();
         Ok(json!({"packages": rows, "gaps": gaps}))
     };
-    let v = cache.memo(&format!("image:{id}"), read, 30.0 * DAY, id, refresh, offline)?;
+    // Not Python's `image:<id>`: that holds osv-scanner's result for the
+    // image, in another shape, under the same cache file.
+    let key = format!("image-packages:{id}");
+    let ours = |v: &Value| v.get("packages").is_some_and(Value::is_array) && v.get("gaps").is_some_and(Value::is_array);
+    let mut v = cache.memo(&key, read, 30.0 * DAY, id, refresh, offline)?;
+    if !ours(&v) && !offline {
+        v = cache.memo(&key, read, 30.0 * DAY, id, true, false)?;
+    }
+    if !ours(&v) {
+        return Err(Error::Offline(format!("{key}: the cached entry is unreadable")));
+    }
     let pkgs = json::arr_at(&v, "packages")
         .iter()
         .map(|p| ImagePackage {
@@ -408,6 +437,35 @@ mod tests {
             ]
         );
         assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    #[test]
+    fn a_cut_short_export_is_an_error_not_an_empty_image() {
+        let d = TempDir::new("untar").unwrap();
+        let whole =
+            tar(&[("var/lib/dpkg/status", b'0', "", b"Package: x\nStatus: install ok installed\nVersion: 1\n")]);
+        for cut in [vec![65u8; 23], whole[..512].to_vec(), whole[..whole.len() - 1024].to_vec(), Vec::new()] {
+            let t = d.path().join("cut.tar");
+            std::fs::write(&t, &cut).unwrap();
+            let root = d.path().join(format!("root{}", cut.len()));
+            std::fs::create_dir_all(&root).unwrap();
+            assert!(matches!(untar(&t, &root), Err(Error::Invalid(_))), "{} bytes", cut.len());
+        }
+    }
+
+    /// Python keeps osv-scanner's result at `image:<id>` (`packages` is a
+    /// count there); Rust neither reads it nor trusts an entry of the wrong
+    /// shape under its own key.
+    #[test]
+    fn python_and_malformed_cache_entries_are_not_read_as_an_empty_image() {
+        let d = TempDir::new("imgcache").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        c.put_run("image:sha256:1", "sha256:1", &json!({"packages": 1, "vulnerable": []})).unwrap();
+        let no_engine = Path::new("/nonexistent/docker");
+        assert!(packages(&c, no_engine, "x", "sha256:1", false, true).is_err(), "offline, nothing of ours cached");
+        c.put_run("image-packages:sha256:1", "sha256:1", &json!({"packages": 1})).unwrap();
+        assert!(packages(&c, no_engine, "x", "sha256:1", false, true).is_err());
+        assert!(packages(&c, no_engine, "x", "sha256:1", false, false).is_err(), "rereads, and can't");
     }
 
     #[test]

@@ -524,6 +524,11 @@ pub fn ca_trust(scan: &mut Scan) {
     match catrust::check() {
         Ok(stores) => {
             scan.count("CA trust stores", stores.len() as i64);
+            for s in &stores {
+                if let Some(why) = &s.unchecked {
+                    scan.unchecked(&format!("CA trust: {} {}", s.label, s.shown), why);
+                }
+            }
             for s in stores.into_iter().filter(|s| s.trusts) {
                 scan.add(Finding {
                     kind: "config".into(),

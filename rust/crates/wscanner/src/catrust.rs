@@ -16,13 +16,27 @@ pub const INTERMEDIATES: &str = include_str!("../assets/distrusted-ca/intermedia
 pub const ISSUERS: &str = include_str!("../assets/distrusted-ca/issuers.pem");
 pub const ADVISORY: &str = "https://emudhra.we-have-a-problem.com/";
 
-/// One trust store and whether it still trusts a distrusted CA.
+/// One trust store and whether it still trusts a distrusted CA, or why
+/// that couldn't be told (then `trusts` is false and the scan reports the
+/// store unchecked, never clean).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Store {
     pub label: String,
     pub shown: String,
     pub trusts: bool,
+    pub unchecked: Option<String>,
     pub hint: String,
+}
+
+/// What `openssl verify` established for a store.
+#[derive(Clone, Debug, PartialEq)]
+enum Verdict {
+    /// A distrusted intermediate chains to one of the store's roots.
+    Trusts,
+    /// Every intermediate was verified against the store, and none chained.
+    Clean,
+    /// openssl couldn't load the store or didn't run: nothing established.
+    Unknown(String),
 }
 
 /// The certificates in a PEM bundle, one PEM each.
@@ -74,8 +88,11 @@ impl Checker {
     }
 
     /// Whether the anchors (a PEM bundle, or a hashed directory) chain any
-    /// distrusted intermediate to one of their roots.
-    fn trusts(&self, anchors: &Path) -> bool {
+    /// distrusted intermediate to one of their roots. Only a verification
+    /// that ran counts either way: `name: OK` is a chain, an `error N at`
+    /// verdict is none; anything else (a file openssl can't load, a timeout)
+    /// is unknown, whatever the exit code.
+    fn verify(&self, anchors: &Path) -> Verdict {
         let opt = if anchors.is_dir() { "-CApath" } else { "-CAfile" };
         let empty_pem = self.dir.path().join("empty.pem").display().to_string();
         let empty_dir = self.dir.path().join("empty").display().to_string();
@@ -85,7 +102,7 @@ impl Checker {
             ("SSL_CERT_DIR", empty_dir.as_str()),
             ("SSL_CERT_URI", uri.as_str()),
         ];
-        self.ints.iter().any(|int| {
+        for int in &self.ints {
             let argv = [
                 self.openssl.as_os_str(),
                 OsStr::new("verify"),
@@ -95,12 +112,38 @@ impl Checker {
                 self.issuers.as_os_str(),
                 int.as_os_str(),
             ];
-            exec(&argv, &env, Duration::from_secs(30)).is_ok_and(|o| o.code == Some(0))
-        })
+            let o = match exec(&argv, &env, Duration::from_secs(30)) {
+                Ok(o) => o,
+                Err(e) => return Verdict::Unknown(e.to_string()),
+            };
+            let said = format!("{}\n{}", o.stdout, o.stderr);
+            let ok = format!("{}: OK", int.display());
+            if o.code == Some(0) && said.lines().any(|l| l.trim() == ok) {
+                return Verdict::Trusts;
+            }
+            let failed = said.lines().any(|l| {
+                l.strip_prefix("error ")
+                    .and_then(|r| r.split_once(" at "))
+                    .is_some_and(|(n, _)| n.parse::<u32>().is_ok())
+            });
+            if !failed {
+                let why = said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no output");
+                return Verdict::Unknown(format!("openssl verify: {why}"));
+            }
+        }
+        Verdict::Clean
     }
 
-    /// Check one store, once per real path; None when it doesn't exist.
+    fn trusts(&self, anchors: &Path) -> bool {
+        self.verify(anchors) == Verdict::Trusts
+    }
+
+    /// Check one store, once per real path; None when it doesn't exist (or
+    /// is an empty file or a directory without hashed certificates, which
+    /// trust nothing). A store that can't be read or holds no certificate is
+    /// unchecked.
     fn store(&mut self, label: &str, shown: &str, bundle: &Path, hint: &str) -> Option<Store> {
+        let mut unchecked = None;
         if bundle.is_dir() {
             let hashed = std::fs::read_dir(bundle)
                 .ok()?
@@ -109,15 +152,37 @@ impl Checker {
             if !hashed {
                 return None;
             }
-        } else if std::fs::metadata(bundle).map_or(true, |m| m.len() == 0) {
-            return None;
+        } else {
+            if std::fs::metadata(bundle).map_or(true, |m| m.len() == 0) {
+                return None;
+            }
+            match std::fs::read(bundle) {
+                Ok(b) if certificates(&String::from_utf8_lossy(&b)).is_empty() => {
+                    unchecked = Some("no PEM certificate in the file".to_string())
+                }
+                Ok(_) => {}
+                Err(e) => unchecked = Some(format!("can't read it: {e}")),
+            }
         }
         let real = realpath(&bundle.display().to_string());
         if self.seen.contains(&real) {
             return None;
         }
         self.seen.push(real);
-        Some(Store { label: label.into(), shown: shown.into(), trusts: self.trusts(bundle), hint: hint.into() })
+        let verdict = match unchecked {
+            Some(why) => Verdict::Unknown(why),
+            None => self.verify(bundle),
+        };
+        Some(Store {
+            label: label.into(),
+            shown: shown.into(),
+            trusts: verdict == Verdict::Trusts,
+            unchecked: match verdict {
+                Verdict::Unknown(why) => Some(why),
+                _ => None,
+            },
+            hint: hint.into(),
+        })
     }
 }
 
@@ -233,6 +298,7 @@ pub fn check() -> Result<Vec<Store>> {
             label: "keychain".into(),
             shown: "macOS trust settings".into(),
             trusts,
+            unchecked: None,
             hint: "Install the latest macOS update".into(),
         });
     }
@@ -259,7 +325,30 @@ mod tests {
         let none = c.dir.path().join("none.pem");
         std::fs::write(&none, ISSUERS).unwrap();
         assert!(!c.trusts(&none), "a bundle without those roots rejects it");
-        assert!(c.store("x", "x", &bad, "").unwrap().trusts);
+        assert_eq!(c.verify(&none), Verdict::Clean);
+        let s = c.store("x", "x", &bad, "").unwrap();
+        assert!(s.trusts && s.unchecked.is_none());
         assert!(c.store("x", "x", &bad, "").is_none(), "each store once");
+    }
+
+    /// A store openssl can't use is unchecked, never "doesn't trust".
+    #[test]
+    fn an_unusable_store_is_unchecked_not_clean() {
+        let Some(openssl) = which("openssl") else { return };
+        let mut c = Checker::new(openssl).unwrap();
+        let junk = c.dir.path().join("junk.pem");
+        std::fs::write(&junk, "not a certificate\n").unwrap();
+        let s = c.store("x", "junk", &junk, "").unwrap();
+        assert!(!s.trusts);
+        assert_eq!(s.unchecked.as_deref(), Some("no PEM certificate in the file"));
+        // openssl itself refusing the file (a PEM block that isn't a certificate).
+        let broken = c.dir.path().join("broken.pem");
+        std::fs::write(&broken, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n").unwrap();
+        assert!(matches!(c.verify(&broken), Verdict::Unknown(_)), "{:?}", c.verify(&broken));
+        let s = c.store("x", "broken", &broken, "").unwrap();
+        assert!(!s.trusts && s.unchecked.is_some());
+        let empty = c.dir.path().join("empty-store.pem");
+        std::fs::write(&empty, "").unwrap();
+        assert!(c.store("x", "empty", &empty, "").is_none(), "an empty file trusts nothing");
     }
 }

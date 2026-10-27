@@ -133,8 +133,15 @@ pub struct Output {
     pub stderr: String,
 }
 
+/// The most of a program's stdout or stderr kept; the rest is read and
+/// dropped, so the program never blocks on a full pipe.
+pub const MAX_OUTPUT: u64 = 64 << 20;
+
 /// Run `argv` with stdin closed and `NO_COLOR=1`, killing it after
-/// `timeout`. An error only when it can't start or times out.
+/// `timeout`. An error only when it can't start or times out. The deadline
+/// covers the program and its output: a process it started in the
+/// background that keeps the pipes open (a daemon, a `sleep &`) doesn't
+/// hold the call past `timeout` (plus a second's grace once it's killed).
 pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
     let mut cmd = Command::new(prog);
@@ -143,19 +150,21 @@ pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))?;
-    let mut out = child.stdout.take().expect("piped stdout");
-    let mut err = child.stderr.take().expect("piped stderr");
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out.read_to_end(&mut buf);
-        buf
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = err.read_to_end(&mut buf);
-        buf
-    });
+    let drain = |pipe: Box<dyn Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut pipe = pipe;
+            let _ = pipe.by_ref().take(MAX_OUTPUT).read_to_end(&mut buf);
+            let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let out = drain(Box::new(child.stdout.take().expect("piped stdout")));
+    let err = drain(Box::new(child.stderr.take().expect("piped stderr")));
     let start = Instant::now();
+    let timed_out = || Error::Failed(format!("{} timed out after {}s", prog.to_string_lossy(), timeout.as_secs()));
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -163,14 +172,19 @@ pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<
         if start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = reader.join();
-            let _ = err_reader.join();
-            return Err(Error::Failed(format!("{} timed out after {}s", prog.to_string_lossy(), timeout.as_secs())));
+            return Err(timed_out());
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let stdout = String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).into_owned();
+    // The program has exited; its output ends when the last process holding
+    // the pipes does. A reader still blocked at the deadline is left to end
+    // with that process, and the call reports the timeout.
+    let deadline = (start + timeout).max(Instant::now() + Duration::from_secs(1));
+    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(|_| timed_out())
+    };
+    let stdout = String::from_utf8_lossy(&collect(out)?).into_owned();
+    let stderr = String::from_utf8_lossy(&collect(err)?).into_owned();
     Ok(Output { code: status.code(), stdout, stderr })
 }
 
@@ -498,6 +512,18 @@ mod tests {
         assert_eq!((o.code, o.stdout.as_str(), o.stderr.as_str()), (Some(3), "out\n1\n", "err\n"));
         assert!(exec(&[OsStr::new("sleep"), OsStr::new("5")], &[], Duration::from_millis(100)).is_err());
         assert_eq!(run(&["/nonexistent/binary"], Duration::from_secs(1)), "");
+    }
+
+    /// A background process holding the pipes doesn't hold the call: not
+    /// when the program is killed at the deadline, nor when it exits first.
+    #[test]
+    fn exec_deadline_covers_processes_left_holding_the_pipes() {
+        for script in ["sleep 5 & wait", "sleep 5 &"] {
+            let start = Instant::now();
+            let got = exec(&[OsStr::new("sh"), OsStr::new("-c"), OsStr::new(script)], &[], Duration::from_millis(100));
+            assert!(got.is_err(), "{script}");
+            assert!(start.elapsed() < Duration::from_secs(3), "{script}: {:?}", start.elapsed());
+        }
     }
 
     #[test]

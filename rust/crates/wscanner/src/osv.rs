@@ -25,10 +25,20 @@ pub const PARALLEL: usize = 8;
 /// (ecosystem, package, version)
 pub type Item = (String, String, String);
 
-/// OSV's answers for `items`: every item answered, cached or fresh, maps to
-/// its (not withdrawn) records; an item never answered (offline on a first
-/// run) is left out, so the caller reports it unchecked rather than clean.
-/// Only a cache failure is an error.
+/// OSV's answers for some items, and what makes them incomplete.
+#[derive(Debug, Default)]
+pub struct Answers {
+    /// Every item answered, cached or fresh, with its (not withdrawn)
+    /// records. An item never answered (offline on a first run) is left
+    /// out, so the caller reports it unchecked rather than clean.
+    pub found: HashMap<Item, Vec<Value>>,
+    /// Why some answers can't be trusted as complete: advisories OSV named
+    /// whose records couldn't be downloaded, or answers older than a day that
+    /// couldn't be asked again. The findings they do give still stand.
+    pub gaps: Vec<String>,
+}
+
+/// OSV's answers for `items`. Only a cache failure is an error.
 pub fn lookup(
     cache: &Cache,
     net: &dyn Net,
@@ -37,7 +47,7 @@ pub fn lookup(
     offline: bool,
     log: &dyn Fn(&str),
     status: Status,
-) -> Result<HashMap<Item, Vec<Value>>> {
+) -> Result<Answers> {
     let items: BTreeSet<&Item> = items.iter().collect();
     let mut stale = Vec::new();
     for it in &items {
@@ -46,17 +56,57 @@ pub fn lookup(
             _ => stale.push((*it).clone()),
         }
     }
+    let mut failure = offline.then(|| "--offline".to_string());
     if !stale.is_empty() && !offline {
         status(&format!("Asking OSV about {} package versions", stale.len()));
         match refresh_items(cache, net, &stale, status) {
             Ok(()) => {}
-            Err(e) if e.is_source() => log(&format!("  ⚠ OSV unreachable, using cached answers ({e})")),
+            Err(e) if e.is_source() => {
+                log(&format!("  ⚠ OSV unreachable, using cached answers ({e})"));
+                failure = Some(format!("OSV unreachable: {e}"));
+            }
             Err(e) => return Err(e),
         }
     }
-    let mut out = HashMap::new();
+    // Records OSV named that aren't here: a download that failed before, or
+    // a record OSV couldn't serve. Ask again while online.
+    let missing = |cache: &Cache| -> Result<BTreeSet<String>> {
+        let mut ids = BTreeSet::new();
+        for it in &items {
+            if let Some((_, listed)) = cache.query(&it.0, &it.1, &it.2)? {
+                for id in listed.split_whitespace() {
+                    if cache.vuln(id)?.is_none() {
+                        ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        Ok(ids)
+    };
+    let mut absent = missing(cache)?;
+    if !absent.is_empty() && failure.is_none() {
+        let ids: Vec<(String, Option<String>)> = absent.iter().map(|id| (id.clone(), None)).collect();
+        match fetch_records(net, &ids, status) {
+            Ok(got) => {
+                for (_, f) in got {
+                    if let Fetched::Record(rec, etag) = f {
+                        store_record(cache, &rec, etag.as_deref())?;
+                    }
+                }
+                cache.commit()?;
+            }
+            Err(e) if e.is_source() => failure = Some(format!("OSV unreachable: {e}")),
+            Err(e) => return Err(e),
+        }
+        absent = missing(cache)?;
+    }
+    let mut out = Answers::default();
+    let mut old = 0;
     for it in items {
-        let Some((_, ids)) = cache.query(&it.0, &it.1, &it.2)? else { continue };
+        let Some((at, ids)) = cache.query(&it.0, &it.1, &it.2)? else { continue };
+        if at < now() - QUERY_TTL {
+            old += 1;
+        }
         let mut recs = Vec::new();
         for id in ids.split_whitespace() {
             if let Some(r) = cache.vuln(id)?
@@ -65,9 +115,25 @@ pub fn lookup(
                 recs.push(r);
             }
         }
-        out.insert(it.clone(), recs);
+        out.found.insert(it.clone(), recs);
+    }
+    if !absent.is_empty() {
+        let ids: Vec<&str> = absent.iter().map(String::as_str).collect();
+        out.gaps.push(format!("OSV lists advisories it couldn't serve here: {}", ids.join(", ")));
+    }
+    if old > 0 {
+        let why = failure.unwrap_or_else(|| "OSV wasn't asked again".into());
+        out.gaps.push(format!("{old} answers are older than a day and couldn't be refreshed ({why})"));
     }
     Ok(out)
+}
+
+fn store_record(cache: &Cache, rec: &Value, etag: Option<&str>) -> Result<()> {
+    cache.put_vuln(rec)?;
+    if let Some(e) = etag {
+        cache.set(&format!("vuln_etag:{}", str_at(rec, "id")), e)?;
+    }
+    Ok(())
 }
 
 fn query(it: &Item) -> Value {
@@ -97,6 +163,9 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
             )));
         }
         for (it, r) in chunk.iter().zip(results) {
+            if !r.is_object() {
+                return Err(Error::Invalid(format!("OSV querybatch answered {r} for {}@{}", it.1, it.2)));
+            }
             let mut vulns = hits(r);
             let mut token = str_at(r, "next_page_token").to_string();
             while !token.is_empty() {
@@ -104,6 +173,9 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
                 let mut q = query(it);
                 q["page_token"] = Value::String(token);
                 let page = net::post_json(net, &format!("{API}/query"), &q)?;
+                if !page.is_object() {
+                    return Err(Error::Invalid(format!("OSV answered {page} for a page of {}@{}", it.1, it.2)));
+                }
                 vulns.extend(hits(&page));
                 token = str_at(&page, "next_page_token").to_string();
             }
@@ -120,12 +192,9 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
     }
     let etags: Vec<(String, Option<String>)> =
         need.into_iter().map(|id| Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?))).collect::<Result<_>>()?;
-    for (id, fetched) in fetch_records(net, &etags, status)? {
-        if let Some((rec, etag)) = fetched {
-            cache.put_vuln(&rec)?;
-            if let Some(e) = etag {
-                cache.set(&format!("vuln_etag:{id}"), &e)?;
-            }
+    for (_, fetched) in fetch_records(net, &etags, status)? {
+        if let Fetched::Record(rec, etag) = fetched {
+            store_record(cache, &rec, etag.as_deref())?;
         }
     }
     for (it, vulns) in &answers {
@@ -135,10 +204,19 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
     cache.commit()
 }
 
-type Fetched = Option<(Value, Option<String>)>;
+/// One record download.
+#[derive(Debug)]
+enum Fetched {
+    Record(Value, Option<String>),
+    /// 304: the cached record stands.
+    NotModified,
+    /// A 404, or a body that isn't the record asked for: nothing is stored,
+    /// so the next run asks again and the scan reports the gap meanwhile.
+    Missing,
+}
 
 /// GET /v1/vulns/{id} for each id, at most [`PARALLEL`] in flight, each
-/// with its stored ETag. None for a 404 or a 304 (the cached record stands).
+/// with its stored ETag.
 fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)], status: Status) -> Result<Vec<(String, Fetched)>> {
     let queue = Mutex::new(ids.iter());
     let results = Mutex::new(Vec::new());
@@ -152,9 +230,13 @@ fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)], status: Status
                     }
                     let Some((id, etag)) = queue.lock().expect("lock").next() else { return };
                     let url = format!("{API}/vulns/{id}");
-                    let got = net::request(net, &url, None, &[], etag.as_deref()).and_then(|r| match r.status {
-                        200 => Ok(Some((json::parse(&r.body, json::MAX_DOCUMENT)?, r.etag))),
-                        _ => Ok(None),
+                    let got = net::request(net, &url, None, &[], etag.as_deref()).map(|r| match r.status {
+                        200 => match json::parse(&r.body, json::MAX_DOCUMENT) {
+                            Ok(rec) if str_at(&rec, "id") == id => Fetched::Record(rec, r.etag),
+                            _ => Fetched::Missing,
+                        },
+                        304 => Fetched::NotModified,
+                        _ => Fetched::Missing,
                     });
                     match got {
                         Ok(rec) => {
@@ -495,8 +577,9 @@ mod tests {
             &|_| {},
         )
         .unwrap();
-        assert_eq!(got[&item("PyPI", "pip", "26.0.1")][0]["id"], "CVE-2026-3");
-        assert!(!got.contains_key(&item("PyPI", "uv", "0.1.0")), "never answered: unknown, not clean");
+        assert_eq!(got.found[&item("PyPI", "pip", "26.0.1")][0]["id"], "CVE-2026-3");
+        assert!(!got.found.contains_key(&item("PyPI", "uv", "0.1.0")), "never answered: unknown, not clean");
+        assert!(got.gaps.is_empty(), "today's answer is complete: {:?}", got.gaps);
     }
 
     #[test]
@@ -540,6 +623,8 @@ mod tests {
         let mut items: Vec<Item> = (0..1500).map(|i| item("npm", &format!("pkg{i}"), "1.0.0")).collect();
         items.push(item("npm", "vite", "8.0.0"));
         let got = lookup(&c, &net, &items, false, false, &|_| {}, &|_| {}).unwrap();
+        assert!(got.gaps.is_empty());
+        let got = got.found;
         assert_eq!(batches.load(Ordering::SeqCst), 2, "1501 queries take two batches");
         let mut ids: Vec<&str> = got[&item("npm", "vite", "8.0.0")].iter().map(|r| r["id"].as_str().unwrap()).collect();
         ids.sort();
@@ -551,7 +636,7 @@ mod tests {
         assert!(got[&item("npm", "pkg7", "1.0.0")].is_empty(), "answered clean");
         // A second lookup the same day asks nothing.
         let quiet = Fake::new(|_| panic!("fresh answers are not refetched"));
-        assert_eq!(lookup(&c, &quiet, &items, false, false, &|_| {}, &|_| {}).unwrap().len(), items.len());
+        assert_eq!(lookup(&c, &quiet, &items, false, false, &|_| {}, &|_| {}).unwrap().found.len(), items.len());
     }
 
     #[test]
@@ -568,7 +653,75 @@ mod tests {
             &|_| {},
         )
         .unwrap();
-        assert!(got.is_empty());
+        assert!(got.found.is_empty());
         assert!(logged.lock().unwrap()[0].contains("OSV unreachable"));
+    }
+
+    /// An answer cached clean two days ago, then OSV fails: the old answer is
+    /// used, and the gap is reported, so the scan can't call it a clean check.
+    #[test]
+    fn a_stale_answer_after_a_failed_refresh_is_a_gap() {
+        let (_d, c) = cache();
+        c.put_query("crates.io", "x", "2.0.0", &[]).unwrap();
+        c.conn.execute("UPDATE queries SET checked_at = ?", [now() - 2.0 * QUERY_TTL]).unwrap();
+        let it = item("crates.io", "x", "2.0.0");
+        let got = lookup(&c, &Fake::offline(), std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+        assert!(got.found[&it].is_empty());
+        assert_eq!(got.gaps.len(), 1);
+        assert!(got.gaps[0].contains("older than a day") && got.gaps[0].contains("OSV unreachable"), "{:?}", got.gaps);
+        let off = lookup(&c, &Fake::offline(), std::slice::from_ref(&it), false, true, &|_| {}, &|_| {}).unwrap();
+        assert!(off.gaps[0].contains("--offline"), "{:?}", off.gaps);
+    }
+
+    /// OSV names an advisory but can't serve it (404, `{}`, another id): the
+    /// item keeps its other records, nothing is cached for the missing one,
+    /// the gap is reported, and the next online run asks again.
+    #[test]
+    fn an_advisory_osv_cannot_serve_is_a_gap_and_is_asked_again() {
+        for body in ["", "{}", r#"{"id": "OTHER-1"}"#] {
+            let (_d, c) = cache();
+            let serve = Arc::new(Mutex::new(false));
+            let s = serve.clone();
+            let net = Fake::new(move |r| {
+                if r.url.ends_with("/querybatch") {
+                    return Ok(Response::ok(
+                        json!({"results": [{"vulns": [{"id": "TEST-1", "modified": "m"}]}]}).to_string(),
+                    ));
+                }
+                Ok(if *s.lock().unwrap() {
+                    Response::ok(json!({"id": "TEST-1", "modified": "m", "affected": []}).to_string())
+                } else if body.is_empty() {
+                    Response { status: 404, body: vec![], etag: None }
+                } else {
+                    Response::ok(body)
+                })
+            });
+            let it = item("crates.io", "x", "2.0.0");
+            let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+            assert!(got.found[&it].is_empty());
+            assert_eq!(got.gaps, ["OSV lists advisories it couldn't serve here: TEST-1"], "body {body:?}");
+            assert_eq!(c.vuln("TEST-1").unwrap(), None);
+            // Offline the gap stays visible; online again the record arrives.
+            let off = lookup(&c, &Fake::offline(), std::slice::from_ref(&it), false, true, &|_| {}, &|_| {}).unwrap();
+            assert_eq!(off.gaps.len(), 1);
+            *serve.lock().unwrap() = true;
+            let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+            assert_eq!(got.found[&it][0]["id"], "TEST-1");
+            assert!(got.gaps.is_empty());
+        }
+    }
+
+    /// A batch answer that isn't an object (`null`) is not "no advisories".
+    #[test]
+    fn a_malformed_batch_answer_is_not_clean() {
+        for answer in [json!([null]), json!([[]]), json!([])] {
+            let (_d, c) = cache();
+            let body = json!({"results": answer}).to_string();
+            let net = Fake::new(move |_| Ok(Response::ok(body.clone())));
+            let it = item("npm", "a", "1.0.0");
+            let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+            assert!(!got.found.contains_key(&it), "{answer}: unanswered, so reported unchecked");
+            assert_eq!(c.query("npm", "a", "1.0.0").unwrap(), None, "{answer}: nothing cached");
+        }
     }
 }

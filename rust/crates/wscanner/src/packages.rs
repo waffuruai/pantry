@@ -11,9 +11,28 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 
-const PY_INFO: &str = "import json, platform, sys, sysconfig, os;\
-print(json.dumps({'v': platform.python_version(), 'exe': sys.executable,\
-'managed': os.path.exists(os.path.join(sysconfig.get_path('stdlib'), 'EXTERNALLY-MANAGED'))}))";
+/// What we need from an interpreter, asked with `-I -S`: no site
+/// processing, so no `.pth` startup hook in its site-packages runs (and no
+/// pip). With `-S` Python doesn't apply a venv itself, so its
+/// `pyvenv.cfg` is read here, as `site.venv` would. `sites` are the
+/// directories `pip list` reads, in sys.path order.
+const PY_INFO: &str = r#"import json, os, platform, site, sys, sysconfig
+exe = os.path.dirname(os.path.abspath(sys.executable))
+cfg = next((c for c in (os.path.join(d, "pyvenv.cfg") for d in (exe, os.path.dirname(exe))) if os.path.isfile(c)), None)
+base = [site.getusersitepackages()] + site.getsitepackages()
+sites = base
+if cfg:
+    system = False
+    for line in open(cfg, encoding="utf-8", errors="replace"):
+        k, _, v = line.partition("=")
+        if k.strip().lower() == "include-system-site-packages":
+            system = v.strip().lower() == "true"
+    ver = "python%d.%d" % sys.version_info[:2]
+    venv = os.path.dirname(cfg)
+    own = [os.path.join(venv, lib, ver + t, "site-packages") for lib in ("lib", "lib64") for t in ("", "t")]
+    sites = own + [os.path.join(venv, "Lib", "site-packages")] + (base if system else [])
+print(json.dumps({"v": platform.python_version(), "exe": sys.executable, "sites": sites,
+    "managed": os.path.exists(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED"))}))"#;
 
 fn sh(argv: &[&str], timeout: u64) -> String {
     run(&argv.iter().map(OsStr::new).collect::<Vec<_>>(), Duration::from_secs(timeout))
@@ -55,7 +74,7 @@ pub fn pythons() -> Vec<Component> {
             if !owner(&real).is_empty() {
                 continue;
             }
-            let raw = sh(&[&shown, "-I", "-c", PY_INFO], 15);
+            let raw = sh(&[&shown, "-I", "-S", "-c", PY_INFO], 15);
             let last = raw.trim().lines().last().unwrap_or("");
             let Some(info) = json_in(last, '{', '}') else { continue };
             let exe = system::realpath(&str_of(&info, "exe"));
@@ -71,22 +90,65 @@ pub fn pythons() -> Vec<Component> {
             c.fix = fix.clone();
             c.auto = auto;
             out.push(c);
-            out.extend(pip(&shown, info.get("managed") == Some(&Value::Bool(true)), (fix, auto)));
+            let sites: Vec<String> = crate::json::strs_at(&info, "sites");
+            out.extend(pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto)));
         }
     }
     out
 }
 
-fn pip(py: &str, managed: bool, runtime_fix: (String, bool)) -> Vec<Component> {
-    let raw = sh(&[py, "-m", "pip", "list", "--format=json", "--disable-pip-version-check"], 60);
-    let list = json_in(&raw, '[', ']').and_then(|v| v.as_array().cloned()).unwrap_or_default();
+/// The distributions installed in `sites` (what `pip list` shows), read
+/// from their metadata: `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` or a
+/// bare `*.egg-info` file. The first of a name on the path wins, as on
+/// import. Nothing is run.
+pub fn installed(sites: &[String]) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut dirs: Vec<&String> = Vec::new();
+    for d in sites {
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        let mut entries: Vec<std::path::PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        entries.sort();
+        for e in entries {
+            let name = e.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let meta = if name.ends_with(".dist-info") {
+                e.join("METADATA")
+            } else if name.ends_with(".egg-info") && e.is_dir() {
+                e.join("PKG-INFO")
+            } else if name.ends_with(".egg-info") {
+                e.clone()
+            } else {
+                continue;
+            };
+            let Ok(text) = system::read_capped(&meta, 1 << 20) else { continue };
+            let (mut n, mut v) = (String::new(), String::new());
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    break; // the headers end at the first blank line
+                }
+                if let Some(x) = line.strip_prefix("Name:") {
+                    n = x.trim().to_string();
+                } else if let Some(x) = line.strip_prefix("Version:") {
+                    v = x.trim().to_string();
+                }
+            }
+            if !n.is_empty() && !v.is_empty() && seen.insert(crate::malicious::norm("PyPI", &n)) {
+                out.push((n, v));
+            }
+        }
+    }
+    out
+}
+
+fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> Vec<Component> {
     let real = system::realpath(py);
     let mut out = Vec::new();
-    for p in list {
-        let (name, ver) = (str_of(&p, "name"), str_of(&p, "version"));
-        if name.is_empty() || ver.is_empty() {
-            continue;
-        }
+    for (name, ver) in installed(sites) {
         let (fix, auto) = if managed && real.contains("/uv/") {
             runtime_fix.clone() // uv's Python builds bundle pip; a newer build brings a newer one
         } else if managed {
@@ -226,6 +288,38 @@ mod tests {
         assert_eq!(json_in("WARNING: x\n[{\"name\": \"pip\"}]\nnotice", '[', ']').unwrap()[0]["name"], "pip");
         assert_eq!(json_in("nothing", '{', '}'), None);
         assert_eq!(json_in("} {", '{', '}'), None);
+    }
+
+    #[test]
+    fn installed_distributions_from_metadata() {
+        let d = system::TempDir::new("sites").unwrap();
+        let (venv, user) = (d.path().join("venv"), d.path().join("user"));
+        let put = |p: std::path::PathBuf, text: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        put(
+            venv.join("pip-26.2.2.dist-info/METADATA"),
+            "Metadata-Version: 2.1\nName: pip\nVersion: 26.2.2\n\nVersion: 0 (body)\n",
+        );
+        put(venv.join("Jinja2-3.1.4.dist-info/METADATA"), "Name: Jinja2\nVersion: 3.1.4\n");
+        put(venv.join("old.egg-info/PKG-INFO"), "Name: old\nVersion: 0.1\n");
+        put(venv.join("legacy-1.0-py3.9.egg-info"), "Name: legacy\nVersion: 1.0\n");
+        put(venv.join("broken.dist-info/METADATA"), "Name: broken\n");
+        put(venv.join("review_hook.pth"), "import os; os.system('never run')\n");
+        put(user.join("jinja2-2.0.dist-info/METADATA"), "Name: jinja2\nVersion: 2.0\n");
+        let sites = [venv.display().to_string(), user.display().to_string(), "/nonexistent".into()];
+        let got = installed(&sites);
+        assert_eq!(
+            got,
+            [
+                ("Jinja2".to_string(), "3.1.4".to_string()),
+                ("legacy".into(), "1.0".into()),
+                ("old".into(), "0.1".into()),
+                ("pip".into(), "26.2.2".into())
+            ],
+            "the first of a name on the path wins; nothing without a version"
+        );
     }
 
     #[test]

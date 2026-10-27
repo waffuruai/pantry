@@ -281,17 +281,22 @@ impl<'a> Scan<'a> {
     }
 
     /// OSV answers for (ecosystem, package, version) items; any it can't
-    /// answer are reported unchecked.
+    /// answer, and anything that makes the answers incomplete (stale, or an
+    /// advisory OSV named but couldn't serve), are reported unchecked.
     pub fn lookup(&mut self, items: &[Item], what: &str) -> Result<HashMap<Item, Vec<Value>>> {
         let (log, status) = (self.log, self.status);
         if !items.is_empty() {
             status(&format!("Checking {} {what}", items.len()));
         }
         let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log, status)?;
-        if items.iter().any(|it| !answers.contains_key(it)) {
-            self.unchecked(what, "OSV unreachable and not cached");
+        let mut why = answers.gaps;
+        if items.iter().any(|it| !answers.found.contains_key(it)) {
+            why.insert(0, "OSV unreachable and not cached".into());
         }
-        Ok(answers)
+        if !why.is_empty() {
+            self.unchecked(what, &why.join("; "));
+        }
+        Ok(answers.found)
     }
 
     // the scan --------------------------------------------------------------
@@ -362,11 +367,14 @@ impl<'a> Scan<'a> {
                 self.unfixed += 1;
                 continue;
             }
-            let safe = versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b)).unwrap_or_else(|| {
-                let mut all = fixes.clone();
-                all.sort_by(|a, b| order.cmp(a, b));
-                all.pop().unwrap_or_default()
-            });
+            // Only a fix newer than what's installed repairs it. Fixes that are
+            // all older end an earlier interval: the installed version's own
+            // (reintroduced) interval has none, so it counts as unfixed rather
+            // than recommending a downgrade.
+            let Some(safe) = versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b)) else {
+                self.unfixed += 1;
+                continue;
+            };
             failing = failing || status == "fail";
             let kev = group.iter().any(|r| is_kev(r, &self.kev));
             self.add(Finding {
@@ -475,6 +483,22 @@ mod tests {
             ("MAL-1", "MALICIOUS", "known malicious package")
         );
         assert_eq!(m.fix_cmd, "Remove rustls now, then rotate any credentials this machine holds");
+    }
+
+    /// Installed 2.0.0, where an advisory was fixed in 1.5.0 and came back
+    /// in 2.0.0 with no fix yet: no downgrade is offered as the repair.
+    #[test]
+    fn a_reintroduced_interval_with_no_fix_is_unfixed() {
+        let net = Fake::offline();
+        let dir = crate::system::TempDir::new("check").unwrap();
+        let mut s = scan(&net, &dir);
+        let mut c = Component::new("project", "x", "2.0.0", "/w/Cargo.lock");
+        c.osv = Some(("crates.io".into(), "x".into(), "2.0.0".into()));
+        let rec = json!({"id": "GHSA-3", "affected": [{"package": {"ecosystem": "crates.io", "name": "x"},
+            "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.5.0"}, {"introduced": "2.0.0"}]}]}]});
+        assert!(!s.advisories(&c, &[rec], None, "fail", None));
+        assert!(s.findings.is_empty(), "{:?}", s.findings);
+        assert_eq!(s.unfixed, 1);
     }
 
     #[test]

@@ -224,11 +224,12 @@ impl Cache {
         Ok(())
     }
 
-    /// compute()'s result, cached under `key`. Reused while fresh (and the
-    /// fingerprint of what it read still matches); reused stale when offline
-    /// or when compute fails as a source; otherwise `Offline`, so the caller
-    /// reports the source unchecked rather than clean. Failures are never
-    /// cached.
+    /// compute()'s result, cached under `key`. Reused while fresh and the
+    /// fingerprint of what it read still matches; reused stale, for the same
+    /// fingerprint only, when offline or when compute fails as a source (a
+    /// result for other input says nothing about this one); otherwise
+    /// `Offline`, so the caller reports the source unchecked rather than
+    /// clean. Failures are never cached.
     pub fn memo(
         &self,
         key: &str,
@@ -238,10 +239,10 @@ impl Cache {
         refresh: bool,
         offline: bool,
     ) -> Result<Value> {
-        let run = self.run(key)?;
-        if let Some((fp, at, res)) = &run
+        let run = self.run(key)?.filter(|(fp, _, _)| fp == fingerprint);
+        if let Some((_, at, res)) = &run
             && !refresh
-            && (offline || (fp == fingerprint && *at > now() - max_age))
+            && (offline || *at > now() - max_age)
         {
             return Ok(res.clone());
         }
@@ -383,8 +384,12 @@ mod tests {
         assert!(matches!(c.memo("k", off, DAY, "", false, false), Err(Error::Offline(_))));
         assert_eq!(c.memo("k", || Ok(json!([1])), DAY, "fp", false, false).unwrap(), json!([1]));
         assert_eq!(c.memo("k", || panic!("fresh"), DAY, "fp", false, false).unwrap(), json!([1]));
-        assert_eq!(c.memo("k", off, DAY, "other", false, false).unwrap(), json!([1]), "stale beats nothing");
-        assert_eq!(c.memo("k", || panic!("offline"), DAY, "other", false, true).unwrap(), json!([1]));
+        c.conn.execute("UPDATE runs SET ran_at = 0", []).unwrap();
+        assert_eq!(c.memo("k", off, DAY, "fp", false, false).unwrap(), json!([1]), "stale beats nothing");
+        assert_eq!(c.memo("k", || panic!("offline"), DAY, "fp", false, true).unwrap(), json!([1]));
+        // A result for other input is never reused, offline or not.
+        assert!(matches!(c.memo("k", || panic!("offline"), DAY, "other", false, true), Err(Error::Offline(_))));
+        assert!(matches!(c.memo("k", off, DAY, "other", false, false), Err(Error::Offline(_))));
         assert_eq!(c.memo("k", || Ok(json!([2])), DAY, "fp", true, false).unwrap(), json!([2]));
     }
 

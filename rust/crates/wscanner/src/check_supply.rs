@@ -583,9 +583,12 @@ pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result
     let extra = |c: &Component, k: &str| c.extra.get(k).cloned().unwrap_or_default();
     items.extend(refs.iter().map(|c| (c, extra(c, "eco"), extra(c, "pkg"), extra(c, "ver"))));
     let total = items.len();
+    let mut unread = Vec::new();
     for (n, (c, eco, name, ver)) in items.into_iter().enumerate() {
         scan.status(&format!("Checking {name} against the malicious-package index ({}/{total})", n + 1));
-        for rec in malicious::reports(&scan.cache, scan.net, &eco, &name, &ver)? {
+        let found = malicious::reports(&scan.cache, scan.net, &eco, &name, &ver, scan.opts.offline)?;
+        unread.extend(found.unknown.iter().map(|id| format!("{name} {ver} ({id})")));
+        for rec in found.matched {
             let id = str_at(&rec, "id").to_string();
             if flagged.insert((c.name.clone(), id.clone())) {
                 let summary = str_at(&rec, "summary");
@@ -600,6 +603,14 @@ pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result
                 });
             }
         }
+    }
+    if !unread.is_empty() {
+        unread.sort();
+        unread.dedup();
+        scan.unchecked(
+            "packages named in the malicious-package index",
+            &format!("couldn't read the report to tell whether these versions are covered: {}", unread.join(", ")),
+        );
     }
     Ok(())
 }

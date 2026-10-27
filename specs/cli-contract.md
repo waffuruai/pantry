@@ -130,7 +130,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `kev` | `cve` TEXT PK, `added`, `name` |
 | `eol` | `product`, `cycle` TEXT (PK together), `eol`, `latest` |
 | `casks` | `app` TEXT PK, `token`, `version` |
-| `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>`, `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
+| `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>` (Python), `image-packages:<id>` (Rust), `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |
 

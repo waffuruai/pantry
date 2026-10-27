@@ -9,14 +9,15 @@
 //! catches packages known only by name (an unpinned `npx some-mcp-server`)
 //! and keeps working offline.
 
+use crate::compare::Comparator;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
 use crate::json::{self, arr_at};
 use crate::net::{self, Net};
 use crate::system::exec;
-use crate::versions::lt;
 use rusqlite::params;
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::time::Duration;
 
@@ -39,7 +40,8 @@ fn dir_for(eco: &str) -> Option<&'static str> {
     })
 }
 
-fn norm(eco: &str, name: &str) -> String {
+/// A package name as the index keys it (PyPI: PEP 503).
+pub fn norm(eco: &str, name: &str) -> String {
     if eco != "PyPI" {
         return name.to_lowercase();
     }
@@ -163,43 +165,61 @@ pub fn sync(cache: &Cache, offline: bool) -> Result<i64> {
     Ok(rows.len() as i64)
 }
 
+/// What the index says about one package: the reports that cover this
+/// version, and the ids whose report couldn't be read (offline, or the fetch
+/// failed), so whether they cover it is unknown.
+#[derive(Debug, Default, PartialEq)]
+pub struct Reports {
+    pub matched: Vec<Value>,
+    pub unknown: Vec<String>,
+}
+
 /// The malicious-package reports that cover this package at this version
-/// (any version when `version` is ""), fetched and cached on first use.
-pub fn reports(cache: &Cache, net: &dyn Net, eco: &str, name: &str, version: &str) -> Result<Vec<Value>> {
-    let Some(dir) = dir_for(eco) else { return Ok(Vec::new()) };
+/// (any version when `version` is ""), fetched and cached on first use. Only
+/// a report OSV actually served is cached; one that couldn't be fetched is
+/// `unknown`, and asked again next time.
+pub fn reports(cache: &Cache, net: &dyn Net, eco: &str, name: &str, version: &str, offline: bool) -> Result<Reports> {
+    let Some(dir) = dir_for(eco) else { return Ok(Reports::default()) };
     let ids: Vec<String> = {
         let mut stmt = cache.conn.prepare("SELECT id FROM malicious WHERE ecosystem = ? AND name = ?")?;
         stmt.query_map(params![dir, norm(eco, name)], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?
     };
-    let mut out = Vec::new();
+    let mut out = Reports::default();
     for id in ids {
         let rec = match cache.vuln(&id)? {
-            Some(r) => Some(r),
-            None => {
-                let rec = match net::get_json(net, &format!("https://api.osv.dev/v1/vulns/{id}"), &[]) {
-                    Ok(r) => r,
-                    Err(e) if e.is_source() => {
-                        Some(json!({"id": id, "summary": format!("Malicious code in {name} ({eco})"), "affected": []}))
-                    }
-                    Err(e) => return Err(e),
-                };
-                if let Some(r) = &rec {
-                    cache.put_vuln(r)?;
-                }
-                rec
+            Some(r) => r,
+            None if offline => {
+                out.unknown.push(id);
+                continue;
             }
+            None => match net::get_json(net, &format!("https://api.osv.dev/v1/vulns/{id}"), &[]) {
+                Ok(Some(r)) if json::str_at(&r, "id") == id => {
+                    cache.put_vuln(&r)?;
+                    r
+                }
+                Ok(_) => {
+                    out.unknown.push(id);
+                    continue;
+                }
+                Err(e) if e.is_source() => {
+                    out.unknown.push(id);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            },
         };
-        if let Some(r) = rec
-            && (version.is_empty() || applies(&r, version))
-        {
-            out.push(r);
+        if version.is_empty() || applies(&rec, version) {
+            out.matched.push(rec);
         }
     }
     Ok(out)
 }
 
-/// Whether `version` is among those a report covers (every version when
-/// the report lists no ranges or versions).
+/// Whether `version` is among those a report covers: listed in `versions`,
+/// or inside any of a range's intervals (each `introduced` up to the next
+/// `fixed` or `limit`, exclusive, or `last_affected`, inclusive), compared
+/// in the package's ecosystem's order. A report listing no ranges or
+/// versions covers every version.
 pub fn applies(rec: &Value, version: &str) -> bool {
     let affected = arr_at(rec, "affected");
     if affected.is_empty() {
@@ -210,17 +230,32 @@ pub fn applies(rec: &Value, version: &str) -> bool {
         if versions.iter().any(|v| v == version) {
             return true;
         }
+        let eco = a.get("package").map(|p| json::str_at(p, "ecosystem")).unwrap_or("");
+        let order = Comparator::for_ecosystem(eco);
+        let lt = |x: &str, y: &str| order.cmp(x, y) == Ordering::Less;
         for r in arr_at(a, "ranges") {
-            let ev = arr_at(r, "events");
-            let first = |k: &str| ev.iter().find_map(|e| e.get(k).and_then(Value::as_str)).map(str::to_string);
-            let intro = first("introduced").unwrap_or_else(|| "0".into());
-            let fixed = first("fixed").unwrap_or_default();
-            let last = first("last_affected").unwrap_or_default();
-            if (intro == "0" || !lt(version, &intro))
-                && (fixed.is_empty() || lt(version, &fixed))
-                && (last.is_empty() || !lt(&last, version))
+            let mut start: Option<&str> = None;
+            for e in arr_at(r, "events") {
+                let at = |k: &str| e.get(k).and_then(Value::as_str);
+                if let Some(intro) = at("introduced") {
+                    start = Some(intro);
+                } else if let Some(intro) = start {
+                    let from = intro == "0" || !lt(version, intro);
+                    let inside = match (at("fixed").or(at("limit")), at("last_affected")) {
+                        (Some(end), _) => lt(version, end),
+                        (None, Some(last)) => !lt(last, version),
+                        (None, None) => continue,
+                    };
+                    if from && inside {
+                        return true;
+                    }
+                    start = None;
+                }
+            }
+            if let Some(intro) = start
+                && (intro == "0" || !lt(version, intro))
             {
-                return true;
+                return true; // introduced, never fixed
             }
         }
         if versions.is_empty() && arr_at(a, "ranges").is_empty() {
@@ -234,6 +269,7 @@ pub fn applies(rec: &Value, version: &str) -> bool {
 mod tests {
     use super::*;
     use crate::net::Fake;
+    use serde_json::json;
 
     #[test]
     fn applies_to_versions_and_ranges() {
@@ -255,11 +291,62 @@ mod tests {
         c.put_vuln(&json!({"id": "MAL-1", "summary": "Malicious code in evil_pkg", "affected": []})).unwrap();
         c.put_vuln(&json!({"id": "MAL-2", "affected": [{"versions": ["1.0.0"]}]})).unwrap();
         let net = Fake::offline();
-        let ids = |v: Vec<Value>| v.iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert_eq!(ids(reports(&c, &net, "PyPI", "Evil_Pkg", "").unwrap()), ["MAL-1"]);
-        assert_eq!(ids(reports(&c, &net, "npm", "@bad/scope", "1.0.0").unwrap()), ["MAL-2"]);
-        assert!(reports(&c, &net, "npm", "@bad/scope", "2.0.0").unwrap().is_empty());
+        let ids = |r: Reports| r.matched.iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(reports(&c, &net, "PyPI", "Evil_Pkg", "", false).unwrap()), ["MAL-1"]);
+        assert_eq!(ids(reports(&c, &net, "npm", "@bad/scope", "1.0.0", false).unwrap()), ["MAL-2"]);
+        assert_eq!(reports(&c, &net, "npm", "@bad/scope", "2.0.0", false).unwrap(), Reports::default());
         assert_eq!(norm("PyPI", "Foo__Bar.baz"), "foo-bar-baz");
+    }
+
+    #[test]
+    fn every_interval_counts() {
+        let rec = json!({"affected": [{"package": {"ecosystem": "crates.io", "name": "x"}, "ranges": [{"type": "SEMVER",
+            "events": [{"introduced": "1.0.0"}, {"fixed": "1.1.0"}, {"introduced": "2.0.0"}, {"fixed": "2.1.0"}]}]}]});
+        for (v, want) in [
+            ("0.9.0", false),
+            ("1.0.0", true),
+            ("1.1.0", false),
+            ("1.5.0", false),
+            ("2.0.0", true),
+            ("2.0.9", true),
+            ("2.1.0", false),
+        ] {
+            assert_eq!(applies(&rec, v), want, "{v}");
+        }
+        let last = json!({"affected": [{"package": {"ecosystem": "npm", "name": "x"}, "ranges": [{"type": "SEMVER",
+            "events": [{"introduced": "0"}, {"last_affected": "1.2.0"}, {"introduced": "3.0.0"}]}]}]});
+        for (v, want) in [("1.2.0", true), ("1.2.1", false), ("2.9.9", false), ("3.0.0", true), ("9.0.0", true)] {
+            assert_eq!(applies(&last, v), want, "{v}");
+        }
+        // The ecosystem's own order: PEP 440 puts 1.0rc1 before 1.0.
+        let py = json!({"affected": [{"package": {"ecosystem": "PyPI", "name": "x"}, "ranges": [{"type": "ECOSYSTEM",
+            "events": [{"introduced": "1.0"}]}]}]});
+        assert!(!applies(&py, "1.0rc1"));
+        assert!(applies(&py, "1.0.post1"));
+    }
+
+    #[test]
+    fn an_unread_report_is_unknown_never_assumed_and_never_cached() {
+        let d = crate::system::TempDir::new("mal").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        c.conn.execute("INSERT INTO malicious VALUES ('crates.io', 'evil', 'MAL-9')", []).unwrap();
+        let unknown = Reports { matched: vec![], unknown: vec!["MAL-9".into()] };
+        // Offline: no request at all.
+        let no_calls = Fake::new(|_| panic!("offline must not fetch"));
+        assert_eq!(reports(&c, &no_calls, "crates.io", "evil", "9.9.0", true).unwrap(), unknown);
+        // Online, the fetch fails or OSV serves something that isn't the record.
+        assert_eq!(reports(&c, &Fake::offline(), "crates.io", "evil", "9.9.0", false).unwrap(), unknown);
+        let wrong = Fake::new(|_| Ok(crate::net::Response::ok("{}")));
+        assert_eq!(reports(&c, &wrong, "crates.io", "evil", "9.9.0", false).unwrap(), unknown);
+        assert_eq!(c.vuln("MAL-9").unwrap(), None, "nothing invented was cached");
+        // Once OSV answers, the real ranges decide.
+        let rec = json!({"id": "MAL-9", "affected": [{"package": {"ecosystem": "crates.io", "name": "evil"},
+            "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.1.0"}]}]}]});
+        let body = rec.to_string();
+        let good = Fake::new(move |_| Ok(crate::net::Response::ok(body.clone())));
+        assert_eq!(reports(&c, &good, "crates.io", "evil", "9.9.0", false).unwrap(), Reports::default());
+        assert_eq!(good.requests().len(), 1);
+        assert_eq!(reports(&c, &no_calls, "crates.io", "evil", "1.0.5", true).unwrap().matched, [rec]);
     }
 
     #[test]

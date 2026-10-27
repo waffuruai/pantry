@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 pub const LOCKFILES: &[&str] = &[
     "Cargo.lock",
     "package-lock.json",
+    "npm-shrinkwrap.json",
     "pnpm-lock.yaml",
     "yarn.lock",
     "bun.lock",
@@ -191,11 +192,19 @@ fn is_lockfile(name: &str) -> bool {
         || (name.starts_with("requirements") && name.ends_with(".txt") && name.len() >= "requirements.txt".len())
 }
 
-/// Every lockfile under root, sorted.
+/// Every lockfile under root, sorted. Where a directory has both, npm reads
+/// `npm-shrinkwrap.json` and ignores `package-lock.json`, so only the
+/// shrinkwrap counts.
 pub fn lockfiles(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = walk(root, 5)
         .into_iter()
-        .flat_map(|(d, files)| files.into_iter().filter(|f| is_lockfile(f)).map(move |f| d.join(f)))
+        .flat_map(|(d, files)| {
+            let shrinkwrap = files.iter().any(|f| f == "npm-shrinkwrap.json");
+            files
+                .into_iter()
+                .filter(move |f| is_lockfile(f) && !(shrinkwrap && f == "package-lock.json"))
+                .map(move |f| d.join(f))
+        })
         .collect();
     out.sort();
     out
@@ -296,7 +305,7 @@ pub fn install_scripts(files: &[PathBuf]) -> Vec<(PathBuf, String)> {
     let mut out = BTreeSet::new();
     for f in files {
         match f.file_name().and_then(|n| n.to_str()) {
-            Some("package-lock.json") => {
+            Some("package-lock.json" | "npm-shrinkwrap.json") => {
                 let Ok(bytes) = std::fs::read(f) else { continue };
                 let Ok(data) = crate::json::parse(&bytes, crate::json::MAX_DOCUMENT) else { continue };
                 if let Some(pkgs) = data.get("packages").and_then(|p| p.as_object()) {
@@ -479,5 +488,23 @@ mod tests {
         }
         let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
         assert_eq!(got, ["Cargo.lock", "py/requirements-dev.txt", "web/pnpm-lock.yaml"]);
+        // npm-shrinkwrap.json is a lockfile, and wins over package-lock.json beside it.
+        for f in ["a/npm-shrinkwrap.json", "b/npm-shrinkwrap.json", "b/package-lock.json", "c/package-lock.json"] {
+            let p = d.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "").unwrap();
+        }
+        let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
+        assert_eq!(
+            got,
+            [
+                "Cargo.lock",
+                "a/npm-shrinkwrap.json",
+                "b/npm-shrinkwrap.json",
+                "c/package-lock.json",
+                "py/requirements-dev.txt",
+                "web/pnpm-lock.yaml"
+            ]
+        );
     }
 }

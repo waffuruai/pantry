@@ -56,7 +56,7 @@ type Parser = fn(&str) -> Result<Vec<Package>>;
 fn parser(name: &str) -> Option<Parser> {
     Some(match name {
         "Cargo.lock" => cargo::parse,
-        "package-lock.json" => npm::parse,
+        "package-lock.json" | "npm-shrinkwrap.json" => npm::parse,
         "pnpm-lock.yaml" => pnpm::parse,
         "yarn.lock" => yarn::parse,
         "bun.lock" => bun::parse,
@@ -90,14 +90,59 @@ pub fn extract(path: &Path) -> Result<Option<Vec<Package>>> {
 /// `root` (the repository it was found in), and nothing outside it.
 pub fn extract_within(path: &Path, root: &Path) -> Result<Option<Vec<Package>>> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // A lockfile that links out of the repo isn't the repo's to report: its
+    // packages would go to OSV as if they were.
+    if parser(name).is_some() || requirements::is_requirements(name) {
+        let (real, base) = (path.canonicalize()?, root.canonicalize()?);
+        if !real.starts_with(&base) {
+            return Err(Error::Invalid(format!("{} links outside {}; not read", path.display(), root.display())));
+        }
+    }
     let found = if requirements::is_requirements(name) {
         requirements::parse_file(path, root)?
     } else {
         let Some(parse) = parser(name) else { return Ok(None) };
-        parse(&crate::system::read_capped(path, MAX_FILE)?)?
+        let text = crate::system::read_capped(path, MAX_FILE)?;
+        if !looks_like(name, &text) {
+            return Err(Error::Invalid(format!("{} isn't a {name} this can read", path.display())));
+        }
+        parse(&text)?
     };
     let pkgs: BTreeSet<Package> = found.into_iter().filter(|p| !p.name.is_empty() && !p.version.is_empty()).collect();
     Ok(Some(pkgs.into_iter().collect()))
+}
+
+/// Whether `text` has the structure every `name` its tool writes has (a
+/// format version, a section, a root element). The parsers read only what
+/// they need and skip the rest, so without this a file that isn't a
+/// lockfile at all would read as one with no packages: a clean check of
+/// nothing.
+fn looks_like(name: &str, text: &str) -> bool {
+    let line = |f: &dyn Fn(&str) -> bool| text.lines().any(|l| f(l.trim_end()));
+    let key = |k: &str| text.contains(&format!("\"{k}\""));
+    match name {
+        "Cargo.lock" => line(&|l| l.starts_with("version =") || l == "[[package]]"),
+        "package-lock.json" | "npm-shrinkwrap.json" | "bun.lock" => key("lockfileVersion"),
+        "pnpm-lock.yaml" => line(&|l| l.starts_with("lockfileVersion:")),
+        "yarn.lock" => text.contains("# yarn lockfile v1") || line(&|l| l == "__metadata:"),
+        "deno.lock" => key("version"),
+        "uv.lock" => line(&|l| l.starts_with("version =")),
+        "poetry.lock" => line(&|l| l == "[metadata]" || l == "[[package]]"),
+        "Pipfile.lock" => key("_meta"),
+        "go.mod" => line(&|l| l.trim_start().starts_with("module ")),
+        "Package.resolved" => key("pins"),
+        "Gemfile.lock" => {
+            line(&|l| matches!(l, "GEM" | "PATH" | "GIT" | "PLATFORMS" | "DEPENDENCIES" | "BUNDLED WITH"))
+        }
+        "composer.lock" => key("packages"),
+        "pubspec.lock" => line(&|l| l == "packages:" || l == "sdks:"),
+        "mix.lock" => text.trim_start().starts_with("%{"),
+        "gradle.lockfile" => line(&|l| l.starts_with("empty=") || (l.contains(':') && l.contains('='))),
+        "pom.xml" => text.contains("<project"),
+        "packages.lock.json" => key("dependencies"),
+        "conan.lock" => key("graph_lock") || key("requires"),
+        _ => true,
+    }
 }
 
 /// Whether [`extract`] reads this kind of lockfile.
@@ -132,6 +177,55 @@ pub(crate) fn unquote(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Text that isn't the lockfile it's named as is an error (so the scan
+    /// reports it unchecked), never a lockfile with no packages; one the tool
+    /// wrote with no packages still reads as empty.
+    #[test]
+    fn a_file_that_isnt_its_lockfile_is_an_error_not_empty() {
+        let d = crate::system::TempDir::new("notlock").unwrap();
+        for name in crate::repos::LOCKFILES.iter().filter(|n| !requirements::is_requirements(n)) {
+            for (i, text) in ["this is not a valid lockfile\n", "", "{}\n"].iter().enumerate() {
+                let dir = d.path().join(format!("{i}-{name}"));
+                std::fs::create_dir_all(&dir).unwrap();
+                let f = dir.join(name);
+                std::fs::write(&f, text).unwrap();
+                assert!(matches!(extract(&f), Err(Error::Invalid(_))), "{name} accepted {text:?}");
+            }
+        }
+        let empty = [
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n\nimporters:\n  .: {}\n"),
+            ("package-lock.json", r#"{"name": "x", "lockfileVersion": 3, "packages": {"": {}}}"#),
+            ("Cargo.lock", "version = 4\n"),
+            ("go.mod", "module example.com/x\n\ngo 1.24\n"),
+            ("yarn.lock", "# THIS IS AN AUTOGENERATED FILE.\n# yarn lockfile v1\n"),
+        ];
+        for (name, text) in empty {
+            let dir = d.path().join(format!("ok-{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let f = dir.join(name);
+            std::fs::write(&f, text).unwrap();
+            let got = extract(&f).unwrap().unwrap();
+            assert!(got.iter().all(|p| p.name == "stdlib"), "{name}: {got:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lockfile_linking_outside_the_repo_is_not_read() {
+        let d = crate::system::TempDir::new("linkout").unwrap();
+        let (repo, outside) = (d.path().join("repo"), d.path().join("outside"));
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Cargo.lock"), "version = 4\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("Cargo.lock"), repo.join("Cargo.lock")).unwrap();
+        assert!(matches!(extract_within(&repo.join("Cargo.lock"), &repo), Err(Error::Invalid(_))));
+        // A link that stays inside the repo is fine.
+        std::fs::write(repo.join("sub/Cargo.lock"), "version = 4\n").unwrap();
+        std::os::unix::fs::symlink(repo.join("sub/Cargo.lock"), repo.join("sub/linked.lock")).unwrap();
+        std::fs::rename(repo.join("sub/linked.lock"), repo.join("Cargo.lock")).unwrap();
+        assert!(extract_within(&repo.join("Cargo.lock"), &repo).unwrap().is_some());
+    }
 
     #[test]
     fn every_scanned_name_is_supported() {

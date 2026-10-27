@@ -61,7 +61,17 @@ Not done yet, and why:
 - **Ctrl-C** ends the process by the signal instead of exiting 130.
 - **Lockfile packages** are read by wscanner, not osv-scanner. Workspace members and local packages (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages, path and `file:` dependencies in the other lockfiles, Composer `path` repositories, private Hex organizations, Conan `@user/channel` recipes) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding. `requirements*.txt` counts `==` pins only, where osv-scanner also queries the lower bound of a `>=` range; PyPI names from requirements files and `Pipfile.lock` are PEP 503-normalized.
 - **The fixed version** a finding recommends is chosen with the ecosystem's own comparator (semver, PEP 440, dpkg, …) where Python uses one generic order; they agree except on versions the generic order gets wrong.
-- **`vuln_etag:<id>`** meta keys hold the ETags of downloaded OSV records (an additive cache key).
+- **`vuln_etag:<id>`** meta keys hold the ETags of downloaded OSV records, and **`image-packages:<id>`** runs entries an image's packages (Python's `image:<id>` holds osv-scanner's result in another shape, so Rust neither reads nor writes it). Both are additive cache keys.
+- **Missing evidence is never clean.** These differ from Python on purpose, after review on the port's PR; each has a regression test:
+  - An OSV answer older than a day that couldn't be refreshed (OSV down, or `--offline`), and an advisory OSV names but can't serve (404, a body that isn't the record), are reported unchecked; the findings they do give still stand. A `querybatch` answer that isn't an object is an error, not "no advisories". (Python reuses the stale answer and drops the missing record silently.)
+  - A malicious-package report that can't be fetched (offline, or the fetch fails) is reported unchecked and asked again next run; Python caches a made-up record that matches every version. Every interval of a report counts, in the ecosystem's order.
+  - A cached result is reused offline or after a failure only for the same input fingerprint (a changed repo HEAD, Homebrew listing or image doesn't reuse the old answer).
+  - A lockfile that isn't the format it's named as (no `lockfileVersion`, no `module` line, …), or that links outside its repo, is reported unchecked instead of read as empty. `npm-shrinkwrap.json` is read, and wins over a `package-lock.json` beside it, as npm does.
+  - A CA store openssl can't load is reported unchecked, not "doesn't trust the eMudhra CAs".
+  - An advisory whose only fixes are older than the installed version (it came back in a later release) counts as unfixed, not as a fix that would be a downgrade.
+  - An image export cut short is an error, not an image with fewer files.
+  - pip packages are read from each Python's site-packages metadata (`*.dist-info`, `*.egg-info`), with the interpreter run under `-I -S`, so no `.pth` startup hook runs and a Python without pip is still listed; Python runs `python -m pip list`.
+  - A program that leaves a background process holding its output pipes can't hold the scan past its timeout.
 - **`tools`** lists `gitleaks`, `git` and `openssl` as required and `brew`, `docker` (or podman) and `rpm` as optional; osv-scanner is not used.
 
 ## Dependency rules

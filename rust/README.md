@@ -57,7 +57,7 @@ So a Rust run today is honest but narrower than a Python run: everything it does
 - **Lockfile packages** are read by wscanner, not osv-scanner. Workspace members (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding.
 - **The fixed version** a finding recommends is chosen with the ecosystem's own comparator (semver, PEP 440, dpkg, …) where Python uses one generic order; they agree except on versions the generic order gets wrong.
 - **`vuln_etag:<id>`** meta keys hold the ETags of downloaded OSV records (an additive cache key).
-- **`tools`** lists `gitleaks` and `git` as required and `rpm` and `docker` as optional; osv-scanner and openssl are not used.
+- **`tools`** lists `gitleaks`, `git` and `openssl` as required and `brew`, `docker` (or podman) and `rpm` as optional; osv-scanner is not used.
 
 ## Dependency rules
 
@@ -65,4 +65,4 @@ So a Rust run today is honest but narrower than a Python run: everything it does
 - Every dependency pinned `=x.y.z`, at a release at least two weeks old when pinned unless a security fix needs a newer one (rustls 0.23.46, for the advisories `cargo deny` raised against 0.23.45); `Cargo.lock` committed; builds use `--locked`.
 - `cargo deny` and `cargo vet` gate every merge; the rustls tree is reviewed at every bump.
 - Parsers, comparators, argument parsing, SHA-256 and civil dates are written here, with golden files and upstream test vectors (`crates/wscanner/tests/vectors/`).
-- The agent skill and the default policy files are read from `python/` at build time until phase 3 moves them.
+- The agent skill and the default policy files are copied into `crates/wscanner/assets/` so the crate packages on its own; `tests/assets.rs` fails when they drift from `python/`, and phase 3 makes `assets/` the only copy.

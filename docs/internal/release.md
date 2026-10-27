@@ -68,7 +68,7 @@ The workflow starts. When **build** is green, the `release` environment asks for
 
 ### The first release only
 
-Trusted publishing can't be configured for a crate that doesn't exist yet, so `v0.1.0` publishes the crates by hand once the GitHub release is out:
+Trusted publishing can't be configured for a crate that doesn't exist yet, so `v0.1.0` publishes the crates by hand once the GitHub release is out. [crates-io.md](crates-io.md) has every step; in short:
 
 ```bash
 git switch --detach v0.1.0

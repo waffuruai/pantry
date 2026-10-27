@@ -1,0 +1,19 @@
+[package]
+name = "wscanner-cli"
+description = "The wscanner binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "wscanner"
+path = "src/main.rs"
+
+[dependencies]
+wscanner.workspace = true
+rusqlite.workspace = true
+
+[lints]
+workspace = true

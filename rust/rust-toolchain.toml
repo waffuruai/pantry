@@ -1,0 +1,5 @@
+# The exact toolchain every build uses (specs/01-rust-port.md S1). Bump by PR.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

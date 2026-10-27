@@ -19,6 +19,8 @@ pub struct Check {
     pub json: bool,
     pub no_input: bool,
     pub gitleaks_config: Option<PathBuf>,
+    /// `--licenses [FILE]`: check dependency licenses (off by default).
+    pub check_licenses: bool,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
 }
@@ -48,7 +50,7 @@ const TOP_USAGE: &str = "usage: wscanner [-h] {check,search,export,breach,versio
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wscanner check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses FILE] [--install-scripts FILE]"
+            "usage: wscanner check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
         }
         "search" => "usage: wscanner search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wscanner export [-h] --csv CSV",
@@ -63,7 +65,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses FILE       policy file (default: bundled licenses.txt)\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE]     also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -179,6 +181,8 @@ pub fn parse(argv: &[String]) -> Parsed {
                     i += 1;
                     Some(argv[i - 1].clone())
                 }
+                // The one option whose value is optional (argparse's nargs="?").
+                None if opt == "--licenses" => None,
                 None => return fail(format!("argument {opt}: expected one argument")),
             }
         } else {
@@ -204,6 +208,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 offline: flag("--offline"),
                 json: flag("--json"),
                 no_input: flag("--no-input"),
+                check_licenses: flag("--licenses"),
                 ..Default::default()
             };
             let paths: Vec<PathBuf> = given
@@ -289,7 +294,9 @@ mod tests {
         assert_eq!(p(&[]), Parsed::Run(Command::Check(Check::default())));
         let Parsed::Run(Command::Check(c)) = p(&["--path", "/a", "--path=/b", "--no-m", "--json"]) else { panic!() };
         assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
-        assert!(c.no_machine && c.json && !c.offline);
+        assert!(c.no_machine && c.json && !c.offline && !c.check_licenses);
+        let Parsed::Run(Command::Check(c)) = p(&["--licenses", "--json"]) else { panic!() };
+        assert!(c.check_licenses && c.licenses.is_none() && c.json, "--licenses alone uses the bundled allowlist");
     }
 
     #[test]

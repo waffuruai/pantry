@@ -147,6 +147,9 @@ pub struct Options {
     /// Run the machine inventory, not only the repo checks.
     pub machine: bool,
     pub policy: Policy,
+    /// Check dependency licenses against the allowlist (`--licenses`); off
+    /// by default, it's noisy.
+    pub licenses: bool,
     pub refresh: bool,
     pub offline: bool,
     /// Whether the scan may ask the user something (the breach consent).

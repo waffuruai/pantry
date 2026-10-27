@@ -55,6 +55,7 @@ fn cmd_check(a: Check) -> Result<i32> {
         },
         refresh: a.refresh,
         offline: a.offline,
+        licenses: a.check_licenses,
         ask: !(a.json || a.dryrun || a.no_input),
     };
     let scan = |opts: Options| -> Result<Outcome> { Scan::new(opts, Cache::open(None)?, &net, log, &note).run() };

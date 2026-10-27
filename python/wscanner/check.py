@@ -86,8 +86,9 @@ class Scan:
     configs, running containers and the breach check)."""
 
     def __init__(self, paths=None, machine=True, policy: Policy = None, refresh=False, offline=False, ask=True,
-                 log=print):
+                 log=print, licenses=False):
         self.paths, self.machine, self.policy = paths, machine, policy or Policy()
+        self.licenses = licenses  # check dependency licenses (--licenses); off by default, it's noisy
         self.refresh, self.offline, self.ask, self.log = refresh, offline, ask, log
         self.cache = Cache()
         self.repos: list = []

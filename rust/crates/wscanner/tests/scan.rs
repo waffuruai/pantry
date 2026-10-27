@@ -115,7 +115,10 @@ fn repo_scan_end_to_end() {
     );
     assert_eq!(f.location, dir.join("Cargo.lock").to_string_lossy());
     assert_eq!(f.fix_cmd, format!("cd {} && cargo update -p smallvec --precise 1.6.1", dir.display()));
-    assert!(out.findings.iter().any(|f| f.kind == "unchecked" && f.component == "dependency licenses (deps.dev)"));
+    assert!(
+        !out.findings.iter().any(|f| f.component.contains("licenses")),
+        "licenses are checked only with --licenses"
+    );
 
     // The findings are the cache's latest, and a second run the same day asks nothing.
     let cache = Cache::open(Some(&db)).unwrap();

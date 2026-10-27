@@ -180,6 +180,21 @@ class Contract(unittest.TestCase):
         self.assertEqual([f["component"] for f in got], ["esbuild"])  # bundled list allows it; this one doesn't
         self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
 
+    def test_licenses_are_opt_in(self):
+        proj = self.home / "p"
+        proj.mkdir()
+        (proj / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "itoa"\nversion = "1.0.9"\n'
+                                         'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
+        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json")
+        env = self.envelope(out)
+        self.assertEqual([f for f in env["findings"] if f["kind"] == "license" or "license" in f["component"]], [])
+        self.assertEqual(env["unknown_licenses"], 0)
+        allow = Path(self.tmp.name, "licenses.txt")
+        allow.write_text("MIT\n")
+        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"]):
+            code, _, err = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", *extra)
+            self.assertNotEqual(code, 2, (extra, err))
+
     # scope -----------------------------------------------------------------
 
     def test_default_scope_walks_home_and_prunes(self):

@@ -114,7 +114,9 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
             scan.advisories(&c, &[], None, "fail", Some(osv::group_by_alias(recs)));
         }
     }
-    scan.unchecked("dependency licenses (deps.dev)", PHASE_2);
+    if scan.opts.licenses {
+        scan.unchecked("dependency licenses (deps.dev)", PHASE_2);
+    }
     Ok(())
 }
 

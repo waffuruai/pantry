@@ -14,7 +14,7 @@ The command line, its exit codes, its JSON and its cache file are wscanner's onl
 
 ```
 wscanner [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
-                 [--json] [--no-input] [--gitleaks-config FILE] [--licenses FILE] [--install-scripts FILE]
+                 [--json] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
 wscanner search QUERY [--applicable] [--limit N] [--json]
 wscanner export --csv FILE
 wscanner breach [--enable | --disable]
@@ -36,7 +36,8 @@ wscanner skill
 | `--offline` | Cache only; anything never cached is `unchecked` |
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt (the breach-consent question is skipped) |
-| `--gitleaks-config`, `--licenses`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
+| `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
+| `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `breach` | Show or set consent for the opt-in email breach check |
@@ -90,7 +91,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
 | `unfixed` | int | Applicable advisories with no released fix (not in `findings`) |
-| `unknown_licenses` | int | Repo dependencies with no identifiable license |
+| `unknown_licenses` | int | Repo dependencies with no identifiable license; 0 unless `--licenses` |
 | `findings` | array of Finding | Everything that applies, failing or warning |
 
 ### Finding

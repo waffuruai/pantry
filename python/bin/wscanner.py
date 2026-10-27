@@ -3,7 +3,7 @@
 the CLI contract is specs/cli-contract.md.
 
   wscanner [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
-                   [--json] [--no-input] [--gitleaks-config F] [--licenses F] [--install-scripts F]
+                   [--json] [--no-input] [--gitleaks-config F] [--licenses [F]] [--install-scripts F]
   wscanner search QUERY [--applicable] [--limit N] [--json]
   wscanner export --csv FILE
   wscanner breach [--enable | --disable]
@@ -37,6 +37,7 @@ from wscanner.db import Cache  # noqa: E402
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_INTERNAL, EXIT_INTERRUPTED = 0, 1, 2, 3, 130
 SKILL = ROOT / "skill" / "wscanner" / "SKILL.md"
 SUBCOMMANDS = ("check", "search", "export", "breach", "version", "tools", "skill")
+BUNDLED = object()  # `--licenses` with no FILE: check against the bundled allowlist
 
 
 def envelope(scan, findings) -> dict:
@@ -49,10 +50,11 @@ def envelope(scan, findings) -> dict:
 def cmd_check(a) -> int:
     log = (lambda *_: None) if a.json else print
     given = (("gitleaks_config", a.gitleaks_config), ("licenses", a.licenses), ("install_scripts", a.install_scripts))
-    policy = checks.Policy(**{k: v for k, v in given if v})
+    policy = checks.Policy(**{k: v for k, v in given if v and v is not BUNDLED})
 
     def scan(**kw):
-        return checks.Scan(a.path, machine=not a.no_machine, policy=policy, offline=a.offline, **kw)
+        return checks.Scan(a.path, machine=not a.no_machine, policy=policy, offline=a.offline,
+                           licenses=a.licenses is not None, **kw)
 
     first = scan(refresh=a.refresh, ask=not (a.json or a.dryrun or a.no_input), log=log)
     findings = first.run()
@@ -188,9 +190,10 @@ def parser() -> argparse.ArgumentParser:
                        ("--json", "print the findings as JSON (schema 1)"),
                        ("--no-input", "never prompt")):
         c.add_argument(flag, action="store_true", help=text)
-    for flag, name in (("--gitleaks-config", "gitleaks.toml"), ("--licenses", "licenses.txt"),
-                       ("--install-scripts", "install-scripts.txt")):
+    for flag, name in (("--gitleaks-config", "gitleaks.toml"), ("--install-scripts", "install-scripts.txt")):
         c.add_argument(flag, type=existing_file, metavar="FILE", help=f"policy file (default: bundled {name})")
+    c.add_argument("--licenses", nargs="?", const=BUNDLED, type=existing_file, metavar="FILE",
+                   help="also check dependency licenses (off by default), against FILE or the bundled licenses.txt")
     s = sub.add_parser("search", help="search cached advisories (for agents)")
     s.add_argument("query")
     s.add_argument("--applicable", action="store_true", help="only advisories that apply here")

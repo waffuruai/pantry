@@ -41,7 +41,7 @@ wscanner --update                              # apply the unattended fixes, the
 
 (`wscanner` is `python/bin/wscanner`.) Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error.
 
-**Scope.** By default wscanner checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in `python/wscanner/defaults/` and can be replaced with `--gitleaks-config`, `--licenses` and `--install-scripts`.
+**Scope.** By default wscanner checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in `python/wscanner/defaults/` and can be replaced with `--gitleaks-config` and `--install-scripts`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`.
 
 **Cache.** `~/.cache/wscanner/wscanner.db` (or `$XDG_CACHE_HOME/wscanner/`, or `WSCANNER_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 

@@ -42,9 +42,10 @@ out="$("$CHECK" --bundle "$tmp/clean.pem" 2>&1)" || {
     openssl x509 -in "$tmp/clean.pem" -noout -subject -dates
     d="$(mktemp -d)"
     awk -v d="$d" '/-----BEGIN CERTIFICATE-----/ { n++; f = sprintf("%s/int%02d.pem", d, n) } f { print > f } /-----END CERTIFICATE-----/ { close(f); f = "" }' "$(dirname "$CHECK")/distrusted-ca/intermediates.pem"
+    mkdir "$d/none"
     for c in "$d"/int*.pem; do
       printf '%s: ' "$(basename "$c")"
-      SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent openssl verify -CAfile "$tmp/clean.pem" -untrusted "$(dirname "$CHECK")/distrusted-ca/issuers.pem" "$c" 2>&1 | tail -1
+      SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent openssl verify -CAfile "$tmp/clean.pem" -CApath "$d/none" -untrusted "$(dirname "$CHECK")/distrusted-ca/issuers.pem" "$c" 2>&1 | tail -1
     done
     rm -rf "$d"
   } >&2 || true

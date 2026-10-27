@@ -1,6 +1,6 @@
 # Rust port: design detail
 
-Detail for [01-rust-port.md](../01-rust-port.md). The PRD holds the criteria; this page holds the tables they point at. Status: draft, 2026-10-25. Everything here is proposed until its criterion has evidence.
+Detail for [01-rust-port.md](../01-rust-port.md). The PRD holds the criteria; this page holds the tables they point at. Status: draft, 2026-10-25; updated 2026-10-27 with what the port settled (marked "settled"). Everything here is proposed until its criterion has evidence.
 
 ## Workspace
 
@@ -9,6 +9,7 @@ rust/
 ├── rust-toolchain.toml        exact toolchain (S1)
 ├── Cargo.toml                 workspace; release profile (S3)
 ├── Cargo.lock                 committed
+├── rustfmt.toml               width 120, as the Python side
 ├── deny.toml                  advisories, sources, licenses (S2)
 ├── supply-chain/              cargo vet audits (S2)
 └── crates/
@@ -39,9 +40,9 @@ Parsers read line by line where the format allows (P5) and never execute or reso
 |---|---|---|---|
 | `Cargo.lock` | `crates.io` | v1–v4 | Registry sources only; `path` and `git` packages skipped |
 | `package-lock.json` | `npm` | v1 (`dependencies`), v2–v3 (`packages`) | Name from the last `node_modules/` segment; links skipped |
-| `pnpm-lock.yaml` | `npm` | v6 (`/name@ver`), v9 (`name@ver`, `snapshots`) | Peer suffixes `(…)` stripped |
-| `Package.resolved` | `SwiftURL` | v1–v3 | Package is the repository URL |
-| `go.mod` | `Go` | — | `require` and `replace`; `go 1.N.M` → `stdlib` (F5) |
+| `pnpm-lock.yaml` | `npm` | v5 (`/name/ver`), v6 (`/name@ver`), v9 (`name@ver`, `snapshots`) | Peer suffixes `(…)` and v5's `_…` stripped; an entry's own `name:`/`version:` wins |
+| `Package.resolved` | `SwiftURL` | v1–v3 | Package is the repository URL without its scheme or `.git` (`github.com/apple/swift-nio`), as osv-scalibr names it (settled) |
+| `go.mod` | `Go` | — | `require` and `replace`; `toolchain goX`, else `go X`, → `stdlib` (F5, as osv-scalibr) |
 | `uv.lock` | `PyPI` | v1 | Editable and virtual sources skipped |
 | `requirements*.txt` | `PyPI` | — | `==` pins only; `-r` includes followed inside the repo |
 | `yarn.lock` | `npm` | v1, berry | Berry is YAML; v1 its own block format |
@@ -70,18 +71,18 @@ Parsers read line by line where the format allows (P5) and never execute or reso
 
 ### `os-release` → ecosystem
 
-Proposed mapping; the conformance fixtures from osv-scanner's testdata (F7) are the authority, and any row they contradict changes.
+Settled against the authority, osv-scalibr's `MakeEcosystem` tests (the extractor library osv-scanner runs), in `osdb.rs` `scalibr_conformance`. Rows the fixtures changed: Ubuntu has no `:LTS` suffix (records suffixed `:LTS` still match a fix by prefix), SUSE is `SUSE:<VERSION_ID>`. The table maps by `ID` only: a derivative's `VERSION_ID` names its own release, so borrowing its parent's ecosystem would ask OSV about the wrong one and come back silently clean.
 
-| `ID` (or `ID_LIKE`) | Ecosystem string |
+| `ID` | Ecosystem string |
 |---|---|
 | `debian` | `Debian:<VERSION_ID>`; no `VERSION_ID` (testing, sid) → `unchecked` |
-| `ubuntu` | `Ubuntu:<VERSION_ID>`, with `:LTS` for LTS releases as OSV names them |
-| `alpine` | `Alpine:v<major>.<minor>` |
+| `ubuntu` | `Ubuntu:<VERSION_ID>`; no `VERSION_ID` → `unchecked` |
+| `alpine` | `Alpine:v<major>.<minor>`; no `VERSION_ID` → `unchecked` |
 | `wolfi` | `Wolfi` |
 | `chainguard` | `Chainguard` |
 | `opensuse-leap` | `openSUSE:Leap <VERSION_ID>` |
 | `opensuse-tumbleweed` | `openSUSE:Tumbleweed` |
-| `sles`, `suse` | `SUSE:Linux Enterprise Server <major>[ SP<n>]` |
+| `sles` | `SUSE:<VERSION_ID>` |
 | anything else | `unchecked` (dnf and Arch families keep their own sources) |
 
 ## Version comparators
@@ -128,7 +129,7 @@ Every request carries `User-Agent: wscanner/<version> (+https://github.com/waffu
 
 ## Contract tests
 
-`tests/contract/` at the repo root, run as `WSCANNER=python/bin/wscanner` and `WSCANNER=rust/target/release/wscanner`. They start the binary with a temp `HOME` and `WSCANNER_DB`, `--offline` (a recording `Net` fake for the online cases in Rust; recorded fixtures for both), and check stdout, stderr and exit codes only. The parity diff (F3) is a separate job that runs both implementations online against the same repos and containers and diffs sorted findings.
+`tests/contract/test_contract.py` at the repo root (Python standard library, so it runs wherever the Python implementation does; `mise run contract`), run as `WSCANNER=python/bin/wscanner` and `WSCANNER=rust/target/release/wscanner`. They start the binary with a temp `HOME` and `WSCANNER_DB`, `--offline`, and check stdout, stderr, exit codes and the cache file only. The online cases (recorded fixtures for both) are still to come; in Rust the recording `Net` fake (`net::Fake`) covers them at the library level (`tests/scan.rs`). The parity diff (F3) is a separate job that runs both implementations online against the same repos and containers and diffs sorted findings.
 
 ## Release
 

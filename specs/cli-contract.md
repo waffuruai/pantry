@@ -114,7 +114,7 @@ A source that couldn't be reached is a finding with `kind == "unchecked"`, `stat
 
 ## `tools --json`
 
-`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. The list is per implementation and may shrink.
+`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. Rust today: `gitleaks`, `git` required; `rpm`, `docker` optional. The list is per implementation and may shrink.
 
 ## Cache (SQLite)
 
@@ -122,7 +122,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 
 | Table | Columns |
 |---|---|
-| `meta` | `key` TEXT PK, `value` TEXT (`breach_consent`, `malicious_at`, `<feed>_at`, `<feed>_etag`, `eol_at:<product>`) |
+| `meta` | `key` TEXT PK, `value` TEXT (`breach_consent`, `malicious_at`, `<feed>_at`, `<feed>_etag`, `eol_at:<product>`, `vuln_etag:<id>`) |
 | `vulns` | `id` TEXT PK, `aliases` TEXT (space-separated), `summary`, `details`, `severity`, `published`, `modified`, `url`, `record` TEXT (full OSV JSON) |
 | `queries` | `ecosystem`, `package`, `version` TEXT (PK together), `checked_at` REAL (Unix time), `vuln_ids` TEXT (space-separated) |
 | `findings` | `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `fixed` TEXT, `kev` INTEGER, `severity`, `note`, `fix_cmd` TEXT, `fix_auto` INTEGER |

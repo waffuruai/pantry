@@ -8,10 +8,6 @@ use wscanner::versions;
 
 pub const MISE_FIX: &str = "mise: manual, see ops MISE_VERSION (make install-mise)";
 
-fn mark(status: &str) -> &'static str {
-    if status == "fail" { "✗" } else { "⚠" }
-}
-
 /// Many packages inside one thing: one entry per thing.
 fn bundle(kind: &str) -> Option<&'static str> {
     match kind {
@@ -37,69 +33,226 @@ pub fn covering<'a>(fs: &[&'a Finding]) -> &'a Finding {
     best.unwrap_or(fs[0])
 }
 
-type Key = (String, String, String, String, String);
+/// The order kinds are listed in: what's installed on the machine, then
+/// what the repos lock, then what the harnesses run, then everything else.
+const KIND_ORDER: &[&str] = &[
+    "os",
+    "runtime",
+    "compiler",
+    "manager",
+    "pkgmgr",
+    "tool",
+    "datastore",
+    "harness",
+    "package",
+    "brew",
+    "app",
+    "browser",
+    "extension",
+    "project",
+    "image",
+    "bundled",
+    "mcp",
+    "secret",
+    "install-script",
+    "license",
+    "config",
+    "account",
+];
 
-/// Report entries: (status, kind, name, version, location) → findings, in
-/// first-seen order.
-fn group(findings: &[Finding]) -> Vec<(Key, Vec<&Finding>)> {
-    let mut by: Vec<(Key, Vec<&Finding>)> = Vec::new();
-    for f in findings {
-        let key: Key = if bundle(&f.kind).is_some() {
-            (
-                f.status.clone(),
-                f.kind.clone(),
-                f.component.split(" › ").next().unwrap_or("").into(),
-                String::new(),
-                String::new(),
-            )
-        } else if f.kind == "license" {
-            (f.status.clone(), f.kind.clone(), f.note.clone(), String::new(), String::new())
-        } else if f.vuln_id == "OUTDATED" && (f.kind == "app" || f.kind == "extension") {
-            let editor = if f.kind == "extension" {
-                f.component.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string()
-            } else {
-                "apps".into()
-            };
-            (f.status.clone(), "outdated".into(), editor, String::new(), String::new())
-        } else {
-            (f.status.clone(), f.kind.clone(), f.component.clone(), f.version.clone(), f.location.clone())
-        };
-        match by.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, fs)) => fs.push(f),
-            None => by.push((key, vec![f])),
-        }
-    }
-    by
+fn kind_rank(kind: &str) -> (usize, &str) {
+    (KIND_ORDER.iter().position(|k| *k == kind).unwrap_or(KIND_ORDER.len()), kind)
 }
 
-/// Print the report; 1 when something fails.
+/// One line of the report: a component (or one bundle) and its findings.
+struct Entry<'a> {
+    kind: &'a str,
+    name: String,
+    version: &'a str,
+    location: &'a str,
+    fs: Vec<&'a Finding>,
+}
+
+impl Entry<'_> {
+    fn fails(&self) -> bool {
+        self.fs.iter().any(|f| f.status == "fail")
+    }
+}
+
+/// Findings grouped into entries, in first-seen order: one per component,
+/// one per bundle (an image, an extension's bundled packages).
+fn entries(findings: &[Finding]) -> Vec<Entry<'_>> {
+    let mut out: Vec<Entry> = Vec::new();
+    for f in findings.iter().filter(|f| f.kind != "unchecked") {
+        let (name, version, location) = if bundle(&f.kind).is_some() {
+            (f.component.split(" › ").next().unwrap_or("").to_string(), "", "")
+        } else {
+            (f.component.clone(), f.version.as_str(), f.location.as_str())
+        };
+        match out
+            .iter_mut()
+            .find(|e| e.kind == f.kind && e.name == name && e.version == version && e.location == location)
+        {
+            Some(e) => e.fs.push(f),
+            None => out.push(Entry { kind: &f.kind, name, version, location, fs: vec![f] }),
+        }
+    }
+    out
+}
+
+fn plural(n: usize, word: &str) -> String {
+    match (n, word.strip_suffix('y')) {
+        (1, _) => format!("1 {word}"),
+        (_, Some(stem)) => format!("{n} {stem}ies"),
+        _ => format!("{n} {word}s"),
+    }
+}
+
+fn mark_of(fails: bool) -> &'static str {
+    if fails { "✗" } else { "⚠" }
+}
+
+/// "name version (location)"
+fn head(e: &Entry) -> String {
+    let mut h = e.name.clone();
+    if !e.version.is_empty() {
+        h.push(' ');
+        h.push_str(e.version);
+    }
+    if !e.location.is_empty() {
+        h.push_str(&format!(" ({})", short(e.location)));
+    }
+    h
+}
+
+/// "Fix: …" from the finding whose fix covers the rest.
+fn fix_of(fs: &[&Finding]) -> String {
+    let best = covering(fs);
+    let cmd = if best.fix_cmd.is_empty() {
+        fs.iter().map(|f| f.fix_cmd.as_str()).find(|c| !c.is_empty()).unwrap_or("")
+    } else {
+        &best.fix_cmd
+    };
+    match (cmd, best.fixed.as_str()) {
+        ("", "") => String::new(),
+        ("", fixed) => format!(" Fix: update to {fixed}"),
+        (cmd, _) => format!(" Fix: {cmd}"),
+    }
+}
+
+fn sentence(note: &str) -> String {
+    let note = note.trim().trim_end_matches('.');
+    if note.is_empty() { String::new() } else { format!(" {note}.") }
+}
+
+/// `name version (location) - (ID KEV SEVERITY) Description. Fix: …`
+fn line(e: &Entry) -> String {
+    let mut fs = e.fs.clone();
+    fs.sort_by(|a, b| (!a.kev, a.status != "fail", &a.vuln_id).cmp(&(!b.kev, b.status != "fail", &b.vuln_id)));
+    let top = fs[0];
+    let tags: Vec<&str> =
+        [top.vuln_id.as_str(), if top.kev && top.severity != "MALICIOUS" { "KEV" } else { "" }, &top.severity]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect();
+    // Our own notes print whole; an advisory's summary is cut.
+    let own = matches!(top.vuln_id.as_str(), "OUTDATED" | "EOL" | "UNPINNED" | "MISSING" | "BROWSER" | "OS-UPDATE");
+    let note = if own { top.note.clone() } else { chars(&top.note, 100) };
+    let mut ids: Vec<&str> = fs.iter().skip(1).map(|f| f.vuln_id.as_str()).filter(|i| *i != top.vuln_id).collect();
+    ids.dedup();
+    let more = match ids.len() {
+        0 => String::new(),
+        n => {
+            let shown: Vec<&str> = ids.iter().take(3).copied().collect();
+            format!(" And {n} more: {}{}.", shown.join(", "), if n > 3 { ", …" } else { "" })
+        }
+    };
+    format!("  {} {} - ({}){}{more}{}", mark_of(e.fails()), head(e), tags.join(" "), sentence(&note), fix_of(&fs))
+}
+
+/// `bundle - N packages with M advisories: pkg ver → fixed, … Fix: …`
+fn bundle_line(e: &Entry) -> String {
+    let mut pkgs: Vec<((&str, &str), Vec<&Finding>)> = Vec::new();
+    for f in &e.fs {
+        let k = (f.component.split(" › ").last().unwrap_or(""), f.version.as_str());
+        match pkgs.iter_mut().find(|(key, _)| *key == k) {
+            Some((_, v)) => v.push(f),
+            None => pkgs.push((k, vec![f])),
+        }
+    }
+    pkgs.sort_by(|(_, a), (_, b)| {
+        (!a.iter().any(|f| f.kev), std::cmp::Reverse(a.len()))
+            .cmp(&(!b.iter().any(|f| f.kev), std::cmp::Reverse(b.len())))
+    });
+    let shown: Vec<String> = pkgs
+        .iter()
+        .take(4)
+        .map(|((pkg, ver), pfs)| {
+            let fixed = &covering(pfs).fixed;
+            if fixed.is_empty() { format!("{pkg} {ver}") } else { format!("{pkg} {ver} → {fixed}") }
+        })
+        .collect();
+    let more = if pkgs.len() > 4 { format!(" and {} more", pkgs.len() - 4) } else { String::new() };
+    let kev = if e.fs.iter().any(|f| f.kev) { ", KEV" } else { "" };
+    let fix =
+        e.fs.iter()
+            .map(|f| f.fix_cmd.as_str())
+            .find(|c| !c.is_empty())
+            .map(|c| format!(" Fix: {c}"))
+            .unwrap_or_default();
+    format!(
+        "  {} {} - ({}, {}{kev}) {}{more}.{fix}",
+        mark_of(e.fails()),
+        e.name,
+        plural(pkgs.len(), "package"),
+        plural(e.fs.len(), "advisory"),
+        shown.join(", ")
+    )
+}
+
+/// Print the report: the findings grouped by kind, one line per component
+/// with why it's listed and how to fix it, then what couldn't be checked;
+/// 1 when something fails.
 pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
     out("");
-    out(&format!("==> Security scan ({db})"));
+    out(&format!("==> Security scan ({})", short(db)));
     let covered: Vec<String> = scan.counts.iter().map(|(what, n)| format!("{n} {what}")).collect();
     out(&if covered.is_empty() {
         "  nothing to check".to_string()
     } else {
         format!("  checked {}", covered.join(", "))
     });
-    let mut by = group(&scan.findings);
-    by.sort_by(|(a, _), (b, _)| (a.0 != "fail", &a.1, &a.2, &a.3, &a.4).cmp(&(b.0 != "fail", &b.1, &b.2, &b.3, &b.4)));
-    for ((status, kind, comp, ver, loc), fs) in &by {
-        if let Some(label) = bundle(kind) {
-            bundle_entry(status, label, comp, fs, out);
-        } else if kind == "license" {
-            license(status, fs, out);
-        } else if kind == "outdated" {
-            outdated(status, comp, fs, out);
-        } else if kind == "unchecked" {
-            out(&format!("  ⚠ not checked: {comp}  ({})", fs[0].note));
-        } else {
-            entry(status, kind, format!("{comp} {ver}").trim(), loc, fs, out);
+
+    let all = entries(&scan.findings);
+    let mut kinds: Vec<&str> = Vec::new();
+    for e in &all {
+        if !kinds.contains(&e.kind) {
+            kinds.push(e.kind);
         }
     }
-    let fails = by.iter().filter(|(k, _)| k.0 == "fail").count();
-    let gaps = by.iter().filter(|(k, _)| k.1 == "unchecked").count();
-    let warns = by.iter().filter(|(k, _)| k.0 == "warn").count() - gaps;
+    // Kinds with something failing first, then by kind.
+    kinds.sort_by_key(|k| (!all.iter().any(|e| e.kind == *k && e.fails()), kind_rank(k)));
+    for kind in &kinds {
+        out("");
+        out(kind);
+        let mut group: Vec<&Entry> = all.iter().filter(|e| e.kind == *kind).collect();
+        group.sort_by_key(|e| !e.fails());
+        for e in group {
+            out(&if bundle(kind).is_some() { bundle_line(e) } else { line(e) });
+        }
+    }
+    let gaps: Vec<&Finding> = scan.findings.iter().filter(|f| f.kind == "unchecked").collect();
+    if !gaps.is_empty() {
+        out("");
+        out("not checked");
+        for f in &gaps {
+            out(&format!("  ⚠ {} - {}", f.component, f.note));
+        }
+    }
+
+    let fails = all.iter().filter(|e| e.fails()).count();
+    let warns = all.len() - fails;
+    out("");
     if scan.unfixed > 0 {
         out(&format!(
             "  · {} applicable advisories have no released fix yet (wscanner search --applicable)",
@@ -107,20 +260,19 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
         ));
     }
     if scan.unknown_licenses > 0 {
-        out(&format!("  · {} project dependencies have no license osv-scanner can identify", scan.unknown_licenses));
+        out(&format!("  · {} project dependencies have no license wscanner can identify", scan.unknown_licenses));
     }
-    out("");
-    let incomplete = if gaps > 0 {
-        format!(" Incomplete: {gaps} source(s) couldn't be checked (offline?); re-run when they're reachable.")
-    } else {
+    let incomplete = if gaps.is_empty() {
         String::new()
+    } else {
+        format!(" Incomplete: {} source(s) couldn't be checked (offline?); re-run when they're reachable.", gaps.len())
     };
     if fails > 0 {
         let advisories = scan.findings.iter().filter(|f| f.status == "fail").count();
         out(&format!(
             "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wscanner --update --dryrun{incomplete}"
         ));
-    } else if gaps > 0 {
+    } else if !gaps.is_empty() {
         out(&format!("⚠ nothing with a released fix found in what could be checked.{incomplete}"));
     } else if warns > 0 {
         out(&format!("✓ nothing with a released fix applies; {warns} warning(s) above"));
@@ -128,109 +280,6 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
         out("✓ nothing with a released fix applies to what was scanned");
     }
     i32::from(fails > 0)
-}
-
-fn entry(status: &str, kind: &str, head: &str, loc: &str, fs: &[&Finding], out: &mut dyn FnMut(&str)) {
-    let at = if loc.is_empty() { String::new() } else { format!("  ({})", short(loc)) };
-    out(&format!("  {} {kind:<8} {head}{at}", mark(status)));
-    let mut shown: Vec<&&Finding> = fs.iter().collect();
-    shown.sort_by(|a, b| (!a.kev, &a.vuln_id).cmp(&(!b.kev, &b.vuln_id)));
-    for f in shown.iter().take(4) {
-        let tags: Vec<&str> = [if f.kev && f.severity != "MALICIOUS" { "KEV" } else { "" }, f.severity.as_str()]
-            .into_iter()
-            .filter(|t| !t.is_empty())
-            .collect();
-        let tags = if tags.is_empty() { String::new() } else { format!(" {}", tags.join(" ")) };
-        let note = if f.vuln_id == "OUTDATED" { f.note.clone() } else { chars(&f.note, 90) }; // our own notes print whole
-        out(&format!("      {}{tags}  {note}", f.vuln_id));
-    }
-    if shown.len() > 4 {
-        out(&format!("      … and {} more", shown.len() - 4));
-    }
-    let best = covering(fs);
-    if !best.fixed.is_empty() {
-        out(&format!("      fixed in {}", best.fixed));
-    }
-    let cmd = if best.fix_cmd.is_empty() {
-        fs.iter().map(|f| f.fix_cmd.as_str()).find(|c| !c.is_empty()).unwrap_or("")
-    } else {
-        &best.fix_cmd
-    };
-    if !cmd.is_empty() {
-        out(&format!("      fix: {cmd}"));
-    }
-}
-
-fn bundle_entry(status: &str, label: &str, r: &str, fs: &[&Finding], out: &mut dyn FnMut(&str)) {
-    let mut pkgs: Vec<((String, String), Vec<&Finding>)> = Vec::new();
-    for f in fs {
-        let k = (f.component.split(" › ").last().unwrap_or("").to_string(), f.version.clone());
-        match pkgs.iter_mut().find(|(key, _)| *key == k) {
-            Some((_, v)) => v.push(f),
-            None => pkgs.push((k, vec![f])),
-        }
-    }
-    out(&format!("  {} {label:<8} {r}  ({} packages, {} advisories)", mark(status), pkgs.len(), fs.len()));
-    pkgs.sort_by(|(_, a), (_, b)| {
-        (!a.iter().any(|f| f.kev), std::cmp::Reverse(a.len()))
-            .cmp(&(!b.iter().any(|f| f.kev), std::cmp::Reverse(b.len())))
-    });
-    for ((pkg, ver), pfs) in pkgs.iter().take(5) {
-        let fixed = &covering(pfs).fixed;
-        let arrow = if fixed.is_empty() { String::new() } else { format!(" → {fixed}") };
-        let kev = if pfs.iter().any(|f| f.kev) { " KEV" } else { "" };
-        out(&format!("      {pkg} {ver}{arrow}  ({} advisories{kev})", pfs.len()));
-    }
-    if pkgs.len() > 5 {
-        out(&format!("      … and {} more packages", pkgs.len() - 5));
-    }
-    out(&format!("      fix: {}", fs[0].fix_cmd));
-}
-
-fn outdated(status: &str, grp: &str, fs: &[&Finding], out: &mut dyn FnMut(&str)) {
-    let what = if grp == "apps" { "apps".to_string() } else { format!("{grp} extensions") };
-    out(&format!("  {} outdated {} {what} behind their latest release", mark(status), fs.len()));
-    let shown: Vec<String> = fs
-        .iter()
-        .take(6)
-        .map(|f| format!("{} {} → {}", f.component.split(" (").next().unwrap_or(""), f.version, f.fixed))
-        .collect();
-    let more = if fs.len() > 6 { format!(" and {} more", fs.len() - 6) } else { String::new() };
-    out(&format!("      {}{more}", shown.join(", ")));
-    let auto = fs.iter().filter(|f| f.fix_auto).count();
-    out(&if auto > 0 {
-        format!("      fix: wscanner --update updates {auto} of them")
-    } else {
-        "      fix: update them from their vendors (or their own updaters)".to_string()
-    });
-}
-
-fn license(status: &str, fs: &[&Finding], out: &mut dyn FnMut(&str)) {
-    let mut names: Vec<&str> = fs.iter().map(|f| f.component.as_str()).collect();
-    names.sort_unstable();
-    names.dedup();
-    let mut where_: Vec<String> = fs
-        .iter()
-        .map(|f| {
-            short(
-                &std::path::Path::new(&f.location)
-                    .parent()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            )
-        })
-        .collect();
-    where_.sort();
-    where_.dedup();
-    out(&format!("  {} license  {}", mark(status), fs[0].note.replacen("license ", "", 1)));
-    let more = if names.len() > 4 { format!(" and {} more", names.len() - 4) } else { String::new() };
-    out(&format!(
-        "      {} packages in {}: {}{more}",
-        names.len(),
-        where_.join(", "),
-        names.iter().take(4).copied().collect::<Vec<_>>().join(", ")
-    ));
-    out("      fix: replace them, or approve the license in the licenses allowlist (--licenses)");
 }
 
 /// (unattended, needs you, also worth doing): one fix per component, the
@@ -455,7 +504,21 @@ mod tests {
     }
 
     #[test]
-    fn report_summarises() {
+    fn report_groups_by_kind_with_reasons_and_fixes() {
+        let adv = |id: &str, kev: bool, sev: &str, note: &str, fixed: &str| Finding {
+            kind: "project".into(),
+            component: "smallvec".into(),
+            version: "1.6.0".into(),
+            location: "/w/app/Cargo.lock".into(),
+            vuln_id: id.into(),
+            status: "fail".into(),
+            fixed: fixed.into(),
+            kev,
+            severity: sev.into(),
+            note: note.into(),
+            fix_cmd: format!("cd /w/app && cargo update -p smallvec --precise {fixed}"),
+            ..Default::default()
+        };
         let scan = Outcome {
             findings: vec![
                 Finding {
@@ -466,9 +529,41 @@ mod tests {
                     note: "down".into(),
                     ..Default::default()
                 },
-                Finding { fixed: "1.2".into(), ..f("brew upgrade a", true, "fail") },
+                adv("CVE-2021-25900", true, "CRITICAL", "Buffer overflow in SmallVec::insert_many", "1.6.1"),
+                adv("CVE-2019-15551", false, "HIGH", "Double free", "1.0.0"),
+                Finding {
+                    kind: "mcp".into(),
+                    component: "y-mcp (project: y)".into(),
+                    version: "unpinned".into(),
+                    location: "/w/app/.mcp.json".into(),
+                    vuln_id: "UNPINNED".into(),
+                    status: "warn".into(),
+                    note: "`npx y-mcp` runs the latest release on every launch".into(),
+                    fix_cmd: "Pin y-mcp to a reviewed version in /w/app/.mcp.json".into(),
+                    ..Default::default()
+                },
+                Finding {
+                    kind: "secret".into(),
+                    component: "app/.env".into(),
+                    location: "line 3, commit abc123".into(),
+                    vuln_id: "aws-access-token".into(),
+                    status: "fail".into(),
+                    note: "AWS access key".into(),
+                    fix_cmd: "Rotate it".into(),
+                    ..Default::default()
+                },
+                Finding {
+                    kind: "bundled".into(),
+                    component: "Cursor ext x › lodash".into(),
+                    version: "4.17.20".into(),
+                    vuln_id: "CVE-2021-23337".into(),
+                    status: "warn".into(),
+                    fixed: "4.17.21".into(),
+                    fix_cmd: "Update the extension".into(),
+                    ..Default::default()
+                },
             ],
-            counts: vec![("git repos".into(), 2)],
+            counts: vec![("git repos".into(), 1), ("project dependencies".into(), 10)],
             unfixed: 1,
             unknown_licenses: 0,
         };
@@ -479,15 +574,25 @@ mod tests {
             [
                 "",
                 "==> Security scan (/c/w.db)",
-                "  checked 2 git repos",
-                "  ✗ tool     a 1",
-                "      CVE-1  ",
-                "      fixed in 1.2",
-                "      fix: brew upgrade a",
-                "  ⚠ not checked: CISA KEV  (down)",
-                "  · 1 applicable advisories have no released fix yet (wscanner search --applicable)",
+                "  checked 1 git repos, 10 project dependencies",
                 "",
-                "✗ 1 thing(s) to update (1 advisories), 0 warning(s). See the plan: wscanner --update --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
+                "project",
+                "  ✗ smallvec 1.6.0 (/w/app/Cargo.lock) - (CVE-2021-25900 KEV CRITICAL) Buffer overflow in SmallVec::insert_many. And 1 more: CVE-2019-15551. Fix: cd /w/app && cargo update -p smallvec --precise 1.6.1",
+                "",
+                "secret",
+                "  ✗ app/.env (line 3, commit abc123) - (aws-access-token) AWS access key. Fix: Rotate it",
+                "",
+                "bundled",
+                "  ⚠ Cursor ext x - (1 package, 1 advisory) lodash 4.17.20 → 4.17.21. Fix: Update the extension",
+                "",
+                "mcp",
+                "  ⚠ y-mcp (project: y) unpinned (/w/app/.mcp.json) - (UNPINNED) `npx y-mcp` runs the latest release on every launch. Fix: Pin y-mcp to a reviewed version in /w/app/.mcp.json",
+                "",
+                "not checked",
+                "  ⚠ CISA KEV - down",
+                "",
+                "  · 1 applicable advisories have no released fix yet (wscanner search --applicable)",
+                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wscanner --update --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
             ]
         );
     }

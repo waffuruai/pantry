@@ -31,6 +31,7 @@ pub fn os_updates(scan: &mut Scan) -> Result<()> {
     match system::os_family(&rel) {
         "osv" => os_packages(scan, &rel),
         "dnf" => {
+            scan.status("Asking dnf for security advisories");
             let r = distros::dnf_advisories(&scan.cache, scan.opts.refresh, scan.opts.offline);
             if let Some(res) = scan.guard("OS packages", r.map(Some), None)? {
                 distro(scan, &rel, res);
@@ -38,6 +39,7 @@ pub fn os_updates(scan: &mut Scan) -> Result<()> {
             Ok(())
         }
         "arch" => {
+            scan.status("Fetching the Arch security tracker");
             let groups = crate::feeds::arch(&scan.cache, scan.net, scan.opts.offline);
             let r = groups.and_then(|g| distros::arch_advisories(&scan.cache, &g));
             if let Some(res) = scan.guard("OS packages", r.map(Some), None)? {
@@ -67,6 +69,7 @@ fn os_packages(scan: &mut Scan, rel: &std::collections::BTreeMap<String, String>
             return Ok(());
         }
     };
+    scan.status("Reading the OS package database");
     let (location, pkgs) = match osdb::installed(rel) {
         Ok(Some(found)) => found,
         Ok(None) => {

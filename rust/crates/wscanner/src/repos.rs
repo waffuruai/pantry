@@ -4,7 +4,7 @@
 //! when installed. The walk rules are the contract's
 //! (`specs/cli-contract.md#scope-walk`).
 
-use crate::system::short;
+use crate::system::{Status, short};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -66,7 +66,13 @@ fn skip(parent: &str, name: &str) -> bool {
 /// is `root` itself. Symlinks are not followed, and only directory entries
 /// are looked at.
 pub fn discover(root: &Path) -> Vec<PathBuf> {
-    fn visit(d: &Path, level: usize, found: &mut Vec<PathBuf>) {
+    discover_with(root, &crate::system::quiet)
+}
+
+/// [`discover`], saying which directory it is looking in.
+pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
+    fn visit(d: &Path, level: usize, found: &mut Vec<PathBuf>, status: Status) {
+        status(&format!("Looking for git repos in {} ({} found)", short(&d.to_string_lossy()), found.len()));
         let Ok(rd) = std::fs::read_dir(d) else { return };
         let entries: Vec<std::fs::DirEntry> = rd.filter_map(|e| e.ok()).collect();
         if let Some(git) = entries.iter().find(|e| e.file_name() == ".git") {
@@ -82,12 +88,12 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
         for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
             if e.file_type().is_ok_and(|t| t.is_dir()) && !skip(&parent, &name) {
-                visit(&e.path(), level + 1, found);
+                visit(&e.path(), level + 1, found, status);
             }
         }
     }
     let mut found = Vec::new();
-    visit(root, 0, &mut found);
+    visit(root, 0, &mut found, status);
     found.sort();
     found
 }
@@ -99,7 +105,13 @@ pub type Repo = (String, PathBuf);
 /// With paths, the checkouts at or under each one; a path holding no
 /// checkout is scanned as one project (without the git-history checks).
 /// Missing paths are skipped with a one-line `note`.
-pub fn scope(paths: Option<&[PathBuf]>, home: &Path, log: &dyn Fn(&str), note: &dyn Fn(&str)) -> Vec<Repo> {
+pub fn scope(
+    paths: Option<&[PathBuf]>,
+    home: &Path,
+    log: &dyn Fn(&str),
+    note: &dyn Fn(&str),
+    status: Status,
+) -> Vec<Repo> {
     let mut roots = Vec::new();
     match paths {
         None => roots.push(home.to_path_buf()),
@@ -116,7 +128,7 @@ pub fn scope(paths: Option<&[PathBuf]>, home: &Path, log: &dyn Fn(&str), note: &
     }
     let mut found = BTreeSet::new();
     for root in &roots {
-        let repos = discover(root);
+        let repos = discover_with(root, status);
         if repos.is_empty() {
             if paths.is_some() {
                 found.insert(root.clone());
@@ -384,7 +396,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, h.join("link")).unwrap();
         let lines = RefCell::new(Vec::new());
-        let got = scope(None, &h, &|m| lines.borrow_mut().push(m.to_string()), &|_| {});
+        let got = scope(None, &h, &|m| lines.borrow_mut().push(m.to_string()), &|_| {}, &|_| {});
         wanted.sort();
         assert_eq!(got.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), wanted);
         assert!(lines.borrow()[0].contains("found 3 git repos"));
@@ -399,14 +411,14 @@ mod tests {
         let elsewhere = git_repo(&h.join("elsewhere"), false);
         let notes = RefCell::new(Vec::new());
         let paths = [h.join("w"), a.clone(), a.join(".."), h.join("missing")];
-        let got = scope(Some(&paths), &h, &|_| {}, &|m| notes.borrow_mut().push(m.to_string()));
+        let got = scope(Some(&paths), &h, &|_| {}, &|m| notes.borrow_mut().push(m.to_string()), &|_| {});
         let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
         let mut want = vec![canon(&a), canon(&b), canon(&elsewhere)];
         want.sort();
         assert_eq!(got.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), want);
         assert_eq!(notes.borrow().len(), 1);
         assert!(notes.borrow()[0].contains("missing"));
-        let only = scope(Some(&[h.join("w")]), &h, &|_| {}, &|_| {});
+        let only = scope(Some(&[h.join("w")]), &h, &|_| {}, &|_| {}, &|_| {});
         assert_eq!(only.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), [canon(&b)]);
     }
 
@@ -417,7 +429,7 @@ mod tests {
         let wt = git_repo(&h.join("wt"), true);
         let plain = h.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        let got = scope(Some(&[wt.clone(), plain.clone()]), &h, &|_| {}, &|_| {});
+        let got = scope(Some(&[wt.clone(), plain.clone()]), &h, &|_| {}, &|_| {}, &|_| {});
         let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
         assert_eq!(got.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(), [canon(&plain), canon(&wt)]);
         assert!(is_git(&wt) && !is_git(&plain));

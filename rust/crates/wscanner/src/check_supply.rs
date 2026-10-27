@@ -69,13 +69,20 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
 // The scanned repos -----------------------------------------------------------
 
 pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
-    let files: Vec<PathBuf> = repos.iter().flat_map(|(_, r)| repos::lockfiles(r)).collect();
+    let files: Vec<PathBuf> = repos
+        .iter()
+        .flat_map(|(name, r)| {
+            scan.status(&format!("Finding lockfiles in {name}"));
+            repos::lockfiles(r)
+        })
+        .collect();
     if files.is_empty() {
         return Ok(());
     }
     let mut read: Vec<(PathBuf, Vec<lockfiles::Package>)> = Vec::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     for f in &files {
+        scan.status(&format!("Reading {}", short(&f.to_string_lossy())));
         match lockfiles::extract(f).map_err(as_source) {
             Ok(Some(pkgs)) => read.push((f.clone(), pkgs)),
             Ok(None) => {
@@ -128,6 +135,7 @@ pub fn secrets(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     }
     let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
     for (name, root) in repos {
+        scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
         let found = match leaks::scan(&scan.cache, root, &config, scan.opts.refresh, scan.opts.offline) {
             Ok(f) => f,
             Err(Error::Missing(_)) => {
@@ -178,6 +186,7 @@ pub fn secrets(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
 
 /// Dependencies that run code at install time, outside the allowlist.
 pub fn install_scripts(scan: &mut Scan, repos: &[Repo]) {
+    scan.status("Checking which dependencies run install scripts");
     let allowed: HashSet<String> = scan.opts.policy.install_scripts().into_iter().collect();
     let files: Vec<PathBuf> = repos.iter().flat_map(|(_, r)| repos::lockfiles(r)).collect();
     for (where_, name) in repos::install_scripts(&files) {
@@ -201,6 +210,7 @@ pub fn install_scripts(scan: &mut Scan, repos: &[Repo]) {
 /// scanned yet (phase 2), so each is reported unchecked.
 pub fn images(scan: &mut Scan, repos: &[Repo]) {
     let Some(docker) = which("docker") else { return };
+    scan.status("Looking for the container images the repos name");
     let mut refs: Vec<String> = repos::repo_images(repos).into_iter().map(|(r, _)| r).collect();
     refs.sort();
     refs.dedup();
@@ -226,6 +236,7 @@ pub fn images(scan: &mut Scan, repos: &[Repo]) {
 /// checked like any package; unpinned ones run whatever is latest on every
 /// launch, so they warn (and fail if the name is known malicious).
 pub fn mcp(scan: &mut Scan, repos: &[Repo]) -> Result<Vec<Component>> {
+    scan.status("Reading the repos' MCP server configs");
     let servers = harnesses::mcp_servers(repos);
     scan.count("MCP servers", servers.len() as i64);
     let mut refs = Vec::new();
@@ -273,6 +284,7 @@ pub fn mcp(scan: &mut Scan, repos: &[Repo]) -> Result<Vec<Component>> {
 /// Every package name we know against the local malicious-package index,
 /// which also covers what OSV couldn't be asked about (offline, unpinned).
 pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result<()> {
+    scan.status("Updating the malicious-package index (OpenSSF)");
     let synced = malicious::sync(&scan.cache, scan.opts.offline);
     if scan.guard("malicious-package index (OpenSSF)", synced.map(Some), None)?.is_none() {
         return Ok(());
@@ -283,7 +295,9 @@ pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result
         found.iter().filter_map(|c| c.osv.as_ref().map(|(e, n, v)| (c, e.clone(), n.clone(), v.clone()))).collect();
     let extra = |c: &Component, k: &str| c.extra.get(k).cloned().unwrap_or_default();
     items.extend(refs.iter().map(|c| (c, extra(c, "eco"), extra(c, "pkg"), extra(c, "ver"))));
-    for (c, eco, name, ver) in items {
+    let total = items.len();
+    for (n, (c, eco, name, ver)) in items.into_iter().enumerate() {
+        scan.status(&format!("Checking {name} against the malicious-package index ({}/{total})", n + 1));
         for rec in malicious::reports(&scan.cache, scan.net, &eco, &name, &ver)? {
             let id = str_at(&rec, "id").to_string();
             if flagged.insert((c.name.clone(), id.clone())) {

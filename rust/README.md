@@ -36,7 +36,8 @@ Phase 0 is done: the workspace, the contract suite (passing on both implementati
 
 | Area | State |
 |---|---|
-| `version`, `tools`, `skill`, `search`, `export`, `breach`, the report, `--update`/`--dryrun`, exit codes | Ported; same output as Python |
+| `version`, `tools`, `skill`, `search`, `export`, `breach`, `--update`/`--dryrun`, exit codes | Ported; same output as Python |
+| The report and progress | New: a live progress line while scanning, and findings grouped by kind, one line per component with its reason and fix |
 | Scope walk (`--path`, `--no-machine`, the default `$HOME` walk) | Ported (F1) |
 | Lockfiles: `Cargo.lock`, `package-lock.json` v1–v3, `pnpm-lock.yaml` v5/v6/v9, `Package.resolved`, `go.mod` (+ `stdlib`), `uv.lock` | Ported, read directly instead of through osv-scanner (F4 first group, F5); golden files in `crates/wscanner/tests/lockfiles/` |
 | OS packages: dpkg (source packages), apk (origins), rpm on SUSE; `os-release` → OSV ecosystem; dnf advisories; the Arch tracker | Ported (F6, F7) |
@@ -49,6 +50,8 @@ Phase 0 is done: the workspace, the contract suite (passing on both implementati
 So a Rust run today is honest but narrower than a Python run: everything it doesn't check yet shows up under "not checked" and makes the report say "Incomplete". Use `python/bin/wscanner` for full coverage until phase 2.
 
 ## Known differences from Python
+
+- **The report** groups findings by kind, one line each (`name version (location) - (ID KEV SEVERITY) Description. Fix: …`), then what couldn't be checked; Python prints one block per component. A **progress line** (spinner, current step or file, elapsed time) is drawn on stderr while scanning, only when stderr is a terminal. Neither is part of the contract, which covers `--json`.
 
 - **Ctrl-C** ends the process by the signal instead of exiting 130.
 - **Lockfile packages** are read by wscanner, not osv-scanner. Workspace members (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding.

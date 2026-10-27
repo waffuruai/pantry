@@ -14,6 +14,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MACOS: bool = cfg!(target_os = "macos");
 
+/// Where a scan says what it is doing right now ("Reading ~/app/Cargo.lock"):
+/// transient progress for a human, never part of the report. Called from
+/// worker threads too, hence `Sync`.
+pub type Status<'a> = &'a (dyn Fn(&str) + Sync);
+
+/// A [`Status`] that shows nothing.
+pub fn quiet(_: &str) {}
+
 /// Something installed or locked that can be checked.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Component {

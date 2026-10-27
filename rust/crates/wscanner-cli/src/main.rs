@@ -7,6 +7,7 @@
 //! error.
 
 mod args;
+mod progress;
 mod report;
 
 use args::{Check, Command, Parsed};
@@ -40,11 +41,23 @@ fn envelope(scan: &Outcome) -> J {
     ])
 }
 
+/// One scan with a live progress line; the line is gone before this returns.
+fn scan(opts: Options, json: bool, net: &dyn wscanner::net::Net) -> Result<Outcome> {
+    let progress = progress::Progress::start();
+    let log = |m: &str| {
+        if !json {
+            progress.println(m);
+        }
+    };
+    let note = |m: &str| progress.eprintln(m);
+    let status = |m: &str| progress.set(m);
+    let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).run();
+    progress.finish();
+    out
+}
+
 fn cmd_check(a: Check) -> Result<i32> {
     let net = wscanner::net::Http::new();
-    let quiet = |_: &str| {};
-    let log: &dyn Fn(&str) = if a.json { &quiet } else { &say };
-    let note = |m: &str| eprintln!("{m}");
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
@@ -58,8 +71,7 @@ fn cmd_check(a: Check) -> Result<i32> {
         licenses: a.check_licenses,
         ask: !(a.json || a.dryrun || a.no_input),
     };
-    let scan = |opts: Options| -> Result<Outcome> { Scan::new(opts, Cache::open(None)?, &net, log, &note).run() };
-    let first = scan(opts.clone())?;
+    let first = scan(opts.clone(), a.json, &net)?;
     if a.json {
         say(&envelope(&first).dumps_indent(1));
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
@@ -74,7 +86,7 @@ fn cmd_check(a: Check) -> Result<i32> {
         return Ok(status);
     }
     say("\nRe-checking after the updates…");
-    let again = scan(Options { refresh: false, ask: false, ..opts })?;
+    let again = scan(Options { refresh: false, ask: false, ..opts }, false, &net)?;
     // A fix that failed fails the run even when the re-check comes back clean.
     let rechecked = report::report(&again, &db, &mut |l| say(l));
     Ok(if rechecked != 0 { rechecked } else { applied })

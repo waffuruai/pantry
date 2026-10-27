@@ -16,7 +16,7 @@ use crate::json::{J, obj, str_at};
 use crate::net::Net;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
-use crate::system::Component;
+use crate::system::{Component, Status};
 use crate::{check_machine, check_supply, feeds, versions};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -175,6 +175,8 @@ pub struct Scan<'a> {
     pub log: &'a dyn Fn(&str),
     /// One-line notes that always go to stderr.
     pub note: &'a dyn Fn(&str),
+    /// What the scan is doing right now (see [`Scan::with_status`]).
+    pub status: Status<'a>,
     pub home: PathBuf,
     pub repos: Vec<Repo>,
     pub findings: Vec<Finding>,
@@ -198,6 +200,7 @@ impl<'a> Scan<'a> {
             net,
             log,
             note,
+            status: &crate::system::quiet,
             home: crate::system::home(),
             repos: Vec::new(),
             findings: Vec::new(),
@@ -206,6 +209,18 @@ impl<'a> Scan<'a> {
             unknown_licenses: 0,
             kev: HashSet::new(),
         }
+    }
+
+    /// Report each step, directory and file as the scan reaches it (the
+    /// CLI's progress line). Off by default.
+    pub fn with_status(mut self, status: Status<'a>) -> Scan<'a> {
+        self.status = status;
+        self
+    }
+
+    /// Say what the scan is doing now.
+    pub fn status(&self, what: &str) {
+        (self.status)(what);
     }
 
     // helpers ---------------------------------------------------------------
@@ -257,8 +272,11 @@ impl<'a> Scan<'a> {
     /// OSV answers for (ecosystem, package, version) items; any it can't
     /// answer are reported unchecked.
     pub fn lookup(&mut self, items: &[Item], what: &str) -> Result<HashMap<Item, Vec<Value>>> {
-        let log = self.log;
-        let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log)?;
+        let (log, status) = (self.log, self.status);
+        if !items.is_empty() {
+            status(&format!("Checking {} {what}", items.len()));
+        }
+        let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log, status)?;
         if items.iter().any(|it| !answers.contains_key(it)) {
             self.unchecked(what, "OSV unreachable and not cached");
         }
@@ -268,10 +286,11 @@ impl<'a> Scan<'a> {
     // the scan --------------------------------------------------------------
 
     pub fn run(mut self) -> Result<Outcome> {
+        self.status("Fetching CISA's known-exploited list");
         let kev = feeds::kev(&self.cache, self.net, self.opts.offline);
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
-        let (log, note) = (self.log, self.note);
-        self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note);
+        let (log, note, status) = (self.log, self.note, self.status);
+        self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
         let found: Vec<Component> = Vec::new();
@@ -279,6 +298,7 @@ impl<'a> Scan<'a> {
             check_machine::run(&mut self)?;
         }
         check_supply::run(&mut self, &found)?;
+        self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
         self.cache.close()?;
         Ok(Outcome {

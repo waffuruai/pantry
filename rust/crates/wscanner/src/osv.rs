@@ -9,7 +9,7 @@ use crate::db::Cache;
 use crate::error::{Error, Result};
 use crate::json::{self, arr_at, str_at};
 use crate::net::{self, Net};
-use crate::system::now;
+use crate::system::{Status, now};
 use crate::versions;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -36,6 +36,7 @@ pub fn lookup(
     refresh: bool,
     offline: bool,
     log: &dyn Fn(&str),
+    status: Status,
 ) -> Result<HashMap<Item, Vec<Value>>> {
     let items: BTreeSet<&Item> = items.iter().collect();
     let mut stale = Vec::new();
@@ -46,7 +47,8 @@ pub fn lookup(
         }
     }
     if !stale.is_empty() && !offline {
-        match refresh_items(cache, net, &stale) {
+        status(&format!("Asking OSV about {} package versions", stale.len()));
+        match refresh_items(cache, net, &stale, status) {
             Ok(()) => {}
             Err(e) if e.is_source() => log(&format!("  ⚠ OSV unreachable, using cached answers ({e})")),
             Err(e) => return Err(e),
@@ -81,7 +83,7 @@ fn hits(v: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item]) -> Result<()> {
+fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -> Result<()> {
     let mut answers: Vec<(Item, Vec<(String, String)>)> = Vec::new();
     for chunk in stale.chunks(BATCH) {
         let body = json!({"queries": chunk.iter().map(query).collect::<Vec<_>>()});
@@ -118,7 +120,7 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item]) -> Result<()> {
     }
     let etags: Vec<(String, Option<String>)> =
         need.into_iter().map(|id| Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?))).collect::<Result<_>>()?;
-    for (id, fetched) in fetch_records(net, &etags)? {
+    for (id, fetched) in fetch_records(net, &etags, status)? {
         if let Some((rec, etag)) = fetched {
             cache.put_vuln(&rec)?;
             if let Some(e) = etag {
@@ -137,7 +139,7 @@ type Fetched = Option<(Value, Option<String>)>;
 
 /// GET /v1/vulns/{id} for each id, at most [`PARALLEL`] in flight, each
 /// with its stored ETag. None for a 404 or a 304 (the cached record stands).
-fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)]) -> Result<Vec<(String, Fetched)>> {
+fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)], status: Status) -> Result<Vec<(String, Fetched)>> {
     let queue = Mutex::new(ids.iter());
     let results = Mutex::new(Vec::new());
     let first_error = Mutex::new(None);
@@ -155,7 +157,11 @@ fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)]) -> Result<Vec<
                         _ => Ok(None),
                     });
                     match got {
-                        Ok(rec) => results.lock().expect("lock").push((id.clone(), rec)),
+                        Ok(rec) => {
+                            let mut done = results.lock().expect("lock");
+                            done.push((id.clone(), rec));
+                            status(&format!("Downloading advisories from OSV ({}/{}): {id}", done.len(), ids.len()));
+                        }
                         Err(e) => {
                             first_error.lock().expect("lock").get_or_insert(e);
                             return;
@@ -479,8 +485,16 @@ mod tests {
         c.put_vuln(&rec("CVE-2026-3", json!([]), &[], Some(("PyPI", "pip")))).unwrap();
         c.put_query("PyPI", "pip", "26.0.1", &["CVE-2026-3".into()]).unwrap();
         let net = Fake::new(|_| panic!("offline lookups make no requests"));
-        let got = lookup(&c, &net, &[item("PyPI", "pip", "26.0.1"), item("PyPI", "uv", "0.1.0")], false, true, &|_| {})
-            .unwrap();
+        let got = lookup(
+            &c,
+            &net,
+            &[item("PyPI", "pip", "26.0.1"), item("PyPI", "uv", "0.1.0")],
+            false,
+            true,
+            &|_| {},
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(got[&item("PyPI", "pip", "26.0.1")][0]["id"], "CVE-2026-3");
         assert!(!got.contains_key(&item("PyPI", "uv", "0.1.0")), "never answered: unknown, not clean");
     }
@@ -525,7 +539,7 @@ mod tests {
         });
         let mut items: Vec<Item> = (0..1500).map(|i| item("npm", &format!("pkg{i}"), "1.0.0")).collect();
         items.push(item("npm", "vite", "8.0.0"));
-        let got = lookup(&c, &net, &items, false, false, &|_| {}).unwrap();
+        let got = lookup(&c, &net, &items, false, false, &|_| {}, &|_| {}).unwrap();
         assert_eq!(batches.load(Ordering::SeqCst), 2, "1501 queries take two batches");
         let mut ids: Vec<&str> = got[&item("npm", "vite", "8.0.0")].iter().map(|r| r["id"].as_str().unwrap()).collect();
         ids.sort();
@@ -537,16 +551,22 @@ mod tests {
         assert!(got[&item("npm", "pkg7", "1.0.0")].is_empty(), "answered clean");
         // A second lookup the same day asks nothing.
         let quiet = Fake::new(|_| panic!("fresh answers are not refetched"));
-        assert_eq!(lookup(&c, &quiet, &items, false, false, &|_| {}).unwrap().len(), items.len());
+        assert_eq!(lookup(&c, &quiet, &items, false, false, &|_| {}, &|_| {}).unwrap().len(), items.len());
     }
 
     #[test]
     fn unreachable_osv_leaves_items_unanswered() {
         let (_d, c) = cache();
         let logged = Mutex::new(Vec::new());
-        let got = lookup(&c, &Fake::offline(), &[item("npm", "a", "1")], false, false, &|m| {
-            logged.lock().unwrap().push(m.to_string())
-        })
+        let got = lookup(
+            &c,
+            &Fake::offline(),
+            &[item("npm", "a", "1")],
+            false,
+            false,
+            &|m| logged.lock().unwrap().push(m.to_string()),
+            &|_| {},
+        )
         .unwrap();
         assert!(got.is_empty());
         assert!(logged.lock().unwrap()[0].contains("OSV unreachable"));

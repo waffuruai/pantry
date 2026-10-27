@@ -82,6 +82,8 @@ impl Checker {
         std::fs::write(&issuers, ISSUERS)?;
         // Empty default locations: openssl verify still reads the system
         // store next to an explicit -CAfile or -CApath on some systems.
+        // OpenSSL honours these variables; LibreSSL (macOS) doesn't, so
+        // `verify` is also always given both -CAfile and -CApath.
         std::fs::create_dir_all(dir.path().join("empty"))?;
         std::fs::write(dir.path().join("empty.pem"), "")?;
         Ok(Checker { openssl, dir, ints, issuers, seen: Vec::new() })
@@ -93,7 +95,19 @@ impl Checker {
     /// verdict is none; anything else (a file openssl can't load, a timeout)
     /// is unknown, whatever the exit code.
     fn verify(&self, anchors: &Path) -> Verdict {
-        let opt = if anchors.is_dir() { "-CApath" } else { "-CAfile" };
+        // LibreSSL's verify reads its default store for whichever of -CAfile
+        // and -CApath is missing, whatever SSL_CERT_FILE and SSL_CERT_DIR say,
+        // and that store would be blamed on this one. So both are always
+        // given: a hashed directory's certificates are gathered into one
+        // file (an empty -CAfile doesn't load), and -CApath is empty.
+        let file = if anchors.is_dir() {
+            match self.gather(anchors) {
+                Ok(f) => f,
+                Err(e) => return Verdict::Unknown(format!("can't read {}: {e}", anchors.display())),
+            }
+        } else {
+            anchors.to_path_buf()
+        };
         let empty_pem = self.dir.path().join("empty.pem").display().to_string();
         let empty_dir = self.dir.path().join("empty").display().to_string();
         let uri = format!("file:{empty_dir}");
@@ -106,8 +120,10 @@ impl Checker {
             let argv = [
                 self.openssl.as_os_str(),
                 OsStr::new("verify"),
-                OsStr::new(opt),
-                anchors.as_os_str(),
+                OsStr::new("-CAfile"),
+                file.as_os_str(),
+                OsStr::new("-CApath"),
+                OsStr::new(&empty_dir),
                 OsStr::new("-untrusted"),
                 self.issuers.as_os_str(),
                 int.as_os_str(),
@@ -132,6 +148,25 @@ impl Checker {
             }
         }
         Verdict::Clean
+    }
+
+    /// The certificates of a hashed directory (`<hash>.<n>`) as one bundle.
+    fn gather(&self, dir: &Path) -> std::io::Result<PathBuf> {
+        let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x.to_string_lossy().bytes().all(|b| b.is_ascii_digit())))
+            .collect();
+        names.sort();
+        let mut pem = String::new();
+        for n in names {
+            if let Ok(b) = std::fs::read(&n) {
+                pem.push_str(&certificates(&String::from_utf8_lossy(&b)).concat());
+            }
+        }
+        let out = self.dir.path().join(format!("dir{}.pem", self.seen.len()));
+        std::fs::write(&out, pem)?;
+        Ok(out)
     }
 
     fn trusts(&self, anchors: &Path) -> bool {
@@ -329,6 +364,23 @@ mod tests {
         let s = c.store("x", "x", &bad, "").unwrap();
         assert!(s.trusts && s.unchecked.is_none());
         assert!(c.store("x", "x", &bad, "").is_none(), "each store once");
+    }
+
+    /// A hashed directory is checked through its certificates, with nothing
+    /// from the system store (LibreSSL reads it for a missing -CAfile).
+    #[test]
+    fn a_hashed_directory_is_judged_by_its_own_certificates() {
+        let Some(openssl) = which("openssl") else { return };
+        let c = Checker::new(openssl).unwrap();
+        let (bad, none) = (c.dir.path().join("bad"), c.dir.path().join("none"));
+        for (d, pem) in [(&bad, include_str!("../assets/distrusted-ca/roots.pem")), (&none, ISSUERS)] {
+            std::fs::create_dir_all(d).unwrap();
+            for (i, cert) in certificates(pem).iter().enumerate() {
+                std::fs::write(d.join(format!("{i:08x}.0")), cert).unwrap();
+            }
+        }
+        assert_eq!(c.verify(&bad), Verdict::Trusts);
+        assert_eq!(c.verify(&none), Verdict::Clean);
     }
 
     /// A store openssl can't use is unchecked, never "doesn't trust".

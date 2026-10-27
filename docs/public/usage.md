@@ -1,17 +1,17 @@
-# Using wscanner
+# Using wpantry
 
-wscanner finds the vulnerabilities that actually apply to your computer and your git repos. It inventories what is installed and what your repos lock, asks [OSV.dev](https://osv.dev), CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) list and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. A source it can't reach is reported "not checked", never clean.
+wpantry finds the vulnerabilities that actually apply to your computer and your git repos. It inventories what is installed and what your repos lock, asks [OSV.dev](https://osv.dev), CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) list and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. A source it can't reach is reported "not checked", never clean.
 
 Install it first: [install.md](install.md).
 
 ## Quick start
 
 ```bash
-wscanner                                       # this computer: machine + every git repo under ~
-wscanner --path ~/code/myproject --no-machine  # one project, no machine inventory
-wscanner --update --dryrun                     # what it would fix, changing nothing
-wscanner --update                              # apply the fixes that can run unattended, then re-check
-wscanner check --json --no-input               # findings as JSON, for tools and agents
+wpantry                                       # this computer: machine + every git repo under ~
+wpantry --path ~/code/myproject --no-machine  # one project, no machine inventory
+wpantry --update --dryrun                     # what it would fix, changing nothing
+wpantry --update                              # apply the fixes that can run unattended, then re-check
+wpantry check --json --no-input               # findings as JSON, for tools and agents
 ```
 
 The first run downloads advisories for what it finds and takes a while; answers are cached for a day, so the next run the same day takes seconds.
@@ -34,7 +34,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 
 ## Scope
 
-By default wscanner checks the machine and every git repo under your home directory. The walk is bounded: depth 6, symlinks not followed, and it skips `Library`, caches, toolchains, `node_modules`, build output and app bundles. It prints how many repos it found.
+By default wpantry checks the machine and every git repo under your home directory. The walk is bounded: depth 6, symlinks not followed, and it skips `Library`, caches, toolchains, `node_modules`, build output and app bundles. It prints how many repos it found.
 
 - `--path DIR` (repeatable) limits the repo checks to the repos at or under DIR. A DIR with no git repo is scanned as one project, without the git-history checks. A missing DIR is skipped with a note.
 - `--no-machine` skips the machine inventory: repo checks only.
@@ -46,7 +46,7 @@ While it scans, a progress line shows what it is doing (the directory it is walk
 Then the findings, grouped by kind, one line per component with why it is listed and how to fix it:
 
 ```
-==> Security scan (~/.cache/wscanner/wscanner.db)
+==> Security scan (~/.cache/wpantry/wpantry.db)
   checked 12 git repos, 486 OS packages, 1820 project dependencies, 3 MCP servers
 
 project
@@ -61,7 +61,7 @@ mcp
 not checked
   ⚠ CISA KEV (exploited-in-the-wild marks) - CISA KEV list unreachable and not cached
 
-✗ 2 thing(s) to update (2 advisories), 1 warning(s). See the plan: wscanner --update --dryrun
+✗ 2 thing(s) to update (2 advisories), 1 warning(s). See the plan: wpantry --update --dryrun
 ```
 
 - `✗` fails: a released fix exists, it's end of life, it's malicious, or it's a committed secret from a provider-specific rule.
@@ -82,11 +82,11 @@ The (Python) implementation prints the same findings as one block per component.
 
 ## Fixing
 
-`wscanner --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wscanner --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
+`wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
 ## JSON
 
-`wscanner check --json` prints one object and never prompts:
+`wpantry check --json` prints one object and never prompts:
 
 ```json
 {
@@ -107,7 +107,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 |---|---|
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
-| `--no-input` | Never prompt (the breach-check question is skipped) |
+| `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
@@ -116,35 +116,35 @@ Policy files are one entry per line, `#` for comments. Reviewed false positives 
 
 ## The cache, search and export
 
-Answers live in one SQLite file: `~/.cache/wscanner/wscanner.db`, or `$XDG_CACHE_HOME/wscanner/`, or `WSCANNER_DB`. It holds the advisories for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
+Answers live in one SQLite file: `~/.cache/wpantry/wpantry.db`, or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`. It holds the advisories for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 
 ```bash
-wscanner search "tarfile traversal"            # rank cached advisories (SQLite FTS5 syntax: "exact phrase", tls AND cert, rust*)
-wscanner search openssl --applicable --json    # only those that apply here
-wscanner export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
+wpantry search "tarfile traversal"            # rank cached advisories (SQLite FTS5 syntax: "exact phrase", tls AND cert, rust*)
+wpantry search openssl --applicable --json    # only those that apply here
+wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
 ```
 
 ## What leaves your machine
 
 - To OSV.dev: the (ecosystem, name, version) of what is installed or locked. No file contents, paths or secrets.
 - Feeds are downloaded: CISA KEV, endoflife.date, the Homebrew cask catalog, browser release feeds, the OpenSSF malicious-packages index (a git clone), and with `--licenses`, deps.dev.
-- The breach check sends your email address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes (`wscanner breach --enable`; `--disable` turns it off).
+- The breach check sends your email address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes (`wpantry breach --enable`; `--disable` turns it off).
 
-Every request names wscanner in its User-Agent and times out after 30 seconds.
+Every request names wpantry in its User-Agent and times out after 30 seconds.
 
 ## Environment
 
 | Variable | Effect |
 |---|---|
-| `WSCANNER_DB` | The cache file |
+| `WPANTRY_DB` | The cache file |
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
-| `NO_COLOR` | Honoured (wscanner never prints colour) |
+| `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
 | `HTTPS_PROXY` | Requests go through the proxy |
 
 ## For agents
 
-`wscanner skill` prints an agent skill (`SKILL.md`) that teaches a coding agent to run wscanner, triage its JSON and plan fixes safely. `wscanner tools --json` lists the external tools and whether they're installed.
+`wpantry skill` prints an agent skill (`SKILL.md`) that teaches a coding agent to run wpantry, triage its JSON and plan fixes safely. `wpantry tools --json` lists the external tools and whether they're installed.
 
 ## Troubleshooting
 

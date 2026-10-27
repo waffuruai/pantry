@@ -1,4 +1,4 @@
-# wscanner: internal docs
+# wpantry: internal docs
 
 For maintainers.
 

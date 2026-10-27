@@ -12,45 +12,46 @@ shellcheck = "0.11.0"
 actionlint = "1.7.12"
 
 [tasks.bootstrap]
-description = "Setup after mise installs [tools]: confirm wscanner finds them (wscanner tools)"
+description = "Setup after mise installs [tools]: confirm the scanner finds them (python/bin/wscanner tools)"
 run = "python/bin/wscanner tools"
 
 [tasks.test]
-description = "Test suites; `all` (the default) is the offline unit tests, then the CA trust test"
+description = "Test suites; `all` (the default) is the offline unit tests, the CA trust test and the install.sh test"
 usage = '''
-arg "[suite]" default="all" help="all, unit or ca-trust" {
-  choices "all" "unit" "ca-trust"
+arg "[suite]" default="all" help="all, unit, ca-trust or install" {
+  choices "all" "unit" "ca-trust" "install"
 }
 '''
-# The unit tests run with the pinned python3 unless WSCANNER_PYTHON names another interpreter, as
+# The unit tests run with the pinned python3 unless WPANTRY_PYTHON names another interpreter, as
 # CI's 3.9 leg does with the one a fresh Mac ships.
-env = { WSCANNER_PYTHON = "{{ env.WSCANNER_PYTHON | default(value='python3') }}" }
+env = { WPANTRY_PYTHON = "{{ env.WPANTRY_PYTHON | default(value='python3') }}" }
 run = '''
-unit() { "$WSCANNER_PYTHON" -m unittest discover -s python -p 'test_*.py'; }
+unit() { "$WPANTRY_PYTHON" -m unittest discover -s python -p 'test_*.py'; }
 case "${usage_suite:-all}" in
-  all) unit; python/test-ca-trust.sh ;;
+  all) unit; python/test-ca-trust.sh; tests/install/test-install.sh ;;
   unit) unit ;;
   ca-trust) exec python/test-ca-trust.sh ;;
+  install) exec tests/install/test-install.sh ;;
 esac
 '''
 
 [tasks.contract]
-description = "The CLI contract suite against WSCANNER (default python/bin/wscanner; rust/target/release/wscanner for the Rust port)"
-env = { WSCANNER = "{{ env.WSCANNER | default(value='python/bin/wscanner') }}", WSCANNER_PYTHON = "{{ env.WSCANNER_PYTHON | default(value='python3') }}" }
-run = '"$WSCANNER_PYTHON" -m unittest discover -s tests/contract'
+description = "The CLI contract suite against WPANTRY (default python/bin/wscanner; rust/target/release/wpantry for the Rust port)"
+env = { WPANTRY = "{{ env.WPANTRY | default(value='python/bin/wscanner') }}", WPANTRY_PYTHON = "{{ env.WPANTRY_PYTHON | default(value='python3') }}" }
+run = '"$WPANTRY_PYTHON" -m unittest discover -s tests/contract'
 
 [tasks.lint]
 description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"
 run = [
-  'for f in python/bin/wscanner python/*.sh rust/release/*.sh; do bash -n "$f"; done',
+  'for f in python/bin/wscanner python/*.sh rust/release/*.sh install.sh tests/install/*.sh; do bash -n "$f"; done',
   # -x follows `source ca-common.sh`; .shellcheckrc resolves it relative to each script.
-  "shellcheck -x python/bin/wscanner python/*.sh rust/release/*.sh",
+  "shellcheck -x python/bin/wscanner python/*.sh rust/release/*.sh install.sh tests/install/*.sh",
   "actionlint",
 ]
 
 [tasks.check]
-description = "Run wscanner check with the pinned tools; more flags after --, such as -- --json --no-input"
-usage = 'arg "[args]" var=#true help="wscanner check flags"'
+description = "Run wpantry check with the pinned tools; more flags after --, such as -- --json --no-input"
+usage = 'arg "[args]" var=#true help="wpantry check flags"'
 run = '''
 eval "set -- ${usage_args:-}"
 exec python/bin/wscanner check "$@"

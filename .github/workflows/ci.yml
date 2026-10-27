@@ -50,7 +50,7 @@ jobs:
 
       # Tasks see only mise's tool directories and the base system, so a tool
       # missing from mise.toml fails here; the 3.9 interpreter is named
-      # explicitly through WSCANNER_PYTHON, by path: mise-action puts the
+      # explicitly through WPANTRY_PYTHON, by path: mise-action puts the
       # pinned python ahead of setup-python's on PATH.
       - name: Pick the Python under test and cut PATH
         env:
@@ -63,7 +63,7 @@ jobs:
             *) py="$(mise which python3)" ;;
           esac
           "$py" -c 'import sys, os; v = os.environ["WANT"]; assert "%d.%d" % sys.version_info[:2] == v, sys.version'
-          echo "WSCANNER_PYTHON=$py" >> "$GITHUB_ENV"
+          echo "WPANTRY_PYTHON=$py" >> "$GITHUB_ENV"
           echo "TASK_PATH=$(dirname "$(command -v mise)"):/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
 
       - name: unittest
@@ -72,6 +72,10 @@ jobs:
       - name: CA trust test
         if: ${{ matrix.python == '3.15' }}
         run: PATH="$TASK_PATH" mise run test ca-trust
+
+      - name: install.sh test
+        if: ${{ matrix.python == '3.15' }}
+        run: PATH="$TASK_PATH" mise run test install
 
   # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
   # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
@@ -97,7 +101,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: wscanner
+          path: wpantry
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -186,7 +190,7 @@ jobs:
       # F12 against a real engine: the hosted Linux runners have Docker.
       - name: image scanning (docker)
         if: runner.os == 'Linux'
-        run: cargo test --locked -p wscanner --test image -- --ignored
+        run: cargo test --locked -p wpantry --test image -- --ignored
 
       - name: build (release)
         run: cargo build --locked --release
@@ -200,7 +204,7 @@ jobs:
       - name: contract tests (rust)
         working-directory: .
         env:
-          WSCANNER: rust/target/release/wscanner
+          WPANTRY: rust/target/release/wpantry
         run: python3 -m unittest discover -s tests/contract -v
 
   # The same contract suite against the Python implementation, which defines
@@ -218,7 +222,7 @@ jobs:
 
       - name: contract tests (python)
         env:
-          WSCANNER: python/bin/wscanner
+          WPANTRY: python/bin/wscanner
         run: python3 -m unittest discover -s tests/contract -v
 
   # S2: cargo deny (advisories, crates.io-only sources, license allowlist)

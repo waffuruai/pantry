@@ -12,10 +12,10 @@ body:
         relevant signal without scraping freeform prose.
 
         **Before filing:**
-        - Search [existing issues](https://github.com/waffuruai/wscanner/issues?q=is%3Aissue) to avoid duplicates.
-        - For features: check the [Roadmap](https://github.com/orgs/waffuruai/projects/1) and [specs/](https://github.com/waffuruai/wscanner/tree/dev/specs) — it may already be planned.
+        - Search [existing issues](https://github.com/waffuruai/wpantry/issues?q=is%3Aissue) to avoid duplicates.
+        - For features: check the [Roadmap](https://github.com/orgs/waffuruai/projects/1) and [specs/](https://github.com/waffuruai/wpantry/tree/dev/specs) — it may already be planned.
         - For bugs: try `main` HEAD; many issues are already fixed.
-        - **A vulnerability in wscanner itself does not go here.** Follow [SECURITY.md](https://github.com/waffuruai/wscanner/blob/main/SECURITY.md).
+        - **A vulnerability in wpantry itself does not go here.** Follow [SECURITY.md](https://github.com/waffuruai/wpantry/blob/main/SECURITY.md).
 
   - type: checkboxes
     id: type
@@ -39,7 +39,7 @@ body:
         One paragraph of context. What are you trying to do, what
         happened (or what should happen), why does it matter?
       placeholder: |
-        `wscanner --path ~/code/app --no-machine` reports nothing for a
+        `wpantry --path ~/code/app --no-machine` reports nothing for a
         `pnpm-lock.yaml` v9 that pins vite 8.2.1, which OSV lists as
         affected by GHSA-xxxx-xxxx-xxxx (fixed in 8.2.3).
     validations:
@@ -62,7 +62,7 @@ body:
           already considered.
       placeholder: |
         ```bash
-        wscanner check --path /tmp/repro --no-machine --json --no-input | jq '.findings[] | select(.kind == "project")'
+        wpantry check --path /tmp/repro --no-machine --json --no-input | jq '.findings[] | select(.kind == "project")'
         # → nothing
         ```
 
@@ -77,12 +77,12 @@ body:
       label: Environment
       description: |
         Required for bugs / perf issues. Optional for features and
-        discussions. Paste `wscanner version`, `wscanner tools` and your
+        discussions. Paste `wpantry version`, `wpantry tools` and your
         OS. Never paste scan output, paths or email addresses from your
         machine.
       render: shell
       placeholder: |
-        wscanner 0.1.0 (python, schema 1)
+        wpantry 0.1.0 (rust, schema 1)
         macOS 26.1 (M2) / Debian 13 / Alpine 3.22
         osv-scanner 2.7.0, gitleaks 8.30.1, Python 3.9.6
     validations:
@@ -128,5 +128,5 @@ body:
       options:
         - label: I searched for duplicate issues.
           required: true
-        - label: I read [`CONTRIBUTING.md`](https://github.com/waffuruai/wscanner/blob/main/CONTRIBUTING.md).
+        - label: I read [`CONTRIBUTING.md`](https://github.com/waffuruai/wpantry/blob/main/CONTRIBUTING.md).
           required: true

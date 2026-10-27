@@ -1,8 +1,8 @@
-# wscanner CLI contract
+# wpantry CLI contract
 
 Status: frozen at schema 1, 2026-10-25. Owner: Eric.
 
-The command line, its exit codes, its JSON and its cache file are wscanner's only stable surface. Callers (ops, control-plane, wsentinel, agents) depend on this page and nothing else. The Python implementation (`python/`) defines it today; the Rust implementation ([01-rust-port.md](01-rust-port.md)) MUST match it. Both MUST pass the same contract tests, which run the binary and check its output rather than its internals.
+The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, control-plane, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (the Rust implementation, [01-rust-port.md](01-rust-port.md)). The Python reference implementation (`python/`) keeps its original name, `python/bin/wscanner`, until phase 3 removes it. Both MUST pass the same contract tests, which run the binary and check its output rather than its internals; where the name appears in output (`skill`'s front matter, the `<name>:` error prefix), each uses its own.
 
 ## Change rule
 
@@ -13,14 +13,14 @@ The command line, its exit codes, its JSON and its cache file are wscanner's onl
 ## Synopsis
 
 ```
-wscanner [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
+wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
                  [--json] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
-wscanner search QUERY [--applicable] [--limit N] [--json]
-wscanner export --csv FILE
-wscanner breach [--enable | --disable]
-wscanner version [--json]
-wscanner tools [--json]
-wscanner skill
+wpantry search QUERY [--applicable] [--limit N] [--json]
+wpantry export --csv FILE
+wpantry breach [--enable | --disable]
+wpantry version [--json]
+wpantry tools [--json]
+wpantry skill
 ```
 
 `check` is the default subcommand.
@@ -30,12 +30,12 @@ wscanner skill
 | `check` | Scan, report, and exit by the result |
 | `--path DIR` | Repeatable. The repo checks cover only the git repos at or under each DIR; a DIR holding no repo is scanned as one project without the git-history checks. A missing DIR is skipped with a one-line note on stderr. Without it the scope is every git repo under `$HOME` |
 | `--no-machine` | Skip the machine inventory (tools, runtimes, packages, apps, browsers, OS, Homebrew, editors, harness configs, running containers, CA trust, breach). Repo checks only |
-| `--update` | Run the unattended fixes, then re-check |
+| `--update` | Run the unattended fixes, then re-check. On a terminal (stdin) without `--no-input`, list them and ask `Run these N updates now? [Y/n]` first; declining changes nothing (exit as the scan) |
 | `--dryrun` | Print the update plan; change nothing |
 | `--refresh` | Ignore cached answers |
 | `--offline` | Cache only; anything never cached is `unchecked` |
 | `--json` | Print the envelope below instead of the report; never prompts |
-| `--no-input` | Never prompt (the breach-consent question is skipped) |
+| `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
 | `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
@@ -53,10 +53,10 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Variable | Effect |
 |---|---|
-| `WSCANNER_DB` | Cache file. Default `$XDG_CACHE_HOME/wscanner/wscanner.db`, else `~/.cache/wscanner/wscanner.db`. The malicious-packages clone sits beside it |
+| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The Python reference reads `WSCANNER_DB`, default `…/wscanner/wscanner.db`; the schema is the same |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
-| `NO_COLOR` | Honoured: wscanner never emits ANSI colour, and runs its child tools with `NO_COLOR=1` |
+| `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
 
 ## Exit codes
 

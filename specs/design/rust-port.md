@@ -13,8 +13,8 @@ rust/
 ├── deny.toml                  advisories, sources, licenses (S2)
 ├── supply-chain/              cargo vet audits (S2)
 └── crates/
-    ├── wscanner/              library: scope, extractors, OSV client, comparators, feeds, cache, findings
-    └── wscanner-cli/          binary: argument parsing, report, JSON envelope, exit codes
+    ├── wpantry/              library: scope, extractors, OSV client, comparators, feeds, cache, findings
+    └── wpantry-cli/          binary: argument parsing, report, JSON envelope, exit codes
 ```
 
 The library has no global state and never prints; the CLI owns stdout, stderr and exit codes. Embedders (wsentinel, control-plane) depend on the library at an exact `0.x` version and accept breakage between minors; the [CLI contract](../cli-contract.md) is what stays stable.
@@ -111,7 +111,7 @@ OSV decides whether a version is affected; the scanner only orders fixed version
 
 ## Network
 
-Every request carries `User-Agent: wscanner/<version> (+https://github.com/waffuruai/wscanner)` and a 30 s timeout. These are the only hosts (S5):
+Every request carries `User-Agent: wpantry/<version> (+https://github.com/waffuruai/wpantry)` and a 30 s timeout. These are the only hosts (S5):
 
 | Host | For |
 |---|---|
@@ -130,7 +130,7 @@ Every request carries `User-Agent: wscanner/<version> (+https://github.com/waffu
 
 ## Contract tests
 
-`tests/contract/test_contract.py` at the repo root (Python standard library, so it runs wherever the Python implementation does; `mise run contract`), run as `WSCANNER=python/bin/wscanner` and `WSCANNER=rust/target/release/wscanner`. They start the binary with a temp `HOME` and `WSCANNER_DB`, `--offline`, and check stdout, stderr, exit codes and the cache file only. The online cases (recorded fixtures for both) are still to come; in Rust the recording `Net` fake (`net::Fake`) covers them at the library level (`tests/scan.rs`). The parity diff (F3) is a separate job that runs both implementations online against the same repos and containers and diffs sorted findings.
+`tests/contract/test_contract.py` at the repo root (Python standard library, so it runs wherever the Python implementation does; `mise run contract`), run as `WPANTRY=python/bin/wscanner` and `WPANTRY=rust/target/release/wpantry`. They start the binary with a temp `HOME` and `WPANTRY_DB`, `--offline`, and check stdout, stderr, exit codes and the cache file only. The online cases (recorded fixtures for both) are still to come; in Rust the recording `Net` fake (`net::Fake`) covers them at the library level (`tests/scan.rs`). The parity diff (F3) is a separate job that runs both implementations online against the same repos and containers and diffs sorted findings.
 
 ## Release
 

@@ -43,7 +43,7 @@ done
 # Builds one triple; prints the binary's path.
 one() {
   (cd "$rust" && cargo build --quiet --release --locked --target "$1") || return 1
-  echo "$CARGO_TARGET_DIR/$1/release/wscanner"
+  echo "$CARGO_TARGET_DIR/$1/release/wpantry"
 }
 
 case "$target" in

@@ -1,13 +1,84 @@
-//! What AI coding harnesses load: here, the MCP servers the scanned repos
-//! configure (`.mcp.json` and friends), and how a server started through a
-//! package runner (`npx some-package`) maps to a package. The harnesses'
-//! own configs, plugins and skills are part of the machine inventory
-//! (phase 2).
+//! What AI coding harnesses load, the attack surface beyond their own
+//! version: MCP servers (often `npx some-package` with no version pinned),
+//! plugins and desktop extensions that bundle npm packages, and skills.
+//!
+//! Covers Claude Code and Claude Desktop, Codex, Cursor, Windsurf, VS Code,
+//! Gemini CLI, Antigravity, Kiro, opencode, OpenClaw, pi and Hermes, plus the
+//! project-level MCP files the scanned repos carry. The harness binaries
+//! themselves are in the catalog (or the npm and pipx listings).
 
 use crate::json::{self, str_at};
+use crate::lockfiles::toml;
 use crate::repos::Repo;
-use serde_json::Value;
+use crate::system::expand;
+use serde_json::{Map, Value};
 use std::path::Path;
+
+/// (harness, config file glob, format, where the servers live: dotted keys,
+/// "*" matches any key, "" the top level)
+pub const MCP_CONFIGS: &[(&str, &str, &str, &[&str])] = &[
+    ("Claude Code", "~/.claude.json", "json", &["mcpServers", "projects.*.mcpServers"]),
+    ("Claude Code", "~/.claude/plugins/**/.mcp.json", "json", &["mcpServers", ""]),
+    ("Claude Desktop", "~/Library/Application Support/Claude/claude_desktop_config.json", "json", &["mcpServers"]),
+    ("Claude Desktop", "~/.config/Claude/claude_desktop_config.json", "json", &["mcpServers"]),
+    ("Codex", "~/.codex/config.toml", "toml", &["mcp_servers"]),
+    ("Cursor", "~/.cursor/mcp.json", "json", &["mcpServers"]),
+    ("Windsurf", "~/.codeium/windsurf/mcp_config.json", "json", &["mcpServers"]),
+    ("VS Code", "~/Library/Application Support/Code/User/mcp.json", "json", &["servers"]),
+    ("VS Code", "~/.config/Code/User/mcp.json", "json", &["servers"]),
+    ("Gemini CLI", "~/.gemini/settings.json", "json", &["mcpServers"]),
+    ("Gemini CLI", "~/.gemini/extensions/*/gemini-extension.json", "json", &["mcpServers"]),
+    ("Antigravity", "~/.gemini/antigravity/mcp_config.json", "json", &["mcpServers"]),
+    ("Kiro", "~/.kiro/settings/mcp.json", "json", &["mcpServers"]),
+    ("opencode", "~/.config/opencode/opencode.json*", "json", &["mcp"]),
+    ("OpenClaw", "~/.openclaw/openclaw.json", "json", &["mcpServers", "mcp.servers"]),
+    ("Hermes", "~/.hermes/config.yaml", "yaml", &["mcp_servers"]),
+];
+
+/// Where harnesses keep plugins and extensions that ship node_modules.
+pub const PLUGIN_DIRS: &[(&str, &str)] = &[
+    ("Claude Desktop", "~/Library/Application Support/Claude/Claude Extensions/*"),
+    ("Claude Desktop", "~/.config/Claude/Claude Extensions/*"),
+    ("Claude Code", "~/.claude/plugins/cache/*/*"),
+    ("Gemini CLI", "~/.gemini/extensions/*"),
+    ("opencode", "~/.cache/opencode"),
+    ("opencode", "~/.config/opencode"),
+    ("OpenClaw", "~/.openclaw/extensions/*"),
+    ("pi", "~/.pi/agent"),
+    ("Hermes", "~/.hermes/plugins/*"),
+];
+
+pub const SKILL_DIRS: &[(&str, &str)] = &[
+    ("Claude Code", "~/.claude/skills/*"),
+    ("Codex", "~/.codex/skills/*"),
+    ("opencode", "~/.config/opencode/skills/*"),
+    ("OpenClaw", "~/.openclaw/skills/*"),
+    ("OpenClaw", "~/.openclaw/workspace/skills/*"),
+    ("Hermes", "~/.hermes/skills/*"),
+    ("pi", "~/.pi/agent/skills/*"),
+];
+
+fn dirs(table: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (h, g) in table {
+        for d in expand(&[g]) {
+            if Path::new(&d).is_dir() {
+                out.push((h.to_string(), d));
+            }
+        }
+    }
+    out
+}
+
+/// (harness, dir) of every installed plugin or desktop extension.
+pub fn plugin_dirs() -> Vec<(String, String)> {
+    dirs(PLUGIN_DIRS)
+}
+
+/// (harness, dir) of every installed skill.
+pub fn skill_dirs() -> Vec<(String, String)> {
+    dirs(SKILL_DIRS)
+}
 
 pub const REPO_MCP_FILES: &[&str] = &[".mcp.json", ".cursor/mcp.json", ".vscode/mcp.json", ".gemini/settings.json"];
 
@@ -21,37 +92,86 @@ pub struct Server {
     pub args: Vec<String>,
 }
 
-/// Every locally run MCP server the repos configure (remote URL servers run
-/// nothing here).
-pub fn mcp_servers(repos: &[Repo]) -> Vec<Server> {
-    let mut out = Vec::new();
+/// Every locally run MCP server the repos configure and, when `machine`,
+/// the harnesses' own configs (remote URL servers run nothing here).
+pub fn mcp_servers(repos: &[Repo], machine: bool) -> Vec<Server> {
+    let mut configs: Vec<(String, String, &str, Vec<&str>)> = Vec::new();
+    if machine {
+        for (h, g, fmt, keys) in MCP_CONFIGS {
+            for f in expand(&[g]) {
+                configs.push((h.to_string(), f, fmt, keys.to_vec()));
+            }
+        }
+    }
     for (_, root) in repos {
         for rel in REPO_MCP_FILES {
             let path = root.join(rel);
-            if !path.is_file() {
-                continue;
+            if path.is_file() {
+                configs.push((
+                    "project".into(),
+                    path.to_string_lossy().into_owned(),
+                    "json",
+                    vec!["mcpServers", "servers"],
+                ));
             }
-            let data = read_json(&path);
-            for key in ["mcpServers", "servers"] {
-                let Some(servers) = data.get(key).and_then(Value::as_object) else { continue };
-                for (name, spec) in servers {
-                    if !spec.is_object() {
-                        continue;
-                    }
-                    if let Some((command, args)) = command(spec) {
-                        out.push(Server {
-                            harness: "project".into(),
-                            name: name.clone(),
-                            file: path.to_string_lossy().into_owned(),
-                            command,
-                            args,
-                        });
-                    }
+        }
+    }
+    let mut out = Vec::new();
+    for (harness, path, fmt, keys) in configs {
+        let data = load(Path::new(&path), fmt);
+        for key in keys {
+            let parts: Vec<&str> = if key.is_empty() { Vec::new() } else { key.split('.').collect() };
+            for (name, spec) in servers(&data, &parts) {
+                if let Some((command, args)) = command(&spec) {
+                    out.push(Server { harness: harness.clone(), name, file: path.clone(), command, args });
                 }
             }
         }
     }
     out
+}
+
+fn load(path: &Path, fmt: &str) -> Value {
+    match fmt {
+        "toml" => toml_servers(path),
+        "yaml" => {
+            let mut m = Map::new();
+            m.insert("mcp_servers".into(), yaml_servers(path));
+            Value::Object(m)
+        }
+        _ => {
+            let v = read_json(path);
+            if v.is_null() && path.to_string_lossy().ends_with(".jsonc") {
+                let text = std::fs::read_to_string(path).unwrap_or_default();
+                let text = crate::re::Regex::with_flags(r"^\s*//.*$|/\*.*?\*/", "ms").replace_all(&text, "");
+                return if text.trim().is_empty() {
+                    Value::Object(Map::new())
+                } else {
+                    serde_json::from_str(&text).unwrap_or(Value::Null)
+                };
+            }
+            v
+        }
+    }
+}
+
+/// The {name: spec} objects at a dotted path; "*" fans out over every key.
+fn servers(data: &Value, keys: &[&str]) -> Vec<(String, Value)> {
+    let Some(obj) = data.as_object() else { return Vec::new() };
+    let Some((head, rest)) = keys.split_first() else {
+        return obj.iter().filter(|(_, v)| v.is_object()).map(|(k, v)| (k.clone(), v.clone())).collect();
+    };
+    if *head == "*" {
+        let mut merged: Vec<(String, Value)> = Vec::new();
+        for v in obj.values() {
+            for (k, spec) in servers(v, rest) {
+                merged.retain(|(n, _)| *n != k);
+                merged.push((k, spec));
+            }
+        }
+        return merged;
+    }
+    obj.get(*head).map(|v| servers(v, rest)).unwrap_or_default()
 }
 
 fn read_json(path: &Path) -> Value {
@@ -163,6 +283,123 @@ fn split_spec(eco: &str, spec: &str) -> (String, String, String) {
     (eco.to_string(), name.to_string(), ver.to_string())
 }
 
+/// A dotted TOML table name split into keys (`mcp_servers."my server"`).
+fn dotted(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = name.trim();
+    while !rest.is_empty() {
+        if rest.starts_with('"') || rest.starts_with('\'') {
+            let Some((k, r)) = toml::string(rest) else { break };
+            out.push(k);
+            rest = r.trim_start().strip_prefix('.').unwrap_or(r).trim_start();
+        } else {
+            let end = rest.find('.').unwrap_or(rest.len());
+            out.push(rest[..end].trim().to_string());
+            rest = rest[end..].strip_prefix('.').unwrap_or("").trim_start();
+        }
+    }
+    out
+}
+
+/// The strings in a TOML array's raw text (`["-y", "x@1.0.0"]`).
+fn toml_strings(raw: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut rest = raw.trim().strip_prefix('[').unwrap_or("");
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.starts_with('#') {
+            rest = rest.split_once('\n').map(|(_, r)| r).unwrap_or("");
+            continue;
+        }
+        match toml::string(rest) {
+            Some((v, r)) => {
+                out.push(Value::String(v));
+                rest = r;
+            }
+            None => return out,
+        }
+    }
+}
+
+/// `[mcp_servers.<name>]` tables of a TOML config (Codex), as {"mcp_servers":
+/// {name: {command, args}}}; nested tables (`.env`) are ignored.
+fn toml_servers(path: &Path) -> Value {
+    let mut servers = Map::new();
+    let text = crate::system::read_capped(path, 16 << 20).unwrap_or_default();
+    for t in toml::parse(&text).unwrap_or_default() {
+        let keys = dotted(&t.name);
+        if keys.len() != 2 || keys[0] != "mcp_servers" || t.array {
+            continue;
+        }
+        let mut spec = Map::new();
+        for (k, v) in &t.entries {
+            let value = match v {
+                toml::Val::Str(s) => Value::String(s.clone()),
+                toml::Val::Raw(r) if r.trim_start().starts_with('[') => Value::Array(toml_strings(r)),
+                toml::Val::Raw(r) => Value::String(r.trim().to_string()),
+            };
+            spec.insert(k.clone(), value);
+        }
+        servers.insert(keys[1].clone(), Value::Object(spec));
+    }
+    let mut m = Map::new();
+    m.insert("mcp_servers".into(), Value::Object(servers));
+    Value::Object(m)
+}
+
+fn unquote(s: &str) -> String {
+    s.trim().trim_matches(['\'', '"']).to_string()
+}
+
+/// `mcp_servers:` in a YAML config: name → {command, args}, where args is a
+/// flow list ([a, b]) or a block list (- a).
+fn yaml_servers(path: &Path) -> Value {
+    let text = crate::system::read_capped(path, 16 << 20).unwrap_or_default();
+    let mut servers: Vec<(String, Map<String, Value>)> = Vec::new();
+    let (mut block, mut key) = (false, String::new());
+    for raw in text.lines() {
+        if raw.trim().is_empty() || raw.trim_start().starts_with('#') {
+            continue;
+        }
+        let indent = raw.len() - raw.trim_start().len();
+        let line = raw.trim();
+        if indent == 0 {
+            block = line.starts_with("mcp_servers:");
+            continue;
+        }
+        if !block {
+            continue;
+        }
+        if line.ends_with(':') && !line.starts_with('-') && indent <= 2 {
+            servers.push((unquote(&line[..line.len() - 1]), Map::new()));
+            key.clear();
+        } else if let Some((_, spec)) = servers.last_mut() {
+            if line.starts_with("- ") && key == "args" {
+                let args = spec.entry("args").or_insert_with(|| Value::Array(Vec::new()));
+                if let Value::Array(a) = args {
+                    a.push(Value::String(unquote(&line[2..])));
+                }
+            } else if let Some((k, v)) = line.split_once(':') {
+                key = k.trim().to_string();
+                let v = v.trim();
+                if v.starts_with('[') {
+                    let items = v
+                        .trim_matches(['[', ']'])
+                        .split(',')
+                        .map(unquote)
+                        .filter(|x| !x.is_empty())
+                        .map(Value::String)
+                        .collect();
+                    spec.insert(key.clone(), Value::Array(items));
+                } else if !v.is_empty() {
+                    spec.insert(key.clone(), Value::String(unquote(v)));
+                }
+            }
+        }
+    }
+    Value::Object(servers.into_iter().map(|(k, v)| (k, Value::Object(v))).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +431,61 @@ mod tests {
         assert_eq!(r("node", &["server.js"]), None);
     }
 
+    // The Python test vectors (python/test_wscanner.py `Harnesses`).
+    #[test]
+    fn configs_across_harnesses() {
+        let _home = crate::system::test_home();
+        let home = crate::system::home();
+        for (f, text) in [
+            (
+                ".cursor/mcp.json",
+                r#"{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs-mcp"]}, "remote": {"url": "https://example.com/mcp"}}}"#,
+            ),
+            (
+                ".codex/config.toml",
+                "[mcp_servers.fetch]\ncommand = \"uvx\"\nargs = [\"mcp-server-fetch\"]\n[mcp_servers.fetch.env]\nX = \"1\"\n",
+            ),
+            (
+                ".hermes/config.yaml",
+                "model: x\nmcp_servers:\n  gh:\n    command: npx\n    args:\n      - -y\n      - gh-mcp@2.0.0\n",
+            ),
+            ("repo/.mcp.json", r#"{"mcpServers": {"db": {"command": "bunx", "args": ["db-mcp"]}}}"#),
+        ] {
+            std::fs::create_dir_all(home.join(f).parent().unwrap()).unwrap();
+            std::fs::write(home.join(f), text).unwrap();
+        }
+        let mut got: Vec<(String, String, Ref)> = mcp_servers(&[("repo".into(), home.join("repo"))], true)
+            .iter()
+            .map(|s| (s.harness.clone(), s.name.clone(), package_ref(&s.command, &s.args)))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("Codex".to_string(), "fetch".to_string(), t("PyPI", "mcp-server-fetch", "")),
+                ("Cursor".to_string(), "fs".to_string(), t("npm", "fs-mcp", "")),
+                ("Hermes".to_string(), "gh".to_string(), t("npm", "gh-mcp", "2.0.0")),
+                ("project".to_string(), "db".to_string(), t("npm", "db-mcp", "")),
+            ]
+        );
+        assert_eq!(mcp_servers(&[], false), [], "no machine configs without a machine scan");
+    }
+
+    #[test]
+    fn toml_quoted_tables() {
+        let d = crate::system::TempDir::new("toml").unwrap();
+        let f = d.path().join("c.toml");
+        std::fs::write(
+            &f,
+            "[mcp_servers.\"my server\"]\ncommand = \"npx\"\nargs = [\"-y\", \"x@1.0.0\"]\n[other]\nk = 1\n",
+        )
+        .unwrap();
+        assert_eq!(
+            toml_servers(&f),
+            serde_json::json!({"mcp_servers": {"my server": {"command": "npx", "args": ["-y", "x@1.0.0"]}}})
+        );
+    }
+
     #[test]
     fn project_mcp_files() {
         let d = crate::system::TempDir::new("mcp").unwrap();
@@ -205,7 +497,7 @@ mod tests {
             r#"{"servers": {"oc": {"command": ["npx", "-y"], "args": ["oc-mcp@1.0.0"]}}}"#,
         )
         .unwrap();
-        let got: Vec<(String, Ref)> = mcp_servers(&[("repo".into(), repo)])
+        let got: Vec<(String, Ref)> = mcp_servers(&[("repo".into(), repo)], false)
             .iter()
             .map(|s| (s.name.clone(), package_ref(&s.command, &s.args)))
             .collect();

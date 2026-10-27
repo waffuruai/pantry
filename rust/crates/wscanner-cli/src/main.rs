@@ -51,7 +51,8 @@ fn scan(opts: Options, json: bool, net: &dyn wscanner::net::Net) -> Result<Outco
     };
     let note = |m: &str| progress.eprintln(m);
     let status = |m: &str| progress.set(m);
-    let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).run();
+    let ask = |q: &str| progress.ask(q);
+    let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask).run();
     progress.finish();
     out
 }
@@ -228,7 +229,7 @@ fn cmd_version(json: bool) -> Result<i32> {
 /// The external tools and whether they're here; fails when a required one
 /// is missing, as the scan would.
 fn cmd_tools(json: bool) -> Result<i32> {
-    let found = wscanner::tools::tools();
+    let found = wscanner::external::tools();
     if json {
         let env = obj([
             ("schema", J::Int(SCHEMA)),

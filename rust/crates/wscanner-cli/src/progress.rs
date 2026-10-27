@@ -120,6 +120,25 @@ impl Progress {
         }
     }
 
+    /// Ask a yes/no question on the terminal, the progress line paused; None
+    /// when stdin isn't a terminal (nobody to answer).
+    pub fn ask(&self, question: &str) -> Option<bool> {
+        if !std::io::stdin().is_terminal() {
+            return None;
+        }
+        let guard = self.state.as_ref().map(|s| s.lock().expect("progress"));
+        let mut guard = guard;
+        if let Some(st) = guard.as_mut() {
+            clear(st);
+        }
+        print!("{question}");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok()?;
+        let reply = line.trim().to_lowercase();
+        Some(reply == "y" || reply == "yes")
+    }
+
     /// A one-line note on stderr while the progress line is up.
     pub fn eprintln(&self, line: &str) {
         if let Some(s) = &self.state {

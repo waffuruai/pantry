@@ -183,6 +183,11 @@ jobs:
       - name: test
         run: cargo test --locked
 
+      # F12 against a real engine: the hosted Linux runners have Docker.
+      - name: image scanning (docker)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p wscanner --test image -- --ignored
+
       - name: build (release)
         run: cargo build --locked --release
 

@@ -58,8 +58,33 @@ pub fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
+thread_local! {
+    static HOME_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A temporary $HOME for the current thread, for tests (changing the real
+/// environment needs `unsafe`, which this crate forbids). Restored on drop.
+#[doc(hidden)]
+pub struct TestHome(#[allow(dead_code)] TempDir);
+
+#[doc(hidden)]
+pub fn test_home() -> TestHome {
+    let dir = TempDir::new("home").expect("a temp dir");
+    HOME_OVERRIDE.with(|h| *h.borrow_mut() = Some(dir.path().to_path_buf()));
+    TestHome(dir)
+}
+
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        HOME_OVERRIDE.with(|h| *h.borrow_mut() = None);
+    }
+}
+
 /// $HOME (Python: `os.path.expanduser("~")`).
 pub fn home() -> PathBuf {
+    if let Some(h) = HOME_OVERRIDE.with(|h| h.borrow().clone()) {
+        return h;
+    }
     std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
@@ -252,6 +277,184 @@ pub fn os_fix(rel: &BTreeMap<String, String>, name: &str) -> String {
     }
 }
 
+/// Python's `fnmatch` for one path component: `*` and `?`; a leading dot
+/// must be matched literally (as `glob` does).
+fn fnmatch(pattern: &str, name: &str) -> bool {
+    if name.starts_with('.') && !pattern.starts_with('.') {
+        return false;
+    }
+    fn go(p: &[char], n: &[char]) -> bool {
+        match (p.first(), n.first()) {
+            (None, None) => true,
+            (Some('*'), _) => go(&p[1..], n) || (!n.is_empty() && go(p, &n[1..])),
+            (Some('?'), Some(_)) => go(&p[1..], &n[1..]),
+            (Some(a), Some(b)) if a == b => go(&p[1..], &n[1..]),
+            _ => false,
+        }
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    go(&p, &n)
+}
+
+/// Paths matching one glob (`~` expanded; `*` and `?` within a component,
+/// `**` like `*`, as Python's non-recursive `glob`), sorted.
+pub fn glob(pattern: &str) -> Vec<String> {
+    let pattern = match pattern.strip_prefix("~/") {
+        Some(rest) => format!("{}/{rest}", home().display()),
+        None if pattern == "~" => home().display().to_string(),
+        None => pattern.to_string(),
+    };
+    let absolute = pattern.starts_with('/');
+    let mut found = vec![if absolute { "/".to_string() } else { String::new() }];
+    for part in pattern.split('/').filter(|p| !p.is_empty()) {
+        let mut next = Vec::new();
+        for base in &found {
+            let join = |name: &str| {
+                if base.is_empty() {
+                    name.to_string()
+                } else if base.ends_with('/') {
+                    format!("{base}{name}")
+                } else {
+                    format!("{base}/{name}")
+                }
+            };
+            if part.contains(['*', '?']) {
+                let dir = if base.is_empty() { "." } else { base.as_str() };
+                let Ok(rd) = std::fs::read_dir(dir) else { continue };
+                let mut names: Vec<String> = rd
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| fnmatch(part, n))
+                    .collect();
+                names.sort();
+                next.extend(names.iter().map(|n| join(n)));
+            } else {
+                let p = join(part);
+                if std::fs::symlink_metadata(&p).is_ok() {
+                    next.push(p);
+                }
+            }
+        }
+        found = next;
+    }
+    found.retain(|p| !p.is_empty() && p != "/" || pattern == "/");
+    found.sort();
+    found
+}
+
+/// Existing paths matching ~-relative globs, in order, without repeats.
+pub fn expand<S: AsRef<str>>(patterns: &[S]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in patterns {
+        for p in glob(g.as_ref()) {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A JSON file, or None when it's missing, unreadable or malformed.
+pub fn read_json(path: &Path) -> Option<serde_json::Value> {
+    let text = read_capped(path, 64 << 20).ok()?;
+    crate::json::parse(text.as_bytes(), crate::json::MAX_DOCUMENT).ok()
+}
+
+/// `realpath`: symlinks resolved, or the path as given when it can't be.
+pub fn realpath(p: &str) -> String {
+    std::fs::canonicalize(p).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string())
+}
+
+const SYSTEM_DIRS: &[&str] = &["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/libexec/", "/usr/lib/", "/System/"];
+const APPLE_DIRS: &[&str] = &["/Library/Developer/CommandLineTools/", "/Applications/Xcode"];
+
+/// Whether the OS update check covers files the OS package manager owns.
+pub fn os_vouches() -> bool {
+    MACOS || !os_family(&os_release()).is_empty()
+}
+
+/// Who vouches for this binary, or "" when we check it ourselves: brew
+/// (`brew vulns`), npm or pipx (their package listings), app (the app
+/// check), os (OS updates).
+pub fn owner(real: &str) -> &'static str {
+    if real.contains("/Cellar/") {
+        return "brew";
+    }
+    if real.contains("/node_modules/") {
+        return "npm";
+    }
+    if real.contains("/pipx/venvs/") {
+        return "pipx";
+    }
+    let apple = APPLE_DIRS.iter().any(|d| real.starts_with(d));
+    if real.contains(".app/Contents/") && !apple {
+        return "app";
+    }
+    if SYSTEM_DIRS.iter().any(|d| real.starts_with(d)) || (MACOS && apple) {
+        return if os_vouches() { "os" } else { "" };
+    }
+    ""
+}
+
+/// Every distinct executable called `name` on PATH, then in the `extra`
+/// directory globs, as (shown path, real path).
+pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> {
+    let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
+    dirs.extend(expand(extra));
+    let mut seen = Vec::new();
+    let mut out = Vec::new();
+    for d in dirs {
+        let p = if d.is_empty() { name.to_string() } else { format!("{}/{name}", d.trim_end_matches('/')) };
+        if is_executable(Path::new(&p)) {
+            let real = realpath(&p);
+            if !seen.contains(&real) {
+                seen.push(real.clone());
+                out.push((p, real));
+            }
+        }
+    }
+    out
+}
+
+pub fn brew_prefix() -> String {
+    match which("brew") {
+        Some(b) => run(&[b.as_os_str(), "--prefix".as_ref()], Duration::from_secs(15)).trim().to_string(),
+        None => String::new(),
+    }
+}
+
+/// {cask token: installed version} for Homebrew-installed casks.
+pub fn brew_casks() -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(b) = which("brew") {
+        for line in
+            run(&[b.as_os_str(), "list".as_ref(), "--cask".as_ref(), "--versions".as_ref()], Duration::from_secs(60))
+                .lines()
+        {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                out.insert(parts[0].to_string(), parts[parts.len() - 1].to_string());
+            }
+        }
+    }
+    out
+}
+
+/// A CLI shipped inside an installed macOS app, or "".
+pub fn app_cli(app_names: &[&str], cli_rel: &str) -> String {
+    for name in app_names {
+        for root in ["/Applications".to_string(), format!("{}/Applications", home().display())] {
+            let cli = format!("{root}/{name}.app/Contents/Resources/app/{cli_rel}");
+            if Path::new(&cli).exists() {
+                return cli;
+            }
+        }
+    }
+    String::new()
+}
+
 /// A directory removed (with its contents) when dropped.
 pub struct TempDir(PathBuf);
 
@@ -310,6 +513,31 @@ mod tests {
             os_fix(&parse_os_release("ID=opensuse-leap\nID_LIKE=\"suse opensuse\"\n"), "curl"),
             "sudo zypper update curl"
         );
+    }
+
+    #[test]
+    fn globs_like_python() {
+        let d = TempDir::new("glob").unwrap();
+        for f in ["a/x/package.json", "a/y/package.json", "a/.hidden/package.json", "b.app/Contents/x"] {
+            let p = d.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "{}").unwrap();
+        }
+        let root = d.path().display().to_string();
+        let got = glob(&format!("{root}/a/*/package.json"));
+        assert_eq!(got, [format!("{root}/a/x/package.json"), format!("{root}/a/y/package.json")]);
+        assert_eq!(glob(&format!("{root}/*.app")), [format!("{root}/b.app")]);
+        assert_eq!(glob(&format!("{root}/a/.hidden/package.json")).len(), 1);
+        assert!(glob(&format!("{root}/nope/*")).is_empty());
+        assert!(fnmatch("python3.*", "python3.12") && !fnmatch("*", ".git") && fnmatch("V?", "V1"));
+    }
+
+    #[test]
+    fn owners() {
+        assert_eq!(owner("/opt/homebrew/Cellar/node/24.1.0/bin/node"), "brew");
+        assert_eq!(owner("/home/u/.npm-global/lib/node_modules/x/bin/x"), "npm");
+        assert_eq!(owner("/Applications/Slack.app/Contents/MacOS/Slack"), "app");
+        assert_eq!(owner("/home/u/.local/bin/mise"), "");
     }
 
     #[test]

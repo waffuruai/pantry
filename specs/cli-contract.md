@@ -115,7 +115,7 @@ A source that couldn't be reached is a finding with `kind == "unchecked"`, `stat
 
 ## `tools --json`
 
-`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. Rust today: `gitleaks`, `git` required; `rpm`, `docker` optional. The list is per implementation and may shrink.
+`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. Rust today: `gitleaks`, `git`, `openssl` required; `brew`, `docker`, `rpm` optional. The list is per implementation and may shrink.
 
 ## Cache (SQLite)
 

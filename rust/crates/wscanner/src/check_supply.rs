@@ -21,22 +21,32 @@ use std::time::Duration;
 
 pub const GITLEAKS_INSTALL: &str = "https://github.com/gitleaks/gitleaks#installing";
 /// How the report names the policy files (their paths vary; the flag doesn't).
+pub const LICENSES: &str = "the licenses allowlist (--licenses)";
 pub const INSTALL_SCRIPTS: &str = "the install-scripts allowlist (--install-scripts)";
 /// Why an area is unchecked until the Rust port covers it.
 pub const PHASE_2: &str =
     "not yet in the Rust implementation (phase 2 of specs/01-rust-port.md); python/bin/wscanner checks it";
 
-/// The repo checks; `found` is what the machine inventory found, for the
-/// malicious-package sweep.
+/// The repo checks always; the editor, harness and breach checks only on a
+/// machine scan. `found` is what the machine inventory found.
 pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
     let repos = scan.repos.clone();
     projects(scan, &repos)?;
     let git: Vec<Repo> = repos.iter().filter(|(_, r)| repos::is_git(r)).cloned().collect();
     secrets(scan, &git)?;
-    install_scripts(scan, &repos);
-    images(scan, &repos);
+    install_scripts(scan, &repos, found);
+    images(scan, &repos)?;
+    let exts = if scan.opts.machine { extensions(scan)? } else { Vec::new() };
     let refs = mcp(scan, &repos)?;
-    sweep(scan, found, &refs)?;
+    if scan.opts.machine {
+        bundles(scan, &exts)?;
+    }
+    let mut known: Vec<Component> = found.to_vec();
+    known.extend(exts);
+    sweep(scan, &known, &refs)?;
+    if scan.opts.machine {
+        breach(scan)?;
+    }
     Ok(())
 }
 
@@ -122,7 +132,50 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
         }
     }
     if scan.opts.licenses {
-        scan.unchecked("dependency licenses (deps.dev)", PHASE_2);
+        licenses(scan, &read)?;
+    }
+    Ok(())
+}
+
+/// Dependencies whose license isn't in the allowlist warn; ones with no
+/// identifiable license are counted (`--licenses`).
+fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Result<()> {
+    let allowed = scan.opts.policy.licenses();
+    let items: Vec<Item> = read
+        .iter()
+        .flat_map(|(_, ps)| ps.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())))
+        .collect();
+    scan.status(&format!("Checking {} dependencies' licenses", items.len()));
+    let status = scan.status;
+    let found = match crate::licenses::lookup(&scan.cache, scan.net, &items, scan.opts.offline, status) {
+        Ok(f) => f,
+        Err(e) if e.is_source() => {
+            scan.unchecked("dependency licenses (deps.dev)", &e.to_string());
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+    let mut i = 0;
+    for (f, ps) in read {
+        for p in ps {
+            let verdict = crate::licenses::judge(&found[i], &allowed);
+            i += 1;
+            match verdict {
+                None => {}
+                Some(v) if v == ["UNKNOWN"] => scan.unknown_licenses += 1,
+                Some(v) => scan.add(Finding {
+                    kind: "license".into(),
+                    component: p.name.clone(),
+                    version: p.version.clone(),
+                    location: f.to_string_lossy().into_owned(),
+                    vuln_id: "LICENSE".into(),
+                    status: "warn".into(),
+                    note: format!("license {} isn't in {LICENSES}", v.join(", ")),
+                    fix_cmd: format!("Review {}: replace it, or approve its license in {LICENSES}", p.name),
+                    ..Default::default()
+                }),
+            }
+        }
     }
     Ok(())
 }
@@ -184,8 +237,9 @@ pub fn secrets(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     Ok(())
 }
 
-/// Dependencies that run code at install time, outside the allowlist.
-pub fn install_scripts(scan: &mut Scan, repos: &[Repo]) {
+/// Dependencies that run code at install time, outside the allowlist, and
+/// whether npm runs them by default on this machine.
+pub fn install_scripts(scan: &mut Scan, repos: &[Repo], found: &[Component]) {
     scan.status("Checking which dependencies run install scripts");
     let allowed: HashSet<String> = scan.opts.policy.install_scripts().into_iter().collect();
     let files: Vec<PathBuf> = repos.iter().flat_map(|(_, r)| repos::lockfiles(r)).collect();
@@ -204,32 +258,245 @@ pub fn install_scripts(scan: &mut Scan, repos: &[Repo]) {
             ..Default::default()
         });
     }
+    let npm = found.iter().find(|c| c.name == "npm" && !c.path.is_empty()).map(|c| c.path.clone());
+    if let Some(npm) = npm
+        && sh(
+            &[OsStr::new(&npm), OsStr::new("config"), OsStr::new("get"), OsStr::new("ignore-scripts")],
+            Duration::from_secs(15),
+        )
+        .trim()
+        .ends_with("false")
+    {
+        scan.add(Finding {
+            kind: "config".into(),
+            component: "npm ignore-scripts".into(),
+            location: npm.clone(),
+            vuln_id: "NPM-SCRIPTS".into(),
+            status: "warn".into(),
+            note: "npm runs every dependency's install scripts (how most npm attacks run)".into(),
+            fix_cmd: format!("{npm} config set ignore-scripts true  (then allow builds per project)"),
+            ..Default::default()
+        });
+    }
 }
 
-/// The images the repos build from or run, when they exist locally: not
-/// scanned yet (phase 2), so each is reported unchecked.
-pub fn images(scan: &mut Scan, repos: &[Repo]) {
-    let Some(docker) = which("docker") else { return };
-    scan.status("Looking for the container images the repos name");
-    let mut refs: Vec<String> = repos::repo_images(repos).into_iter().map(|(r, _)| r).collect();
-    refs.sort();
-    refs.dedup();
-    for r in refs {
-        let id = sh(
-            &[
-                docker.as_os_str(),
-                OsStr::new("image"),
-                OsStr::new("inspect"),
-                OsStr::new("--format"),
-                OsStr::new("{{.Id}}"),
-                OsStr::new(&r),
-            ],
-            Duration::from_secs(20),
-        );
-        if id.trim().starts_with("sha256:") {
-            scan.unchecked(&format!("image {r}"), &format!("container image scanning is {PHASE_2}"));
+/// Images behind running containers (machine scans), and the ones the repos
+/// build from or run, when they exist locally (pulling is left to the user),
+/// scanned with the same extractors as everything else (F12).
+pub fn images(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
+    let Some(engine) = crate::images::engine() else { return Ok(()) };
+    scan.status("Looking for container images");
+    let mut refs: Vec<(String, String)> = Vec::new();
+    if scan.opts.machine {
+        for r in crate::apps::running_images() {
+            refs.push((r.clone(), format!("docker pull {r}, then recreate its containers")));
         }
     }
+    for (r, f) in repos::repo_images(repos) {
+        if !refs.iter().any(|(x, _)| *x == r) {
+            let fix = format!(
+                "docker pull {r} (the tag may already carry the fixes); if not, bump it in {}; then rebuild",
+                short(&f.to_string_lossy())
+            );
+            refs.push((r, fix));
+        }
+    }
+    refs.sort();
+    for (r, fix) in refs {
+        let id = crate::images::image_id(&engine, &r);
+        if id.is_empty() {
+            continue;
+        }
+        scan.status(&format!("Reading image {r}"));
+        let (pkgs, gaps) =
+            match crate::images::packages(&scan.cache, &engine, &r, &id, scan.opts.refresh, scan.opts.offline) {
+                Ok(p) => p,
+                Err(e) if e.is_source() || matches!(e, Error::Missing(_)) => {
+                    scan.unchecked(&format!("image {r}"), &e.to_string());
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+        if !gaps.is_empty() {
+            scan.unchecked(&format!("image {r}"), &gaps.join("; "));
+        }
+        scan.count("image packages", pkgs.len() as i64);
+        let items: Vec<Item> = pkgs.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())).collect();
+        let answers = scan.lookup(&items, &format!("image {r} against OSV"))?;
+        for (p, item) in pkgs.iter().zip(items) {
+            let Some(recs) = answers.get(&item).filter(|x| !x.is_empty()) else { continue };
+            let mut c = Component::new("image", &format!("{r} › {}", p.name), &p.version, &p.source);
+            c.fix = fix.clone();
+            c.osv = Some(item);
+            scan.advisories(&c, &[], None, "fail", Some(osv::group_by_alias(recs)));
+        }
+    }
+    Ok(())
+}
+
+// Editors and AI harnesses ----------------------------------------------------
+
+/// Malicious or deprecated per the lists VS Code itself uses (and OSV),
+/// behind their marketplace's latest, and the npm packages they bundle.
+pub fn extensions(scan: &mut Scan) -> Result<Vec<Component>> {
+    scan.status("Reading editor extensions");
+    let mut exts = crate::editors::extensions();
+    if exts.is_empty() {
+        return Ok(exts);
+    }
+    scan.count("editor extensions", exts.len() as i64);
+    scan.status("Fetching VS Code's malicious-extension list");
+    let r = crate::feeds::vscode_lists(&scan.cache, scan.net, scan.opts.offline).map(Some);
+    let lists = scan.guard("VS Code's malicious-extension list", r, None)?;
+    let items: Vec<Item> = exts.iter().filter_map(|e| e.osv.clone()).collect();
+    let answers = scan.lookup(&items, "editor extensions against OSV")?;
+    let mut latest: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for market in ["vscode", "openvsx"] {
+        let ids: Vec<String> = exts
+            .iter()
+            .filter(|e| e.extra.get("market").map(String::as_str) == Some(market))
+            .map(|e| e.name.clone())
+            .collect();
+        if !ids.is_empty() {
+            scan.status(&format!("Fetching the latest extension versions ({market})"));
+            let r =
+                crate::feeds::latest_extensions(&scan.cache, scan.net, &ids, market == "openvsx", scan.opts.offline);
+            latest.extend(scan.guard(&format!("latest extension versions ({market})"), r, Default::default())?);
+        }
+    }
+    for e in &mut exts {
+        let id = e.extra.get("id").cloned().unwrap_or_default();
+        let editor = e.extra.get("editor").cloned().unwrap_or_default();
+        let cli = e.extra.get("cli").cloned().unwrap_or_default();
+        let lower = id.to_lowercase();
+        e.name = format!("{id} ({editor})"); // how the report names it
+        let uninstall = format!("{cli} --uninstall-extension {id}");
+        if lists.as_ref().is_some_and(|l| l.malicious.contains(&lower)) {
+            scan.add(Finding {
+                vuln_id: "MALICIOUS".into(),
+                status: "fail".into(),
+                kev: true,
+                severity: "MALICIOUS".into(),
+                fix_cmd: uninstall,
+                fix_auto: true,
+                note: "known malicious extension (removed from the marketplace)".into(),
+                ..Finding::of(e)
+            });
+            continue;
+        }
+        (e.fix, e.auto) = (uninstall.clone(), true);
+        let recs = e.osv.as_ref().and_then(|o| answers.get(o)).cloned().unwrap_or_default();
+        if scan.advisories(e, &recs, None, "fail", None) {
+            continue;
+        }
+        e.fix = format!("{cli} --install-extension {id} --force");
+        if let Some(repl) = lists.as_ref().and_then(|l| l.deprecated.get(&lower)) {
+            scan.add(Finding {
+                vuln_id: "DEPRECATED".into(),
+                status: "warn".into(),
+                note: if repl.is_empty() { "deprecated".into() } else { format!("deprecated; use {repl}") },
+                fix_cmd: uninstall,
+                ..Finding::of(e)
+            });
+        }
+        if let Some(newest) = latest.get(&lower)
+            && !crate::versions::same_or_newer(&e.version, newest)
+        {
+            scan.add(Finding {
+                vuln_id: "OUTDATED".into(),
+                status: "warn".into(),
+                fixed: newest.clone(),
+                note: format!("latest release is {newest}"),
+                fix_cmd: e.fix.clone(),
+                fix_auto: true,
+                ..Finding::of(e)
+            });
+        }
+    }
+    Ok(exts)
+}
+
+/// npm packages bundled in editor extensions, harness plugins and desktop
+/// extensions, plus lockfiles shipped in those and in skills. A vulnerable
+/// bundle warns (only its vendor can fix it); malicious fails.
+pub fn bundles(scan: &mut Scan, exts: &[Component]) -> Result<()> {
+    scan.status("Reading the packages extensions and plugins bundle");
+    let mut dirs: Vec<(String, String, String)> =
+        exts.iter().map(|e| (e.name.clone(), e.extra.get("dir").cloned().unwrap_or_default(), e.fix.clone())).collect();
+    for (h, d) in crate::harnesses::plugin_dirs() {
+        let base = Path::new(&d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        dirs.push((
+            format!("{h} plugin {base}"),
+            d.clone(),
+            format!("Update or remove the {h} plugin in {}", short(&d)),
+        ));
+    }
+    let pkgs: Vec<Vec<(String, String)>> =
+        dirs.iter().map(|(_, d, _)| crate::editors::bundled_npm(Path::new(d))).collect();
+    let items: Vec<Item> = pkgs.iter().flatten().map(|(n, v)| ("npm".to_string(), n.clone(), v.clone())).collect();
+    let answers = scan.lookup(&items, "bundled npm packages against OSV")?;
+    for ((label, d, fix), ps) in dirs.iter().zip(&pkgs) {
+        for (n, v) in ps {
+            let item = ("npm".to_string(), n.clone(), v.clone());
+            let mut c = Component::new("bundled", &format!("{label} › {n}"), v, d);
+            c.fix = fix.clone();
+            let recs = answers.get(&item).cloned().unwrap_or_default();
+            c.osv = Some(item);
+            scan.advisories(&c, &recs, None, "warn", None);
+        }
+    }
+    let mut roots: Vec<String> = dirs.iter().map(|(_, d, _)| d.clone()).collect();
+    roots.extend(crate::harnesses::skill_dirs().into_iter().map(|(_, d)| d));
+    let mut read: Vec<(PathBuf, Vec<lockfiles::Package>)> = Vec::new();
+    for root in &roots {
+        for f in repos::lockfiles(Path::new(root)) {
+            if let Ok(Some(p)) = lockfiles::extract(&f) {
+                read.push((f, p));
+            }
+        }
+    }
+    scan.count("packages in extension, plugin and skill lockfiles", read.iter().map(|(_, p)| p.len() as i64).sum());
+    let items: Vec<Item> = read
+        .iter()
+        .flat_map(|(_, ps)| ps.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())))
+        .collect();
+    let answers = scan.lookup(&items, "lockfiles inside extensions, plugins and skills")?;
+    for (f, ps) in &read {
+        let parent = short(&f.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+        for p in ps {
+            let item = (p.ecosystem.clone(), p.name.clone(), p.version.clone());
+            let Some(recs) = answers.get(&item).filter(|r| !r.is_empty()) else { continue };
+            let mut c = Component::new("bundled", &format!("{parent} › {}", p.name), &p.version, &f.to_string_lossy());
+            c.fix = format!("Update or remove what ships {}", short(&f.to_string_lossy()));
+            c.osv = Some(item);
+            scan.advisories(&c, &[], None, "warn", Some(osv::group_by_alias(recs)));
+        }
+    }
+    Ok(())
+}
+
+/// The opt-in email breach check.
+pub fn breach(scan: &mut Scan) -> Result<()> {
+    let ask = if scan.opts.ask { scan.asker } else { None };
+    if crate::breach::consent(&scan.cache, ask)? != Some(true) {
+        return Ok(());
+    }
+    scan.status("Checking your email against breach data");
+    for (email, names) in crate::breach::check(&scan.cache, scan.net, scan.opts.offline)? {
+        let shown = names.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+        let more = if names.len() > 6 { format!(" and {} more", names.len() - 6) } else { String::new() };
+        scan.add(Finding {
+            kind: "account".into(),
+            component: email,
+            location: "breach data".into(),
+            vuln_id: "BREACH".into(),
+            status: "warn".into(),
+            note: format!("in {} breaches: {shown}{more}", names.len()),
+            fix_cmd: "Change any password reused from those sites; turn on 2FA".into(),
+            ..Default::default()
+        });
+    }
+    Ok(())
 }
 
 /// MCP servers the repos start through a package runner. Pinned ones are
@@ -237,7 +504,7 @@ pub fn images(scan: &mut Scan, repos: &[Repo]) {
 /// launch, so they warn (and fail if the name is known malicious).
 pub fn mcp(scan: &mut Scan, repos: &[Repo]) -> Result<Vec<Component>> {
     scan.status("Reading the repos' MCP server configs");
-    let servers = harnesses::mcp_servers(repos);
+    let servers = harnesses::mcp_servers(repos, scan.opts.machine);
     scan.count("MCP servers", servers.len() as i64);
     let mut refs = Vec::new();
     for s in &servers {
@@ -272,6 +539,9 @@ pub fn mcp(scan: &mut Scan, repos: &[Repo]) -> Result<Vec<Component>> {
     }
     let items: Vec<Item> = refs.iter().filter_map(|c| c.osv.clone()).collect();
     let answers = scan.lookup(&items, "MCP server packages against OSV")?;
+    if scan.opts.machine {
+        scan.count("harness skills", crate::harnesses::skill_dirs().len() as i64);
+    }
     for c in &refs {
         if let Some(item) = &c.osv {
             let recs = answers.get(item).cloned().unwrap_or_default();

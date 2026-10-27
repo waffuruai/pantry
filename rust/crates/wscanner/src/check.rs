@@ -152,7 +152,8 @@ pub struct Options {
     pub licenses: bool,
     pub refresh: bool,
     pub offline: bool,
-    /// Whether the scan may ask the user something (the breach consent).
+    /// Whether the scan may ask the user something (the breach consent);
+    /// the question goes to [`Scan::with_ask`]'s answerer.
     pub ask: bool,
 }
 
@@ -177,6 +178,8 @@ pub struct Scan<'a> {
     pub note: &'a dyn Fn(&str),
     /// What the scan is doing right now (see [`Scan::with_status`]).
     pub status: Status<'a>,
+    /// Asks the user a yes/no question (see [`Scan::with_ask`]).
+    pub asker: Option<crate::breach::Ask<'a>>,
     pub home: PathBuf,
     pub repos: Vec<Repo>,
     pub findings: Vec<Finding>,
@@ -201,6 +204,7 @@ impl<'a> Scan<'a> {
             log,
             note,
             status: &crate::system::quiet,
+            asker: None,
             home: crate::system::home(),
             repos: Vec::new(),
             findings: Vec::new(),
@@ -215,6 +219,13 @@ impl<'a> Scan<'a> {
     /// CLI's progress line). Off by default.
     pub fn with_status(mut self, status: Status<'a>) -> Scan<'a> {
         self.status = status;
+        self
+    }
+
+    /// How to ask the user a yes/no question (the breach check's consent),
+    /// when `opts.ask` allows asking at all.
+    pub fn with_ask(mut self, ask: crate::breach::Ask<'a>) -> Scan<'a> {
+        self.asker = Some(ask);
         self
     }
 
@@ -293,10 +304,7 @@ impl<'a> Scan<'a> {
         self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
-        let found: Vec<Component> = Vec::new();
-        if self.opts.machine {
-            check_machine::run(&mut self)?;
-        }
+        let found: Vec<Component> = if self.opts.machine { check_machine::run(&mut self)? } else { Vec::new() };
         check_supply::run(&mut self, &found)?;
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;

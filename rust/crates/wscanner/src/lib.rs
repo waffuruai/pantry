@@ -9,23 +9,35 @@
 //! a parity diff can be traced to a file. The stable surface is the CLI
 //! contract (`specs/cli-contract.md`), not this crate's API.
 
+pub mod apps;
+pub mod breach;
+pub mod catalog;
+pub mod catrust;
 pub mod check;
 pub mod check_machine;
 pub mod check_supply;
 pub mod compare;
 pub mod db;
 pub mod distros;
+pub mod editors;
 pub mod error;
+pub mod external;
 pub mod feeds;
 pub mod harnesses;
+pub mod images;
 pub mod json;
 pub mod leaks;
+pub mod licenses;
 pub mod lockfiles;
 pub mod malicious;
 pub mod net;
 pub mod osdb;
 pub mod osv;
+pub mod packages;
+pub mod plist;
+pub mod re;
 pub mod repos;
+pub mod scanners;
 pub mod sha256;
 pub mod system;
 pub mod tools;

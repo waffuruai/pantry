@@ -15,6 +15,9 @@ fn assets_match_the_python_originals() {
         ("assets/defaults/gitleaks.toml", "wscanner/defaults/gitleaks.toml"),
         ("assets/defaults/licenses.txt", "wscanner/defaults/licenses.txt"),
         ("assets/defaults/install-scripts.txt", "wscanner/defaults/install-scripts.txt"),
+        ("assets/distrusted-ca/intermediates.pem", "distrusted-ca/intermediates.pem"),
+        ("assets/distrusted-ca/issuers.pem", "distrusted-ca/issuers.pem"),
+        ("assets/distrusted-ca/roots.pem", "distrusted-ca/roots.pem"),
     ] {
         let ours = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(copy)).unwrap();
         let theirs = std::fs::read_to_string(python.join(original)).unwrap();

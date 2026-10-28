@@ -11,8 +11,9 @@ use crate::json::str_at;
 use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
-use crate::system::{Component, run as sh, short, which};
+use crate::system::{self, Component, run as sh, short, which};
 use crate::{harnesses, leaks, malicious};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -197,6 +198,9 @@ fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Res
     Ok(())
 }
 
+/// gitleaks scans run at once on a first run: each keeps a core busy.
+const GITLEAKS_AT_ONCE: usize = 4;
+
 /// Secrets committed anywhere in the repos' history. A provider-specific
 /// rule (AWS, GitHub, OpenAI, …) fails; a generic one asks for review.
 pub fn secrets(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
@@ -204,9 +208,29 @@ pub fn secrets(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
         return Ok(());
     }
     let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
-    for (name, root) in repos {
+    // Each repo's fingerprint at once, then gitleaks over the repos whose
+    // cached result is stale, a few at once (it is CPU-bound); the results
+    // are cached and read in the repos' order.
+    let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
+    let jobs = system::par_map(repos, system::PROBES, |(_, root)| leaks::job(root, &config));
+    let mut todo = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        if let Ok(job) = job
+            && leaks::stale(&scan.cache, job, refresh, offline)?
+        {
+            todo.push((i, job));
+        }
+    }
+    if !todo.is_empty() {
+        scan.status(&format!("Scanning {} repos' git history for secrets (gitleaks)", todo.len()));
+    }
+    let mut ran: Vec<Option<Result<Value>>> = repos.iter().map(|_| None).collect();
+    for ((i, _), r) in todo.iter().zip(system::par_map(&todo, GITLEAKS_AT_ONCE, |(_, job)| leaks::run_job(job))) {
+        ran[*i] = Some(r);
+    }
+    for (((name, root), job), ran) in repos.iter().zip(jobs).zip(ran) {
         scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
-        let found = match leaks::scan(&scan.cache, root, &config, scan.opts.refresh, scan.opts.offline) {
+        let found = match job.and_then(|job| leaks::finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
             Err(Error::Missing(_)) => {
                 let has_brew = which("brew").is_some();

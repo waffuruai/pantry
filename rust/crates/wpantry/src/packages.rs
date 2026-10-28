@@ -67,32 +67,29 @@ pub fn pythons() -> Vec<Component> {
     names.sort();
     names.dedup();
     names.insert(0, "python3".into());
+    let found: Vec<(String, String)> =
+        names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect();
+    let probed = system::par_map(&found, system::PROBES, |(shown, _)| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15));
     let mut out = Vec::new();
     let mut seen = Vec::new();
-    for n in names {
-        for (shown, real) in on_path(&n, PYTHON_DIRS) {
-            if !owner(&real).is_empty() {
-                continue;
-            }
-            let raw = sh(&[&shown, "-I", "-S", "-c", PY_INFO], 15);
-            let last = raw.trim().lines().last().unwrap_or("");
-            let Some(info) = json_in(last, '{', '}') else { continue };
-            let exe = system::realpath(&str_of(&info, "exe"));
-            if seen.contains(&exe) {
-                continue;
-            }
-            seen.push(exe);
-            let v = str_of(&info, "v");
-            let (fix, auto) = updater(&real, "python");
-            let mut c = Component::new("runtime", "python", &v, &shown);
-            c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
-            c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
-            c.fix = fix.clone();
-            c.auto = auto;
-            out.push(c);
-            let sites: Vec<String> = crate::json::strs_at(&info, "sites");
-            out.extend(pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto)));
+    for ((shown, real), raw) in found.into_iter().zip(probed) {
+        let last = raw.trim().lines().last().unwrap_or("");
+        let Some(info) = json_in(last, '{', '}') else { continue };
+        let exe = system::realpath(&str_of(&info, "exe"));
+        if seen.contains(&exe) {
+            continue;
         }
+        seen.push(exe);
+        let v = str_of(&info, "v");
+        let (fix, auto) = updater(&real, "python");
+        let mut c = Component::new("runtime", "python", &v, &shown);
+        c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
+        c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
+        c.fix = fix.clone();
+        c.auto = auto;
+        out.push(c);
+        let sites: Vec<String> = crate::json::strs_at(&info, "sites");
+        out.extend(pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto)));
     }
     out
 }
@@ -169,38 +166,42 @@ fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -
 
 /// npm itself and the global npm packages of each Node in `found`.
 pub fn node_packages(found: &[Component]) -> Vec<Component> {
+    let nodes: Vec<&Component> = found.iter().filter(|c| c.name == "node").collect();
+    system::par_map(&nodes, system::PROBES, |node| npm_globals(node)).concat()
+}
+
+/// npm and the global packages of one node install.
+fn npm_globals(node: &Component) -> Vec<Component> {
     let mut out = Vec::new();
     let version = Regex::new(r"(\d+\.\d+\.\d+)$");
-    for node in found.iter().filter(|c| c.name == "node") {
-        let real = system::realpath(&node.path);
-        let npm = Path::new(&real).with_file_name("npm").display().to_string();
-        if !Path::new(&npm).exists() {
-            continue;
-        }
-        // npm doesn't always list itself.
-        let v = sh(&[&npm, "--version"], 15);
-        if let Some(m) = v.trim().lines().last().and_then(|l| version.match_start(l)) {
-            let mut c = Component::new("pkgmgr", "npm", m.get(1), &npm);
-            c.osv = Some(("npm".into(), "npm".into(), m.get(1).into()));
-            c.fix = format!("{npm} install -g npm@{{safe}}");
+    let real = system::realpath(&node.path);
+    let npm = Path::new(&real).with_file_name("npm").display().to_string();
+    if !Path::new(&npm).exists() {
+        return out;
+    }
+    // npm doesn't always list itself.
+    let v = sh(&[&npm, "--version"], 15);
+    if let Some(m) = v.trim().lines().last().and_then(|l| version.match_start(l)) {
+        let mut c = Component::new("pkgmgr", "npm", m.get(1), &npm);
+        c.osv = Some(("npm".into(), "npm".into(), m.get(1).into()));
+        c.fix = format!("{npm} install -g npm@{{safe}}");
+        c.auto = true;
+        out.push(c);
+    }
+    let deps = json_in(&sh(&[&npm, "ls", "-g", "--json", "--depth=0"], 60), '{', '}').unwrap_or(Value::Null);
+    if let Some(map) = deps.get("dependencies").and_then(Value::as_object) {
+        for (name, d) in map {
+            let ver = str_of(d, "version");
+            if name == "npm" || ver.is_empty() {
+                continue;
+            }
+            let kind = if name == "corepack" { "pkgmgr" } else { "package" };
+            let shown = if kind == "pkgmgr" { name.clone() } else { format!("npm:{name}") };
+            let mut c = Component::new(kind, &shown, &ver, &npm);
+            c.osv = Some(("npm".into(), name.clone(), ver));
+            c.fix = format!("{npm} install -g {name}@{{safe}}");
             c.auto = true;
             out.push(c);
-        }
-        let deps = json_in(&sh(&[&npm, "ls", "-g", "--json", "--depth=0"], 60), '{', '}').unwrap_or(Value::Null);
-        if let Some(map) = deps.get("dependencies").and_then(Value::as_object) {
-            for (name, d) in map {
-                let ver = str_of(d, "version");
-                if name == "npm" || ver.is_empty() {
-                    continue;
-                }
-                let kind = if name == "corepack" { "pkgmgr" } else { "package" };
-                let shown = if kind == "pkgmgr" { name.clone() } else { format!("npm:{name}") };
-                let mut c = Component::new(kind, &shown, &ver, &npm);
-                c.osv = Some(("npm".into(), name.clone(), ver));
-                c.fix = format!("{npm} install -g {name}@{{safe}}");
-                c.auto = true;
-                out.push(c);
-            }
         }
     }
     out

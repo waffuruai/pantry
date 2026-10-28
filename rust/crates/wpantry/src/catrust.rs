@@ -119,7 +119,8 @@ impl Checker {
             ("SSL_CERT_URI", uri.as_str()),
             ("OPENSSL_X509_TEA_DISABLE", "1"),
         ];
-        for int in &self.ints {
+        // One intermediate per call (see `new`), all at once; read in order.
+        let outputs = system::par_map(&self.ints, system::PROBES, |int| {
             let argv = [
                 self.openssl.as_os_str(),
                 OsStr::new("verify"),
@@ -131,7 +132,10 @@ impl Checker {
                 self.issuers.as_os_str(),
                 int.as_os_str(),
             ];
-            let o = match exec(&argv, &env, Duration::from_secs(30)) {
+            exec(&argv, &env, Duration::from_secs(30))
+        });
+        for (int, o) in self.ints.iter().zip(outputs) {
+            let o = match o {
                 Ok(o) => o,
                 Err(e) => return Verdict::Unknown(e.to_string()),
             };

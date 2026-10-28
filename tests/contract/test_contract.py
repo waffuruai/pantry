@@ -192,7 +192,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(env["unknown_licenses"], 0)
         allow = Path(self.tmp.name, "licenses.txt")
         allow.write_text("MIT\n")
-        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"]):
+        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"], ["--license"],
+                      ["--license", str(allow)]):
             code, _, err = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", *extra)
             self.assertNotEqual(code, 2, (extra, err))
 

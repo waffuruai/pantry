@@ -65,7 +65,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE]     also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -87,6 +87,10 @@ fn help(cmd: &str) -> String {
     };
     format!("{}\n\n{body}\n", usage(cmd))
 }
+
+/// Other spellings an option answers to, matched before prefixes are:
+/// `--license` for `--licenses`.
+const ALIASES: &[(&str, &str)] = &[("--license", "--licenses")];
 
 /// (option, takes a value) for each subcommand.
 fn options(cmd: &str) -> &'static [(&'static str, bool)] {
@@ -152,6 +156,7 @@ pub fn parse(argv: &[String]) -> Parsed {
             Some((n, v)) if n.starts_with("--") => (n, Some(v.to_string())),
             _ => (a.as_str(), None),
         };
+        let name = ALIASES.iter().find(|(alias, _)| *alias == name).map_or(name, |(_, opt)| *opt);
         let opts = options(&cmd);
         let matched: Vec<&(&str, bool)> = match opts.iter().find(|(o, _)| *o == name) {
             Some(exact) => vec![exact],
@@ -297,6 +302,11 @@ mod tests {
         assert!(c.no_machine && c.json && !c.offline && !c.check_licenses);
         let Parsed::Run(Command::Check(c)) = p(&["--licenses", "--json"]) else { panic!() };
         assert!(c.check_licenses && c.licenses.is_none() && c.json, "--licenses alone uses the bundled allowlist");
+        let Parsed::Run(Command::Check(c)) = p(&["--license", "--json"]) else { panic!() };
+        assert!(c.check_licenses && c.licenses.is_none() && c.json, "--license is --licenses");
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let Parsed::Run(Command::Check(c)) = p(&[&format!("--license={file}")]) else { panic!() };
+        assert!(c.check_licenses && c.licenses == Some(PathBuf::from(file)));
     }
 
     #[test]

@@ -10,13 +10,14 @@ A tag `vX.Y.Z` on `main`. Pushing it runs the release workflow:
 2. **build**, per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `universal-apple-darwin`): two checkouts at different paths, each built with [`rust/release/build.sh`](../../rust/release/build.sh) (`--locked`, the release profile, remapped paths, `SOURCE_DATE_EPOCH` from the commit). The two binaries must be byte-identical or the release stops. A smoke test runs each one.
 3. **publish**, after a maintainer approves the `release` environment:
    - It writes `SHA256SUMS`.
-   - It copies `install.sh` with the release's tag stamped in as its default version.
+   - It copies `install.sh` with the release's tag stamped in as its default version, and writes `install.sh.sha256` beside it for waffuru.ai's release receiver, which serves a verified, pinned copy at `https://waffuru.ai/pantry/install.sh`.
    - It makes a GitHub build-provenance attestation for each binary and `install.sh`, and a cosign keyless bundle for each binary.
-   - It verifies all of that the way users will, then creates the GitHub release with generated notes.
+   - It verifies all of that the way users will, then creates the GitHub release as a draft with generated notes. Releases in this repository are immutable once published, so nothing can be attached after that.
    - It publishes `wpantry`, then `wpantry-cli`, to crates.io through trusted publishing.
-4. **packslip**: in a job that can't write the release, [packslip](https://packslip.dev) (`jdx/packslip`, pinned) signs a manifest of the three binaries: digests, platforms, and the command name `wpantry`. It links the publish job's attestations. A last job with `contents: write` uploads the manifest as `packslip.sigstore.json`. mise's `packslip:` backend and `packslip verify` check releases against it.
+4. **packslip**: in a job that can't write the release, [packslip](https://packslip.dev) (`jdx/packslip`, pinned) signs a manifest of the three binaries: digests, platforms, and the command name `wpantry`. It links the publish job's attestations. mise's `packslip:` backend and `packslip verify` check releases against it.
+5. **release**: attaches the manifest to the draft as `packslip.sigstore.json`, checks the draft has every asset, and publishes it as the latest release. Then it dispatches the website's release receiver (`waffuruai/website` `release.yml`) with the `WEBSITE_DISPATCH_TOKEN` secret, so `https://waffuru.ai/pantry/install.sh` serves the new release within minutes. Without the secret, or if the dispatch fails, it warns; the next site deploy picks the release up. If a job before this one fails, the release stays a draft: fix the cause and rerun the failed jobs.
 
-Nothing in the workflow holds a long-lived secret: attestations, cosign certificates, the packslip signature and crates.io tokens all come from the job's short-lived GitHub OIDC identity.
+Nothing that signs or publishes holds a long-lived secret: attestations, cosign certificates, the packslip signature and crates.io tokens all come from the job's short-lived GitHub OIDC identity. The one secret, `WEBSITE_DISPATCH_TOKEN`, can only start the website's deploy, which verifies `install.sh` itself.
 
 ## Versions
 
@@ -35,6 +36,7 @@ Done once per repository by an org owner; check it before the first release.
 4. **crates.io owners**: after the first publish, add the maintainers team: `cargo owner --add github:waffuruai:<team> wpantry wpantry-cli`.
 5. **Trusted publishing** (after the first publish, crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`; until it is, the workflow skips the crates.io step.
 6. **Arm64 runners**: the build uses GitHub's `ubuntu-24.04-arm` runner; make sure the org can use it.
+7. **Website dispatch**: the repository secret `WEBSITE_DISPATCH_TOKEN`, a fine-grained token with Actions: write on `waffuruai/website`, as wrunner's release has. The website's own `GH_TOKEN` needs Contents: read on `waffuruai/pantry` while the repository is private.
 
 ## Before the release
 

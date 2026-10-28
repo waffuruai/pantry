@@ -47,7 +47,8 @@ jobs:
         run: |
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' rust/Cargo.toml | head -1)"
           [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "::error::tag $GITHUB_REF_NAME but rust/Cargo.toml says $version"; exit 1; }
-          git fetch -q origin main
+          # fetch-depth: 0 already fetched origin/main; a fetch here would need
+          # the credentials persist-credentials: false dropped.
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
 
       - name: Install the pinned toolchain

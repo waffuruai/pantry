@@ -465,10 +465,48 @@ pub fn brew_prefix() -> String {
     }
 }
 
+/// Homebrew's prefix: HOMEBREW_PREFIX, else the folder above the `bin` the
+/// `brew` on PATH is in (how brew finds its own).
+pub fn homebrew_prefix(brew: &Path) -> Option<PathBuf> {
+    std::env::var_os("HOMEBREW_PREFIX")
+        .map(PathBuf::from)
+        .or_else(|| brew.parent().and_then(Path::parent).map(Path::to_path_buf))
+}
+
+/// {cask: version} from the Caskroom, what `brew list --cask --versions`
+/// says without starting Homebrew's Ruby. Symlinks are skipped, as brew
+/// does: a renamed cask's old token, a cask's `latest`. None when there's
+/// no Caskroom or a cask has more than one version installed (brew says
+/// which it lists).
+pub fn caskroom(dir: &Path) -> Option<BTreeMap<String, String>> {
+    let entries = |d: &Path| -> Option<Vec<std::fs::DirEntry>> {
+        Some(
+            std::fs::read_dir(d)
+                .ok()?
+                .filter_map(|e| e.ok())
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                .filter(|e| !e.file_type().is_ok_and(|t| t.is_symlink()))
+                .collect(),
+        )
+    };
+    let mut out = BTreeMap::new();
+    for cask in entries(dir)? {
+        let name = cask.file_name().to_string_lossy().into_owned();
+        let versions: Vec<String> =
+            entries(&cask.path())?.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let [v] = versions.as_slice() else { return None };
+        out.insert(name, v.clone());
+    }
+    Some(out)
+}
+
 /// {cask token: installed version} for Homebrew-installed casks.
 pub fn brew_casks() -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if let Some(b) = which("brew") {
+        if let Some(casks) = homebrew_prefix(&b).and_then(|p| caskroom(&p.join("Caskroom"))) {
+            return casks;
+        }
         for line in
             run(&[b.as_os_str(), "list".as_ref(), "--cask".as_ref(), "--versions".as_ref()], Duration::from_secs(60))
                 .lines()
@@ -526,6 +564,25 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caskroom_lists_one_version_per_cask() {
+        let d = TempDir::new("caskroom").unwrap();
+        for v in ["firefox/150.0", "firefox/.metadata", "1password-cli/2.41.1", ".DS_Store"] {
+            std::fs::create_dir_all(d.path().join(v)).unwrap();
+        }
+        // A cask's `latest`, and a renamed cask's old token: links brew skips.
+        std::os::unix::fs::symlink(d.path().join("firefox/150.0"), d.path().join("firefox/latest")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("firefox"), d.path().join("firefox-old")).unwrap();
+        let got = caskroom(d.path()).unwrap();
+        assert_eq!(
+            got.into_iter().collect::<Vec<_>>(),
+            [("1password-cli".into(), "2.41.1".into()), ("firefox".into(), "150.0".into())]
+        );
+        std::fs::create_dir_all(d.path().join("firefox/151.0")).unwrap();
+        assert_eq!(caskroom(d.path()), None, "two versions: brew list says which");
+        assert_eq!(caskroom(&d.path().join("nowhere")), None);
+    }
 
     #[test]
     fn par_map_keeps_order_and_runs_at_once() {

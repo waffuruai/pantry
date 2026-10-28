@@ -15,9 +15,7 @@ use std::time::Duration;
 /// Cellar: the cache key `brew list --versions` gave, without starting
 /// Homebrew's Ruby (most of a second). None when there's no Cellar to read.
 fn cellar(brew: &Path) -> Option<String> {
-    let prefix = std::env::var_os("HOMEBREW_PREFIX")
-        .map(PathBuf::from)
-        .or_else(|| brew.parent().and_then(Path::parent).map(Path::to_path_buf))?;
+    let prefix = crate::system::homebrew_prefix(brew)?;
     let dir = std::env::var_os("HOMEBREW_CELLAR").map(PathBuf::from).unwrap_or_else(|| prefix.join("Cellar"));
     cellar_listing(&dir)
 }

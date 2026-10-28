@@ -179,32 +179,70 @@ fn npm_globals(node: &Component) -> Vec<Component> {
     if !Path::new(&npm).exists() {
         return out;
     }
-    // npm doesn't always list itself.
-    let v = sh(&[&npm, "--version"], 15);
-    if let Some(m) = v.trim().lines().last().and_then(|l| version.match_start(l)) {
-        let mut c = Component::new("pkgmgr", "npm", m.get(1), &npm);
-        c.osv = Some(("npm".into(), "npm".into(), m.get(1).into()));
-        c.fix = format!("{npm} install -g npm@{{safe}}");
+    // The global packages are the folders under `npm root -g` (it honours
+    // npm's prefix config), read directly: `npm ls -g` takes most of a
+    // second to say the same. npm ls is the fallback.
+    let root = sh(&[&npm, "root", "-g"], 15).trim().lines().last().unwrap_or("").to_string();
+    let globals = if root.starts_with('/') { global_packages(Path::new(&root)) } else { None };
+    let globals = globals.unwrap_or_else(|| {
+        let deps = json_in(&sh(&[&npm, "ls", "-g", "--json", "--depth=0"], 60), '{', '}').unwrap_or(Value::Null);
+        let mut v: Vec<(String, String)> = deps
+            .get("dependencies")
+            .and_then(Value::as_object)
+            .map(|m| m.iter().map(|(name, d)| (name.clone(), str_of(d, "version"))).collect())
+            .unwrap_or_default();
+        // npm doesn't always list itself.
+        if !v.iter().any(|(n, _)| n == "npm") {
+            let said = sh(&[&npm, "--version"], 15);
+            if let Some(m) = said.trim().lines().last().and_then(|l| version.match_start(l)) {
+                v.push(("npm".into(), m.get(1).into()));
+            }
+        }
+        v
+    });
+    for (name, ver) in globals {
+        if ver.is_empty() {
+            continue;
+        }
+        let mut c = match name.as_str() {
+            "npm" => Component::new("pkgmgr", "npm", &ver, &npm),
+            "corepack" => Component::new("pkgmgr", "corepack", &ver, &npm),
+            _ => Component::new("package", &format!("npm:{name}"), &ver, &npm),
+        };
+        c.osv = Some(("npm".into(), name.clone(), ver));
+        c.fix = format!("{npm} install -g {name}@{{safe}}");
         c.auto = true;
         out.push(c);
     }
-    let deps = json_in(&sh(&[&npm, "ls", "-g", "--json", "--depth=0"], 60), '{', '}').unwrap_or(Value::Null);
-    if let Some(map) = deps.get("dependencies").and_then(Value::as_object) {
-        for (name, d) in map {
-            let ver = str_of(d, "version");
-            if name == "npm" || ver.is_empty() {
-                continue;
+    out
+}
+
+/// (name, version) of each package installed under a global node_modules
+/// (`@scope/name` included), sorted, npm first; None when it can't be read.
+fn global_packages(root: &Path) -> Option<Vec<(String, String)>> {
+    let mut names = Vec::new();
+    for e in std::fs::read_dir(root).ok()?.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        if name.starts_with('@') {
+            for s in std::fs::read_dir(e.path()).ok()?.filter_map(|e| e.ok()) {
+                names.push(format!("{name}/{}", s.file_name().to_string_lossy()));
             }
-            let kind = if name == "corepack" { "pkgmgr" } else { "package" };
-            let shown = if kind == "pkgmgr" { name.clone() } else { format!("npm:{name}") };
-            let mut c = Component::new(kind, &shown, &ver, &npm);
-            c.osv = Some(("npm".into(), name.clone(), ver));
-            c.fix = format!("{npm} install -g {name}@{{safe}}");
-            c.auto = true;
-            out.push(c);
+        } else {
+            names.push(name);
         }
     }
-    out
+    let mut out: Vec<(String, String)> = names
+        .into_iter()
+        .filter_map(|n| {
+            let pkg = read_json(&root.join(&n).join("package.json"))?;
+            Some((n, str_of(&pkg, "version")))
+        })
+        .collect();
+    out.sort_by(|a, b| (a.0 != "npm", &a.0).cmp(&(b.0 != "npm", &b.0)));
+    Some(out)
 }
 
 pub fn cargo_installs() -> Vec<Component> {
@@ -283,6 +321,28 @@ pub fn gems(found: &[Component]) -> Vec<Component> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_packages_reads_npm_root() {
+        let d = crate::system::TempDir::new("npmroot").unwrap();
+        let pkg = |dir: &str, json: &str| {
+            std::fs::create_dir_all(d.path().join(dir)).unwrap();
+            std::fs::write(d.path().join(dir).join("package.json"), json).unwrap();
+        };
+        pkg("typescript", r#"{"name": "typescript", "version": "5.9.3"}"#);
+        pkg("npm", r#"{"name": "npm", "version": "11.20.0"}"#);
+        pkg("@openai/codex", r#"{"name": "@openai/codex", "version": "0.70.0"}"#);
+        std::fs::create_dir_all(d.path().join(".bin")).unwrap();
+        std::fs::create_dir_all(d.path().join("half-installed")).unwrap();
+        // `npm link` leaves a symlink to the package's own folder.
+        let linked = crate::system::TempDir::new("linked").unwrap();
+        std::fs::write(linked.path().join("package.json"), r#"{"name": "mine", "version": "1.0.0"}"#).unwrap();
+        std::os::unix::fs::symlink(linked.path(), d.path().join("mine")).unwrap();
+        let got = global_packages(d.path()).unwrap();
+        let want = [("npm", "11.20.0"), ("@openai/codex", "0.70.0"), ("mine", "1.0.0"), ("typescript", "5.9.3")];
+        assert_eq!(got, want.map(|(n, v)| (n.to_string(), v.to_string())));
+        assert_eq!(global_packages(&d.path().join("nowhere")), None);
+    }
 
     #[test]
     fn json_inside_noisy_output() {

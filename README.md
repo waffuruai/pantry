@@ -59,7 +59,7 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 ## Who uses it
 
-- **ops**: `mise run secure` runs it on every Waffuru machine at install and in `mise run doctor`, with the org's policy files.
+- **ops**: `make secure` runs it on every Waffuru machine at install and in `make doctor`, with the org's policy files.
 - **wsentinel**: the scan engine behind Sentinel's inventory, advisory and secret findings.
 - **wci**: checks every pull request for security issues before it runs; **wrunner** and wci vet workloads before they run on someone else's machine (planned).
 - **wOS** and wOS Server: baked into the OS image as a system service (planned). The same binary runs on its own on macOS and Linux (Windows: [#11](https://github.com/waffuruai/pantry/issues/11)).

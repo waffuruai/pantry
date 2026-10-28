@@ -11,7 +11,7 @@ mise use -g packslip:github.com/waffuruai/pantry
 wpantry version
 ```
 
-mise reads the release's signed [packslip](https://packslip.dev) and verifies its signature against this repository's release workflow before it installs anything. It also checks the binary's digest against the packslip. It remembers the signer, and refuses a later release signed by anyone else. Pin a version with `packslip:github.com/waffuruai/pantry@0.1.1`, or put that line in a project's `mise.toml`.
+mise reads the release's signed [packslip](https://packslip.dev) and verifies its signature against this repository's release workflow before it installs anything. It also checks the binary's digest against the packslip. It remembers the signer, and refuses a later release signed by anyone else. Pin a version with `packslip:github.com/waffuruai/pantry@0.2.0`, or put that line in a project's `mise.toml`.
 
 **With the install script** (no mise):
 
@@ -22,7 +22,7 @@ curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.
 It picks the binary for your OS and CPU and checks it against `SHA256SUMS`. Then it verifies the signature with the first of `packslip`, `gh` (logged in) or `cosign` that you have, and installs to `~/.local/bin/wpantry`. Without any of the three it says only the checksum was checked. Set `WPANTRY_REQUIRE_SIGNATURE=1` to make that an error. Options are `--version vX.Y.Z` and `--dir DIR`, or `WPANTRY_VERSION` and `WPANTRY_INSTALL_DIR`. Each release ships its own `install.sh`, which installs that release by default and is attested like the binaries. To read it before running it:
 
 ```bash
-curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.1.1/install.sh
+curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.2.0/install.sh
 less install.sh && sh install.sh
 ```
 
@@ -50,7 +50,7 @@ Each binary and `install.sh` also has a GitHub artifact attestation (build prove
 ### Download
 
 ```bash
-VERSION=0.1.1                                   # the release to install
+VERSION=0.2.0                                   # the release to install
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)         ASSET=wpantry-x86_64-unknown-linux-musl ;;
   Linux/aarch64)        ASSET=wpantry-aarch64-unknown-linux-musl ;;
@@ -77,7 +77,7 @@ grep " $ASSET\$" SHA256SUMS | shasum -a 256 -c -
 
 ```bash
 packslip verify packslip.sigstore.json --artifact "$ASSET"
-# ok: github.com/waffuruai/pantry 0.1.1 …
+# ok: github.com/waffuruai/pantry 0.2.0 …
 ```
 
 Check that the first line names `github.com/waffuruai/pantry` and the version you asked for: packslip trusts the project the bundle claims, and the line is how you see which one.
@@ -120,7 +120,7 @@ If it doesn't match, don't install it: open an issue (or a [security report](../
 
 ```bash
 install -m 0755 "$ASSET" ~/.local/bin/wpantry  # or anywhere on your PATH
-wpantry version                                # wpantry 0.1.1 (rust, schema 1)
+wpantry version                                # wpantry 0.2.0 (rust, schema 1)
 wpantry tools                                  # which external tools it found
 ```
 
@@ -144,7 +144,7 @@ This builds from source with the exact dependency versions in the published `Car
 
 ```bash
 git clone https://github.com/waffuruai/pantry && cd pantry/rust
-git checkout v0.1.1                             # a release tag
+git checkout v0.2.0                             # a release tag
 cargo build --release --locked                  # target/release/wpantry
 ```
 

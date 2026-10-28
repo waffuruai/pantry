@@ -90,7 +90,7 @@ The (Python) implementation prints the same findings as one block per component.
 
 ```json
 {
- "schema": 1, "impl": "rust", "version": "0.1.1",
+ "schema": 1, "impl": "rust", "version": "0.2.0",
  "checked": {"git repos": 12, "project dependencies": 1820},
  "unfixed": 3, "unknown_licenses": 0,
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",

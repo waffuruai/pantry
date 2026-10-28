@@ -26,16 +26,39 @@ fn manual(formula: &str) -> Option<&'static str> {
 /// The machine checks; returns what the inventory found, for the
 /// supply-chain sweep.
 pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
-    let found = inventory(scan);
-    components(scan, &found)?;
-    apps(scan)?;
-    os_updates(scan)?;
-    brew(scan)?;
-    ca_trust(scan);
-    Ok(found)
+    // The probes that need nothing from the scan run beside it: the trust
+    // stores and Software Update's last scan, seconds of subprocesses each.
+    std::thread::scope(|s| {
+        let trust = s.spawn(catrust::check);
+        let updates = s.spawn(apps_mod::macos_updates);
+        let found = inventory(scan);
+        components(scan, &found)?;
+        apps(scan)?;
+        os_updates(scan, joined(updates))?;
+        brew(scan)?;
+        ca_trust(scan, joined(trust));
+        Ok(found)
+    })
+}
+
+/// A probe's result; its panic, if it had one, carries on here.
+fn joined<T>(probe: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    probe.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 pub fn inventory(scan: &mut Scan) -> Vec<Component> {
+    std::thread::scope(|s| {
+        let docker = s.spawn(apps_mod::docker);
+        let mut found = inventory_local(scan);
+        scan.status("Asking Docker for its engine version");
+        found.extend(joined(docker));
+        scan.count("tools, runtimes and packages", found.len() as i64);
+        found
+    })
+}
+
+/// What the machine has installed, without Docker's engine.
+fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     scan.status("Finding installed tools, runtimes and package managers");
     let mut found = tools::tools();
     scan.status("Listing Python installs and their pip packages");
@@ -48,9 +71,6 @@ pub fn inventory(scan: &mut Scan) -> Vec<Component> {
     found.extend(gems);
     found.extend(packages::cargo_installs());
     found.extend(packages::pipx_packages());
-    scan.status("Asking Docker for its engine version");
-    found.extend(apps_mod::docker());
-    scan.count("tools, runtimes and packages", found.len() as i64);
     found
 }
 
@@ -311,9 +331,9 @@ fn browser_finding(scan: &mut Scan, a: &Component, target: &str, start: f64, how
 
 // OS ----------------------------------------------------------------------------
 
-pub fn os_updates(scan: &mut Scan) -> Result<()> {
+pub fn os_updates(scan: &mut Scan, macos_updates: (Vec<(String, String)>, String)) -> Result<()> {
     if MACOS {
-        macos(scan);
+        macos(scan, macos_updates);
         return Ok(());
     }
     let rel = system::os_release();
@@ -348,9 +368,8 @@ pub fn os_updates(scan: &mut Scan) -> Result<()> {
     }
 }
 
-fn macos(scan: &mut Scan) {
+fn macos(scan: &mut Scan, (updates, last): (Vec<(String, String)>, String)) {
     scan.status("Reading macOS Software Update's last scan");
-    let (updates, last) = apps_mod::macos_updates();
     for (title, ver) in updates {
         scan.add(Finding {
             kind: "os".into(),
@@ -519,9 +538,9 @@ pub fn brew(scan: &mut Scan) -> Result<()> {
 
 /// Trust stores that still trust a distrusted CA fail (Python ran this as
 /// `check-ca-trust.sh` beside the scan; here it is part of it).
-pub fn ca_trust(scan: &mut Scan) {
+pub fn ca_trust(scan: &mut Scan, stores: Result<Vec<catrust::Store>>) {
     scan.status("Checking trust stores for distrusted CAs");
-    match catrust::check() {
+    match stores {
         Ok(stores) => {
             scan.count("CA trust stores", stores.len() as i64);
             for s in &stores {

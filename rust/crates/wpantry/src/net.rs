@@ -120,7 +120,15 @@ impl Default for Http {
 
 impl Http {
     pub fn new() -> Http {
-        let config = ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).http_status_as_error(false).build();
+        // Keep a connection for each parallel fetch (OSV records, deps.dev):
+        // ureq keeps 3 per host by default, so the rest paid a TLS handshake
+        // per request.
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(TIMEOUT))
+            .http_status_as_error(false)
+            .max_idle_connections(32)
+            .max_idle_connections_per_host(16)
+            .build();
         Http { agent: config.into() }
     }
 }

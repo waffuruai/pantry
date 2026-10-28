@@ -95,6 +95,10 @@ fn atom(t: &[&str], i: &mut usize, allowed: &[String]) -> Option<bool> {
     Some(allowed.iter().any(|a| a.eq_ignore_ascii_case(id)))
 }
 
+/// deps.dev lookups in flight at once: a first run asks about every locked
+/// package, thousands of small GETs.
+const PARALLEL: usize = 16;
+
 /// The licenses deps.dev declares for one package version (empty when
 /// unknown), cached.
 fn fetch(net: &dyn Net, sys: &str, name: &str, version: &str) -> Result<Vec<String>> {
@@ -121,7 +125,7 @@ pub fn judge(licenses: &[String], allowed: &[String]) -> Option<Vec<String>> {
 }
 
 /// Licenses for many (ecosystem, name, version), cached for 30 days and
-/// fetched at most 8 at a time. Packages deps.dev doesn't cover map to [].
+/// fetched at most [`PARALLEL`] at a time. Packages deps.dev doesn't cover map to [].
 /// `Offline` when none could be fetched and nothing was cached.
 pub fn lookup(
     cache: &Cache,
@@ -150,7 +154,7 @@ pub fn lookup(
     let failed = Mutex::new(None);
     let queue = Mutex::new(todo.iter());
     std::thread::scope(|s| {
-        for _ in 0..8.min(todo.len()) {
+        for _ in 0..PARALLEL.min(todo.len()) {
             s.spawn(|| {
                 while let Some(&i) = { queue.lock().expect("lock").next() } {
                     let (e, n, v) = &items[i];

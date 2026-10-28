@@ -11,8 +11,9 @@ use crate::json::str_at;
 use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
-use crate::system::{Component, run as sh, short, which};
+use crate::system::{self, Component, run as sh, short, which};
 use crate::{harnesses, leaks, malicious};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -27,9 +28,29 @@ pub const INSTALL_SCRIPTS: &str = "the install-scripts allowlist (--install-scri
 /// machine scan. `found` is what the machine inventory found.
 pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
     let repos = scan.repos.clone();
-    projects(scan, &repos)?;
     let git: Vec<Repo> = repos.iter().filter(|(_, r)| repos::is_git(r)).cloned().collect();
-    secrets(scan, &git)?;
+    // gitleaks is local and CPU-bound: the repos whose cached scan is stale
+    // are scanned, a few at once, while `projects` waits on the network.
+    let jobs = secret_jobs(scan, &git)?;
+    let todo: Vec<(usize, &leaks::Job)> = jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (j, stale))| j.as_ref().ok().filter(|_| *stale).map(|j| (i, j)))
+        .collect();
+    let ran = std::thread::scope(|s| -> Result<Vec<Option<Result<Value>>>> {
+        let running = s.spawn(|| system::par_map(&todo, GITLEAKS_AT_ONCE, |(_, job)| leaks::run_job(job)));
+        projects(scan, &repos)?;
+        if !todo.is_empty() {
+            scan.status(&format!("Scanning {} repos' git history for secrets (gitleaks)", todo.len()));
+        }
+        let mut ran: Vec<Option<Result<Value>>> = jobs.iter().map(|_| None).collect();
+        let results = running.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        for ((i, _), r) in todo.iter().zip(results) {
+            ran[*i] = Some(r);
+        }
+        Ok(ran)
+    })?;
+    secrets(scan, &git, jobs, ran)?;
     install_scripts(scan, &repos, found);
     images(scan, &repos)?;
     let exts = if scan.opts.machine { extensions(scan)? } else { Vec::new() };
@@ -197,16 +218,42 @@ fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Res
     Ok(())
 }
 
-/// Secrets committed anywhere in the repos' history. A provider-specific
-/// rule (AWS, GitHub, OpenAI, …) fails; a generic one asks for review.
-pub fn secrets(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
+/// gitleaks scans run at once on a first run: each keeps a core busy.
+const GITLEAKS_AT_ONCE: usize = 4;
+
+/// Each repo's gitleaks job, its fingerprint read at once, and whether its
+/// cached result is stale.
+fn secret_jobs(scan: &Scan, repos: &[Repo]) -> Result<Vec<(Result<leaks::Job>, bool)>> {
     if repos.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
-    for (name, root) in repos {
+    let jobs = system::par_map(repos, system::PROBES, |(_, root)| leaks::job(root, &config));
+    jobs.into_iter()
+        .map(|job| {
+            let stale = match &job {
+                Ok(j) => leaks::stale(&scan.cache, j, scan.opts.refresh, scan.opts.offline)?,
+                Err(_) => false,
+            };
+            Ok((job, stale))
+        })
+        .collect()
+}
+
+/// Secrets committed anywhere in the repos' history, from the jobs
+/// [`secret_jobs`] made and the scans run ahead (`ran`), in the repos'
+/// order. A provider-specific rule (AWS, GitHub, OpenAI, …) fails; a generic
+/// one asks for review.
+fn secrets(
+    scan: &mut Scan,
+    repos: &[Repo],
+    jobs: Vec<(Result<leaks::Job>, bool)>,
+    ran: Vec<Option<Result<Value>>>,
+) -> Result<()> {
+    let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
+    for (((name, root), (job, _)), ran) in repos.iter().zip(jobs).zip(ran) {
         scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
-        let found = match leaks::scan(&scan.cache, root, &config, scan.opts.refresh, scan.opts.offline) {
+        let found = match job.and_then(|job| leaks::finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
             Err(Error::Missing(_)) => {
                 let has_brew = which("brew").is_some();

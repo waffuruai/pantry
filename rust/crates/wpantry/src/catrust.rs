@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::system::{self, MACOS, TempDir, exec, realpath, run, which};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub const INTERMEDIATES: &str = include_str!("../assets/distrusted-ca/intermediates.pem");
@@ -65,6 +66,9 @@ struct Checker {
     ints: Vec<PathBuf>,
     issuers: PathBuf,
     seen: Vec<String>,
+    /// Numbers the bundles gathered from hashed directories, which are
+    /// verified at once.
+    gathered: AtomicUsize,
 }
 
 impl Checker {
@@ -85,7 +89,7 @@ impl Checker {
         // `verify` is also always given both -CAfile and -CApath.
         std::fs::create_dir_all(dir.path().join("empty"))?;
         std::fs::write(dir.path().join("empty.pem"), "")?;
-        Ok(Checker { openssl, dir, ints, issuers, seen: Vec::new() })
+        Ok(Checker { openssl, dir, ints, issuers, seen: Vec::new(), gathered: AtomicUsize::new(0) })
     }
 
     /// Whether the anchors (a PEM bundle, or a hashed directory) chain any
@@ -119,7 +123,8 @@ impl Checker {
             ("SSL_CERT_URI", uri.as_str()),
             ("OPENSSL_X509_TEA_DISABLE", "1"),
         ];
-        for int in &self.ints {
+        // One intermediate per call (see `new`), all at once; read in order.
+        let outputs = system::par_map(&self.ints, system::PROBES, |int| {
             let argv = [
                 self.openssl.as_os_str(),
                 OsStr::new("verify"),
@@ -131,7 +136,10 @@ impl Checker {
                 self.issuers.as_os_str(),
                 int.as_os_str(),
             ];
-            let o = match exec(&argv, &env, Duration::from_secs(30)) {
+            exec(&argv, &env, Duration::from_secs(30))
+        });
+        for (int, o) in self.ints.iter().zip(outputs) {
+            let o = match o {
                 Ok(o) => o,
                 Err(e) => return Verdict::Unknown(e.to_string()),
             };
@@ -167,7 +175,7 @@ impl Checker {
                 pem.push_str(&certificates(&String::from_utf8_lossy(&b)).concat());
             }
         }
-        let out = self.dir.path().join(format!("dir{}.pem", self.seen.len()));
+        let out = self.dir.path().join(format!("dir{}.pem", self.gathered.fetch_add(1, Ordering::Relaxed)));
         std::fs::write(&out, pem)?;
         Ok(out)
     }
@@ -176,11 +184,11 @@ impl Checker {
         self.verify(anchors) == Verdict::Trusts
     }
 
-    /// Check one store, once per real path; None when it doesn't exist (or
-    /// is an empty file or a directory without hashed certificates, which
-    /// trust nothing). A store that can't be read or holds no certificate is
-    /// unchecked.
-    fn store(&mut self, label: &str, shown: &str, bundle: &Path, hint: &str) -> Option<Store> {
+    /// One store to check, once per real path; None when it doesn't exist
+    /// (or is an empty file or a directory without hashed certificates,
+    /// which trust nothing). A store that can't be read or holds no
+    /// certificate is unchecked. [`Checker::finish`] verifies it.
+    fn store(&mut self, label: &str, shown: &str, bundle: &Path, hint: &str) -> Option<Pending> {
         let mut unchecked = None;
         if bundle.is_dir() {
             let hashed = std::fs::read_dir(bundle)
@@ -207,22 +215,42 @@ impl Checker {
             return None;
         }
         self.seen.push(real);
-        let verdict = match unchecked {
-            Some(why) => Verdict::Unknown(why),
-            None => self.verify(bundle),
-        };
-        Some(Store {
-            label: label.into(),
-            shown: shown.into(),
-            trusts: verdict == Verdict::Trusts,
-            unchecked: match verdict {
-                Verdict::Unknown(why) => Some(why),
-                _ => None,
-            },
-            hint: hint.into(),
+        Some(Pending {
+            store: Store { label: label.into(), shown: shown.into(), trusts: false, unchecked, hint: hint.into() },
+            bundle: bundle.to_path_buf(),
         })
     }
+
+    /// Verify the stores, a few at once (each runs its intermediates at
+    /// once too), in their order.
+    fn finish(&self, pending: Vec<Pending>) -> Vec<Store> {
+        let verdicts = system::par_map(&pending, STORES_AT_ONCE, |p| match &p.store.unchecked {
+            Some(why) => Verdict::Unknown(why.clone()),
+            None => self.verify(&p.bundle),
+        });
+        pending
+            .into_iter()
+            .zip(verdicts)
+            .map(|(p, verdict)| Store {
+                trusts: verdict == Verdict::Trusts,
+                unchecked: match verdict {
+                    Verdict::Unknown(why) => Some(why),
+                    _ => None,
+                },
+                ..p.store
+            })
+            .collect()
+    }
 }
+
+/// A store found and not yet verified.
+struct Pending {
+    store: Store,
+    bundle: PathBuf,
+}
+
+/// Stores verified at once; each runs its intermediates at once as well.
+const STORES_AT_ONCE: usize = 4;
 
 fn sh(argv: &[&OsStr]) -> String {
     run(argv, Duration::from_secs(30))
@@ -233,8 +261,8 @@ fn sh(argv: &[&OsStr]) -> String {
 pub fn check() -> Result<Vec<Store>> {
     let openssl = which("openssl").ok_or_else(|| Error::Missing("openssl".into()))?;
     let mut c = Checker::new(openssl.clone())?;
-    let mut out = Vec::new();
-    let mut add = |s: Option<Store>| out.extend(s);
+    let mut pending = Vec::new();
+    let mut add = |s: Option<Pending>| pending.extend(s);
     let fix = "ca-trust/fix-ca-trust.sh from the pantry repo, or the OS's ca-certificates update";
     if MACOS {
         add(c.store("system", "/etc/ssl/cert.pem", Path::new("/etc/ssl/cert.pem"), &format!("Run {fix}")));
@@ -265,28 +293,28 @@ pub fn check() -> Result<Vec<Store>> {
     if MACOS && sh(&[OsStr::new("xcode-select"), OsStr::new("-p")]).starts_with('/') {
         pythons.push("/usr/bin/python3".into());
     }
+    // pip reads PIP_CERT instead of its own bundle when it is set.
     let pip_cert = std::env::var("PIP_CERT").ok().filter(|p| Path::new(p).is_file());
-    for py in pythons {
-        let path_of = |code: &str| {
-            sh(&[OsStr::new(&py), OsStr::new("-I"), OsStr::new("-c"), OsStr::new(code)])
-                .trim()
-                .lines()
-                .last()
-                .unwrap_or("")
-                .to_string()
-        };
-        let certifi = path_of("import certifi; print(certifi.where())");
+    let pip_cert_clean = pip_cert.is_some_and(|pc| !c.trusts(Path::new(&pc)));
+    let path_of = |py: &str, code: &str| {
+        sh(&[OsStr::new(py), OsStr::new("-I"), OsStr::new("-c"), OsStr::new(code)])
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("")
+            .to_string()
+    };
+    let bundles = system::par_map(&pythons, system::PROBES, |py| {
+        (
+            path_of(py, "import certifi; print(certifi.where())"),
+            path_of(py, "import pip._vendor.certifi as c; print(c.where())"),
+        )
+    });
+    for (py, (certifi, pip_ca)) in pythons.iter().zip(bundles) {
         if certifi.starts_with('/') {
             add(c.store("certifi", &certifi, Path::new(&certifi), &format!("Run: {py} -m pip install -U certifi")));
         }
-        let pip_ca = path_of("import pip._vendor.certifi as c; print(c.where())");
-        if !pip_ca.starts_with('/') {
-            continue;
-        }
-        // pip reads PIP_CERT instead of its own bundle when it is set.
-        if let Some(pc) = &pip_cert
-            && !c.trusts(Path::new(pc))
-        {
+        if !pip_ca.starts_with('/') || pip_cert_clean {
             continue;
         }
         add(c.store(
@@ -297,9 +325,13 @@ pub fn check() -> Result<Vec<Store>> {
         ));
     }
     // Node compiles its roots in; dump them to check like any other bundle.
-    for (i, (node, _)) in system::on_path::<&str>("node", &[]).into_iter().enumerate() {
+    let nodes: Vec<String> = system::on_path::<&str>("node", &[]).into_iter().map(|(node, _)| node).collect();
+    let dumps = system::par_map(&nodes, system::PROBES, |node| {
         let roots =
-            sh(&[OsStr::new(&node), OsStr::new("-p"), OsStr::new("require('tls').rootCertificates.join('\\n')")]);
+            sh(&[OsStr::new(node), OsStr::new("-p"), OsStr::new("require('tls').rootCertificates.join('\\n')")]);
+        (roots, sh(&[OsStr::new(node), OsStr::new("--version")]))
+    });
+    for (i, (node, (roots, v))) in nodes.iter().zip(dumps).enumerate() {
         if !roots.contains("BEGIN CERTIFICATE") {
             continue;
         }
@@ -307,7 +339,6 @@ pub fn check() -> Result<Vec<Store>> {
         if std::fs::write(&f, roots).is_err() {
             continue;
         }
-        let v = sh(&[OsStr::new(&node), OsStr::new("--version")]);
         add(c.store(
             "node",
             &format!("{node} ({})", v.trim()),
@@ -315,9 +346,10 @@ pub fn check() -> Result<Vec<Store>> {
             "Upgrade Node (26.12.1, 24.22.1, 22.23.4 or later)",
         ));
     }
+    let mut out = c.finish(pending);
     // The macOS trust settings that Safari, URLSession and Go use; -L: local only.
     if MACOS {
-        let trusts = c.ints.iter().any(|int| {
+        let trusts = system::par_map(&c.ints, system::PROBES, |int| {
             let argv = [
                 OsStr::new("security"),
                 OsStr::new("verify-cert"),
@@ -331,7 +363,8 @@ pub fn check() -> Result<Vec<Store>> {
                 c.issuers.as_os_str(),
             ];
             exec(&argv, &[], Duration::from_secs(30)).is_ok_and(|o| o.code == Some(0))
-        });
+        })
+        .contains(&true);
         out.push(Store {
             label: "keychain".into(),
             shown: "macOS trust settings".into(),
@@ -346,6 +379,14 @@ pub fn check() -> Result<Vec<Store>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl Checker {
+        /// One store, found and verified.
+        fn check_one(&mut self, label: &str, shown: &str, bundle: &Path, hint: &str) -> Option<Store> {
+            let p = self.store(label, shown, bundle, hint)?;
+            self.finish(vec![p]).pop()
+        }
+    }
 
     #[test]
     fn splits_bundles_and_judges_stores() {
@@ -364,9 +405,9 @@ mod tests {
         std::fs::write(&none, ISSUERS).unwrap();
         assert!(!c.trusts(&none), "a bundle without those roots rejects it");
         assert_eq!(c.verify(&none), Verdict::Clean);
-        let s = c.store("x", "x", &bad, "").unwrap();
+        let s = c.check_one("x", "x", &bad, "").unwrap();
         assert!(s.trusts && s.unchecked.is_none());
-        assert!(c.store("x", "x", &bad, "").is_none(), "each store once");
+        assert!(c.check_one("x", "x", &bad, "").is_none(), "each store once");
     }
 
     /// A hashed directory is checked through its certificates, with nothing
@@ -393,17 +434,17 @@ mod tests {
         let mut c = Checker::new(openssl).unwrap();
         let junk = c.dir.path().join("junk.pem");
         std::fs::write(&junk, "not a certificate\n").unwrap();
-        let s = c.store("x", "junk", &junk, "").unwrap();
+        let s = c.check_one("x", "junk", &junk, "").unwrap();
         assert!(!s.trusts);
         assert_eq!(s.unchecked.as_deref(), Some("no PEM certificate in the file"));
         // openssl itself refusing the file (a PEM block that isn't a certificate).
         let broken = c.dir.path().join("broken.pem");
         std::fs::write(&broken, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n").unwrap();
         assert!(matches!(c.verify(&broken), Verdict::Unknown(_)), "{:?}", c.verify(&broken));
-        let s = c.store("x", "broken", &broken, "").unwrap();
+        let s = c.check_one("x", "broken", &broken, "").unwrap();
         assert!(!s.trusts && s.unchecked.is_some());
         let empty = c.dir.path().join("empty-store.pem");
         std::fs::write(&empty, "").unwrap();
-        assert!(c.store("x", "empty", &empty, "").is_none(), "an empty file trusts nothing");
+        assert!(c.check_one("x", "empty", &empty, "").is_none(), "an empty file trusts nothing");
     }
 }

@@ -99,7 +99,7 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
 
 /// Every catalog tool found, plus nvm, one entry per install.
 pub fn tools() -> Vec<Component> {
-    let mut found: Vec<Component> = TOOLS.iter().flat_map(|t| find(t, &[])).collect();
+    let mut found: Vec<Component> = system::par_map(TOOLS, system::PROBES, |t| find(t, &[])).concat();
     found.extend(nvm());
     dedupe(found)
 }

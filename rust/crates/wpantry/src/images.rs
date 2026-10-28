@@ -34,6 +34,13 @@ pub struct ImagePackage {
     pub source: String,
 }
 
+/// The kernel's source package, which an image carries only as headers
+/// (linux-libc-dev): a container runs on the host's kernel, so the kernel's
+/// advisories are the host's, not the image's (osv-scanner skips it too).
+pub fn host_kernel(p: &ImagePackage) -> bool {
+    p.source == "/var/lib/dpkg/status" && p.name == "linux"
+}
+
 /// docker, else podman.
 pub fn engine() -> Option<PathBuf> {
     which("docker").or_else(|| which("podman"))
@@ -437,6 +444,22 @@ mod tests {
             ]
         );
         assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    #[test]
+    fn the_kernel_in_an_image_is_the_hosts() {
+        let pkg = |name: &str, source: &str| ImagePackage {
+            ecosystem: "Debian:12".into(),
+            name: name.into(),
+            version: "6.1.176-1".into(),
+            source: source.into(),
+        };
+        assert!(host_kernel(&pkg("linux", "/var/lib/dpkg/status")));
+        assert!(!host_kernel(&pkg("libssh2", "/var/lib/dpkg/status")));
+        assert!(
+            !host_kernel(&pkg("linux", "/srv/app/package-lock.json")),
+            "an npm package named linux is not the kernel"
+        );
     }
 
     #[test]

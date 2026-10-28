@@ -43,6 +43,7 @@ Every release ships:
 | `packslip.sigstore.json` | The signed packslip: every binary's digest, platform and command name |
 | `<binary>.sigstore.json` | A cosign keyless signature bundle for that binary |
 | `install.sh` | The install script above |
+| `install.sh.sha256` | SHA-256 of `install.sh` |
 
 Each binary and `install.sh` also has a GitHub artifact attestation (build provenance): a signed record that the release workflow in `waffuruai/pantry` built it from the tagged commit. Releases are listed at <https://github.com/waffuruai/pantry/releases>.
 

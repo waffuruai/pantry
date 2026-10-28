@@ -191,25 +191,15 @@ jobs:
           done
           gh attestation verify install.sh --repo "$GITHUB_REPOSITORY"
 
-      - name: GitHub release
+      # Releases here are immutable: once published, no asset can be added. So
+      # the release starts as a draft and the last job publishes it once the
+      # packslip is attached. A rerun adds to the draft instead.
+      - name: GitHub release (draft)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "wpantry $GITHUB_REF_NAME" --generate-notes
-
-      # The website republishes install.sh at https://waffuru.ai/pantry/install.sh.
-      # The release already exists by now, so a failed dispatch must not stop
-      # the packslip jobs; the next site deploy picks the release up anyway.
-      - name: Tell the website about the release
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
         run: |
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::WEBSITE_DISPATCH_TOKEN is unset; the website was not told about $GITHUB_REF_NAME."
-            exit 0
-          fi
-          gh workflow run release.yml --repo waffuruai/website --ref main \
-            -f product=pantry -f tag="$GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "wpantry $GITHUB_REF_NAME" --generate-notes ||
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
 
       - name: Install the pinned toolchain
         working-directory: rust
@@ -238,7 +228,7 @@ jobs:
   # workflow's identity. mise installs from it (`mise use
   # packslip:github.com/waffuruai/pantry`) and verifies it, as does
   # `packslip verify`. Signed in a job that can't write the release, as
-  # packslip recommends; the next job uploads the bundle.
+  # packslip recommends; the next job attaches the bundle and publishes.
   packslip:
     name: Packslip
     needs: publish
@@ -272,20 +262,47 @@ jobs:
           path: ${{ steps.packslip.outputs.bundle }}
           if-no-files-found: error
 
-  packslip-upload:
-    name: Upload the packslip
+  release:
+    name: Attach the packslip and publish
     needs: packslip
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # the release asset
+      contents: write # the release asset, and publishing the draft
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packslip
           path: packslip
 
-      - name: Upload to the release
+      - name: Attach the packslip
+        run: gh release upload "$GITHUB_REF_NAME" packslip/packslip.sigstore.json --clobber
+
+      # Publishing makes the release immutable, so check nothing is missing:
+      # the website's receiver needs install.sh.sha256, and mise the packslip.
+      - name: Publish the release
+        run: |
+          assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          for a in SHA256SUMS install.sh install.sh.sha256 packslip.sigstore.json \
+            wpantry-x86_64-unknown-linux-musl wpantry-aarch64-unknown-linux-musl wpantry-universal-apple-darwin; do
+            printf '%s\n' "$assets" | grep -qx "$a" || { echo "::error::the draft has no $a"; exit 1; }
+          done
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+
+      # The website republishes install.sh at https://waffuru.ai/pantry/install.sh.
+      # The release is out by now, so a failed dispatch only warns; the next
+      # site deploy picks the release up anyway.
+      - name: Tell the website about the release
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" packslip/packslip.sigstore.json --repo "$GITHUB_REPOSITORY"
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::WEBSITE_DISPATCH_TOKEN is unset; the website was not told about $GITHUB_REF_NAME."
+            exit 0
+          fi
+          gh workflow run release.yml --repo waffuruai/website --ref main \
+            -f product=pantry -f tag="$GITHUB_REF_NAME"

@@ -620,7 +620,7 @@ pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result
 mod tests {
     use super::*;
 
-    // The Python test vectors (python/test_wscanner.py `Plan.test_project_fixes_stay_manual_and_per_ecosystem`).
+    // The test vectors the Python implementation had (`Plan.test_project_fixes_stay_manual_and_per_ecosystem`).
     #[test]
     fn project_fixes_stay_manual_and_per_ecosystem() {
         assert_eq!(

@@ -1,7 +1,5 @@
 //! What we know how to check: each tool's binaries, how to read its version,
 //! and how OSV (and endoflife.date) know it. Data only; `tools` finds them.
-//! Generated from `python/wscanner/catalog.py` and kept in step with it
-//! (tests/catalog.rs compares the two while python/ exists).
 //!
 //! An OSV mapping is an ecosystem package, ("npm", "@openai/codex", "{v}"),
 //! or an upstream repo plus its release-tag format, ("GIT", repo URL, "{v}").

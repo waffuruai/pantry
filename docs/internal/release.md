@@ -31,7 +31,7 @@ Done once per repository by an org owner; check it before the first release.
 
 1. **Environment** `release` (Settings → Environments): required reviewers (at least one maintainer who isn't the person tagging), deployment branches and tags limited to `v*` tags.
 2. **Tag protection** (Settings → Rules → Rulesets): only maintainers can create `v*` tags; tags can't be updated or deleted.
-3. **Branch protection** on `main` and `dev`: the CI checks required, including `Rust (ubuntu-latest)`, `Rust (macos-latest)`, `Contract (python, …)` and `Rust supply chain`.
+3. **Branch protection** on `main` and `dev`: the CI checks required, including `Rust (ubuntu-latest)`, `Rust (macos-latest)`, `Test (ubuntu-latest)`, `Test (macos-latest)` and `Rust supply chain`.
 4. **crates.io owners**: after the first publish, add the maintainers team: `cargo owner --add github:waffuruai:<team> wpantry wpantry-cli`.
 5. **Trusted publishing** (after the first publish, crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`; until it is, the workflow skips the crates.io step.
 6. **Arm64 runners**: the build uses GitHub's `ubuntu-24.04-arm` runner; make sure the org can use it.
@@ -42,7 +42,6 @@ On `dev`, through a PR like any other change:
 
 - [ ] CI green on `dev`, including `Rust supply chain` (cargo deny and cargo vet) run within the last day: `cargo deny` fetches the advisory database fresh, so rerun it if the last run is older.
 - [ ] Dependencies reviewed since the last release ([dependencies.md](dependencies.md)): no exemption added without a reason in its PR.
-- [ ] For a release that replaces the Python implementation for a caller: the F3 parity diff (Python and Rust `check --json`, findings sorted, `impl` and `version` dropped) is empty on the org repos and in Debian, Alpine and openSUSE containers, and recorded in the PRD.
 - [ ] Bump the version: `version` in `[workspace.package]` and the `wpantry = { …, version = "=X.Y.Z" }` pin in `[workspace.dependencies]`, then `cargo update -w` so `Cargo.lock` follows. `crates/wpantry/tests/pins.rs` and CI catch a mismatch.
 - [ ] PR titles on the way in carry their conventional prefix and labels, so the generated notes (`.github/release.yml`) group them.
 

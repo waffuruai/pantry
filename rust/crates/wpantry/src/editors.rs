@@ -119,7 +119,7 @@ pub fn bundled_npm(root: &Path) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
-    // The Python test vector (python/test_wscanner.py `SupplyChain.test_bundled_npm`).
+    // The test vector the Python implementation had (`SupplyChain.test_bundled_npm`).
     #[test]
     fn bundled_npm_packages() {
         let d = system::TempDir::new("bundled").unwrap();

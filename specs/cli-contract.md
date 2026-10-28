@@ -2,7 +2,7 @@
 
 Status: frozen at schema 1, 2026-10-25. Owner: Eric.
 
-The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, control-plane, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (the Rust implementation, [01-rust-port.md](01-rust-port.md)). The Python reference implementation (`python/`) keeps its original name, `python/bin/wscanner`, until phase 3 removes it. Both MUST pass the same contract tests, which run the binary and check its output rather than its internals; where the name appears in output (`skill`'s front matter, the `<name>:` error prefix), each uses its own.
+The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (the Rust implementation, [01-rust-port.md](01-rust-port.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals. The Python reference implementation, `wscanner`, passed the same tests until phase 3 removed it (2026-10-28); where the name appears in output (`skill`'s front matter, the `<name>:` error prefix), each used its own.
 
 ## Change rule
 
@@ -41,7 +41,7 @@ wpantry skill
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `breach` | Show or set consent for the opt-in email breach check |
-| `version` | `{"version": "0.1.0", "impl": "python", "schema": 1}` with `--json` |
+| `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
 | `skill` | Print the bundled agent skill (`SKILL.md`) to stdout |
 
@@ -53,7 +53,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Variable | Effect |
 |---|---|
-| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The Python reference reads `WSCANNER_DB`, default `…/wscanner/wscanner.db`; the schema is the same |
+| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The retired Python implementation's cache (`WSCANNER_DB`, default `…/wscanner/wscanner.db`) has the same schema |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
 | `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
@@ -68,14 +68,12 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
 | 130 | Interrupted (Ctrl-C) |
 
-`python/bin/wscanner` also runs the CA trust check before a machine scan; its failure counts as 1, and a 2 or 3 from the scan outranks it.
-
 ## `check --json`
 
 ```json
 {
   "schema": 1,
-  "impl": "python",
+  "impl": "rust",
   "version": "0.1.0",
   "checked": {"git repos": 12, "tools, runtimes and packages": 140},
   "unfixed": 3,
@@ -87,7 +85,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | Key | Type | Meaning |
 |---|---|---|
 | `schema` | int | Contract version, 1 |
-| `impl` | string | `python` or `rust` |
+| `impl` | string | `rust` (`python` from the retired reference implementation) |
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
 | `unfixed` | int | Applicable advisories with no released fix (not in `findings`) |
@@ -115,7 +113,7 @@ A source that couldn't be reached is a finding with `kind == "unchecked"`, `stat
 
 ## `tools --json`
 
-`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Python today: `osv-scanner`, `gitleaks`, `git`, `openssl` required; `brew`, `docker` optional. Rust today: `gitleaks`, `git`, `openssl` required; `brew`, `docker`, `rpm` optional. The list is per implementation and may shrink.
+`{"schema": 1, "impl": ..., "version": ..., "tools": [{"name", "required", "found", "path", "version", "purpose"}]}`. Today: `gitleaks`, `git`, `openssl` required; `brew`, `docker`, `rpm` optional. The list may shrink.
 
 ## Cache (SQLite)
 

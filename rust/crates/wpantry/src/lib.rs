@@ -1,12 +1,11 @@
 //! wpantry: inventory this machine and its git repos, check only what is
 //! installed or locked against OSV.dev, CISA KEV and endoflife.date, and
-//! cache the answers in a local SQLite database shared with the Python
-//! implementation.
+//! cache the answers in a local SQLite database whose schema the CLI contract
+//! fixes.
 //!
 //! The library has no global state and never prints: progress goes through
 //! the `log` callback a [`check::Scan`] is given, and the CLI owns stdout,
-//! stderr and exit codes. Modules map onto `python/wscanner/` one to one, so
-//! a parity diff can be traced to a file. The stable surface is the CLI
+//! stderr and exit codes. The stable surface is the CLI
 //! contract (`specs/cli-contract.md`), not this crate's API.
 
 pub mod apps;
@@ -53,13 +52,11 @@ pub const IMPL: &str = "rust";
 pub const SCHEMA: i64 = 1;
 
 /// The agent skill `wpantry skill` prints, in the crate so the published
-/// crate carries it. It started as `python/skill/wscanner/SKILL.md` and
-/// describes this binary.
+/// crate carries it; it describes this binary.
 pub const SKILL: &str = include_str!("../assets/SKILL.md");
 
 /// The bundled policy files, the defaults `--gitleaks-config`, `--licenses`
-/// and `--install-scripts` replace. Copies of `python/wscanner/defaults/`
-/// with the name changed (tests/assets.rs keeps them in step).
+/// and `--install-scripts` replace.
 pub mod defaults {
     pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");

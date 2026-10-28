@@ -147,17 +147,6 @@ git checkout v0.1.0                             # a release tag
 cargo build --release --locked                  # target/release/wpantry
 ```
 
-## The Python implementation
-
-The Python implementation is the reference the Rust port was checked against, and ops still runs it until phase 3 of [specs/01-rust-port.md](../../specs/01-rust-port.md) switches over. It needs Python 3.9+ and only the standard library:
-
-```bash
-git clone https://github.com/waffuruai/pantry.git
-pantry/python/bin/wscanner tools                # which external tools it found
-```
-
-It needs `osv-scanner` and `gitleaks`; with [mise](https://mise.jdx.dev), `mise bootstrap` in the checkout installs the pinned versions. Both implementations share the CLI and the JSON, and their caches use the same schema. Python's command is still `wscanner`, with its cache in `~/.cache/wscanner/` (`WSCANNER_DB`).
-
 ## Upgrade and uninstall
 
 With mise: `mise upgrade packslip:github.com/waffuruai/pantry`, or change the pinned version. Otherwise, install a newer release the same way, and verify it again. To uninstall, delete the binary; the cache is `~/.cache/wpantry/` (or `$XDG_CACHE_HOME/wpantry/`, or wherever `WPANTRY_DB` points) and can be deleted too.

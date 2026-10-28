@@ -475,7 +475,7 @@ mod tests {
         (e.into(), n.into(), v.into())
     }
 
-    // The Python test vectors (python/test_wscanner.py `Fixes`).
+    // The test vectors the Python implementation had (`Fixes`).
     #[test]
     fn semver_fix() {
         let r = rec(

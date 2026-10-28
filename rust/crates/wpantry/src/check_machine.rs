@@ -565,7 +565,7 @@ mod tests {
         Scan::new(Default::default(), Cache::open(Some(&d.path().join("w.db"))).unwrap(), net, &|_| {}, &|_| {})
     }
 
-    // The Python test vectors (python/test_wscanner.py `Mise`).
+    // The test vectors the Python implementation had (`Mise`).
     #[test]
     fn mise_behind_latest_release_warns_and_is_never_unattended() {
         let d = crate::system::TempDir::new("mise").unwrap();

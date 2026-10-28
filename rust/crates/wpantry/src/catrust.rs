@@ -1,6 +1,5 @@
 //! Is a certificate authority this machine trusts known to be compromised?
-//! (Python: `check-ca-trust.sh`, which `python/bin/wscanner` runs before a machine
-//! scan.) A trust store fails when openssl can build a path from one of the
+//! (On its own: `ca-trust/check-ca-trust.sh` in the repo.) A trust store fails when openssl can build a path from one of the
 //! distrusted intermediates in `assets/distrusted-ca/` (today: the eMudhra
 //! intermediates whose private keys leaked) to a root the store holds: the
 //! trust decision every OpenSSL-, LibreSSL-, pip- or Node-based client
@@ -236,7 +235,7 @@ pub fn check() -> Result<Vec<Store>> {
     let mut c = Checker::new(openssl.clone())?;
     let mut out = Vec::new();
     let mut add = |s: Option<Store>| out.extend(s);
-    let fix = "the bundled fix-ca-trust.sh (python/), or the OS's ca-certificates update";
+    let fix = "ca-trust/fix-ca-trust.sh from the pantry repo, or the OS's ca-certificates update";
     if MACOS {
         add(c.store("system", "/etc/ssl/cert.pem", Path::new("/etc/ssl/cert.pem"), &format!("Run {fix}")));
     } else {

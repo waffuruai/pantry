@@ -149,11 +149,15 @@ jobs:
 
       # The installer ships with the release it installs, attested like the
       # binaries: `releases/download/vX.Y.Z/install.sh` can't change later.
+      # install.sh.sha256 beside it is what waffuru.ai's release receiver
+      # checks before serving a pinned copy at waffuru.ai/pantry/install.sh;
+      # without it that deploy fails.
       - name: install.sh
         run: |
           sed "s/^DEFAULT_VERSION=\"latest\"$/DEFAULT_VERSION=\"$GITHUB_REF_NAME\"/" install.sh > dist/install.sh
           grep -q "^DEFAULT_VERSION=\"$GITHUB_REF_NAME\"$" dist/install.sh
           chmod 0755 dist/install.sh
+          (cd dist && sha256sum install.sh > install.sh.sha256 && cat install.sh.sha256)
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -176,7 +180,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum -c SHA256SUMS
+          sha256sum -c SHA256SUMS install.sh.sha256
           for f in wpantry-*; do
             case "$f" in *.sigstore.json) continue ;; esac
             gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"

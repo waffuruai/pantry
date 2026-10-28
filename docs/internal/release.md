@@ -10,7 +10,7 @@ A tag `vX.Y.Z` on `main`. Pushing it runs the release workflow:
 2. **build**, per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `universal-apple-darwin`): two checkouts at different paths, each built with [`rust/release/build.sh`](../../rust/release/build.sh) (`--locked`, the release profile, remapped paths, `SOURCE_DATE_EPOCH` from the commit). The two binaries must be byte-identical or the release stops. A smoke test runs each one.
 3. **publish**, after a maintainer approves the `release` environment:
    - It writes `SHA256SUMS`.
-   - It copies `install.sh` with the release's tag stamped in as its default version.
+   - It copies `install.sh` with the release's tag stamped in as its default version, and writes `install.sh.sha256` beside it for waffuru.ai's release receiver, which serves a verified, pinned copy at `https://waffuru.ai/pantry/install.sh`.
    - It makes a GitHub build-provenance attestation for each binary and `install.sh`, and a cosign keyless bundle for each binary.
    - It verifies all of that the way users will, then creates the GitHub release with generated notes.
    - It publishes `wpantry`, then `wpantry-cli`, to crates.io through trusted publishing.

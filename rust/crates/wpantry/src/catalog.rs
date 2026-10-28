@@ -48,7 +48,7 @@ pub struct Tool {
 }
 
 pub const MISE_REPO: &str = "jdx/mise";
-pub const MISE_FIX: &str = "mise: manual, see ops MISE_VERSION (make install-mise)";
+pub const MISE_FIX: &str = "mise: manual, bump MISE_VERSION in ops, then rerun its scripts/bootstrap.sh";
 pub const NODE_DIRS: &[&str] = &[
     "~/.nvm/versions/node/*/bin",
     "~/.volta/tools/image/node/*/bin",
@@ -304,7 +304,7 @@ pub const TOOLS: &[Tool] = &[
         eol: None,
         always: true,
         paths: &["~/.local/bin"],
-        fix: "mise: manual, see ops MISE_VERSION (make install-mise)",
+        fix: "mise: manual, bump MISE_VERSION in ops, then rerun its scripts/bootstrap.sh",
     },
     Tool {
         name: "rustup",

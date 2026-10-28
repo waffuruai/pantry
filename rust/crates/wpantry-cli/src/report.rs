@@ -5,7 +5,7 @@ use wpantry::check::{Finding, Outcome};
 use wpantry::system::short;
 use wpantry::versions;
 
-pub const MISE_FIX: &str = "mise: manual, see ops MISE_VERSION (make install-mise)";
+pub const MISE_FIX: &str = "mise: manual, bump MISE_VERSION in ops, then rerun its scripts/bootstrap.sh";
 
 /// Many packages inside one thing: one entry per thing.
 fn bundle(kind: &str) -> Option<&'static str> {

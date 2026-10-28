@@ -2,7 +2,9 @@
 //! declared licenses, judged against an allowlist of SPDX ids. A package
 //! passes when its license expression can be satisfied with allowed ids
 //! (`MIT OR GPL-3.0-only` passes an allowlist holding MIT); one with no
-//! identifiable license is only counted, as the Python implementation does.
+//! identifiable license is only counted. deps.dev's `non-standard` (custom
+//! terms, such as a license that needs a company licence) is a license no
+//! allowlist holds, so it is reported, not counted as unknown.
 //! deps.dev covers npm, PyPI, crates.io, Go, Maven, NuGet and RubyGems; the
 //! rest count as unknown. Answers are cached for 30 days.
 
@@ -93,12 +95,16 @@ fn atom(t: &[&str], i: &mut usize, allowed: &[String]) -> Option<bool> {
     Some(allowed.iter().any(|a| a.eq_ignore_ascii_case(id)))
 }
 
+/// deps.dev lookups in flight at once: a first run asks about every locked
+/// package, thousands of small GETs.
+const PARALLEL: usize = 16;
+
 /// The licenses deps.dev declares for one package version (empty when
 /// unknown), cached.
 fn fetch(net: &dyn Net, sys: &str, name: &str, version: &str) -> Result<Vec<String>> {
     let url = format!("{API}/{sys}/packages/{}/versions/{}", segment(name), segment(version));
     let Some(v) = net::get_json(net, &url, &[])? else { return Ok(Vec::new()) };
-    Ok(json::strs_at(&v, "licenses").into_iter().filter(|l| !l.is_empty() && l != "non-standard").collect())
+    Ok(json::strs_at(&v, "licenses").into_iter().filter(|l| !l.is_empty()).collect())
 }
 
 /// One package's verdict: None passes, Some(["UNKNOWN"]) has no license we
@@ -119,7 +125,7 @@ pub fn judge(licenses: &[String], allowed: &[String]) -> Option<Vec<String>> {
 }
 
 /// Licenses for many (ecosystem, name, version), cached for 30 days and
-/// fetched at most 8 at a time. Packages deps.dev doesn't cover map to [].
+/// fetched at most [`PARALLEL`] at a time. Packages deps.dev doesn't cover map to [].
 /// `Offline` when none could be fetched and nothing was cached.
 pub fn lookup(
     cache: &Cache,
@@ -148,7 +154,7 @@ pub fn lookup(
     let failed = Mutex::new(None);
     let queue = Mutex::new(todo.iter());
     std::thread::scope(|s| {
-        for _ in 0..8.min(todo.len()) {
+        for _ in 0..PARALLEL.min(todo.len()) {
             s.spawn(|| {
                 while let Some(&i) = { queue.lock().expect("lock").next() } {
                     let (e, n, v) = &items[i];
@@ -203,6 +209,7 @@ mod tests {
         assert_eq!(judge(&[], &allow), Some(ids(&["UNKNOWN"])));
         assert_eq!(judge(&ids(&["GPL-3.0-only"]), &allow), Some(ids(&["GPL-3.0-only"])));
         assert_eq!(judge(&ids(&["GPL-3.0-only", "MIT"]), &allow), None);
+        assert_eq!(judge(&ids(&["non-standard"]), &allow), Some(ids(&["non-standard"])), "custom terms need review");
     }
 
     #[test]

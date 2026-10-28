@@ -1,12 +1,11 @@
 //! Print the findings, and plan or apply the fixes (`wpantry --update`).
-//! The same report the Python implementation prints, line for line.
 
 use std::collections::HashSet;
 use wpantry::check::{Finding, Outcome};
 use wpantry::system::short;
 use wpantry::versions;
 
-pub const MISE_FIX: &str = "mise: manual, see ops MISE_VERSION (make install-mise)";
+pub const MISE_FIX: &str = "mise: manual, bump MISE_VERSION in ops, then rerun its scripts/bootstrap.sh";
 
 /// Many packages inside one thing: one entry per thing.
 fn bundle(kind: &str) -> Option<&'static str> {
@@ -447,7 +446,7 @@ mod tests {
         }
     }
 
-    // The Python test vectors (python/test_wscanner.py `Plan` and `Mise`).
+    // The test vectors the Python implementation had (`Plan` and `Mise`).
     #[test]
     fn plan_dedupes_and_splits() {
         let (auto, manual, optional) = plan(&[

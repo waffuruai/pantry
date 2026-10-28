@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$SCRIPT_DIR/check-ca-trust.sh"
 FIX="$SCRIPT_DIR/fix-ca-trust.sh"
-ROOTS="$SCRIPT_DIR/distrusted-ca/roots.pem"
+ROOTS="$SCRIPT_DIR/../rust/crates/wpantry/assets/distrusted-ca/roots.pem"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

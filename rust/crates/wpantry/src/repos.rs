@@ -372,7 +372,7 @@ mod tests {
         path.to_path_buf()
     }
 
-    // The Python Scope tests (python/test_wscanner.py `Scope`).
+    // The Scope tests the Python implementation had (`Scope`).
     #[test]
     fn default_scope_walks_home_and_prunes_caches() {
         let tmp = TempDir::new("scope").unwrap();

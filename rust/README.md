@@ -1,6 +1,6 @@
 # wpantry in Rust
 
-The Rust port of wpantry: a `0.x` library crate and the `wpantry` binary, behind the same [CLI contract](../specs/cli-contract.md) as [`python/`](../python/), which stays the reference implementation until this one ships. The plan is [specs/01-rust-port.md](../specs/01-rust-port.md); the detail (extractors, ecosystem strings, comparators, dependencies) is [specs/design/rust-port.md](../specs/design/rust-port.md).
+wpantry: a `0.x` library crate and the `wpantry` binary, behind the [CLI contract](../specs/cli-contract.md). It was ported from the Python implementation (`wscanner`), which was removed on 2026-10-28 once the parity runs below showed nothing it reported that this one misses. The plan is [specs/01-rust-port.md](../specs/01-rust-port.md); the detail (extractors, ecosystem strings, comparators, dependencies) is [specs/design/rust-port.md](../specs/design/rust-port.md).
 
 ```
 rust/
@@ -23,12 +23,11 @@ cargo test --locked                    # unit, golden-file and comparator-vector
 cargo clippy --locked --all-targets -- -D warnings && cargo fmt --check
 cargo deny --locked check && cargo vet --locked   # the supply-chain gates (S2): cargo-deny 0.20.2, cargo-vet 0.10.2
 
-# The contract suite, against this binary or the Python one (from the repo root):
+# The contract suite against this binary (from the repo root; `mise run contract` builds first):
 WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
-WPANTRY=python/bin/wscanner mise run contract
 ```
 
-CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `contract-python`, `rust-supply-chain`).
+CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `rust-supply-chain`; `test` runs the `ca-trust/` scripts and `install.sh`).
 
 ## Where the port stands
 
@@ -50,17 +49,28 @@ Phases 0–2 are written: the workspace, the contract suite (passing on both imp
 
 Not done yet, and why:
 
-- **F3 parity**: the `check --json` diff against Python on the org repos and in Debian, Alpine and openSUSE containers needs api.osv.dev, which the environment the port was written in couldn't reach. Python stays the reference until that diff is empty.
-- **P1, P2**: warm and cold run times on a developer Mac.
-- **Phase 3**: the first tag runs `.github/workflows/release.yml` (the S3 and S4 evidence for every target); then ops pins the artifact and `python/` is deleted. Each step is the owner's call; the playbook is [docs/internal/release.md](../docs/internal/release.md).
+- **Phase 3**: the first tag runs `.github/workflows/release.yml` (the S3 and S4 evidence for every target); then ops pins the artifact. Each step is the owner's call; the playbook is [docs/internal/release.md](../docs/internal/release.md).
 
-## Known differences from Python
+**F3 parity, 2026-10-28.** Python (`wscanner`) and this binary at the same commit, `check --json` with ops' policy files and separate fresh caches, on a developer Mac (16 org repos, 80 apps, 128 Homebrew formulae, local images) and inside Debian 13, Ubuntu 24.04, Alpine 3.22 and openSUSE Leap 15.6 containers (current images and older point releases with fixable advisories: Debian 13.0, Ubuntu 24.04.2, Alpine 3.22.0, Leap 15.5), on arm64 and x86-64. Nothing Python reported was missed. The runs found three bugs, fixed with regression tests: an alias group's fix was the lowest of its records' (Ubuntu's incomplete USN-8477-1 for tar, where the CVE's record needs 0ubuntu0.4); images reported the kernel's source package, present only as headers (2,232 findings on one Debian image); and a license deps.dev calls `non-standard` was counted unknown instead of reported (Remotion's). What still differs is in the list below. In the containers both took 9 to 43 s cold and wpantry 1 to 3 s warm.
+
+**Speed (P1, P2), 2026-10-28.** On a developer Mac over the org workspace (16 repos, `--licenses`, local images), each run alone: a warm run takes 4 to 5 s (Python: 28 s), a cold one 136 to 149 s (Python: 183 s). Almost none of it is CPU: a run waits on subprocesses (tool versions, npm, Python, openssl, gitleaks, Homebrew) and on HTTP (OSV, deps.dev). So independent probes run at once (`system::par_map`, results kept in order), the trust stores and Software Update run beside the inventory, gitleaks scans stale repos while the dependency checks wait on the network, the HTTP pool keeps a connection per parallel fetch, and folders are read where a command would only list them (the Homebrew Cellar and Caskroom, `npm root -g`). A cold run's floor is the network (6,620 deps.dev lookups, OSV) and exporting container images; a warm run's is npm and the tool probes.
+
+## Differences from the Python implementation
+
+What a caller moving from `wscanner` sees.
+
 
 - **The report** groups findings by kind, one line each (`name version (location) - (ID KEV SEVERITY) Description. Fix: …`), then what couldn't be checked; Python prints one block per component. A **progress line** (spinner, current step or file, elapsed time) is drawn on stderr while scanning, only when stderr is a terminal. Neither is part of the contract, which covers `--json`.
 
 - **Ctrl-C** ends the process by the signal instead of exiting 130.
 - **Lockfile packages** are read by wpantry, not osv-scanner. Workspace members and local packages (package-lock entries outside `node_modules/`, Cargo packages without a crates.io source, uv's editable and virtual packages, path and `file:` dependencies in the other lockfiles, Composer `path` repositories, private Hex organizations, Conan `@user/channel` recipes) are not sent to OSV, so a local package that shares a name with a published one can't raise a false finding. `requirements*.txt` counts `==` pins only, where osv-scanner also queries the lower bound of a `>=` range; PyPI names from requirements files and `Pipfile.lock` are PEP 503-normalized.
 - **The fixed version** a finding recommends is chosen with the ecosystem's own comparator (semver, PEP 440, dpkg, …) where Python uses one generic order; they agree except on versions the generic order gets wrong.
+- **An alias group's fix** is the version that repairs every record in it. Python took the lowest of them, so it could recommend an update that leaves the CVE open (glibc on Ubuntu 24.04: 8.6 where the CVE's record needs 8.7).
+- **Advisory ids.** Records are grouped by id, aliases and upstream CVE, and a group is named by its bare CVE when a record carries one, else by its first record. The same advisories can carry another name than Python's (`UBUNTU-CVE-…` for `USN-…`, `GHSA-…` for `RUSTSEC-…`), and two advisories Ubuntu shipped in one USN can be two findings with the same fix.
+- **OS packages** are reported under their source package and version (dpkg `Source:`, apk origin), the names OSV matches: a binNMU shows `4.9-2` where Python showed the binary's `4.9-2+b1`. The counts in `checked` are source packages too.
+- **The CA trust check** is part of the scan: its results are findings (kind `config`) in the JSON, where Python printed them on stderr before the scan.
+- **SUSE** hosts are read through `rpm`; Python read no packages there.
+- **Container images** leave out the kernel's source package (`linux`, shipped only as `linux-libc-dev` headers): a container runs on the host's kernel. Images whose packages it can't read (rpm-based) are reported unchecked.
 - **`vuln_etag:<id>`** meta keys hold the ETags of downloaded OSV records, and **`image-packages:<id>`** runs entries an image's packages (Python's `image:<id>` holds osv-scanner's result in another shape, so Rust neither reads nor writes it). Both are additive cache keys.
 - **Missing evidence is never clean.** These differ from Python on purpose, after review on the port's PR; each has a regression test:
   - An OSV answer older than a day that couldn't be refreshed (OSV down, or `--offline`), and an advisory OSV names but can't serve (404, a body that isn't the record), are reported unchecked; the findings they do give still stand. A `querybatch` answer that isn't an object is an error, not "no advisories". (Python reuses the stale answer and drops the missing record silently.)
@@ -80,4 +90,4 @@ Not done yet, and why:
 - Every dependency pinned `=x.y.z`, at a release at least two weeks old when pinned unless a security fix needs a newer one (rustls 0.23.46, for the advisories `cargo deny` raised against 0.23.45); `Cargo.lock` committed; builds use `--locked`.
 - `cargo deny` and `cargo vet` gate every merge; the rustls tree is reviewed at every bump.
 - Parsers, comparators, argument parsing, SHA-256 and civil dates are written here, with golden files and upstream test vectors (`crates/wpantry/tests/vectors/`).
-- The default policy files and the distrusted CA certificates are copied into `crates/wpantry/assets/` so the crate packages on its own; `tests/assets.rs` fails when they drift from `python/` (allowing for the name). The agent skill there describes the Rust binary and is not compared. Each crate carries a copy of the repository's `LICENSE`, also checked by `tests/assets.rs`.
+- The default policy files, the distrusted CA certificates and the agent skill live in `crates/wpantry/assets/` so the crate packages on its own; `ca-trust/` reads the certificates from there. Each crate carries a copy of the repository's `LICENSE`, checked by `tests/assets.rs`.

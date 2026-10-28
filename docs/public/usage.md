@@ -90,7 +90,7 @@ The (Python) implementation prints the same findings as one block per component.
 
 ```json
 {
- "schema": 1, "impl": "rust", "version": "0.1.1",
+ "schema": 1, "impl": "rust", "version": "0.2.0",
  "checked": {"git repos": 12, "project dependencies": 1820},
  "unfixed": 3, "unknown_licenses": 0,
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
@@ -108,7 +108,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
 | `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
-| `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default |
+| `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
 

@@ -3,7 +3,6 @@ binary named by WPANTRY with a temp HOME and cache, offline, and check only
 its stdout, stderr, exit codes and cache file. Every implementation must pass
 (specs/01-rust-port.md F2). Standard library only, Python 3.9+:
 
-    WPANTRY=python/bin/wscanner python3 -m unittest discover -s tests/contract
     WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
 """
 
@@ -20,10 +19,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BIN = Path(os.environ.get("WPANTRY") or ROOT / "python" / "bin" / "wscanner")
+BIN = Path(os.environ.get("WPANTRY") or ROOT / "rust" / "target" / "release" / "wpantry")
 if not BIN.is_absolute():
     BIN = (ROOT / BIN).resolve()
-# The name the binary goes by: `wpantry` (Rust), `wscanner` (the Python reference).
+# The name the binary goes by, which its skill and errors carry.
 NAME = BIN.name
 
 ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
@@ -64,7 +63,7 @@ class Contract(unittest.TestCase):
         self.home = Path(self.tmp.name, "home")
         self.home.mkdir()
         self.db = Path(self.tmp.name, "cache", "w.db")
-        self.env = dict(os.environ, HOME=str(self.home), WPANTRY_DB=str(self.db), WSCANNER_DB=str(self.db), NO_COLOR="1")
+        self.env = dict(os.environ, HOME=str(self.home), WPANTRY_DB=str(self.db), NO_COLOR="1")
         self.env.pop("XDG_CACHE_HOME", None)
 
     def run_bin(self, *argv, env=None, timeout=300):
@@ -127,7 +126,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.run_bin("check", "--help")[0], 0)
 
     def test_exit_3_when_the_cache_cant_be_opened(self):
-        env = dict(self.env, WPANTRY_DB="/dev/null/w.db", WSCANNER_DB="/dev/null/w.db")
+        env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
         code, _, err = self.run_bin("search", "x", env=env)
         self.assertEqual(code, 3)
         self.assertIn(f"{NAME}:", err)
@@ -193,7 +192,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(env["unknown_licenses"], 0)
         allow = Path(self.tmp.name, "licenses.txt")
         allow.write_text("MIT\n")
-        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"]):
+        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"], ["--license"],
+                      ["--license", str(allow)]):
             code, _, err = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", *extra)
             self.assertNotEqual(code, 2, (extra, err))
 

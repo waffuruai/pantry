@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
 # Fail when a trust store on this machine still trusts an intermediate CA in
-# distrusted-ca/ (today: the eMudhra intermediates whose private keys leaked,
-# https://emudhra.we-have-a-problem.com/). bin/wscanner runs it before every
-# machine scan.
+# the crate's assets/distrusted-ca/ (today: the eMudhra intermediates whose
+# private keys leaked, https://emudhra.we-have-a-problem.com/). `wpantry check`
+# makes the same check on every machine scan (catrust.rs); this is the check
+# on its own, beside fix-ca-trust.sh, which repairs what it finds.
 #
 # A store fails when openssl can build a path from one of those intermediates
 # to a root it holds, which is the trust decision every OpenSSL-, LibreSSL-,
 # pip- or Node-based client makes. Rust crates that embed roots (webpki-roots)
-# are covered by the CVE scan, bin/wscanner.py.
+# are covered by wpantry's CVE scan.
 #
 # Usage: check-ca-trust.sh [--bundle FILE]   (--bundle checks one PEM bundle)
 
@@ -18,7 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=ca-common.sh
 source "$SCRIPT_DIR/ca-common.sh"
 
-CA_DIR="$SCRIPT_DIR/distrusted-ca"
+# The certificates the wpantry crate embeds, so there is one copy.
+CA_DIR="$(cd "$SCRIPT_DIR/../rust/crates/wpantry/assets/distrusted-ca" && pwd)"
 
 require_cmd openssl
 

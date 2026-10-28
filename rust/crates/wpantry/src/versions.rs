@@ -180,7 +180,7 @@ pub fn same_or_newer(installed: &str, latest: &str) -> bool {
 mod tests {
     use super::*;
 
-    // The Python test vectors (python/test_wscanner.py `Versions`).
+    // The test vectors the Python implementation had (`Versions`).
     #[test]
     fn order() {
         assert!(lt("1.2.3", "1.2.10"));

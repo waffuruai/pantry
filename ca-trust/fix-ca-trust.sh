@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Distrust the roots in distrusted-ca/roots.pem in the system trust
+# Distrust the roots in the crate's distrusted-ca/roots.pem in the system trust
 # store, the advisory's workaround (https://emudhra.we-have-a-problem.com/)
 # matched by fingerprint. Needs root (uses sudo). Updating the OS's
 # ca-certificates package is the real fix; this is for until it ships.
@@ -8,7 +8,7 @@
 #   macOS   rewrites /etc/ssl/cert.pem, which OpenSSL and LibreSSL tools read
 #           and macOS updates have not fixed. The original is kept once as
 #           cert.pem.orig; a macOS update may restore the file, so re-run
-#           after one (wscanner says).
+#           after one (wpantry says).
 #   Linux   uses the distro's own mechanism, so its next trust store rebuild
 #           keeps the roots out: `!` lines in /etc/ca-certificates.conf
 #           (Debian, Ubuntu, Alpine) or the p11-kit blocklist (Fedora, RHEL,
@@ -23,7 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=ca-common.sh
 source "$SCRIPT_DIR/ca-common.sh"
 
-CA_DIR="$SCRIPT_DIR/distrusted-ca"
+# The certificates the wpantry crate embeds, so there is one copy.
+CA_DIR="$(cd "$SCRIPT_DIR/../rust/crates/wpantry/assets/distrusted-ca" && pwd)"
 
 require_cmd openssl
 

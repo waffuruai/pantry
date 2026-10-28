@@ -99,7 +99,7 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
 
 /// Every catalog tool found, plus nvm, one entry per install.
 pub fn tools() -> Vec<Component> {
-    let mut found: Vec<Component> = TOOLS.iter().flat_map(|t| find(t, &[])).collect();
+    let mut found: Vec<Component> = system::par_map(TOOLS, system::PROBES, |t| find(t, &[])).concat();
     found.extend(nvm());
     dedupe(found)
 }
@@ -154,7 +154,7 @@ mod tests {
             let t = TOOLS.iter().find(|t| t.name == name).unwrap();
             Regex::with_flags(t.pattern, "m").search(out).map(|c| c.get(1).to_string())
         };
-        // The Python test vector (python/test_wscanner.py `Mise.test_version_and_tag`).
+        // The test vector the Python implementation had (`Mise.test_version_and_tag`).
         assert_eq!(read("mise", "2026.10.19 macos-arm64 (2026-10-24)").as_deref(), Some("2026.10.19"));
         assert_eq!(read("node", "v24.11.1\n").as_deref(), Some("24.11.1"));
         assert_eq!(read("go", "go1.24.7\n").as_deref(), Some("1.24.7"));

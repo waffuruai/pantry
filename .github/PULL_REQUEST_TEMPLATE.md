@@ -41,7 +41,7 @@ subsystem. Skip mechanical things (whitespace, lint). -->
 <!-- How you verified this works. Required for behavior changes. -->
 
 - [ ] `mise run test` and `mise run lint` pass locally
-- [ ] Added/updated tests in `python/test_wscanner.py`
+- [ ] Added/updated tests (`cargo test --locked` in `rust/`, offline)
 - [ ] Manual verification (describe below)
 
 <details>

@@ -362,16 +362,21 @@ impl<'a> Scan<'a> {
                 });
                 continue;
             }
-            let fixes: Vec<String> = group.iter().flat_map(|r| osv::fixed_versions(r, &eco, &pkg, newer)).collect();
-            if fixes.is_empty() {
-                self.unfixed += 1;
-                continue;
-            }
             // Only a fix newer than what's installed repairs it. Fixes that are
             // all older end an earlier interval: the installed version's own
             // (reintroduced) interval has none, so it counts as unfixed rather
-            // than recommending a downgrade.
-            let Some(safe) = versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b)) else {
+            // than recommending a downgrade. Each record names its own fix, and
+            // only the highest of them repairs the group: a distro's first,
+            // incomplete update and its CVE record are aliases with different
+            // fixes (Ubuntu's USN-8477-1 for tar, then UBUNTU-CVE-2026-5704).
+            let safe = group
+                .iter()
+                .filter_map(|r| {
+                    let fixes = osv::fixed_versions(r, &eco, &pkg, newer);
+                    versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b))
+                })
+                .max_by(|a, b| order.cmp(a, b));
+            let Some(safe) = safe else {
                 self.unfixed += 1;
                 continue;
             };
@@ -483,6 +488,32 @@ mod tests {
             ("MAL-1", "MALICIOUS", "known malicious package")
         );
         assert_eq!(m.fix_cmd, "Remove rustls now, then rotate any credentials this machine holds");
+    }
+
+    /// Ubuntu's first tar update for CVE-2026-5704 (USN-8477-1, 0ubuntu0.1)
+    /// was incomplete; the CVE's own record, an alias, is fixed in 0ubuntu0.4.
+    /// The group's fix is the one that repairs both records.
+    #[test]
+    fn a_group_is_fixed_by_the_version_that_fixes_every_record() {
+        let net = Fake::offline();
+        let dir = crate::system::TempDir::new("check").unwrap();
+        let mut s = scan(&net, &dir);
+        let (eco, installed) = ("Ubuntu:24.04:LTS", "1.35+dfsg-3build1");
+        let mut c = Component::new("os", "tar", installed, "/var/lib/dpkg/status");
+        c.osv = Some((eco.into(), "tar".into(), installed.into()));
+        let rec = |id: &str, upstream: &str, fixed: &str| {
+            json!({"id": id, "upstream": [upstream], "affected": [{"package": {"ecosystem": eco, "name": "tar"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": fixed}]}]}]})
+        };
+        let recs = vec![
+            rec("USN-8477-1", "UBUNTU-CVE-2026-5704", "1.35+dfsg-3ubuntu0.1"),
+            rec("UBUNTU-CVE-2026-5704", "CVE-2026-5704", "1.35+dfsg-3ubuntu0.4"),
+        ];
+        let groups = osv::group_by_alias(&recs);
+        assert_eq!(groups.len(), 1);
+        assert!(s.advisories(&c, &[], None, "fail", Some(groups)));
+        assert_eq!(s.findings.len(), 1);
+        assert_eq!(s.findings[0].fixed, "1.35+dfsg-3ubuntu0.4");
     }
 
     /// Installed 2.0.0, where an advisory was fixed in 1.5.0 and came back

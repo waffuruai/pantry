@@ -337,6 +337,7 @@ pub fn images(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
         if !gaps.is_empty() {
             scan.unchecked(&format!("image {r}"), &gaps.join("; "));
         }
+        let pkgs: Vec<_> = pkgs.into_iter().filter(|p| !crate::images::host_kernel(p)).collect();
         scan.count("image packages", pkgs.len() as i64);
         let items: Vec<Item> = pkgs.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())).collect();
         let answers = scan.lookup(&items, &format!("image {r} against OSV"))?;
@@ -619,7 +620,7 @@ pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result
 mod tests {
     use super::*;
 
-    // The Python test vectors (python/test_wscanner.py `Plan.test_project_fixes_stay_manual_and_per_ecosystem`).
+    // The test vectors the Python implementation had (`Plan.test_project_fixes_stay_manual_and_per_ecosystem`).
     #[test]
     fn project_fixes_stay_manual_and_per_ecosystem() {
         assert_eq!(

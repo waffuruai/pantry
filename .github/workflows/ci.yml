@@ -1,9 +1,8 @@
 name: CI
 
-# The Python scanner's offline tests on the oldest (3.9, what a fresh Mac
-# has) and a current Python, on Linux and macOS, plus shell and workflow lint;
-# the Rust port's build, tests and supply-chain gates; and the CLI contract
-# suite against both implementations (specs/01-rust-port.md, phase 0).
+# wpantry's build, tests and supply-chain gates and the CLI contract suite
+# against the binary, on Linux and macOS (specs/01-rust-port.md); the CA trust
+# scripts and install.sh on both; shell and workflow lint.
 on:
   pull_request:
   push:
@@ -21,60 +20,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What the Rust job doesn't cover: the CA trust scripts and install.sh.
   test:
-    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ["3.9", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The 3.9 leg tests the interpreter users have: macOS's own
-      # /usr/bin/python3 is 3.9, and Linux gets 3.9 from setup-python. The
-      # 3.15 leg tests the python pinned in mise.toml.
-      - if: ${{ matrix.python == '3.9' && runner.os != 'macOS' }}
-        id: setup-python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.9"
-
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
-          install: ${{ matrix.python == '3.15' }}
-          install_args: python
+          install: false
           cache: true
 
-      # Tasks see only mise's tool directories and the base system, so a tool
-      # missing from mise.toml fails here; the 3.9 interpreter is named
-      # explicitly through WPANTRY_PYTHON, by path: mise-action puts the
-      # pinned python ahead of setup-python's on PATH.
-      - name: Pick the Python under test and cut PATH
-        env:
-          WANT: ${{ matrix.python }}
-          SETUP_PYTHON: ${{ steps.setup-python.outputs.python-path }}
-        run: |
-          case "$WANT/$RUNNER_OS" in
-            3.9/macOS) py=/usr/bin/python3 ;;
-            3.9/*) py="$SETUP_PYTHON" ;;
-            *) py="$(mise which python3)" ;;
-          esac
-          "$py" -c 'import sys, os; v = os.environ["WANT"]; assert "%d.%d" % sys.version_info[:2] == v, sys.version'
-          echo "WPANTRY_PYTHON=$py" >> "$GITHUB_ENV"
-          echo "TASK_PATH=$(dirname "$(command -v mise)"):/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
-
-      - name: unittest
-        run: PATH="$TASK_PATH" mise run test unit
+      # Tasks see only mise and the base system, so a tool missing from
+      # mise.toml fails here.
+      - name: Cut PATH to mise and the base system
+        run: echo "TASK_PATH=$(dirname "$(command -v mise)"):/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
 
       - name: CA trust test
-        if: ${{ matrix.python == '3.15' }}
         run: PATH="$TASK_PATH" mise run test ca-trust
 
       - name: install.sh test
-        if: ${{ matrix.python == '3.15' }}
         run: PATH="$TASK_PATH" mise run test install
 
   # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
@@ -102,7 +73,7 @@ jobs:
       # The path and the mount below are the ops image's workspace layout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: wscanner
+          path: pantry
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,13 +96,13 @@ jobs:
           cache-from: type=gha,scope=ops-bootstrap
           cache-to: type=gha,mode=max,scope=ops-bootstrap
 
-      # The checkout goes in the image's workspace, which mise trusts; the
-      # image installs nothing behind a task's back, so python comes first.
+      # The checkout goes in the image's workspace, which mise trusts. The
+      # Rust job builds and tests wpantry; here, the shell tests.
       - name: mise run test
         run: |
-          docker run --rm -v "$PWD/wscanner:/home/waffuru/waffuru/wscanner" \
-            -w /home/waffuru/waffuru/wscanner "$IMAGE" \
-            bash -ec 'mise install python && mise run test'
+          docker run --rm -v "$PWD/pantry:/home/waffuru/waffuru/pantry" \
+            -w /home/waffuru/waffuru/pantry "$IMAGE" \
+            bash -ec 'mise run test ca-trust && mise run test install'
 
   lint:
     name: Lint
@@ -206,24 +177,6 @@ jobs:
         working-directory: .
         env:
           WPANTRY: rust/target/release/wpantry
-        run: python3 -m unittest discover -s tests/contract -v
-
-  # The same contract suite against the Python implementation, which defines
-  # the contract until the Rust one replaces it.
-  contract-python:
-    name: Contract (python, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: contract tests (python)
-        env:
-          WPANTRY: python/bin/wscanner
         run: python3 -m unittest discover -s tests/contract -v
 
   # S2: cargo deny (advisories, crates.io-only sources, license allowlist)

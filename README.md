@@ -13,7 +13,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | See what your AI coding tools actually run | Claude Code, Codex, Cursor, Gemini CLI and other harnesses: their MCP servers (unpinned ones warn), plugins, skills and bundled npm packages |
 | Keep the OS, browsers and apps current | macOS Software Update, Debian/Ubuntu/Alpine/openSUSE packages, dnf distros, Arch; Chrome, Firefox; Electron apps; other apps against the Homebrew cask catalog |
 | Know when a runtime stops getting fixes | End-of-life dates for runtimes and datastores |
-| Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against `python/distrusted-ca/` |
+| Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
 | Review supply-chain risk | Dependency licenses outside an allowlist, npm install scripts, container images your repos build from |
 | Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |
 
@@ -27,8 +27,6 @@ curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.
 Both verify the release before installing: mise against the release's signed packslip, and `install.sh` against `SHA256SUMS` and a signature (packslip, `gh` or `cosign`, whichever you have). [docs/public/install.md](docs/public/install.md) has the details, manual verification, crates.io and building from source. Releases cover macOS (one binary for Apple silicon and Intel) and Linux (x86-64 and arm64, static); Windows: [#11](https://github.com/waffuruai/pantry/issues/11). Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10).
 
 `wpantry tools` lists the external tools it uses (`git`, `gitleaks`, `openssl`; `brew` and `docker` when present) and which are missing.
-
-The Python reference implementation, `python/bin/wscanner` (Python 3.9+, standard library only), is what ops runs until the switch in [specs/01-rust-port.md](specs/01-rust-port.md). It shares the CLI and JSON.
 
 ## Usage
 
@@ -62,13 +60,13 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 ## Development
 
 ```bash
-mise bootstrap   # the pinned tools, then `python/bin/wscanner tools` to confirm them
-mise run test    # offline unit tests, the CA trust test and the install.sh test
+mise bootstrap   # the pinned tools, then build wpantry and run `wpantry tools` to confirm them
+mise run test    # the Rust tests, the CA trust test and the install.sh test, offline
 ```
 
-`mise tasks ls` lists the rest: `mise run test unit`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the Python implementation), and `mise run check` (the Python implementation's check with the pinned tools; flags after `--`). The Rust port builds and tests with `cargo` in `rust/` ([rust/README.md](rust/README.md)).
+`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md)); the standalone CA trust check and fix are in `ca-trust/`.
 
-The CLI contract every implementation keeps is [specs/cli-contract.md](specs/cli-contract.md); all specs are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+The CLI contract wpantry keeps is [specs/cli-contract.md](specs/cli-contract.md); all specs are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 

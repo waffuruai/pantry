@@ -563,7 +563,7 @@ mod tests {
         (d, c)
     }
 
-    // The Python test vector (python/test_wscanner.py `Parsers.test_postgres_table`).
+    // The test vector the Python implementation had (`Parsers.test_postgres_table`).
     #[test]
     fn postgres_table() {
         let page = "<table><tr><th>Reference</th></tr><tr><td><a>CVE-2026-19385</a> <a>Announcement</a></td><td>18, 17, 16</td><td>18.6, 17.11, 16.15</td><td>core server<br>8.8<br>AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</td><td>Heap overflow <a>more details</a></td></tr><tr><td>client</td><td>legend row</td></tr></table>";

@@ -1,58 +1,63 @@
 # Development toolchain, pinned, and the tasks that use it. `mise bootstrap` installs all of it
 # (checksummed through mise's aqua registry) and runs the `bootstrap` task; `mise run test` runs the
 # suites; `mise tasks ls` lists the rest. CI installs the same pins with jdx/mise-action and runs the
-# same tasks. The scanner itself only needs the Python 3.9+ a fresh Mac ships, so this file is for
-# contributors and CI, not users. Keep the pins equal to ops' mise.toml.
-# See ops planning/specs/02-mise-bootstrap.md.
+# same tasks. Rust comes from rustup, at the toolchain rust/rust-toolchain.toml pins. wpantry itself
+# needs only gitleaks, git and openssl, so this file is for contributors and CI, not users. Keep the
+# pins equal to ops' mise.toml. See ops planning/specs/02-mise-bootstrap.md.
 [tools]
-python = "3.15.1"
-osv-scanner = "2.7.0"
-gitleaks = "8.30.1"
+python = "3.15.1"   # the CLI contract suite, tests/contract
+gitleaks = "8.30.1" # wpantry's secret scan
 shellcheck = "0.11.0"
 actionlint = "1.7.12"
 
+# A global mise rust sets RUSTUP_TOOLCHAIN, which would win over rust/rust-toolchain.toml.
+[tasks.build]
+description = "Build wpantry (rust/target/release/wpantry) on the toolchain rust/rust-toolchain.toml pins"
+dir = "rust"
+run = "env -u RUSTUP_TOOLCHAIN cargo build --locked --release"
+
 [tasks.bootstrap]
-description = "Setup after mise installs [tools]: confirm the scanner finds them (python/bin/wscanner tools)"
-run = "python/bin/wscanner tools"
+description = "Setup after mise installs [tools]: build wpantry and confirm it finds what it needs (wpantry tools)"
+depends = ["build"]
+run = "rust/target/release/wpantry tools"
 
 [tasks.test]
-description = "Test suites; `all` (the default) is the offline unit tests, the CA trust test and the install.sh test"
+description = "Test suites; `all` (the default) is the Rust tests, the CA trust test and the install.sh test"
 usage = '''
-arg "[suite]" default="all" help="all, unit, ca-trust or install" {
-  choices "all" "unit" "ca-trust" "install"
+arg "[suite]" default="all" help="all, rust, ca-trust or install" {
+  choices "all" "rust" "ca-trust" "install"
 }
 '''
-# The unit tests run with the pinned python3 unless WPANTRY_PYTHON names another interpreter, as
-# CI's 3.9 leg does with the one a fresh Mac ships.
-env = { WPANTRY_PYTHON = "{{ env.WPANTRY_PYTHON | default(value='python3') }}" }
 run = '''
-unit() { "$WPANTRY_PYTHON" -m unittest discover -s python -p 'test_*.py'; }
+cargo_test() { (cd rust && env -u RUSTUP_TOOLCHAIN cargo test --locked); }
 case "${usage_suite:-all}" in
-  all) unit; python/test-ca-trust.sh; tests/install/test-install.sh ;;
-  unit) unit ;;
-  ca-trust) exec python/test-ca-trust.sh ;;
+  all) cargo_test && ca-trust/test-ca-trust.sh && tests/install/test-install.sh ;;
+  rust) cargo_test ;;
+  ca-trust) exec ca-trust/test-ca-trust.sh ;;
   install) exec tests/install/test-install.sh ;;
 esac
 '''
 
 [tasks.contract]
-description = "The CLI contract suite against WPANTRY (default python/bin/wscanner; rust/target/release/wpantry for the Rust port)"
-env = { WPANTRY = "{{ env.WPANTRY | default(value='python/bin/wscanner') }}", WPANTRY_PYTHON = "{{ env.WPANTRY_PYTHON | default(value='python3') }}" }
-run = '"$WPANTRY_PYTHON" -m unittest discover -s tests/contract'
+description = "The CLI contract suite against WPANTRY (default rust/target/release/wpantry, built first)"
+depends = ["build"]
+env = { WPANTRY = "{{ env.WPANTRY | default(value='rust/target/release/wpantry') }}" }
+run = "python3 -m unittest discover -s tests/contract"
 
 [tasks.lint]
 description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"
 run = [
-  'for f in python/bin/wscanner python/*.sh rust/release/*.sh install.sh tests/install/*.sh; do bash -n "$f"; done',
+  'for f in ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh; do bash -n "$f"; done',
   # -x follows `source ca-common.sh`; .shellcheckrc resolves it relative to each script.
-  "shellcheck -x python/bin/wscanner python/*.sh rust/release/*.sh install.sh tests/install/*.sh",
+  "shellcheck -x ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh",
   "actionlint",
 ]
 
 [tasks.check]
-description = "Run wpantry check with the pinned tools; more flags after --, such as -- --json --no-input"
+description = "Run wpantry check, built first, with the pinned tools; more flags after --, such as -- --json --no-input"
 usage = 'arg "[args]" var=#true help="wpantry check flags"'
+depends = ["build"]
 run = '''
 eval "set -- ${usage_args:-}"
-exec python/bin/wscanner check "$@"
+exec rust/target/release/wpantry check "$@"
 '''

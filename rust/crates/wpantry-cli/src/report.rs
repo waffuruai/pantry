@@ -1,5 +1,4 @@
 //! Print the findings, and plan or apply the fixes (`wpantry --update`).
-//! The same report the Python implementation prints, line for line.
 
 use std::collections::HashSet;
 use wpantry::check::{Finding, Outcome};
@@ -447,7 +446,7 @@ mod tests {
         }
     }
 
-    // The Python test vectors (python/test_wscanner.py `Plan` and `Mise`).
+    // The test vectors the Python implementation had (`Plan` and `Mise`).
     #[test]
     fn plan_dedupes_and_splits() {
         let (auto, manual, optional) = plan(&[

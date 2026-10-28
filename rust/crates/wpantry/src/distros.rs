@@ -224,7 +224,7 @@ pub fn arch_advisories(cache: &Cache, groups: &Value) -> Result<Advisories> {
 mod tests {
     use super::*;
 
-    // The Python test vectors (python/test_wscanner.py `Parsers.test_dnf_parsing`).
+    // The test vectors the Python implementation had (`Parsers.test_dnf_parsing`).
     #[test]
     fn dnf_parsing() {
         assert_eq!(

@@ -414,7 +414,7 @@ mod tests {
         Some((e.into(), n.into(), v.into()))
     }
 
-    // The Python test vectors (python/test_wscanner.py `Harnesses`).
+    // The test vectors the Python implementation had (`Harnesses`).
     #[test]
     fn package_runners() {
         assert_eq!(
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(r("node", &["server.js"]), None);
     }
 
-    // The Python test vectors (python/test_wscanner.py `Harnesses`).
+    // The test vectors the Python implementation had (`Harnesses`).
     #[test]
     fn configs_across_harnesses() {
         let _home = crate::system::test_home();

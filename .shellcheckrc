@@ -1,3 +1,3 @@
 # Resolve `# shellcheck source=` directives relative to the script being
-# checked, so `shellcheck -x python/*.sh` works from the repo root.
+# checked, so `shellcheck -x ca-trust/*.sh` works from the repo root.
 source-path=SCRIPTDIR

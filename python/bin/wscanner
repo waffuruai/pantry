@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# wscanner: on a machine scan, the CA trust check (check-ca-trust.sh), then
+# the scan (wscanner.py). Both run; the exit status is the worse of the two.
+# Other subcommands, --help and --no-machine runs go straight to wscanner.py.
+#
+#   wscanner                                 scan this computer
+#   wscanner --path ~/code/app --no-machine  scan one project
+#   wscanner --update --dryrun               print the update plan, change nothing
+#
+# Exit codes (specs/cli-contract.md): 0 clean, 1 something fails, 2 usage
+# error, 3 internal error.
+
+set -uo pipefail
+
+# Resolve symlinks (ops links this into ~/.local/bin) so BIN is python/bin
+# in the checkout, wherever the link lives. readlink -f is not on every macOS.
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+  dir="$(cd "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$dir/$self" ;; esac
+done
+BIN="$(cd "$(dirname "$self")" && pwd)"
+ROOT="$(dirname "$BIN")"
+REPO="$(dirname "$ROOT")"
+
+# osv-scanner and gitleaks are pinned in the repo's mise.toml. When mise is
+# installed, put those exact versions first on PATH so a checkout is enough:
+# no separate brew or release installs, and the same versions as CI.
+if [ -f "$REPO/mise.toml" ] && command -v mise >/dev/null 2>&1; then
+  if tool_paths="$(mise bin-paths -C "$REPO" 2>/dev/null | paste -sd: -)" && [ -n "$tool_paths" ]; then
+    PATH="$tool_paths:$PATH"
+    export PATH
+  fi
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "✗ python3 (3.9 or later) is required (macOS: xcode-select --install)" >&2
+  exit 3
+fi
+
+ca=1
+json=0
+case "${1:-}" in
+  search | export | breach | version | tools | skill | -h | --help) ca=0 ;;
+esac
+for arg in "$@"; do
+  case "$arg" in
+    --no-machine | -h | --help) ca=0 ;;
+    --json) json=1 ;;
+  esac
+done
+
+status=0
+if [ "$ca" -eq 1 ]; then
+  # Keep stdout pure JSON under --json: the trust check reports on stderr.
+  if [ "$json" -eq 1 ]; then
+    "$ROOT/check-ca-trust.sh" >&2 || status=1
+  else
+    "$ROOT/check-ca-trust.sh" || status=1
+  fi
+fi
+
+python3 "$BIN/wscanner.py" "$@"
+rc=$?
+# A usage or internal error outranks a failing finding.
+if [ "$rc" -ge 2 ]; then
+  exit "$rc"
+fi
+if [ "$rc" -ne 0 ] || [ "$status" -ne 0 ]; then
+  exit 1
+fi
+exit 0

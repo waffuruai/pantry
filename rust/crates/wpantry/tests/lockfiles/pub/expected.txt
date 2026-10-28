@@ -1,0 +1,12 @@
+Pub async 2.13.1
+Pub collection 1.19.1
+Pub http 1.2.0
+Pub http_parser 4.1.2
+Pub lints 4.0.0
+Pub meta 1.19.0
+Pub path 1.9.0
+Pub source_span 1.10.2
+Pub string_scanner 1.4.1
+Pub term_glyph 1.2.2
+Pub typed_data 1.4.0
+Pub web 0.4.2

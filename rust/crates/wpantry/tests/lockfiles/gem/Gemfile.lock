@@ -1,0 +1,53 @@
+PATH
+  remote: local_gem
+  specs:
+    local_gem (0.1.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    nokogiri (1.16.0-aarch64-linux)
+      racc (~> 1.4)
+    nokogiri (1.16.0-arm-linux)
+      racc (~> 1.4)
+    nokogiri (1.16.0-arm64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.16.0-x86-linux)
+      racc (~> 1.4)
+    nokogiri (1.16.0-x86_64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.16.0-x86_64-linux)
+      racc (~> 1.4)
+    racc (1.8.1)
+    rack (2.2.6)
+    rake (13.0.6)
+
+PLATFORMS
+  aarch64-linux
+  arm-linux
+  arm64-darwin
+  x86-linux
+  x86_64-darwin
+  x86_64-linux
+
+DEPENDENCIES
+  local_gem!
+  nokogiri (= 1.16.0)
+  rack (= 2.2.6)
+  rake (= 13.0.6)
+
+CHECKSUMS
+  bundler (4.0.18) sha256=02d9a17429de1847b4e0c9f27a9ee4b20c0a74c0a641b4e77195d6019e3618ac
+  local_gem (0.1.0)
+  nokogiri (1.16.0-aarch64-linux) sha256=8cd981dfd4bea4f519ceebb885cf3b422b71c059d841c039d327e73b19247f53
+  nokogiri (1.16.0-arm-linux) sha256=c68d861155c40777eee3eb4efbb375d665c8c889cebd5cd1ba32f30a8aac6c21
+  nokogiri (1.16.0-arm64-darwin) sha256=10c08f246085709790ea628b5fa031cf23dadd843e173711b335ba6287b59d0a
+  nokogiri (1.16.0-x86-linux) sha256=159107da8a35f1fc22ee5b78d70da9bda4098a3771a29beac3f727cafd5041cb
+  nokogiri (1.16.0-x86_64-darwin) sha256=237aa89b9ef6b8e014f197167677926ebc4bdb9cafb2b101399d8001fda4fa43
+  nokogiri (1.16.0-x86_64-linux) sha256=6f55093bb47e75d412138f4b9462f960d3aad96cb6b43dbe9a3de62c2d31a742
+  racc (1.8.1) sha256=4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f
+  rack (2.2.6) sha256=d903a6529095f624bb7bd3b6b0e29a1aa0fdcd85d476033648d93e7a68760308
+  rake (13.0.6) sha256=5ce4bf5037b4196c24ac62834d8db1ce175470391026bd9e557d669beeb19097
+
+BUNDLED WITH
+  4.0.18

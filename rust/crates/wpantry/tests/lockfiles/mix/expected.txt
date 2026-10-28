@@ -1,0 +1,6 @@
+Hex decimal 2.1.1
+Hex jason 1.4.1
+Hex mime 2.0.5
+Hex plug 1.15.3
+Hex plug_crypto 2.0.0
+Hex telemetry 1.2.1

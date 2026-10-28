@@ -1,0 +1,35 @@
+# wpantry in Rust: specs/01-rust-port.md and specs/design/rust-port.md.
+# Every dependency is pinned `=x.y.z` (S1), only from the allowlist in the PRD's decision log.
+[workspace]
+resolver = "3"
+members = ["crates/wpantry", "crates/wpantry-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/waffuruai/pantry"
+
+[workspace.dependencies]
+serde = { version = "=1.0.229", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+wpantry = { path = "crates/wpantry", version = "=0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# S3: reproducible, small, stripped. --remap-path-prefix and SOURCE_DATE_EPOCH come from the
+# release job's RUSTFLAGS and environment.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
+opt-level = "z"

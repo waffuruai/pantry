@@ -1,0 +1,32 @@
+{
+  "originHash" : "5c6a0a5ab1bd4cfa1cd4f3b0b6a1b3f1d0f3f2b0c6e4a8d2e1f0a9b8c7d6e5f4",
+  "pins" : [
+    {
+      "identity" : "local-thing",
+      "kind" : "localSourceControl",
+      "location" : "/src/local-thing",
+      "state" : {
+        "revision" : "0123456789abcdef0123456789abcdef01234567"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "629f0b679d0fd0a6ae823d7f750b9ab032c00b80",
+        "version" : "3.0.0"
+      }
+    },
+    {
+      "identity" : "vapor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vapor/vapor.git",
+      "state" : {
+        "revision" : "4f9b2b2d8d3ce1d8bba6b5a0f5ad4a1a4bce4bd9",
+        "version" : "4.89.0"
+      }
+    }
+  ],
+  "version" : 3
+}

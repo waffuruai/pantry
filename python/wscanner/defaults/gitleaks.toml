@@ -1,0 +1,27 @@
+# wscanner's default gitleaks config (replace it with --gitleaks-config FILE).
+# A repo's own .gitleaks.toml replaces this; its .gitleaksignore lists the
+# fingerprints of reviewed false positives (gitleaks prints them).
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Hashes, ids and names the generic rule mistakes for keys"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = [
+  '''^[0-9a-f]{40}$''',                                                 # SHA-1, git object ids
+  '''^[0-9a-f]{64}$''',                                                 # SHA-256
+  '''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''', # UUIDs
+  '''^[A-Z][A-Z0-9_]+$''',                                              # environment variable names
+  '''^[a-z][a-z0-9]*([._/-][a-z0-9]+)+$''',                             # lowercase dotted / dashed / slashed identifiers
+]
+
+[[allowlists]]
+description = "Placeholders in docs and examples"
+regexTarget = "secret"
+regexes = [
+  '''(?i)^(your|my|example|sample|dummy|fake|placeholder|changeme|xxx+)[-_a-z0-9]*$''',
+  '''^<[^>]+>$''',
+  '''^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$''',
+]

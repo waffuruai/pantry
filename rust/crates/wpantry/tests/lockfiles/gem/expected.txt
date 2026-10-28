@@ -1,0 +1,4 @@
+RubyGems nokogiri 1.16.0
+RubyGems racc 1.8.1
+RubyGems rack 2.2.6
+RubyGems rake 13.0.6

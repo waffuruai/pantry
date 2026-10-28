@@ -1,0 +1,256 @@
+name: CI
+
+# The Python scanner's offline tests on the oldest (3.9, what a fresh Mac
+# has) and a current Python, on Linux and macOS, plus shell and workflow lint;
+# the Rust port's build, tests and supply-chain gates; and the CLI contract
+# suite against both implementations (specs/01-rust-port.md, phase 0).
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+env:
+  # Tasks run with the tools mise-action installed and nothing more.
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.15"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The 3.9 leg tests the interpreter users have: macOS's own
+      # /usr/bin/python3 is 3.9, and Linux gets 3.9 from setup-python. The
+      # 3.15 leg tests the python pinned in mise.toml.
+      - if: ${{ matrix.python == '3.9' && runner.os != 'macOS' }}
+        id: setup-python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.9"
+
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          install: ${{ matrix.python == '3.15' }}
+          install_args: python
+          cache: true
+
+      # Tasks see only mise's tool directories and the base system, so a tool
+      # missing from mise.toml fails here; the 3.9 interpreter is named
+      # explicitly through WPANTRY_PYTHON, by path: mise-action puts the
+      # pinned python ahead of setup-python's on PATH.
+      - name: Pick the Python under test and cut PATH
+        env:
+          WANT: ${{ matrix.python }}
+          SETUP_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          case "$WANT/$RUNNER_OS" in
+            3.9/macOS) py=/usr/bin/python3 ;;
+            3.9/*) py="$SETUP_PYTHON" ;;
+            *) py="$(mise which python3)" ;;
+          esac
+          "$py" -c 'import sys, os; v = os.environ["WANT"]; assert "%d.%d" % sys.version_info[:2] == v, sys.version'
+          echo "WPANTRY_PYTHON=$py" >> "$GITHUB_ENV"
+          echo "TASK_PATH=$(dirname "$(command -v mise)"):/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+
+      - name: unittest
+        run: PATH="$TASK_PATH" mise run test unit
+
+      - name: CA trust test
+        if: ${{ matrix.python == '3.15' }}
+        run: PATH="$TASK_PATH" mise run test ca-trust
+
+      - name: install.sh test
+        if: ${{ matrix.python == '3.15' }}
+        run: PATH="$TASK_PATH" mise run test install
+
+  # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
+  # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
+  # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
+  # the layer has one source, until ops publishes the image; bump OPS_REF by
+  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it.
+  container:
+    name: Test (ops bootstrap container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPS_REF: a296725712ee48f23b9b79967e431ae53a455250
+      IMAGE: waffuru-bootstrap:ci
+    steps:
+      - name: Check for the ops deploy key
+        env:
+          WSCANNER_OP_DEPLOY_KEY: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+        run: |
+          [ -n "$WSCANNER_OP_DEPLOY_KEY" ] || {
+            echo "::error::WSCANNER_OP_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's WSCANNER_OP_DEPLOY_KEY secret"
+            exit 1
+          }
+
+      # The path and the mount below are the ops image's workspace layout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: wscanner
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: waffuruai/ops
+          ref: ${{ env.OPS_REF }}
+          path: ops
+          ssh-key: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The image's last step is ops' `mise run doctor` for the container role.
+      - name: Build the ops bootstrap image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ops
+          file: ops/containers/Dockerfile.bootstrap
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha,scope=ops-bootstrap
+          cache-to: type=gha,mode=max,scope=ops-bootstrap
+
+      # The checkout goes in the image's workspace, which mise trusts; the
+      # image installs nothing behind a task's back, so python comes first.
+      - name: mise run test
+        run: |
+          docker run --rm -v "$PWD/wscanner:/home/waffuru/waffuru/wscanner" \
+            -w /home/waffuru/waffuru/wscanner "$IMAGE" \
+            bash -ec 'mise install python && mise run test'
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same pins laptops use: shellcheck and actionlint from mise.toml,
+      # fetched through mise's checksummed registry. Python is not needed here.
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          install_args: shellcheck actionlint
+          cache: true
+
+      - name: Cut PATH to mise and the base system
+        run: echo "TASK_PATH=$(dirname "$(command -v mise)"):/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+
+      - name: mise tasks validate
+        run: PATH="$TASK_PATH" mise tasks validate
+
+      # bash -n, shellcheck -x (actionlint also lints every `run:` block with it)
+      # and actionlint.
+      - name: lint
+        run: PATH="$TASK_PATH" mise run lint
+
+  # The Rust port (rust/): rustfmt, clippy, unit and golden-file tests, the
+  # release build, then the contract suite against the binary it built. The
+  # toolchain is the one rust-toolchain.toml pins; rustup on the runners
+  # installs it.
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --locked
+
+      # F12 against a real engine: the hosted Linux runners have Docker.
+      - name: image scanning (docker)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p wpantry --test image -- --ignored
+
+      - name: build (release)
+        run: cargo build --locked --release
+
+      # The crates must stay publishable: everything they compile in is
+      # inside them, and they build from the packaged sources alone.
+      - name: cargo package
+        if: runner.os == 'Linux'
+        run: cargo package --workspace --locked
+
+      - name: contract tests (rust)
+        working-directory: .
+        env:
+          WPANTRY: rust/target/release/wpantry
+        run: python3 -m unittest discover -s tests/contract -v
+
+  # The same contract suite against the Python implementation, which defines
+  # the contract until the Rust one replaces it.
+  contract-python:
+    name: Contract (python, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: contract tests (python)
+        env:
+          WPANTRY: python/bin/wscanner
+        run: python3 -m unittest discover -s tests/contract -v
+
+  # S2: cargo deny (advisories, crates.io-only sources, license allowlist)
+  # and cargo vet (every dependency audited or explicitly exempted). Either
+  # failing blocks the merge. The tools are installed at exact versions from
+  # their locked sources.
+  rust-supply-chain:
+    name: Rust supply chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+      CARGO_VET_VERSION: 0.10.2
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install cargo-deny and cargo-vet
+        run: cargo install --locked "cargo-deny@$CARGO_DENY_VERSION" "cargo-vet@$CARGO_VET_VERSION"
+
+      - name: cargo deny
+        run: cargo deny --locked check
+
+      - name: cargo vet
+        run: cargo vet --locked

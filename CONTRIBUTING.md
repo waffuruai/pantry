@@ -1,0 +1,20 @@
+# Contributing
+
+Contributions are welcome under the [MIT](LICENSE) license.
+
+Start with the [README](README.md) for what wpantry is, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned. We write issues, PRDs and pull requests by the rules in [waffuruai/ops `.agents`](https://github.com/waffuruai/ops/tree/dev/.agents): open an issue first, keep a PR to one change, and say in its description which spec it updated or "no PRD impact".
+
+Tooling comes from [mise](https://mise.jdx.dev). Set up and test with:
+
+```bash
+mise bootstrap
+mise run test
+```
+
+`mise bootstrap` installs the pinned Python, osv-scanner, gitleaks, shellcheck and actionlint from [`mise.toml`](mise.toml) and runs `python/bin/wscanner tools` to confirm them. `mise run test` runs the offline unit tests and the CA trust test; `mise tasks ls` lists the rest (`lint`, `check`). CI runs the same tasks from the same file, so bumping a pin there bumps it everywhere; its 3.9 leg runs the unit tests with `WPANTRY_PYTHON` set to the 3.9 interpreter, and one job runs `mise run test` inside ops' bootstrap container (`containers/Dockerfile.bootstrap` at the ops commit `OPS_REF` in `.github/workflows/ci.yml`). Without mise, install osv-scanner and gitleaks yourself; `wpantry tools` says what is missing. Before opening a pull request, run `mise run test` and `mise run lint`, and `mise run contract` when the change touches the CLI. Rust changes also run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` in `rust/`, under the dependency rules in [rust/README.md](rust/README.md).
+
+A change to the CLI, the JSON output, the exit codes or the cache schema updates [specs/cli-contract.md](specs/cli-contract.md) in the same PR and follows its change rule: additive only, or bump `schema`. A new check needs a test that runs offline. Python stays standard-library only and runs on 3.9.
+
+Keep examples and fixtures generic. Do not commit secrets, tokens, real email addresses, usernames, machine identifiers, personal paths or captured scan output. A finding from your own machine is reported as a minimal reproducer, never as a pasted report.
+
+Security reports do not go in a pull request or a public issue. Follow [SECURITY.md](SECURITY.md).

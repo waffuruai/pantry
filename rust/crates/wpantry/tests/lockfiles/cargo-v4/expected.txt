@@ -1,0 +1,2 @@
+crates.io itoa 1.0.9
+crates.io smallvec 1.6.0

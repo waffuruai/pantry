@@ -1,5 +1,5 @@
 <!--
-Read CONTRIBUTING.md before opening this PR: https://github.com/waffuruai/wpantry/blob/main/CONTRIBUTING.md
+Read CONTRIBUTING.md before opening this PR: https://github.com/waffuruai/pantry/blob/main/CONTRIBUTING.md
 
 PRs without a linked, discussed issue will be closed. -->
 

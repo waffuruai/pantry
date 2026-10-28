@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::sync::Mutex;
 use std::time::Duration;
 
-pub const USER_AGENT: &str = concat!("wpantry/", env!("CARGO_PKG_VERSION"), " (+https://github.com/waffuruai/wpantry)");
+pub const USER_AGENT: &str = concat!("wpantry/", env!("CARGO_PKG_VERSION"), " (+https://github.com/waffuruai/pantry)");
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest response body read (S7); a bigger one is `Invalid`.
 pub const MAX_BODY: u64 = 128 << 20;
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn user_agent_names_the_project() {
-        assert_eq!(USER_AGENT, format!("wpantry/{} (+https://github.com/waffuruai/wpantry)", crate::VERSION));
+        assert_eq!(USER_AGENT, format!("wpantry/{} (+https://github.com/waffuruai/pantry)", crate::VERSION));
     }
 
     #[test]

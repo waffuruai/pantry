@@ -216,7 +216,7 @@ jobs:
   # A signed packslip (https://packslip.dev) for the release: the binaries'
   # digests, platforms and executable name, signed keylessly with this
   # workflow's identity. mise installs from it (`mise use
-  # packslip:github.com/waffuruai/wpantry`) and verifies it, as does
+  # packslip:github.com/waffuruai/pantry`) and verifies it, as does
   # `packslip verify`. Signed in a job that can't write the release, as
   # packslip recommends; the next job uploads the bundle.
   packslip:

@@ -111,7 +111,7 @@ OSV decides whether a version is affected; the scanner only orders fixed version
 
 ## Network
 
-Every request carries `User-Agent: wpantry/<version> (+https://github.com/waffuruai/wpantry)` and a 30 s timeout. These are the only hosts (S5):
+Every request carries `User-Agent: wpantry/<version> (+https://github.com/waffuruai/pantry)` and a 30 s timeout. These are the only hosts (S5):
 
 | Host | For |
 |---|---|

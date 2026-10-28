@@ -3,7 +3,7 @@
 # Install wpantry (Pantry): download the release binary for this computer,
 # verify it, and put it on PATH.
 #
-#   curl -fsSL https://github.com/waffuruai/wpantry/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh
 #   sh install.sh [--version vX.Y.Z] [--dir DIR]
 #
 # The download is always checked against the release's SHA256SUMS. Its
@@ -17,11 +17,11 @@
 # WPANTRY_DOWNLOAD_BASE replaces the release download URL, for a mirror or a
 # test; the signature checks still name this repository.
 #
-# mise is the other way in: `mise use -g packslip:github.com/waffuruai/wpantry`.
+# mise is the other way in: `mise use -g packslip:github.com/waffuruai/pantry`.
 
 set -eu
 
-REPO="waffuruai/wpantry"
+REPO="waffuruai/pantry"
 NAME="wpantry"
 # The release workflow sets this to the release's own tag in the copy it
 # publishes, so an install.sh downloaded from a release installs that release.

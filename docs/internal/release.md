@@ -33,7 +33,7 @@ Done once per repository by an org owner; check it before the first release.
 2. **Tag protection** (Settings → Rules → Rulesets): only maintainers can create `v*` tags; tags can't be updated or deleted.
 3. **Branch protection** on `main` and `dev`: the CI checks required, including `Rust (ubuntu-latest)`, `Rust (macos-latest)`, `Contract (python, …)` and `Rust supply chain`.
 4. **crates.io owners**: after the first publish, add the maintainers team: `cargo owner --add github:waffuruai:<team> wpantry wpantry-cli`.
-5. **Trusted publishing** (after the first publish, crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/wpantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`; until it is, the workflow skips the crates.io step.
+5. **Trusted publishing** (after the first publish, crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`; until it is, the workflow skips the crates.io step.
 6. **Arm64 runners**: the build uses GitHub's `ubuntu-24.04-arm` runner; make sure the org can use it.
 
 ## Before the release
@@ -89,7 +89,7 @@ Revoke the token right after, then do steps 4 and 5 of the one-time setup.
 
 Right after publishing, a maintainer who didn't approve it checks it from the outside, on Linux and on a Mac, exactly as [install.md](../public/install.md) says: download each binary, `SHA256SUMS` and the bundles; check the checksum, `packslip verify`, `gh attestation verify`, `cosign verify-blob`; run `wpantry version` and a `--no-machine` scan. Then:
 
-- [ ] `mise use -g packslip:github.com/waffuruai/wpantry@X.Y.Z` installs and verifies it, and so does `curl -fsSL https://github.com/waffuruai/wpantry/releases/download/vX.Y.Z/install.sh | sh`, on Linux and on a Mac.
+- [ ] `mise use -g packslip:github.com/waffuruai/pantry@X.Y.Z` installs and verifies it, and so does `curl -fsSL https://github.com/waffuruai/pantry/releases/download/vX.Y.Z/install.sh | sh`, on Linux and on a Mac.
 - [ ] crates.io shows both crates at `X.Y.Z`, and `cargo install --locked wpantry-cli@X.Y.Z` builds in a clean `rust` container.
 - [ ] One Linux binary rebuilds byte-for-byte with the install guide's container recipe (optional, but do it for the first release and after any toolchain or dependency bump).
 - [ ] The release notes read right; edit them if not.

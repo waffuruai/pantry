@@ -78,7 +78,7 @@ run && fail "a SHA256SUMS without the asset should fail"
 echo "✓ refuses a release whose SHA256SUMS doesn't list the binary"
 
 release
-packslip_says "ok: github.com/waffuruai/wpantry 9.9.9"
+packslip_says "ok: github.com/waffuruai/pantry 9.9.9"
 run WPANTRY_REQUIRE_SIGNATURE=1 || { cat "$tmp/out" >&2; fail "a verified packslip should install"; }
 grep -q "signature verified: packslip" "$tmp/out" || fail "it should say the packslip verified"
 echo "✓ verifies the packslip when packslip is installed"

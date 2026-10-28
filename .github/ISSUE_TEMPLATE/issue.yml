@@ -12,10 +12,10 @@ body:
         relevant signal without scraping freeform prose.
 
         **Before filing:**
-        - Search [existing issues](https://github.com/waffuruai/wpantry/issues?q=is%3Aissue) to avoid duplicates.
-        - For features: check the [Roadmap](https://github.com/orgs/waffuruai/projects/1) and [specs/](https://github.com/waffuruai/wpantry/tree/dev/specs) — it may already be planned.
+        - Search [existing issues](https://github.com/waffuruai/pantry/issues?q=is%3Aissue) to avoid duplicates.
+        - For features: check the [Roadmap](https://github.com/orgs/waffuruai/projects/1) and [specs/](https://github.com/waffuruai/pantry/tree/dev/specs) — it may already be planned.
         - For bugs: try `main` HEAD; many issues are already fixed.
-        - **A vulnerability in wpantry itself does not go here.** Follow [SECURITY.md](https://github.com/waffuruai/wpantry/blob/main/SECURITY.md).
+        - **A vulnerability in wpantry itself does not go here.** Follow [SECURITY.md](https://github.com/waffuruai/pantry/blob/main/SECURITY.md).
 
   - type: checkboxes
     id: type
@@ -128,5 +128,5 @@ body:
       options:
         - label: I searched for duplicate issues.
           required: true
-        - label: I read [`CONTRIBUTING.md`](https://github.com/waffuruai/wpantry/blob/main/CONTRIBUTING.md).
+        - label: I read [`CONTRIBUTING.md`](https://github.com/waffuruai/pantry/blob/main/CONTRIBUTING.md).
           required: true

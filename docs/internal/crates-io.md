@@ -17,7 +17,7 @@ The crates are `wpantry` (the library) and `wpantry-cli` (the `wpantry` binary).
 9. **Check.** Both crates show the version on crates.io, docs.rs builds the library's docs within a few minutes, and `cargo install --locked wpantry-cli@X.Y.Z` works in a clean `rust` container.
 10. **Revoke.** Delete the token on crates.io, then `cargo logout`.
 11. **Co-owners.** `cargo owner --add github:waffuruai:owners wpantry wpantry-cli`, so the crates don't depend on one person's account. The waffuruai org has to allow the crates.io GitHub app first (org settings → Third-party access).
-12. **Trusted publishing.** For each crate: crates.io → the crate → Settings → Trusted Publishing → add repository `waffuruai/wpantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`.
+12. **Trusted publishing.** For each crate: crates.io → the crate → Settings → Trusted Publishing → add repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`.
 
 ## Every release after that
 

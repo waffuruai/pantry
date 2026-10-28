@@ -196,7 +196,10 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "wpantry $GITHUB_REF_NAME" --generate-notes
 
       # The website republishes install.sh at https://waffuru.ai/pantry/install.sh.
+      # The release already exists by now, so a failed dispatch must not stop
+      # the packslip jobs; the next site deploy picks the release up anyway.
       - name: Tell the website about the release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
         run: |

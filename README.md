@@ -24,7 +24,7 @@ mise use -g packslip:github.com/waffuruai/pantry                                
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # without mise
 ```
 
-Both verify the release before installing: mise against the release's signed packslip, and `install.sh` against `SHA256SUMS` and a signature (packslip, `gh` or `cosign`, whichever you have). [docs/public/install.md](docs/public/install.md) has the details, manual verification, crates.io and building from source. Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10).
+Both verify the release before installing: mise against the release's signed packslip, and `install.sh` against `SHA256SUMS` and a signature (packslip, `gh` or `cosign`, whichever you have). [docs/public/install.md](docs/public/install.md) has the details, manual verification, crates.io and building from source. Releases cover macOS (one binary for Apple silicon and Intel) and Linux (x86-64 and arm64, static); Windows: [#11](https://github.com/waffuruai/pantry/issues/11). Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10).
 
 `wpantry tools` lists the external tools it uses (`git`, `gitleaks`, `openssl`; `brew` and `docker` when present) and which are missing.
 
@@ -58,13 +58,6 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 - [Install and verify a release](docs/public/install.md), and [use wpantry](docs/public/usage.md).
 - For maintainers: the [release playbook](docs/internal/release.md), [publishing to crates.io](docs/internal/crates-io.md) and [dependency rules](docs/internal/dependencies.md).
-
-## Who uses it
-
-- **ops**: `make secure` runs it on every Waffuru machine at install and in `make doctor`, with the org's policy files.
-- **wsentinel**: the scan engine behind Sentinel's inventory, advisory and secret findings.
-- **wci**: checks every pull request for security issues before it runs; **wrunner** and wci vet workloads before they run on someone else's machine (planned).
-- **wOS** and wOS Server: baked into the OS image as a system service (planned). The same binary runs on its own on macOS and Linux (Windows: [#11](https://github.com/waffuruai/pantry/issues/11)).
 
 ## Development
 

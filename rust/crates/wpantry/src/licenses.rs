@@ -2,7 +2,9 @@
 //! declared licenses, judged against an allowlist of SPDX ids. A package
 //! passes when its license expression can be satisfied with allowed ids
 //! (`MIT OR GPL-3.0-only` passes an allowlist holding MIT); one with no
-//! identifiable license is only counted, as the Python implementation does.
+//! identifiable license is only counted. deps.dev's `non-standard` (custom
+//! terms, such as a license that needs a company licence) is a license no
+//! allowlist holds, so it is reported, not counted as unknown.
 //! deps.dev covers npm, PyPI, crates.io, Go, Maven, NuGet and RubyGems; the
 //! rest count as unknown. Answers are cached for 30 days.
 
@@ -98,7 +100,7 @@ fn atom(t: &[&str], i: &mut usize, allowed: &[String]) -> Option<bool> {
 fn fetch(net: &dyn Net, sys: &str, name: &str, version: &str) -> Result<Vec<String>> {
     let url = format!("{API}/{sys}/packages/{}/versions/{}", segment(name), segment(version));
     let Some(v) = net::get_json(net, &url, &[])? else { return Ok(Vec::new()) };
-    Ok(json::strs_at(&v, "licenses").into_iter().filter(|l| !l.is_empty() && l != "non-standard").collect())
+    Ok(json::strs_at(&v, "licenses").into_iter().filter(|l| !l.is_empty()).collect())
 }
 
 /// One package's verdict: None passes, Some(["UNKNOWN"]) has no license we
@@ -203,6 +205,7 @@ mod tests {
         assert_eq!(judge(&[], &allow), Some(ids(&["UNKNOWN"])));
         assert_eq!(judge(&ids(&["GPL-3.0-only"]), &allow), Some(ids(&["GPL-3.0-only"])));
         assert_eq!(judge(&ids(&["GPL-3.0-only", "MIT"]), &allow), None);
+        assert_eq!(judge(&ids(&["non-standard"]), &allow), Some(ids(&["non-standard"])), "custom terms need review");
     }
 
     #[test]

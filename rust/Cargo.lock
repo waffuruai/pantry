@@ -570,7 +570,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
-name = "wscanner"
+name = "wpantry"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
@@ -581,11 +581,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "wscanner-cli"
+name = "wpantry-cli"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
- "wscanner",
+ "wpantry",
 ]
 
 [[package]]

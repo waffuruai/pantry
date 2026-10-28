@@ -1,10 +1,10 @@
 """The CLI contract (specs/cli-contract.md), tested from the outside: run the
-binary named by WSCANNER with a temp HOME and cache, offline, and check only
+binary named by WPANTRY with a temp HOME and cache, offline, and check only
 its stdout, stderr, exit codes and cache file. Every implementation must pass
 (specs/01-rust-port.md F2). Standard library only, Python 3.9+:
 
-    WSCANNER=python/bin/wscanner python3 -m unittest discover -s tests/contract
-    WSCANNER=rust/target/release/wscanner python3 -m unittest discover -s tests/contract
+    WPANTRY=python/bin/wscanner python3 -m unittest discover -s tests/contract
+    WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
 """
 
 from __future__ import annotations
@@ -20,9 +20,11 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BIN = Path(os.environ.get("WSCANNER") or ROOT / "python" / "bin" / "wscanner")
+BIN = Path(os.environ.get("WPANTRY") or ROOT / "python" / "bin" / "wscanner")
 if not BIN.is_absolute():
     BIN = (ROOT / BIN).resolve()
+# The name the binary goes by: `wpantry` (Rust), `wscanner` (the Python reference).
+NAME = BIN.name
 
 ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
 FINDING = {"kind": str, "component": str, "version": str, "location": str, "vuln_id": str, "status": str,
@@ -62,7 +64,7 @@ class Contract(unittest.TestCase):
         self.home = Path(self.tmp.name, "home")
         self.home.mkdir()
         self.db = Path(self.tmp.name, "cache", "w.db")
-        self.env = dict(os.environ, HOME=str(self.home), WSCANNER_DB=str(self.db), NO_COLOR="1")
+        self.env = dict(os.environ, HOME=str(self.home), WPANTRY_DB=str(self.db), WSCANNER_DB=str(self.db), NO_COLOR="1")
         self.env.pop("XDG_CACHE_HOME", None)
 
     def run_bin(self, *argv, env=None, timeout=300):
@@ -111,7 +113,7 @@ class Contract(unittest.TestCase):
     def test_skill(self):
         code, out, _ = self.run_bin("skill")
         self.assertEqual(code, 0)
-        self.assertTrue(out.startswith("---\nname: wscanner\n"))
+        self.assertTrue(out.startswith(f"---\nname: {NAME}\n"))
 
     # exit codes ------------------------------------------------------------
 
@@ -125,10 +127,10 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.run_bin("check", "--help")[0], 0)
 
     def test_exit_3_when_the_cache_cant_be_opened(self):
-        env = dict(self.env, WSCANNER_DB="/dev/null/w.db")
+        env = dict(self.env, WPANTRY_DB="/dev/null/w.db", WSCANNER_DB="/dev/null/w.db")
         code, _, err = self.run_bin("search", "x", env=env)
         self.assertEqual(code, 3)
-        self.assertIn("wscanner:", err)
+        self.assertIn(f"{NAME}:", err)
         self.assertEqual(self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--json", env=env)[0], 3)
 
     def test_exit_0_when_only_warnings_and_unchecked(self):

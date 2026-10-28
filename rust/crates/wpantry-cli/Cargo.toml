@@ -1,0 +1,21 @@
+[package]
+name = "wpantry-cli"
+description = "The wpantry binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["security", "vulnerability", "osv", "scanner", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "wpantry"
+path = "src/main.rs"
+
+[dependencies]
+wpantry.workspace = true
+rusqlite.workspace = true
+
+[lints]
+workspace = true

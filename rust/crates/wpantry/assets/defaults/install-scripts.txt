@@ -1,0 +1,13 @@
+# npm packages whose install scripts are accepted, wpantry's default (replace
+# it with --install-scripts FILE). wpantry warns on any other dependency
+# that runs code at install time (npm's
+# hasInstallScript, or a build a pnpm workspace allows). Install scripts are how
+# most npm supply-chain attacks run; add a package here only after looking at
+# what its script does.
+esbuild
+fsevents
+sharp
+@swc/core
+@parcel/watcher
+@tailwindcss/oxide
+workerd

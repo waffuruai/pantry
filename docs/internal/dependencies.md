@@ -1,10 +1,10 @@
 # Dependencies and supply chain
 
-wscanner runs with access to the whole home directory, so what goes into it is reviewed like the code. The rules come from the PRD's decision log ([specs/01-rust-port.md](../../specs/01-rust-port.md), S1 and S2); this page is how to follow them.
+wpantry runs with access to the whole home directory, so what goes into it is reviewed like the code. The rules come from the PRD's decision log ([specs/01-rust-port.md](../../specs/01-rust-port.md), S1 and S2); this page is how to follow them.
 
 ## The rules
 
-- **Crates**: only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`), `ureq` and `rustls` (`ring`), plus what they pull in. A new direct dependency needs a decision in the PRD's log first; `rust/crates/wscanner/tests/pins.rs` fails otherwise.
+- **Crates**: only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`), `ureq` and `rustls` (`ring`), plus what they pull in. A new direct dependency needs a decision in the PRD's log first; `rust/crates/wpantry/tests/pins.rs` fails otherwise.
 - **Pins**: every dependency `=x.y.z` in `rust/Cargo.toml` `[workspace.dependencies]`, crates take them with `.workspace = true`, `Cargo.lock` is committed and every build is `--locked`.
 - **Age**: pin a release at least two weeks old. The exception is a security fix, which goes in as soon as it's out (rustls 0.23.46 was one).
 - **Toolchain**: `rust/rust-toolchain.toml` names an exact version.
@@ -37,7 +37,7 @@ The audits of other organizations (Mozilla, Google, Bytecode Alliance) would cov
 
 ## cargo deny
 
-`rust/deny.toml` checks the targets we ship. An advisory against a dependency fails CI: bump it (security fixes skip the two-week rule). Only if there is no fix and the vulnerable code is unreachable from wscanner, add the advisory id to `[advisories] ignore` with a comment saying why and when to revisit, in its own PR.
+`rust/deny.toml` checks the targets we ship. An advisory against a dependency fails CI: bump it (security fixes skip the two-week rule). Only if there is no fix and the vulnerable code is unreachable from wpantry, add the advisory id to `[advisories] ignore` with a comment saying why and when to revisit, in its own PR.
 
 ## The rustls tree
 

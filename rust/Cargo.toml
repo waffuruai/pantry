@@ -1,15 +1,15 @@
-# wscanner in Rust: specs/01-rust-port.md and specs/design/rust-port.md.
+# wpantry in Rust: specs/01-rust-port.md and specs/design/rust-port.md.
 # Every dependency is pinned `=x.y.z` (S1), only from the allowlist in the PRD's decision log.
 [workspace]
 resolver = "3"
-members = ["crates/wscanner", "crates/wscanner-cli"]
+members = ["crates/wpantry", "crates/wpantry-cli"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-license = "Apache-2.0"
-repository = "https://github.com/waffuruai/wscanner"
+license = "MIT"
+repository = "https://github.com/waffuruai/pantry"
 
 [workspace.dependencies]
 serde = { version = "=1.0.229", default-features = false, features = ["std"] }
@@ -17,7 +17,7 @@ serde_json = { version = "=1.0.151", default-features = false, features = ["std"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-wscanner = { path = "crates/wscanner", version = "=0.1.0" }
+wpantry = { path = "crates/wpantry", version = "=0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

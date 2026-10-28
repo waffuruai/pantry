@@ -31,6 +31,14 @@ cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
 export RUSTFLAGS="--remap-path-prefix=$root=/build --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
 
+# Apple's linker hashes its debug map (each object file's absolute path) into
+# LC_UUID, and rustc strips that map only after linking, so the UUID, and the
+# arm64 code signature over it, would still depend on the checkout's path.
+# -S keeps the debug map out of the link; the binary is stripped anyway.
+case "$target" in
+  *-apple-darwin) RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-S" ;;
+esac
+
 # Linux musl targets compile C (ring, SQLite) with musl-gcc where the
 # triple-prefixed cross compiler isn't installed (Debian's musl-tools).
 for musl in x86_64 aarch64; do

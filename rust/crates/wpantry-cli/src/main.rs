@@ -7,6 +7,7 @@
 //! error.
 
 mod args;
+mod html;
 mod progress;
 mod report;
 mod style;
@@ -68,6 +69,7 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
 }
 
 fn cmd_check(a: Check) -> Result<i32> {
+    let html = a.html.as_deref().map(html::Output::new).transpose()?;
     let net = wpantry::net::Http::new();
     let opts = Options {
         paths: a.path.clone(),
@@ -84,12 +86,14 @@ fn cmd_check(a: Check) -> Result<i32> {
     };
     let first = scan(opts.clone(), a.json, &net)?;
     if a.json {
+        html::finish(html, &first, &opts, "scan")?;
         say(&envelope(&first).dumps_indent(1));
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
     }
     let db = db::path().to_string_lossy().into_owned();
     let status = report::report(&first, &db, &mut |l| show(l));
     if !(a.update || a.dryrun) {
+        html::finish(html, &first, &opts, "scan")?;
         return Ok(status);
     }
     // Before changing anything, ask, when someone is there to answer.
@@ -106,12 +110,15 @@ fn cmd_check(a: Check) -> Result<i32> {
     };
     let applied = report::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
     if a.dryrun {
+        html::finish(html, &first, &opts, "before updates (dry run)")?;
         return Ok(status);
     }
     say("\nRe-checking after the updates…");
-    let again = scan(Options { refresh: false, ask: false, ..opts }, false, &net)?;
+    let again = scan(Options { refresh: false, ask: false, ..opts.clone() }, false, &net)?;
     // A fix that failed fails the run even when the re-check comes back clean.
     let rechecked = report::report(&again, &db, &mut |l| show(l));
+    let phase = if applied == 0 { "after updates" } else { "after updates (an update command failed)" };
+    html::finish(html, &again, &opts, phase)?;
     Ok(if rechecked != 0 { rechecked } else { applied })
 }
 

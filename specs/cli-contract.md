@@ -14,7 +14,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 
 ```
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
-                 [--json] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
+                 [--json] [--html FILE] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export --csv FILE
 wpantry breach [--enable | --disable]
@@ -34,6 +34,7 @@ wpantry skill
 | `--dryrun` | Print the update plan; change nothing |
 | `--refresh` | Ignore cached answers |
 | `--offline` | Cache only; anything never cached is `unchecked` |
+| `--html FILE` | Also write an offline, self-contained HTML report; optional, no browser auto-launch, success notice on stderr |
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
@@ -67,6 +68,12 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
 | 130 | Interrupted (Ctrl-C) |
+
+## `check --html FILE`
+
+HTML is an optional sidecar to the scan. Terminal output and scan exit codes stay the same; `--json --html FILE` prints the unchanged schema-1 envelope on stdout and embeds that same envelope in the HTML. As before, `--json` selects reporting only even with `--update`. Without JSON, `--update` exports the final recheck, including an indication of failed update commands; `--dryrun` exports the initial scan. A report retains unchecked sources, unfixed-advisory and unknown-license counts, and scope (paths, machine inventory, offline mode and license checking).
+
+`FILE` is required; empty values and `-` are usage errors (2). The parent must exist. Output is staged beside the destination before scanning, written with mode 0600 on Unix and renamed over the destination only after successful generation. A destination symlink is replaced rather than followed. File errors return 3; a scan error leaves a previous report intact. Export never opens a browser, fetches extra advisories, or applies updates. The viewer uses embedded assets, escapes report text, and only copies proposed commands on request. The HTML layout and bundle metadata are presentation details, not a new version of the JSON contract.
 
 ## `check --json`
 

@@ -17,6 +17,7 @@ pub struct Check {
     pub refresh: bool,
     pub offline: bool,
     pub json: bool,
+    pub html: Option<PathBuf>,
     pub no_input: bool,
     pub gitleaks_config: Option<PathBuf>,
     /// `--licenses [FILE]`: check dependency licenses (off by default).
@@ -50,7 +51,7 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json] [--html FILE]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] --csv CSV",
@@ -65,7 +66,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -104,6 +105,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--refresh", false),
             ("--offline", false),
             ("--json", false),
+            ("--html", true),
             ("--no-input", false),
             ("--gitleaks-config", true),
             ("--licenses", true),
@@ -216,6 +218,12 @@ pub fn parse(argv: &[String]) -> Parsed {
                 check_licenses: flag("--licenses"),
                 ..Default::default()
             };
+            if let Some(v) = value("--html") {
+                if v.is_empty() || v == "-" {
+                    return fail("argument --html: expected a file path, not stdout".into());
+                }
+                c.html = Some(expand(&v));
+            }
             let paths: Vec<PathBuf> = given
                 .iter()
                 .filter(|(o, _)| *o == "--path")
@@ -307,6 +315,16 @@ mod tests {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
         let Parsed::Run(Command::Check(c)) = p(&[&format!("--license={file}")]) else { panic!() };
         assert!(c.check_licenses && c.licenses == Some(PathBuf::from(file)));
+    }
+
+    #[test]
+    fn html_is_optional_and_composes_with_json() {
+        let Parsed::Run(Command::Check(c)) = p(&["--ht=report with spaces.html", "--json"]) else { panic!() };
+        assert!(c.json);
+        assert_eq!(c.html, Some(PathBuf::from("report with spaces.html")));
+        for bad in [&["--html"][..], &["--html="], &["--html=-"]] {
+            assert!(matches!(p(bad), Parsed::Usage(_)));
+        }
     }
 
     #[test]

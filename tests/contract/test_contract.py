@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -155,6 +156,72 @@ class Contract(unittest.TestCase):
         for f in unchecked:
             self.assertEqual((f["status"], f["vuln_id"]), ("warn", "UNCHECKED"))
         self.assertEqual(code, 1 if any(f["status"] == "fail" for f in env["findings"]) else 0)
+
+    # HTML is an optional sidecar of the same scan, including failures.
+    def html_bundle(self, path):
+        text = path.read_text()
+        marker = '<script id="pantry-bundle" type="application/json">'
+        self.assertEqual(text.count(marker), 1)
+        return json.loads(text.split(marker, 1)[1].split('</script>', 1)[0])
+
+    def test_html_matches_json_and_preserves_exit_status(self):
+        project = git_repo(self.home / "app")
+        # A synthetic cached malicious-package record supplies a failing finding.
+        (project / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {
+            "node_modules/example-package": {"version": "1.0.0", "hasInstallScript": True}}}))
+        self.project_run("--json")
+        rec = {"id": "MAL-TEST-1", "summary": "Synthetic malicious-package fixture",
+               "affected": [{"package": {"ecosystem": "npm", "name": "example-package"}, "versions": ["1.0.0"]}]}
+        with sqlite3.connect(str(self.db)) as conn:
+            conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)",
+                         ("npm", "example-package", "1.0.0", time.time(), rec["id"]))
+            conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (rec["id"], "", rec["summary"], "", "", "", "", "", json.dumps(rec)))
+        path = self.home / "report with spaces.html"
+        code, out, err = self.project_run("--json", "--html", str(path))
+        report = self.envelope(out)
+        self.assertEqual(code, 1)
+        bundle = self.html_bundle(path)
+        self.assertEqual(bundle["runs"][0]["report"], report)
+        self.assertTrue(any(f["kind"] == "unchecked" for f in report["findings"]))
+        self.assertEqual(bundle["scope"], {"machine": False, "offline": True, "licenses": False,
+                                           "paths": [str(self.home)]})
+        self.assertEqual(bundle["phase"], "scan")
+        self.assertGreater(bundle["generated_at"], 1000000000000)
+        self.assertIn(str(path), err)
+        self.assertNotIn("HTML report", out)
+
+    def test_html_dry_run_and_final_recheck(self):
+        path = self.home / "report.html"
+        code, out, _ = self.project_run("--dryrun", "--html", str(path))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.html_bundle(path)["phase"], "before updates (dry run)")
+        self.assertIn("Incomplete", out)
+        # Empty, offline scope has no fixes to execute.
+        code, out, _ = self.project_run("--update", "--html", str(path))
+        self.assertEqual(code, 0)
+        self.assertIn("Re-checking", out)
+        self.assertEqual(self.html_bundle(path)["phase"], "after updates")
+
+    def test_html_file_errors_fail_before_scan(self):
+        for bad in (str(self.home), str(self.home / "missing" / "report.html")):
+            code, out, err = self.project_run("--html", bad)
+            self.assertEqual(code, 3, err)
+            self.assertEqual(out, "")
+            self.assertFalse(self.db.exists())
+        for bad in (["--html"], ["--html="], ["--html=-"]):
+            self.assertEqual(self.run_bin(*bad)[0], 2)
+
+    def test_html_is_opt_in_and_preserves_old_file_on_scan_error(self):
+        self.project_run()
+        self.assertEqual(list(self.home.glob("*.html")), [])
+        path = self.home / "report.html"
+        path.write_text("previous report")
+        env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
+        code, _, _ = self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--html", str(path), env=env)
+        self.assertEqual(code, 3)
+        self.assertEqual(path.read_text(), "previous report")
+        self.assertEqual(list(self.home.glob(".wpantry-report-*.tmp")), [])
 
     def test_no_machine_runs_only_repo_checks(self):
         (self.home / ".cursor").mkdir()

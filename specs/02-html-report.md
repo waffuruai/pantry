@@ -49,8 +49,8 @@ All criteria track [#36](https://github.com/waffuruai/pantry/issues/36).
 
 - F1: No flag creates no HTML; `--html FILE` writes the same outcome as JSON without changing stdout or scan exit codes. Evidence: `tests/contract/test_contract.py`, HTML cases.
 - F2: Updates export the final recheck and dry runs the initial scan; failed updates remain indicated. Evidence: CLI contract tests and viewer behavior tests.
-- F3: Search, status/category/KEV filters, finding details, advisory links, exact-command deduplication, theme selection and printing work locally. Evidence: `tests/html/test-viewer.cjs` exercises viewer logic; visual browser verification is not evidence yet.
-- F4: Unchecked sources, unfixed advisories and unknown licenses stay visible, even with zero finding rows; CSV never establishes complete coverage. Evidence: viewer behavior tests.
+- F3: Search, status/category/KEV filters, finding details, advisory links, exact-action grouping with all affected components, an explicit Coverage tab, theme selection and printing work locally. Evidence: `tests/html/test-viewer.cjs` exercises viewer logic; visual browser verification is not evidence yet.
+- F4: Unchecked sources, unfixed advisories and unknown licenses stay visible, even with zero finding rows; CSV never establishes complete coverage. Inventory counts are not a completeness score; imported JSON/CSV cannot establish missing scope options, and finding locations are never used to guess scope. Evidence: viewer behavior tests.
 - F5: Invalid paths fail with code 3 before scanning; failures preserve the previous report and remove the staged file. Evidence: `src/html.rs` unit tests and CLI contract tests.
 
 ### Performance
@@ -80,3 +80,5 @@ Visual browser QA is pending: the available browser tool rejected `file:` naviga
 | 2026-10-29 | Require an explicit output file; keep terminal output | Optional output requested by Tom | Tom |
 | 2026-10-29 | Embed the official Waffuru PNG and use local system-font fallbacks | Works offline without additional dependencies or remote fonts | Tom's implementation |
 | 2026-10-29 | Keep schema 1 intact inside a presentation bundle | Existing consumers remain compatible | Tom's implementation |
+
+| 2026-10-29 | Treat the supplied ZIP as a mockup, refining around actual scanner outputs | Explicit user clarification; coverage and grouped actions take precedence over the mockup layout | Tom |

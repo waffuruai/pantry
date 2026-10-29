@@ -116,7 +116,7 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
 .verdict .extra{margin-top:6px;font:13px var(--mono);color:var(--amber)}
 
 /* tabs */
-.tabs{display:flex;gap:30px;border-bottom:1px solid var(--line);margin-top:20px}
+.tabs{display:flex;flex-wrap:wrap;column-gap:24px;row-gap:0;border-bottom:1px solid var(--line);margin-top:20px}
 .tab{border:0;background:none;padding:10px 0 12px;font-size:17px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
 .tab.on{color:var(--text);border-bottom-color:var(--tab)}
 .tab sup{font:12px var(--mono);color:var(--muted);margin-left:6px;vertical-align:4px}
@@ -179,7 +179,7 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
 .cmd code{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}
 .cmd .copy{flex:none;height:26px;padding:0 9px;font-size:12px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
 .kv{display:grid;grid-template-columns:110px minmax(0,1fr);gap:7px 12px;font-size:13px}
-.kv dt{color:var(--muted)}
+.kv dt{color:var(--muted);overflow-wrap:anywhere}
 .kv dd{margin:0;font-family:var(--mono);word-break:break-word}
 .kv dd .q{color:var(--faint);font-family:var(--sans)}
 .links{display:flex;flex-wrap:wrap;gap:6px}
@@ -194,6 +194,7 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
 .pgroup h3{margin:0;font-size:16px;font-weight:500}
 .pgroup .why{color:var(--muted);margin:3px 0 10px;max-width:78ch}
 .pitem{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;align-items:start;padding:10px 0;border-top:1px solid var(--line)}
+.pitem li{overflow-wrap:anywhere;margin:5px 0}
 .pitem input{width:16px;height:16px;margin-top:10px;accent-color:var(--green)}
 .pitem .who{font-size:13px;color:var(--muted);margin-bottom:5px}
 .pitem.done .cmd code{text-decoration:line-through;color:var(--muted)}
@@ -313,6 +314,7 @@ var MARKERS = Object.create(null);
 var KIND_LABEL = {project:'Project deps', mcp:'MCP servers', unchecked:'Not checked', secret:'Secrets', runtime:'Runtimes',
   os:'OS', compiler:'Compilers', 'package manager':'Package managers', tools:'Tools', datastores:'Datastores',
   homebrew:'Homebrew', apps:'Apps', browsers:'Browsers', extensions:'Extensions', images:'Images', bundled:'Bundled deps',
+  'install-script':'Install scripts', license:'Licenses', tool:'Tools', account:'Accounts',
   'install scripts':'Install scripts', licenses:'Licenses', config:'Config', accounts:'Accounts'};
 
 function $(id){return document.getElementById(id)}
@@ -368,9 +370,6 @@ function normalize(raw, meta){
   c.advisories=Object.keys(advs).length; c.components=Object.keys(comps).length;
   r.counts=c;
   r.verdict = c.fail? 'fail' : (c.unchecked||c.warn||r.unfixed||r.unknown_licenses||r.partial? 'warn' : 'ok');
-  // project root guess for the subtitle
-  var locs=fs.map(function(f){return f.location}).filter(Boolean);
-  r.root = locs.length? locs[0].replace(/[\\/][^\\/]*$/,'') : '';
   return r;
 }
 
@@ -407,7 +406,7 @@ function renderSidebar(){
     var c=r.counts, st, cls;
     if(c.fail){st=c.fail+' to fix';cls='fail'} else if(c.unchecked){st='incomplete';cls='warn'} else if(c.warn||r.unfixed||r.unknown_licenses||r.partial){st='review coverage';cls='warn'} else {st='no findings';cls='ok'}
     var dot = cls==='fail'?'r':(cls==='warn'?'a':'g');
-    return '<button class="run'+(i===state.run?' on':'')+'" data-run="'+i+'" type="button"><div class="r1"><span class="dot '+dot+'"></span>'+esc(r.title)+'<span class="st '+cls+'">'+esc(st)+'</span></div><div class="r2">'+esc(r.file||r.root||'')+'</div></button>';
+    return '<button class="run'+(i===state.run?' on':'')+'" data-run="'+i+'" type="button"><div class="r1"><span class="dot '+dot+'"></span>'+esc(r.title)+'<span class="st '+cls+'">'+esc(st)+'</span></div><div class="r2">'+esc(r.file||'')+'</div></button>';
   }).join('') || '<div class="meta">No scans loaded yet.</div>';
 
   var r=cur(); if(!r){$('kinds').innerHTML='';$('meta').innerHTML='';return;}
@@ -488,12 +487,12 @@ function detailHTML(f){
   var links=isAdvisory(f)?advLinks(f.vuln_id):[];
   var shared = cur().findings.filter(function(x){return x.vuln_id===f.vuln_id&&x!==f&&isAdvisory(f)&&isAdvisory(x)}).map(function(x){return x.component});
   var left='';
-  if(f.note) left+='<h4>Why it’s here</h4><p>'+ticks(f.note)+'.</p>';
+  if(f.note) left+='<h4>Why it’s here</h4><p>'+ticks(f.note)+'</p>';
   if(f.fix_cmd){
     left+='<h4>'+(f.fix_auto?'Unattended command (review before use)':'Suggested action (review before use)')+'</h4>'+
       '<div class="cmd"><code>'+esc(f.fix_cmd)+'</code><button class="copy" type="button" data-copy="'+esc(f.fix_cmd)+'">Copy</button></div>';
   } else if(f.state==='unchecked'){
-    left+='<h4>What to do</h4><p>Re-run the scan when this source is reachable, or warm the cache first. Until then, results for anything that depends on it are unknown.</p>';
+    left+='<h4>What to do</h4><p>Resolve the cause reported above, then scan again. The cause may be an unavailable source, missing tool, or input that could not be read; results depending on it remain unknown.</p>';
   } else if(cur().partial){
     left+='<p style="color:var(--muted)">CSV exports don’t include the explanation or suggested action. Load the JSON report for those.</p>';
   }
@@ -536,20 +535,48 @@ function findingsHTML(r){
 }
 
 function planItems(r){
-  var seen=Object.create(null), items=[];
-  r.findings.forEach(function(f){if(f.fix_cmd && !seen[f.fix_cmd]){seen[f.fix_cmd]=true;items.push(f)}});
+  var byAction=Object.create(null), items=[];
+  r.findings.forEach(function(f){
+    if(!f.fix_cmd)return;
+    var item=byAction[f.fix_cmd];
+    if(!item){item={action:f.fix_cmd,findings:[],automatic:true};byAction[f.fix_cmd]=item;items.push(item)}
+    item.findings.push(f); item.automatic=item.automatic&&f.fix_auto;
+  });
   return items;
 }
 function planHTML(r){
   var items=planItems(r);
-  if(!items.length)return '<div class="empty"><div class="t">No suggested actions in this report</div>'+(r.partial?'CSV exports do not include suggested actions.':'Review findings for details.')+'</div>';
-  return '<div class="plan-bar">These are distinct suggested actions from the report. Review each before use. A fresh scan is needed to verify results.</div><div class="plan">'+items.map(function(f){return '<div class="pitem"><div><div class="who">'+esc(f.component)+' · '+esc(f.vuln_id)+'</div><div class="cmd"><code>'+esc(f.fix_cmd)+'</code><button class="copy" type="button" data-copy="'+esc(f.fix_cmd)+'">Copy</button></div></div></div>'}).join('')+'</div>';
+  if(!items.length)return '<div class="empty"><div class="t">No suggested actions in this report</div>'+(r.partial?'CSV exports do not include suggested actions.':'Review findings and coverage for details; this does not establish that no work remains.')+'</div>';
+  return '<div class="plan-bar">These are distinct suggested actions from the report. Manual actions can include instructions rather than shell commands. Review each before use. A fresh scan is needed to verify results.</div><div class="plan">'+items.map(function(item){
+    var affected=Array.from(new Set(item.findings.map(function(f){return f.component+(f.version?' '+f.version:'')+(f.location?' — '+f.location:'')+' · '+f.vuln_id})));
+    return '<div class="pitem"><div><div class="who"><b>'+(item.automatic?'Unattended command available':'Manual review or action')+'</b> · '+plural(item.findings.length,'finding')+'</div><ul>'+affected.map(function(x){return '<li class="mono">'+esc(x)+'</li>'}).join('')+'</ul><div class="cmd"><code>'+esc(item.action)+'</code><button class="copy" type="button" data-copy="'+esc(item.action)+'">Copy</button></div></div></div>';
+  }).join('')+'</div>';
+}
+
+function coverageHTML(r){
+  var sc=!r.loadedAt && bundle.scope && typeof bundle.scope==='object'?bundle.scope:null;
+  function mode(key,yes,no){return sc&&typeof sc[key]==='boolean'?(sc[key]?yes:no):'Not recorded'}
+  var paths=sc&&Array.isArray(sc.paths)&&sc.paths.every(function(p){return typeof p==='string'})?sc.paths:null;
+  var out='<section class="tbl" style="padding:20px;margin-top:20px"><h2>Scan scope</h2><dl class="kv">'+
+    '<dt>Machine</dt><dd>'+mode('machine','Included','Excluded')+'</dd>'+
+    '<dt>Sources</dt><dd>'+mode('offline','Offline cache only','Online lookups enabled; cached answers may be reused')+'</dd>'+
+    '<dt>Licenses</dt><dd>'+mode('licenses','Enabled','Not requested')+'</dd>'+
+    '<dt>Repo paths</dt><dd>'+(paths?esc(paths.length?paths.join(', '):'Default bounded discovery under the home directory'):'Not recorded')+'</dd></dl>';
+  if(!sc)out+='<p>Scope options are not recorded in this imported report. Finding locations do not establish which directories or machine checks were included.</p>';
+  out+='<h2>Inventory counts</h2><p>These are the scanner’s reported counts, not a completeness score. Categories can overlap; collecting an item does not prove every source checked it.</p><dl class="kv">';
+  var keys=Object.keys(r.checked);
+  out+=keys.length?keys.map(function(k){return '<dt>'+esc(k)+'</dt><dd>'+r.checked[k]+'</dd>'}).join(''):'<dt>Inventory</dt><dd>No counts recorded</dd>';
+  out+='</dl><h2>Coverage gaps</h2>';
+  var gaps=r.findings.filter(function(f){return f.state==='unchecked'});
+  out+=gaps.length?gaps.map(function(f){return '<div class="notice"><b>'+esc(f.component)+'</b><p>'+ticks(f.note)+'</p></div>'}).join(''):'<p>No unchecked-source rows recorded. This only describes the recorded scan scope.</p>';
+  if(r.partial)out+='<p>CSV omits inventory counts and unfixed-advisory and unknown-license totals; coverage cannot be established from this export.</p>';
+  return out+'</section>';
 }
 
 function advisoriesHTML(r){
   var m=Object.create(null),order=[];
   r.findings.forEach(function(f){ if(!isAdvisory(f))return; if(!m[f.vuln_id]){m[f.vuln_id]=[];order.push(f.vuln_id)} m[f.vuln_id].push(f); });
-  if(!order.length)return '<div class="empty"><div class="t">No advisories in this scan</div>Markers like UNPINNED or UNCHECKED aren’t advisories, so they’re listed only under Findings.</div>';
+  if(!order.length)return '<div class="empty"><div class="t">No advisory rows in this report</div>Markers like UNPINNED or UNCHECKED aren’t advisories, so they’re listed only under Findings.</div>';
   return '<div class="advs">'+order.map(function(id){
     var fs=m[id], info=advInfo[id]||{}, links=advLinks(id);
     var al=(info.aliases||[]).filter(function(a){return a!==id});
@@ -572,17 +599,17 @@ function render(){
   var right = checked.length? '<div class="right">'+checked.map(function(k){return '<span class="chk"><b>'+esc(r.checked[k])+'</b> '+esc(k)+'</span>'}).join('')+'</div>' : '';
   var planN=planItems(r).length;
   var advN=r.counts.advisories;
-  var subBits=[]; if(r.root)subBits.push(r.root); if(r.version)subBits.push('wpantry '+r.version);
+  var subBits=[]; if(r.version)subBits.push('wpantry '+r.version);
   if(typeof bundle.generated_at==='number'&&!r.loadedAt && Number.isFinite(bundle.generated_at)){var dt=new Date(bundle.generated_at);if(!isNaN(dt.getTime()))subBits.push('generated '+dt.toISOString());}
   if(!r.loadedAt && typeof bundle.phase==='string') subBits.push('phase: '+bundle.phase);
   if(!r.loadedAt && bundle.scope && typeof bundle.scope==='object'){var sc=bundle.scope; subBits.push('machine: '+(sc.machine?'included':'excluded')+', offline: '+(sc.offline?'yes':'no')+', license checks: '+(sc.licenses?'enabled':'disabled')+(Array.isArray(sc.paths)&&sc.paths.every(function(p){return typeof p==='string'})?', paths: '+(sc.paths.length?sc.paths.join(', '):'default home discovery'):''));}
   var schemaWarn = (r.schema!=null&&r.schema!==1)?'<div class="notice">This report uses schema '+esc(r.schema)+'. The viewer was built for schema 1, so some fields may be missing.</div>':'';
-  var body = state.tab==='plan'?planHTML(r):(state.tab==='advisories'?advisoriesHTML(r):findingsHTML(r));
+  var body = state.tab==='coverage'?coverageHTML(r):(state.tab==='plan'?planHTML(r):(state.tab==='advisories'?advisoriesHTML(r):findingsHTML(r)));
   main.innerHTML =
     '<div class="head"><div><h1>'+esc(r.title)+'</h1><div class="sub">'+(subBits.length?'<span class="mono">'+esc(subBits.join(' · '))+'</span>':'Pantry security scan')+'</div></div>'+right+'</div>'+
     schemaWarn + (!r.loadedAt && typeof bundle.phase==='string' && bundle.phase.indexOf('an update command failed')!==-1?'<div class="notice">An update command failed. Review the command output and recheck before relying on the result.</div>':'') + verdictHTML(r)+
     '<div class="tabs" aria-label="Report sections">'+
-      tabBtn('findings','Findings',r.findings.length)+tabBtn('plan','Update plan',planN)+tabBtn('advisories','Advisories',advN)+
+      tabBtn('findings','Findings',r.findings.length)+tabBtn('plan','Update plan',planN)+tabBtn('advisories','Advisories',advN)+tabBtn('coverage','Coverage',r.counts.unchecked)+
     '</div>'+ body;
 }
 function tabBtn(id,label,n){return '<button class="tab'+(state.tab===id?' on':'')+'" aria-pressed="'+(state.tab===id)+'" data-tab="'+id+'" type="button">'+label+'<sup>'+n+'</sup></button>'}
@@ -668,19 +695,19 @@ function addText(text,name){
       rows.forEach(function(o){if(o.kind!=='secret' && o.id&&!isMarker(o.id))advInfo[o.id]={aliases:o.aliases.split(/\s+/).filter(Boolean)}}); source='csv';
     } else {
       raw=JSON.parse(trimmed);
-      if(raw&&Array.isArray(raw.runs)){ if(!raw.runs.length || !raw.runs.every(function(x){return x && typeof x.title==='string' && typeof x.file==='string' && validReport(x.report)}))throw new Error('shape'); raw.runs.forEach(function(x){runs.push(normalize(x.report,{title:x.title,file:x.file,loadedAt:Date.now()}))}); state.run=runs.length-1; render(); toast('Added '+plural(raw.runs.length,'scan')); return; }
+      if(raw&&Array.isArray(raw.runs)){ if(!raw.runs.length || !raw.runs.every(function(x){return x && typeof x.title==='string' && typeof x.file==='string' && validReport(x.report)}))throw new Error('shape'); raw.runs.forEach(function(x){runs.push(normalize(x.report,{title:x.title,file:x.file,loadedAt:Date.now()}))}); state.run=runs.length-1; state.kind='all'; state.open={}; state.tab='findings'; state.q=''; state.show={fail:true,warn:true,unchecked:true}; state.kevOnly=false; $('q').value=''; setHash(); render(); toast('Added '+plural(raw.runs.length,'scan')); return; }
       if(!validReport(raw))throw new Error('shape');
     }
   }catch(err){ toast(name+' isn’t a Pantry JSON report or CSV export'); return; }
   var title=name.replace(/\.(json|csv)$/i,'');
   runs.push(normalize(raw,{title:title,file:name,source:source,loadedAt:Date.now()}));
-  state.run=runs.length-1; state.kind='all'; state.open={}; state.tab='findings'; setHash();
+  state.run=runs.length-1; state.kind='all'; state.open={}; state.tab='findings'; state.q=''; state.show={fail:true,warn:true,unchecked:true}; state.kevOnly=false; $('q').value=''; setHash();
   render(); toast('Added '+name);
 }
 
 // hash routing: #findings, #plan, #advisories
 function setHash(){try{history.replaceState(null,'','#'+state.tab)}catch(e){location.hash=state.tab}}
-function fromHash(){var h=(location.hash||'').slice(1); if(h==='plan'||h==='advisories'||h==='findings')state.tab=h}
+function fromHash(){var h=(location.hash||'').slice(1); if(h==='plan'||h==='advisories'||h==='findings'||h==='coverage')state.tab=h}
 window.addEventListener('hashchange',function(){fromHash();render()});
 
 (Array.isArray(bundle.runs)?bundle.runs:[]).forEach(function(x){if(x && validReport(x.report) && typeof x.title==='string' && typeof x.file==='string') runs.push(normalize(x.report,{title:x.title,file:x.file,source:x.source}))});

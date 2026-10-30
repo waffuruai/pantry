@@ -25,6 +25,8 @@ const EXIT_OK: i32 = 0;
 const EXIT_FAIL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_INTERNAL: i32 = 3;
+/// `watch`: a fix has landed for something that had none.
+const EXIT_AVAILABLE: i32 = 10;
 
 /// A line of data on stdout, never coloured (JSON, search results, the
 /// skill).
@@ -279,6 +281,56 @@ fn cmd_tools(json: bool) -> Result<i32> {
     Ok(if found.iter().any(|t| t.required && !t.found) { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// The advisories the last scan found with no released fix, asked about
+/// again now; exit 10 when any has a fix.
+fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let net = wpantry::net::Http::new();
+    let style = Style::stderr();
+    let status = |s: &str| {
+        if !json && std::io::stderr().is_terminal() {
+            eprintln!("{}", style.dim(s));
+        }
+    };
+    let watched = wpantry::watch::run(&cache, &net, offline, &status)?;
+    let landed = watched.iter().filter(|w| w.fixed.is_some()).count();
+    if json {
+        say(&wpantry::watch::report_json(&watched));
+    } else if watched.is_empty() {
+        say("Nothing to watch: the last scan found no Critical, High or exploited advisory without a released fix.");
+    } else {
+        let out = Style::stdout();
+        for w in &watched {
+            let (mark, state) = match &w.fixed {
+                Some(v) => (out.green("✓"), out.green(&format!("FIX AVAILABLE: {} {v}", w.item.1))),
+                None => (out.yellow("⚠"), out.yellow("no fix yet")),
+            };
+            say(&format!(
+                "{mark} {} {} {} ({}) - {} {}",
+                w.item.1,
+                w.item.2,
+                out.dim(&w.item.0),
+                out.bold(&w.id),
+                w.summary,
+                state
+            ));
+            match (&w.fixed, &w.mitigation) {
+                (Some(_), _) => say("    Fix: run wpantry --update --dryrun for the step"),
+                (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
+                (None, None) => {
+                    say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
+                }
+            }
+        }
+        say(&format!(
+            "{} advisories watched, {landed} with a fix now{}",
+            watched.len(),
+            if landed > 0 { ". Re-run wpantry check to see the update plan" } else { "" }
+        ));
+    }
+    Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -292,6 +344,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
         Command::Export { csv } => cmd_export(&csv),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
+        Command::Watch { json, offline } => cmd_watch(json, offline),
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),

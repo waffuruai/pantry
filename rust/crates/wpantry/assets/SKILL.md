@@ -22,11 +22,12 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Search cached advisories, ranked | `wpantry search "tarfile traversal" --json` |
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry export --csv findings.csv` |
+| Re-ask OSV about the Critical/High advisories that had no fix; exit 10 when one landed | `wpantry watch --json` |
 | Which external tools are installed | `wpantry tools` |
 
 `search` takes SQLite FTS5 syntax (`"exact phrase"`, `tls AND certificate`, `rust*`). Results rank by text relevance, then whether the advisory applies to this machine, then whether it is in CISA KEV.
 
-Exit codes: 0 clean (warnings and "not checked" included), 1 a failing finding or a failed unattended fix, 2 usage error, 3 internal error.
+Exit codes: 0 clean (warnings and "not checked" included), 1 a failing finding or a failed unattended fix, 2 usage error, 3 internal error, 10 (`watch` only) a fix has landed.
 
 For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readonly ~/.cache/wpantry/wpantry.db`. Tables: `findings` (latest scan), `vulns` (OSV records; `record` is the full JSON), `queries` (package/version → advisory ids, with when we asked), `kev`, `eol`, `casks`, `malicious` (the malicious-package name index), `runs` (cached osv-scanner, `brew vulns` and gitleaks results), `meta`.
 
@@ -38,8 +39,9 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 4. Never run the printed steps that need sudo (OS updates, `fix-ca-trust.sh`) yourself. Hand them to the user.
 5. A fix in a repo's lockfile is a code change. Follow that repo's contribution rules: an issue, a branch, the printed `cargo update` / `pnpm update` / `npm install` there, the repo's build and tests, and a draft PR. Never edit a shared checkout in place.
 6. `posture` findings are the machine's own settings (FileVault, firewall, Remote Login, automatic login, screen lock, updates): the user-level ones `--update` can apply; the `sudo` ones go to the user with the printed step. `--posture-policy FILE` silences checks a machine means to fail (a server's Remote Login).
-7. Warnings (no released fix yet, an app or extension behind its latest release, an Electron app whose vendor hasn't shipped a fix, an unreviewed install script, a license outside the allowlist) don't fail the check. Mention them; don't chase them unless asked.
-7. `unchecked` findings ("not checked" in the report) mean a source couldn't be reached and had nothing cached. Never report those areas as clean: re-run with network, or say they're unverified.
+7. A `warn` finding with `fixed` empty is an advisory that applies and has no released fix: Critical, High or in KEV, else it would only be counted (`unfixed`). Tell the user it exists, give its `fix_cmd` (the mitigation, such as the nftables rule for a kernel bug) as the stopgap, and offer `wpantry watch` (hourly from cron, alert on exit 10) so the fix is noticed the hour it lands. `posture` findings `KERNEL-TCP-IP-OPTIONS` and `MPTCP` are the Linux kernel side of that.
+8. Warnings (no released fix yet, an app or extension behind its latest release, an Electron app whose vendor hasn't shipped a fix, an unreviewed install script, a license outside the allowlist) don't fail the check. Mention them; don't chase them unless asked.
+9. `unchecked` findings ("not checked" in the report) mean a source couldn't be reached and had nothing cached. Never report those areas as clean: re-run with network, or say they're unverified.
 
 ## Rules
 

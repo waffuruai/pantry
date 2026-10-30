@@ -296,6 +296,85 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.run_bin("breach", "--disable")[0], 0)
         self.assertIn("no", self.run_bin("breach")[1])
 
+    def test_watch_re_asks_about_unfixed_advisories_and_exits_10_when_a_fix_lands(self):
+        self.project_run()
+        code, out, _ = self.run_bin("watch", "--offline", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["watched"], [])
+        self.assertIn("Nothing to watch", self.run_bin("watch", "--offline")[1])
+
+        def record(fixed):
+            events = [{"introduced": "0"}] + ([{"fixed": fixed}] if fixed else [])
+            return {"id": "GHSA-k", "aliases": ["CVE-2026-98432"], "summary": "TCP use-after-free",
+                    "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                    "affected": [{"package": {"ecosystem": "npm", "name": "kern"},
+                                  "ranges": [{"type": "SEMVER", "events": events}]}]}
+
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("GHSA-k", "CVE-2026-98432", "TCP use-after-free", "", "CRITICAL", "", "",
+                      "https://osv.dev/vulnerability/GHSA-k", json.dumps(record(None))))
+        conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "kern", "1.0.0", 4_000_000_000, "GHSA-k"))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("project", "kern", "1.0.0", "/w/package-lock.json", "CVE-2026-98432", "warn", "", 0, "CRITICAL",
+                      "TCP use-after-free (no fix released for npm yet)", "Until the fix lands: …", 0))
+        conn.commit()
+        conn.close()
+
+        code, out, _ = self.run_bin("watch", "--offline", "--json")
+        self.assertEqual(code, 0, out)
+        got = json.loads(out)
+        self.assertEqual(set(got), {"schema", "impl", "version", "watched"})
+        self.assertEqual(got["schema"], 1)
+        [w] = got["watched"]
+        self.assertEqual(set(w), {"id", "severity", "summary", "ecosystem", "package", "version", "fixed", "mitigation"})
+        self.assertEqual((w["id"], w["package"], w["version"], w["fixed"]), ("CVE-2026-98432", "kern", "1.0.0", None))
+        self.assertIn("hdrlength", w["mitigation"])
+        code, out, _ = self.run_bin("watch", "--offline")
+        self.assertEqual(code, 0)
+        self.assertIn("no fix yet", out)
+        self.assertIn("Meanwhile:", out)
+
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("UPDATE vulns SET record = ? WHERE id = 'GHSA-k'", (json.dumps(record("1.0.1")),))
+        conn.commit()
+        conn.close()
+        code, out, _ = self.run_bin("watch", "--offline", "--json")
+        self.assertEqual(code, 10, out)
+        self.assertEqual(json.loads(out)["watched"][0]["fixed"], "1.0.1")
+        code, out, _ = self.run_bin("watch", "--offline")
+        self.assertEqual(code, 10)
+        self.assertIn("FIX AVAILABLE: kern 1.0.1", out)
+
+    def test_unfixed_critical_advisories_warn_in_check(self):
+        """A Critical/High advisory with no released fix is a `warn` finding with
+        `fixed` empty (the step is the mitigation); the `unfixed` count still
+        includes it."""
+        git_repo(self.home / "app")
+        (self.home / "app" / "package-lock.json").write_text(json.dumps({
+            "name": "app", "lockfileVersion": 3, "packages": {"": {"name": "app"},
+            "node_modules/kern": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/kern/-/kern-1.0.0.tgz"}}}))
+        self.project_run()  # creates the cache
+        rec = {"id": "GHSA-k", "aliases": ["CVE-2026-98432"], "summary": "TCP use-after-free",
+               "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+               "affected": [{"package": {"ecosystem": "npm", "name": "kern"},
+                             "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]}]}
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("GHSA-k", "CVE-2026-98432", rec["summary"], "", "", "", "", "", json.dumps(rec)))
+        conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "kern", "1.0.0", 4_000_000_000, "GHSA-k"))
+        conn.commit()
+        conn.close()
+        code, out, _ = self.project_run("--json")
+        self.assertEqual(code, 0, out)
+        env = self.envelope(out)
+        self.assertEqual(env["unfixed"], 1)
+        [f] = [f for f in env["findings"] if f["vuln_id"] == "CVE-2026-98432"]
+        self.assertEqual((f["status"], f["fixed"], f["severity"], f["fix_auto"]), ("warn", "", "CRITICAL", False))
+        self.assertIn("no fix released", f["note"])
+        self.assertIn("hdrlength", f["fix_cmd"])
+
     def test_json_stdout_is_pure(self):
         git_repo(self.home / "app")
         _, out, _ = self.project_run("--json")

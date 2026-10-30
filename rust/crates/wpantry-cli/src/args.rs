@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "version", "tools", "skill"];
+pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "watch", "version", "tools", "skill"];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -33,6 +33,7 @@ pub enum Command {
     Search { query: String, applicable: bool, limit: i64, json: bool },
     Export { csv: String },
     Breach { enable: bool, disable: bool },
+    Watch { json: bool, offline: bool },
     Version { json: bool },
     Tools { json: bool },
     Skill,
@@ -47,7 +48,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -57,6 +58,7 @@ pub fn usage(cmd: &str) -> &'static str {
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] --csv CSV",
         "breach" => "usage: wpantry breach [-h] [--enable | --disable]",
+        "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
@@ -76,6 +78,9 @@ fn help(cmd: &str) -> String {
         "breach" => {
             "show or set consent for the email breach check\n\noptions:\n  -h, --help  show this help message and exit\n  --enable\n  --disable"
         }
+        "watch" => {
+            "ask OSV again about the advisories the last scan found with no released fix (Critical, High, exploited in the wild): exit 10 when a fix has landed\n\noptions:\n  -h, --help  show this help message and exit\n  --offline   use only the local cache\n  --json"
+        }
         "version" => {
             "print the version, implementation and JSON schema\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
         }
@@ -84,7 +89,7 @@ fn help(cmd: &str) -> String {
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error, 10 (watch) a fix has landed."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -116,6 +121,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
         "export" => &[("--help", false), ("--csv", true)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
+        "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
         _ => &[("--help", false)],
     }
@@ -277,11 +283,12 @@ pub fn parse(argv: &[String]) -> Parsed {
             }
             Command::Breach { enable, disable }
         }
-        "version" | "tools" | "skill" => {
+        "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
             }
             match cmd.as_str() {
+                "watch" => Command::Watch { json: flag("--json"), offline: flag("--offline") },
                 "version" => Command::Version { json: flag("--json") },
                 "tools" => Command::Tools { json: flag("--json") },
                 _ => Command::Skill,
@@ -345,5 +352,7 @@ mod tests {
         );
         assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
         assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
+        assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
+        assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
     }
 }

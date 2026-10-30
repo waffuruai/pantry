@@ -46,6 +46,7 @@ wpantry skill
 | `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
 | `skill` | Print the bundled agent skill (`SKILL.md`) to stdout |
+| `harden` | `harden extension-cooldown [--hours N]` (default 72): set `extensions.installCooldownHours` in every installed VS Code-family editor's `settings.json`, keeping comments and formatting; the fix `POSTURE-EXTENSION-COOLDOWN` names, and the one posture fix that edits a file. Exit 0 |
 
 ### Scope walk
 

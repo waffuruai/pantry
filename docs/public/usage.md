@@ -30,6 +30,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System and tool trust stores against known-distrusted CAs |
 | The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |
+| Developer-tool guardrails | Editor extensions wait 72 hours before a new version installs (`wpantry harden extension-cooldown`), git hooks that check commits |
 
 `--no-machine` limits a run to the first five rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
 

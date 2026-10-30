@@ -279,6 +279,24 @@ fn cmd_tools(json: bool) -> Result<i32> {
     Ok(if found.iter().any(|t| t.required && !t.found) { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// `harden extension-cooldown`: the one posture fix that edits files.
+fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
+    let changed = wpantry::posture::tools::set_extension_cooldown(hours)?;
+    if changed.is_empty() {
+        let editors = wpantry::posture::tools::editor_settings();
+        if editors.is_empty() {
+            show("  no VS Code-family editor is installed");
+        } else {
+            show(&format!("  every editor already waits {hours} hours"));
+        }
+    }
+    for c in &changed {
+        show(&format!("  ✓ {c}"));
+    }
+    show("  Extensions wait that long after a version is published before it installs here (restart the editor).");
+    Ok(EXIT_OK)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -295,6 +313,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
+        Command::Harden { what: _, hours } => cmd_harden_cooldown(hours),
     }
 }
 

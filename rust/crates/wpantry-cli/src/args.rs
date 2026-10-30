@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "version", "tools", "skill"];
+pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "version", "tools", "skill", "harden"];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -35,6 +35,7 @@ pub enum Command {
     Breach { enable: bool, disable: bool },
     Version { json: bool },
     Tools { json: bool },
+    Harden { what: String, hours: u32 },
     Skill,
 }
 
@@ -47,7 +48,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,harden} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -83,8 +84,11 @@ fn help(cmd: &str) -> String {
             "list the external tools this implementation uses\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
+        "harden" => {
+            "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,harden}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    harden              apply a user-level posture fix (extension-cooldown)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -117,6 +121,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "export" => &[("--help", false), ("--csv", true)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
+        "harden" => &[("--help", false), ("--hours", true)],
         _ => &[("--help", false)],
     }
 }
@@ -276,6 +281,22 @@ pub fn parse(argv: &[String]) -> Parsed {
                 return fail("argument --disable: not allowed with argument --enable".into());
             }
             Command::Breach { enable, disable }
+        }
+        "harden" => {
+            let what = match positional.as_slice() {
+                [w] if w == "extension-cooldown" => w.clone(),
+                [w] => return fail(format!("argument what: invalid choice: '{w}' (choose from extension-cooldown)")),
+                [] => return fail("the following arguments are required: what".into()),
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
+            let hours = match value("--hours") {
+                None => 72,
+                Some(v) => match v.trim().parse::<u32>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
+                },
+            };
+            Command::Harden { what, hours }
         }
         "version" | "tools" | "skill" => {
             if !positional.is_empty() {

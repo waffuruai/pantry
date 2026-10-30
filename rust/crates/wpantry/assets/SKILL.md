@@ -23,6 +23,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry export --csv findings.csv` |
 | Which external tools are installed | `wpantry tools` |
+| Make every VS Code-family editor wait 72 h before installing a new extension version | `wpantry harden extension-cooldown --hours 72` |
 
 `search` takes SQLite FTS5 syntax (`"exact phrase"`, `tls AND certificate`, `rust*`). Results rank by text relevance, then whether the advisory applies to this machine, then whether it is in CISA KEV.
 

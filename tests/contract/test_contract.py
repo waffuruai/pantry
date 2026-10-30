@@ -178,6 +178,18 @@ class Contract(unittest.TestCase):
         code, _, err = self.run_bin("--posture-policy", str(self.home / "missing.txt"))
         self.assertEqual(code, 2, err)
 
+    def test_harden_usage(self):
+        code, _, err = self.run_bin("harden")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("harden", "firewall")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("harden", "extension-cooldown", "--hours", "lots")
+        self.assertEqual(code, 2, err)
+        # With a temp HOME there is no editor: nothing to edit, exit 0.
+        code, out, err = self.run_bin("harden", "extension-cooldown")
+        self.assertEqual(code, 0, err)
+        self.assertIn("no VS Code-family editor", out)
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()

@@ -15,6 +15,7 @@ use std::time::Duration;
 
 pub mod linux;
 pub mod macos;
+pub mod tools;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -105,15 +106,16 @@ pub struct Check {
     pub explain: &'static str,
 }
 
-/// The checks for this OS.
-pub fn checks() -> &'static [Check] {
-    if cfg!(target_os = "macos") {
+/// The checks for this OS, then the developer-tool ones every OS has.
+pub fn checks() -> Vec<&'static Check> {
+    let os: &'static [Check] = if cfg!(target_os = "macos") {
         macos::CHECKS
     } else if cfg!(target_os = "linux") {
         linux::CHECKS
     } else {
         &[]
-    }
+    };
+    os.iter().chain(tools::CHECKS.iter()).collect()
 }
 
 /// Run every check not in `skip` (ids, case-insensitive).
@@ -121,7 +123,7 @@ pub fn run(skip: &[String], runner: Runner) -> Vec<(&'static Check, Outcome)> {
     let skipped = |id: &str| {
         skip.iter().any(|s| s.eq_ignore_ascii_case(id) || s.eq_ignore_ascii_case(id.trim_start_matches("POSTURE-")))
     };
-    let todo: Vec<&'static Check> = checks().iter().filter(|c| !skipped(c.id)).collect();
+    let todo: Vec<&'static Check> = checks().into_iter().filter(|c| !skipped(c.id)).collect();
     let outcomes = crate::system::par_map(&todo, 4, |c| (c.probe)(runner));
     todo.into_iter().zip(outcomes).collect()
 }
@@ -174,6 +176,7 @@ mod tests {
             return; // an OS without checks
         }
         let first = checks()[0].id;
+        let _ = &first;
         let without: Vec<String> = vec![first.trim_start_matches("POSTURE-").to_ascii_lowercase()];
         assert_eq!(run(&without, &runner).len(), all - 1);
         let with: Vec<String> = vec![first.to_string()];

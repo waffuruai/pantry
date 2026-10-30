@@ -44,6 +44,9 @@ wpantry skill
 | `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
 | `skill` | Print the bundled agent skill (`SKILL.md`) to stdout |
+| `sync` | `sync [--refresh] [--json]`: refresh what the cache already knows, without an inventory: the feeds (CISA KEV, the malicious-package index, the cask catalog and browser releases, VS Code's lists, the latest wpantry), end-of-life dates for every product on record, and OSV's answers for every package version asked about before. Exit 0, or 1 when a source was unreachable. `--json`: `{"refreshed": [...], "failed": [{"source", "why"}], "packages": n}` |
+| `schedule` | `schedule install [--every hourly|daily|weekly] [--at HH:MM] [--dry-run]`, `status`, `uninstall`, `run`: a scheduled `sync` then `check --json --no-input` (never `--update`) through launchd (`~/Library/LaunchAgents/ai.waffuru.wpantry.plist`), a systemd user timer (`~/.config/systemd/user/wpantry.{service,timer}`) or cron. `run` writes `$XDG_STATE_HOME/wpantry/last.json` (default `~/.local/state/wpantry/`) and appends one line to `schedule.log`; one run at a time (`schedule.lock`). Default daily at 09:30 |
+| `cache` | `cache prune [--older-than DAYS]` (default 90): drop package versions not asked about since then, the advisories only they referred to, and cached runs that old, then `VACUUM` |
 
 ### Scope walk
 

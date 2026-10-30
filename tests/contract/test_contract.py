@@ -165,6 +165,35 @@ class Contract(unittest.TestCase):
         unpinned = [f["component"] for f in self.envelope(out)["findings"] if f["vuln_id"] == "UNPINNED"]
         self.assertEqual(unpinned, ["y-mcp (project: y)"])  # the repo's server, not the harness config's
 
+    def test_sync_offline_reports_unreachable_sources(self):
+        # No network in the contract suite: every source is unreachable, none is "clean".
+        code, out, err = self.run_bin("sync", "--json", env=dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9"))
+        self.assertEqual(code, 1, err)
+        data = json.loads(out)
+        self.assertEqual(set(data), {"refreshed", "failed", "packages"})
+        self.assertTrue(data["failed"], data)
+        self.assertEqual(data["packages"], 0)
+
+    def test_schedule_dry_run_and_cache_prune(self):
+        code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
+        self.assertEqual(code, 0, err)
+        self.assertIn("schedule", out)
+        # launchd (integers), systemd (HH:MM) or cron (M H) spell the time differently.
+        self.assertTrue("07:05" in out or ("<integer>7</integer>" in out and "<integer>5</integer>" in out)
+                        or out.startswith("5 7 "), out)
+        code, _, err = self.run_bin("schedule", "install", "--at", "25:00")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("schedule", "dance")
+        self.assertEqual(code, 2, err)
+        code, out, err = self.run_bin("schedule", "status", env=dict(self.env, XDG_STATE_HOME=str(self.home / "state")))
+        self.assertEqual(code, 0, err)
+        self.assertIn("last run: never", out)
+        self.project_run()
+        code, out, err = self.run_bin("cache", "prune", "--older-than", "1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("pruned", out)
+        self.assertTrue(self.db.exists())
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()

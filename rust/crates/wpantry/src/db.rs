@@ -192,6 +192,66 @@ impl Cache {
             .optional()?)
     }
 
+    /// Every (ecosystem, package, version) ever asked of OSV.
+    pub fn queried(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT ecosystem, package, version FROM queries ORDER BY 1, 2, 3")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<(Option<String>, Option<String>, Option<String>)>>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(e, p, v)| (e.unwrap_or_default(), p.unwrap_or_default(), v.unwrap_or_default()))
+            .filter(|(e, p, _)| !e.is_empty() && !p.is_empty())
+            .collect())
+    }
+
+    /// Every product with end-of-life rows.
+    pub fn eol_products(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT product FROM eol ORDER BY 1")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().flatten().collect())
+    }
+
+    /// Drop what a scan hasn't touched in `max_age` seconds: package
+    /// versions not asked about since then (and the advisories only they
+    /// referred to), cached runs that old, then compact the file. Returns
+    /// (queries, vulns, runs) removed.
+    pub fn prune(&self, max_age: f64) -> Result<(usize, usize, usize)> {
+        let cutoff = now() - max_age;
+        let queries = self.conn.execute("DELETE FROM queries WHERE checked_at < ?", [cutoff])?;
+        let runs = self.conn.execute("DELETE FROM runs WHERE ran_at < ?", [cutoff])?;
+        let mut keep: HashSet<String> = HashSet::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT vuln_ids FROM queries")?;
+            for ids in stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten() {
+                keep.extend(ids.split_whitespace().map(str::to_string));
+            }
+            let mut stmt = self.conn.prepare("SELECT vuln_id FROM findings")?;
+            keep.extend(stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten());
+        }
+        let mut gone: Vec<String> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT id, aliases FROM vulns")?;
+            for row in stmt.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))? {
+                let (id, aliases) = row?;
+                let Some(id) = id else { continue };
+                let referenced =
+                    keep.contains(&id) || aliases.as_deref().unwrap_or("").split_whitespace().any(|a| keep.contains(a));
+                if !referenced {
+                    gone.push(id);
+                }
+            }
+        }
+        for id in &gone {
+            self.conn.execute("DELETE FROM vulns WHERE id = ?", [id])?;
+            if self.fts {
+                let _ = self.conn.execute("DELETE FROM vulns_fts WHERE id = ?", [id]);
+            }
+        }
+        self.conn.execute_batch("COMMIT; VACUUM; BEGIN")?;
+        Ok((queries, gone.len(), runs))
+    }
+
     pub fn put_query(&self, eco: &str, pkg: &str, ver: &str, ids: &[String]) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO queries VALUES (?, ?, ?, ?, ?)",

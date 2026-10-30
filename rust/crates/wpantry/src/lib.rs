@@ -38,6 +38,7 @@ pub mod re;
 pub mod repos;
 pub mod scanners;
 pub mod sha256;
+pub mod sync;
 pub mod system;
 pub mod tools;
 pub mod versions;

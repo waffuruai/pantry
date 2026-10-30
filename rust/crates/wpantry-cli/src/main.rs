@@ -108,11 +108,23 @@ fn cmd_check(a: Check) -> Result<i32> {
     if a.dryrun {
         return Ok(status);
     }
+    if !applied.ran.is_empty() {
+        let cache = Cache::open(None)?;
+        for (cmd, ok) in &applied.ran {
+            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok)?;
+        }
+        cache.close()?;
+    }
     say("\nRe-checking after the updates…");
     let again = scan(Options { refresh: false, ask: false, ..opts }, false, &net)?;
+    if !applied.ran.is_empty() {
+        let cache = Cache::open(None)?;
+        wpantry::history::verify_fixes(&cache, first.scan_id, again.scan_id)?;
+        cache.close()?;
+    }
     // A fix that failed fails the run even when the re-check comes back clean.
     let rechecked = report::report(&again, &db, &mut |l| show(l));
-    Ok(if rechecked != 0 { rechecked } else { applied })
+    Ok(if rechecked != 0 { rechecked } else { applied.status })
 }
 
 fn round3(x: f64) -> f64 {
@@ -277,6 +289,141 @@ fn cmd_tools(json: bool) -> Result<i32> {
     Ok(if found.iter().any(|t| t.required && !t.found) { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// `report`: the exposure, remediation and audit logs from the cache's
+/// history tables, as Markdown (default), JSON or CSV.
+fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&str>) -> Result<i32> {
+    use wpantry::history::{self, stamp};
+    let cache = Cache::open(None)?;
+    let since = wpantry::system::now() - since_days as f64 * wpantry::db::DAY;
+    let want = |s: &str| sections.iter().any(|x| x == s || x == "all");
+    let exposures = if want("exposure") { history::exposures(&cache, since)? } else { Vec::new() };
+    let fixes = if want("remediation") { history::fixes(&cache, since)? } else { Vec::new() };
+    let (scans, events) = if want("audit") {
+        (history::scans(&cache, since)?, history::events(&cache, since)?)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let text = match format {
+        "json" => {
+            history::report_json(&cache, want("exposure"), want("remediation"), want("audit"), since, since_days)?
+        }
+        "csv" => {
+            let mut t = String::from(
+                "kind,component,version,location,vuln_id,status,severity,kev,fixed,first_seen,last_seen,resolved,days_exposed\r\n",
+            );
+            for e in &exposures {
+                let row = [
+                    e.kind.as_str(),
+                    &e.component,
+                    &e.version,
+                    &e.location,
+                    &e.vuln_id,
+                    &e.status,
+                    &e.severity,
+                    if e.kev { "true" } else { "false" },
+                    &e.fixed,
+                    &stamp(e.first_at),
+                    &stamp(e.last_at),
+                    &e.resolved_at.map(stamp).unwrap_or_default(),
+                    &e.days_exposed.to_string(),
+                ];
+                t.push_str(&row.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
+                t.push_str("\r\n");
+            }
+            t
+        }
+        _ => {
+            let mut t = format!(
+                "# wpantry report\n\nGenerated {} by wpantry {VERSION}; the last {since_days} days.\n",
+                stamp(wpantry::system::now())
+            );
+            if want("exposure") {
+                let open = exposures.iter().filter(|e| e.resolved_at.is_none()).count();
+                let closed: Vec<&history::Exposure> = exposures.iter().filter(|e| e.resolved_at.is_some()).collect();
+                let median = {
+                    let mut d: Vec<f64> = closed.iter().map(|e| e.days_exposed).collect();
+                    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    d.get(d.len() / 2).copied().unwrap_or(0.0)
+                };
+                t.push_str(&format!(
+                    "\n## Exposure log\n\n{open} open, {} resolved; median time to resolve {median} days.\n\n| Component | Version | Advisory | Severity | Status | First seen | Resolved | Days |\n|---|---|---|---|---|---|---|---|\n",
+                    closed.len()
+                ));
+                for e in &exposures {
+                    t.push_str(&format!(
+                        "| {} | {} | {}{} | {} | {} | {} | {} | {} |\n",
+                        md(&e.component),
+                        md(&e.version),
+                        md(&e.vuln_id),
+                        if e.kev { " (KEV)" } else { "" },
+                        md(&e.severity),
+                        if e.resolved_at.is_some() { "resolved" } else { &e.status },
+                        stamp(e.first_at),
+                        e.resolved_at.map(stamp).unwrap_or_else(|| "open".into()),
+                        e.days_exposed
+                    ));
+                }
+            }
+            if want("remediation") {
+                t.push_str("\n## Remediation log\n\n| When | Command | Mode | Result | Verified by scan |\n|---|---|---|---|---|\n");
+                for f in &fixes {
+                    t.push_str(&format!(
+                        "| {} | `{}` | {} | {} | {} |\n",
+                        stamp(f.at),
+                        f.command.replace('`', "'"),
+                        f.mode,
+                        if f.ok { "ok" } else { "failed" },
+                        f.verified_scan.map(|s| format!("#{s}")).unwrap_or_else(|| "-".into())
+                    ));
+                }
+            }
+            if want("audit") {
+                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns |\n|---|---|---|---|---|---|---|---|\n");
+                for s in &scans {
+                    t.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        s.id,
+                        stamp(s.finished_at),
+                        md(&s.host),
+                        md(&s.user),
+                        s.version,
+                        md(&s.scope),
+                        s.fails,
+                        s.warns
+                    ));
+                }
+                t.push_str("\n### Events\n\n| When | Event | Detail |\n|---|---|---|\n");
+                for e in &events {
+                    t.push_str(&format!("| {} | {} | {} |\n", stamp(e.at), e.kind, md(&e.detail.to_string())));
+                }
+            }
+            t
+        }
+    };
+    cache.close()?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &text)?;
+            show(&format!("✓ wrote the report to {path}"));
+        }
+        None => {
+            // A pipe that closes early (`| head`) ends the output, not the process.
+            let mut out = std::io::stdout().lock();
+            if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush())
+                && e.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(e.into());
+            }
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+/// A table cell: no pipes, newlines or control characters.
+fn md(s: &str) -> String {
+    s.replace('|', "\\|").chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -293,6 +440,9 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
+        Command::Report { sections, since_days, format, out } => {
+            cmd_report(&sections, since_days, &format, out.as_deref())
+        }
     }
 }
 

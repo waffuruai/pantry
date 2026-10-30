@@ -165,6 +165,30 @@ class Contract(unittest.TestCase):
         unpinned = [f["component"] for f in self.envelope(out)["findings"] if f["vuln_id"] == "UNPINNED"]
         self.assertEqual(unpinned, ["y-mcp (project: y)"])  # the repo's server, not the harness config's
 
+    def test_report_keeps_scan_history(self):
+        self.project_run()
+        self.project_run()
+        code, out, err = self.run_bin("report", "--format", "json", "--since", "7")
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual(set(data), {"schema", "version", "since_days", "exposures", "fixes", "scans", "events"})
+        self.assertEqual(len(data["scans"]), 2, data["scans"])
+        self.assertTrue(all(s["scope"].startswith("repos:") for s in data["scans"]), data["scans"])
+        self.assertEqual([e["kind"] for e in data["events"]], ["scan", "scan"])
+        code, out, err = self.run_bin("report", "--audit")
+        self.assertEqual(code, 0, err)
+        self.assertIn("## Audit log", out)
+        self.assertNotIn("## Exposure log", out)
+        code, out, err = self.run_bin("report", "--exposure", "--format", "csv")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("kind,component,version,location,vuln_id,"), out[:80])
+        code, _, err = self.run_bin("report", "--format", "pdf")
+        self.assertEqual(code, 2, err)
+        conn = sqlite3.connect(str(self.db))
+        for table in ("scans", "exposures", "fixes", "events"):
+            self.assertTrue(conn.execute(f"PRAGMA table_info({table})").fetchall(), table)
+        conn.close()
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()

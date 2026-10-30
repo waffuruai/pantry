@@ -323,19 +323,27 @@ pub fn upgrades_mise(cmd: &str) -> bool {
         || (w.len() >= 2 && w[..2] == ["mise", "self-update"])
 }
 
-/// Run (or, on a dry run, print) the unattended fixes and list the rest;
-/// 1 when an unattended fix failed. `confirm` gets the unattended commands
-/// before any runs; on false nothing is run.
+/// What `apply` did: the exit status (1 when an unattended fix failed) and
+/// each unattended command with whether it succeeded (dry runs list none).
+pub struct Applied {
+    pub status: i32,
+    pub ran: Vec<(String, bool)>,
+}
+
+/// Run (or, on a dry run, print) the unattended fixes and list the rest.
+/// `confirm` gets the unattended commands before any runs; on false
+/// nothing is run.
 pub fn apply(
     findings: &[Finding],
     dryrun: bool,
     confirm: &dyn Fn(&[String]) -> bool,
     out: &mut dyn FnMut(&str),
-) -> i32 {
+) -> Applied {
     let (auto, manual, optional) = plan(findings);
+    let mut ran = Vec::new();
     if auto.is_empty() && manual.is_empty() && optional.is_empty() {
         out("Nothing to update.");
-        return 0;
+        return Applied { status: 0, ran };
     }
     out("");
     out(&format!("==> Update plan{}", if dryrun { " (dry run: nothing is changed)" } else { "" }));
@@ -358,6 +366,7 @@ pub fn apply(
             out(&format!("  ✗ failed: {cmd}"));
             status = 1;
         }
+        ran.push((cmd.clone(), ok));
     }
     for (title, cmds) in [
         ("Needs you (sudo, a shell function, a vendor update, or a change in a repo, made on a branch):", &manual),
@@ -370,7 +379,7 @@ pub fn apply(
             }
         }
     }
-    status
+    Applied { status, ran }
 }
 
 /// POSIX shell word splitting, as Python's `shlex.split`; None on an
@@ -482,10 +491,10 @@ mod tests {
     #[test]
     fn dryrun_runs_nothing() {
         let mut lines = Vec::new();
-        assert_eq!(apply(&[f("false", true, "fail")], true, &|_| true, &mut |l| lines.push(l.to_string())), 0);
+        assert_eq!(apply(&[f("false", true, "fail")], true, &|_| true, &mut |l| lines.push(l.to_string())).status, 0);
         assert!(lines.contains(&"  would run: false".to_string()));
         let mut lines = Vec::new();
-        assert_eq!(apply(&[f("false", true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string())), 1);
+        assert_eq!(apply(&[f("false", true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string())).status, 1);
         assert!(lines.contains(&"  ✗ failed: false".to_string()));
         // Declined: the command is offered, and nothing runs.
         let mut lines = Vec::new();
@@ -494,7 +503,7 @@ mod tests {
             offered.borrow_mut().extend_from_slice(cmds);
             false
         };
-        assert_eq!(apply(&[f("false", true, "fail")], false, &decline, &mut |l| lines.push(l.to_string())), 0);
+        assert_eq!(apply(&[f("false", true, "fail")], false, &decline, &mut |l| lines.push(l.to_string())).status, 0);
         assert_eq!(*offered.borrow(), ["false"]);
         assert!(lines.contains(&"  Nothing was changed.".to_string()));
         assert!(!lines.iter().any(|l| l.contains("failed")));
@@ -540,6 +549,7 @@ mod tests {
             ..Default::default()
         };
         let scan = Outcome {
+            scan_id: 1,
             findings: vec![
                 Finding {
                     kind: "unchecked".into(),

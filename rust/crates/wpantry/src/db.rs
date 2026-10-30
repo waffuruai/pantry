@@ -74,6 +74,7 @@ impl Cache {
         let conn = Connection::open(&file)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::history::SCHEMA)?;
         let fts = conn
             .execute_batch(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS vulns_fts USING fts5(\

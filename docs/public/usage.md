@@ -25,12 +25,13 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Malicious packages | Every package name against the OpenSSF malicious-packages index |
 | AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
+| Repo hooks | Code a repo runs the moment it is opened or installed: Claude Code and Gemini hooks, MCP servers kept in the repo, VS Code tasks on folder open, devcontainer commands, direnv, the repo's own install scripts, gyp expansions, native addons; plus the file names, packages, hosts and hashes of known hijacked-repo campaigns |
 | The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
 | Installed software | Runtimes and compilers (every version a version manager keeps), package managers, CLI tools, datastores, Docker, global packages, Homebrew formulae, apps, browsers, editor extensions |
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System and tool trust stores against known-distrusted CAs |
 
-`--no-machine` limits a run to the first five rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
+`--no-machine` limits a run to the first six rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
 
 ## Scope
 
@@ -38,6 +39,16 @@ By default wpantry checks the machine and every git repo under your home directo
 
 - `--path DIR` (repeatable) limits the repo checks to the repos at or under DIR. A DIR with no git repo is scanned as one project, without the git-history checks. A missing DIR is skipped with a note.
 - `--no-machine` skips the machine inventory: repo checks only.
+
+## Cloned a repo? Check it before you open it
+
+A repo can run code the moment an agent or editor opens it: a `.claude/settings.json` SessionStart hook, a `.cursor/mcp.json` server, a `.vscode/tasks.json` task on folder open, a devcontainer command, an npm `postinstall`. Hijacked repos hide the payload in a file the hook runs (a 13 MB `.github/init.js` that code search never indexes). Before opening a clone you didn't write:
+
+```bash
+wpantry check --path ~/Downloads/some-repo --no-machine
+```
+
+A hook that runs a file kept in the repo, a file that looks like a dropper, or a known indicator fails (`repo-hook` findings `RUNS-REPO-FILE`, `LOADER`, `IOC`); a hook that runs a command at all warns (`OPEN-HOOK`, `INSTALL-HOOK`), as do the commit and branch markers of a known campaign (`MARKER`). Nothing is run or fixed for you: read the file the finding names, then remove the hook or decide to trust it. `--repo-hooks FILE` replaces the bundled indicator list.
 
 ## Reading the report
 
@@ -111,6 +122,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
+| `--repo-hooks FILE` | Your list of hijacked-repo indicators (file names, package names, hosts, hashes) |
 
 Policy files are one entry per line, `#` for comments. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 

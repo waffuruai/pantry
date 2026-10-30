@@ -23,6 +23,7 @@ pub struct Check {
     pub check_licenses: bool,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
+    pub repo_hooks: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -50,7 +51,7 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--repo-hooks FILE]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] --csv CSV",
@@ -65,7 +66,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -108,6 +109,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--gitleaks-config", true),
             ("--licenses", true),
             ("--install-scripts", true),
+            ("--repo-hooks", true),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
         "export" => &[("--help", false), ("--csv", true)],
@@ -226,6 +228,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 ("--gitleaks-config", &mut c.gitleaks_config),
                 ("--licenses", &mut c.licenses),
                 ("--install-scripts", &mut c.install_scripts),
+                ("--repo-hooks", &mut c.repo_hooks),
             ] {
                 if let Some(v) = value(opt) {
                     let p = expand(&v);

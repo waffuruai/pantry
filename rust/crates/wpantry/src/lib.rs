@@ -23,6 +23,7 @@ pub mod error;
 pub mod external;
 pub mod feeds;
 pub mod harnesses;
+pub mod hooks;
 pub mod images;
 pub mod json;
 pub mod leaks;
@@ -61,4 +62,5 @@ pub mod defaults {
     pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
+    pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
 }

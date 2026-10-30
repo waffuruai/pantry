@@ -165,6 +165,30 @@ class Contract(unittest.TestCase):
         unpinned = [f["component"] for f in self.envelope(out)["findings"] if f["vuln_id"] == "UNPINNED"]
         self.assertEqual(unpinned, ["y-mcp (project: y)"])  # the repo's server, not the harness config's
 
+    def test_repo_hooks_fail_when_a_repo_runs_its_own_file_on_open(self):
+        repo = git_repo(self.home / "clone")
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "node .github/init.js || bun .github/init.js"}]}]}}))
+        (repo / ".github").mkdir()
+        (repo / ".github" / "init.js").write_text("console.log('hi')\n")
+        (repo / ".vscode").mkdir()
+        (repo / ".vscode" / "tasks.json").write_text('{"version": "2.0.0", "tasks": [{"label": "fmt", "type": "shell", "command": "cargo fmt"}]}')
+        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        self.assertEqual(code, 1, err)
+        hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
+        self.assertEqual([h["vuln_id"] for h in hooks], ["RUNS-REPO-FILE"], hooks)
+        self.assertEqual(hooks[0]["status"], "fail")
+        self.assertTrue(hooks[0]["component"].endswith("/.claude/settings.json"), hooks[0])
+        self.assertIn("SessionStart", hooks[0]["location"])
+        self.assertFalse(hooks[0]["fix_auto"])
+        # A hook that runs an installed tool is a warning, not a failure.
+        (repo / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+            {"hooks": [{"type": "command", "command": "cargo fmt"}]}]}}))
+        code, out, _ = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
+        self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("OPEN-HOOK", "warn")], hooks)
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()

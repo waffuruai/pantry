@@ -250,12 +250,21 @@ const CVE_2026_98432_FIXED: &[(Kernel, Kernel)] = &[
     ((6, 19, 0), (7, 2, 10)),
 ];
 
-fn drops_ip_options(r: Runner) -> bool {
-    let nft = r(&["nft", "list", "ruleset"]);
+/// Whether a rule drops inbound TCP with IP options. `nft list ruleset` and `iptables -S` need root
+/// and print nothing without it (so does an empty ruleset), so the read happens as root, or through
+/// `sudo -n` (which fails rather than prompts); `None` when neither is available.
+fn drops_ip_options(r: Runner) -> Option<bool> {
+    let root = r(&["id", "-u"]).trim() == "0";
+    let (nft, ipt) = if root {
+        (r(&["nft", "list", "ruleset"]), r(&["iptables", "-S"]))
+    } else if r(&["sudo", "-n", "id", "-u"]).trim() == "0" {
+        (r(&["sudo", "-n", "nft", "list", "ruleset"]), r(&["sudo", "-n", "iptables", "-S"]))
+    } else {
+        return None;
+    };
     let nft_rule = nft.contains("hdrlength > 5") && nft.contains("drop");
-    let ipt = r(&["iptables", "-S"]);
     let ipt_rule = ipt.contains("ipv4options") && ipt.contains("DROP");
-    nft_rule || ipt_rule
+    Some(nft_rule || ipt_rule)
 }
 
 fn tcp_ip_options(r: Runner) -> Outcome {
@@ -265,10 +274,18 @@ fn tcp_ip_options(r: Runner) -> Outcome {
     if !vulnerable_upstream {
         return Outcome::pass(format!("kernel {raw} has the fix for CVE-2026-98432"));
     }
-    if drops_ip_options(r) {
-        return Outcome::pass(format!(
-            "kernel {raw}: inbound TCP with IP options is dropped (CVE-2026-98432 stopgap in place); update the kernel when the fix ships"
-        ));
+    match drops_ip_options(r) {
+        Some(true) => {
+            return Outcome::pass(format!(
+                "kernel {raw}: inbound TCP with IP options is dropped (CVE-2026-98432 stopgap in place); update the kernel when the fix ships"
+            ));
+        }
+        None => {
+            return Outcome::manual(format!(
+                "kernel {raw} is in CVE-2026-98432's affected range and the ruleset can't be read here (nft needs root): sudo nft list table inet cve_2026_98432, or mise run mitigate-cve-2026-98432 --status"
+            ));
+        }
+        Some(false) => {}
     }
     if distro {
         Outcome::fail(format!(
@@ -466,12 +483,24 @@ mod tests {
         assert_eq!(tcp_ip_options(&fixed).status, Status::Pass);
         let newer = machine(&[("uname -r", "6.18.60-1-lts\n")]);
         assert_eq!(tcp_ip_options(&newer).status, Status::Pass);
-        let old = machine(&[("uname -r", "6.8.0-45-generic\n"), ("nft list ruleset", "table inet filter {\n}\n")]);
+        let old = machine(&[
+            ("uname -r", "6.8.0-45-generic\n"),
+            ("id -u", "0\n"),
+            ("nft list ruleset", "table inet filter {\n}\n"),
+        ]);
         let o = tcp_ip_options(&old);
         assert_eq!(o.status, Status::Fail);
         assert!(o.evidence.contains("distro kernel"), "{}", o.evidence);
+        // not root and no passwordless sudo: the ruleset is unreadable, never a false fail
+        let unreadable = machine(&[("uname -r", "6.8.0-45-generic\n"), ("id -u", "1000\n")]);
+        let u = tcp_ip_options(&unreadable);
+        assert_eq!(u.status, Status::Manual);
+        assert!(u.evidence.contains("needs root"), "{}", u.evidence);
+        // the rule read through sudo -n (the first match wins: "sudo -n id -u" before "id -u")
         let mitigated = machine(&[
             ("uname -r", "6.8.0-45-generic\n"),
+            ("sudo -n id -u", "0\n"),
+            ("id -u", "1000\n"),
             (
                 "nft list ruleset",
                 "table inet cve_2026_98432 {\n\tchain pre {\n\t\tip hdrlength > 5 meta l4proto tcp counter packets 0 bytes 0 drop\n\t}\n}\n",
@@ -480,6 +509,7 @@ mod tests {
         assert_eq!(tcp_ip_options(&mitigated).status, Status::Pass);
         let ipt = machine(&[
             ("uname -r", "5.15.0-100-generic\n"),
+            ("id -u", "0\n"),
             ("iptables -S", "-A INPUT -p tcp -m ipv4options --any-opt -j DROP\n"),
         ]);
         assert_eq!(tcp_ip_options(&ipt).status, Status::Pass);

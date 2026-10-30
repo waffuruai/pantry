@@ -13,6 +13,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | See what your AI coding tools actually run | Claude Code, Codex, Cursor, Gemini CLI and other harnesses: their MCP servers (unpinned ones warn), plugins, skills and bundled npm packages |
 | Keep the OS, browsers and apps current | macOS Software Update, Debian/Ubuntu/Alpine/openSUSE packages, dnf distros, Arch; Chrome, Firefox; Electron apps; other apps against the Homebrew cask catalog |
 | Know when a runtime stops getting fixes | End-of-life dates for runtimes and datastores |
+| Know whether the machine itself is set up safely | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock (CIS benchmark items, read-only; `--no-posture` skips them) |
 | Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
 | Review supply-chain risk | Dependency licenses outside an allowlist, npm install scripts, container images your repos build from |
 | Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |

@@ -34,6 +34,7 @@ pub mod osdb;
 pub mod osv;
 pub mod packages;
 pub mod plist;
+pub mod posture;
 pub mod re;
 pub mod repos;
 pub mod scanners;
@@ -61,4 +62,5 @@ pub mod defaults {
     pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
+    pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
 }

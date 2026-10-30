@@ -29,6 +29,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Installed software | Runtimes and compilers (every version a version manager keeps), package managers, CLI tools, datastores, Docker, global packages, Homebrew formulae, apps, browsers, editor extensions |
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System and tool trust stores against known-distrusted CAs |
+| The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |
 
 `--no-machine` limits a run to the first five rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
 
@@ -111,6 +112,8 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
+| `--no-posture` | Skip the machine's security settings |
+| `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
 
 Policy files are one entry per line, `#` for comments. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 

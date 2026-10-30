@@ -37,7 +37,8 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 3. Say what each fix touches before running it. `wpantry --update` only runs unattended, user-level updates (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, uninstalling malicious extensions). It prints the rest as steps.
 4. Never run the printed steps that need sudo (OS updates, `fix-ca-trust.sh`) yourself. Hand them to the user.
 5. A fix in a repo's lockfile is a code change. Follow that repo's contribution rules: an issue, a branch, the printed `cargo update` / `pnpm update` / `npm install` there, the repo's build and tests, and a draft PR. Never edit a shared checkout in place.
-6. Warnings (no released fix yet, an app or extension behind its latest release, an Electron app whose vendor hasn't shipped a fix, an unreviewed install script, a license outside the allowlist) don't fail the check. Mention them; don't chase them unless asked.
+6. `posture` findings are the machine's own settings (FileVault, firewall, Remote Login, automatic login, screen lock, updates): the user-level ones `--update` can apply; the `sudo` ones go to the user with the printed step. `--posture-policy FILE` silences checks a machine means to fail (a server's Remote Login).
+7. Warnings (no released fix yet, an app or extension behind its latest release, an Electron app whose vendor hasn't shipped a fix, an unreviewed install script, a license outside the allowlist) don't fail the check. Mention them; don't chase them unless asked.
 7. `unchecked` findings ("not checked" in the report) mean a source couldn't be reached and had nothing cached. Never report those areas as clean: re-run with network, or say they're unverified.
 
 ## Rules

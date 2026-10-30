@@ -79,6 +79,8 @@ pub struct Policy {
     pub gitleaks_config: Option<PathBuf>,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
+    /// Posture checks to skip (`--posture-policy`); the bundled, empty list by default.
+    pub posture: Option<PathBuf>,
 }
 
 impl Policy {
@@ -88,6 +90,10 @@ impl Policy {
 
     pub fn licenses(&self) -> Vec<String> {
         listed(self.licenses.as_deref(), crate::defaults::LICENSES)
+    }
+
+    pub fn posture_skip(&self) -> Vec<String> {
+        listed(self.posture.as_deref(), crate::defaults::POSTURE)
     }
 
     /// The gitleaks config file: the given one, or the bundled one written
@@ -146,6 +152,9 @@ pub struct Options {
     pub paths: Option<Vec<PathBuf>>,
     /// Run the machine inventory, not only the repo checks.
     pub machine: bool,
+    /// Skip the machine's security settings (`--no-posture`); they run
+    /// with the machine inventory otherwise.
+    pub no_posture: bool,
     pub policy: Policy,
     /// Check dependency licenses against the allowlist (`--licenses`); off
     /// by default, it's noisy.

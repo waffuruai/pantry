@@ -165,6 +165,19 @@ class Contract(unittest.TestCase):
         unpinned = [f["component"] for f in self.envelope(out)["findings"] if f["vuln_id"] == "UNPINNED"]
         self.assertEqual(unpinned, ["y-mcp (project: y)"])  # the repo's server, not the harness config's
 
+    def test_posture_flags(self):
+        # Repo-only scans never report the machine's settings.
+        code, out, _ = self.project_run("--json")
+        self.assertFalse([f for f in json.loads(out)["findings"] if f["kind"] == "posture"])
+        code, _, err = self.run_bin("--no-machine", "--no-posture", "--offline", "--no-input", "--path", str(self.home))
+        self.assertEqual(code, 0, err)
+        policy = self.home / "posture.txt"
+        policy.write_text("remote-login\nPOSTURE-FILEVAULT\n")
+        code, _, err = self.run_bin("--no-machine", "--posture-policy", str(policy), "--offline", "--no-input", "--path", str(self.home))
+        self.assertEqual(code, 0, err)
+        code, _, err = self.run_bin("--posture-policy", str(self.home / "missing.txt"))
+        self.assertEqual(code, 2, err)
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()

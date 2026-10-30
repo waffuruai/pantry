@@ -96,7 +96,10 @@ pub fn install(every: Every, at: (u32, u32), dry_run: bool) -> Result<i32> {
     let (hour, minute) = at;
     let text = match backend() {
         Backend::Launchd => plist(&program, every, hour, minute, &p),
-        Backend::Systemd => unit(&program, every, hour, minute, &p).1,
+        Backend::Systemd => {
+            let (service, timer) = unit(&program, every, hour, minute, &p);
+            format!("# wpantry.service\n{service}\n# wpantry.timer\n{timer}")
+        }
         Backend::Cron => cron_line(&program, every, hour, minute, &p),
     };
     if dry_run {

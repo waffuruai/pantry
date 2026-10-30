@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "version", "tools", "skill"];
+pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "version", "tools", "skill", "update"];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -33,6 +33,7 @@ pub enum Command {
     Breach { enable: bool, disable: bool },
     Version { json: bool },
     Tools { json: bool },
+    Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
     Skill,
 }
 
@@ -45,7 +46,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,update} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -81,8 +82,11 @@ fn help(cmd: &str) -> String {
             "list the external tools this implementation uses\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
+        "update" => {
+            "check for a newer wpantry release and, after a yes, install it verified\n\noptions:\n  -h, --help       show this help message and exit\n  --check          only say whether a newer release exists (exit 10 when one does)\n  --yes            install without asking\n  --no-input       never ask: report only\n  --offline        use only the cached answer\n  --version VER    this release instead of the latest"
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,update}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    update              check for a newer release and install it verified\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -113,6 +117,14 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "export" => &[("--help", false), ("--csv", true)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
+        "update" => &[
+            ("--help", false),
+            ("--check", false),
+            ("--yes", false),
+            ("--no-input", false),
+            ("--offline", false),
+            ("--version", true),
+        ],
         _ => &[("--help", false)],
     }
 }
@@ -270,6 +282,18 @@ pub fn parse(argv: &[String]) -> Parsed {
                 return fail("argument --disable: not allowed with argument --enable".into());
             }
             Command::Breach { enable, disable }
+        }
+        "update" => {
+            if !positional.is_empty() {
+                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
+            }
+            Command::Update {
+                check: flag("--check"),
+                yes: flag("--yes"),
+                no_input: flag("--no-input"),
+                offline: flag("--offline"),
+                version: value("--version"),
+            }
         }
         "version" | "tools" | "skill" => {
             if !positional.is_empty() {

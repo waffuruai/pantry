@@ -10,6 +10,7 @@ mod args;
 mod progress;
 mod report;
 mod style;
+mod update;
 
 use args::{Check, Command, Parsed};
 use rusqlite::types::ValueRef;
@@ -25,6 +26,8 @@ const EXIT_OK: i32 = 0;
 const EXIT_FAIL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_INTERNAL: i32 = 3;
+/// `update --check`: a newer release exists.
+const EXIT_UPDATE_AVAILABLE: i32 = 10;
 
 /// A line of data on stdout, never coloured (JSON, search results, the
 /// skill).
@@ -89,6 +92,9 @@ fn cmd_check(a: Check) -> Result<i32> {
     }
     let db = db::path().to_string_lossy().into_owned();
     let status = report::report(&first, &db, &mut |l| show(l));
+    if let Some(n) = update::notice(&net, a.offline) {
+        eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
+    }
     if !(a.update || a.dryrun) {
         return Ok(status);
     }
@@ -293,6 +299,9 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
+        Command::Update { check, yes, no_input, offline, version } => {
+            update::run(update::Update { check, yes, no_input, offline, version })
+        }
     }
 }
 

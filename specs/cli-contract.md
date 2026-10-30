@@ -44,6 +44,7 @@ wpantry skill
 | `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
 | `skill` | Print the bundled agent skill (`SKILL.md`) to stdout |
+| `update` | `update [--check] [--yes] [--no-input] [--offline] [--version VER]`: is there a newer release; after a yes (or `--yes`), install it. The download is checked against the release `SHA256SUMS` and then verified by the first installed verifier (packslip with the release signer pinned, `gh attestation verify` against `release.yml` at the tag, cosign against the same identity); with none, nothing is installed. An install mise, cargo or Homebrew made is updated through that tool; a source build is only reported. `check` prints one stderr line when a newer release is cached (`WPANTRY_NO_UPDATE_CHECK=1` turns it off) |
 
 ### Scope walk
 
@@ -56,6 +57,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The retired Python implementation's cache (`WSCANNER_DB`, default `…/wscanner/wscanner.db`) has the same schema |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
+| `WPANTRY_NO_UPDATE_CHECK` | Set to anything: `check` never mentions a newer wpantry release |
 | `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
 
 ## Exit codes
@@ -66,6 +68,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | 1 | At least one finding has `status == "fail"`, or an unattended fix failed under `--update`. `tools` exits 1 when a required tool is missing |
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
+| 10 | `update`: a newer release exists and was not installed (`--check`, `--no-input`, no terminal, a "no", or a source build) |
 | 130 | Interrupted (Ctrl-C) |
 
 ## `check --json`

@@ -72,8 +72,15 @@ impl Cache {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(&file)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Readers and the writer coexist (a scheduled scan beside a manual
+        // one), and a minute of waiting beats failing a scan outright.
+        conn.busy_timeout(std::time::Duration::from_secs(60))?;
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
+             CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
+        )?;
         let fts = conn
             .execute_batch(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS vulns_fts USING fts5(\

@@ -302,6 +302,7 @@ impl<'a> Scan<'a> {
     // the scan --------------------------------------------------------------
 
     pub fn run(mut self) -> Result<Outcome> {
+        repos::forget_walks();
         self.status("Fetching CISA's known-exploited list");
         let kev = feeds::kev(&self.cache, self.net, self.opts.offline);
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;

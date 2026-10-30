@@ -219,6 +219,77 @@ fn time_sync(r: Runner) -> Outcome {
     }
 }
 
+/// A kernel version as (major, minor, patch).
+type Kernel = (u64, u64, u64);
+
+/// `uname -r` as (major, minor, patch); distro suffixes are dropped.
+fn kernel_version(r: Runner) -> Option<(u64, u64, u64, String)> {
+    let raw = r(&["uname", "-r"]).trim().to_string();
+    let core: String = raw.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let mut it = core.split('.').map(|p| p.parse::<u64>().ok());
+    let (a, b, c) = (it.next()??, it.next()??, it.next().flatten().unwrap_or(0));
+    Some((a, b, c, raw))
+}
+
+/// Whether a kernel version lies in any of the (introduced, fixed) ranges.
+fn in_ranges(v: Kernel, ranges: &[(Kernel, Kernel)]) -> bool {
+    ranges.iter().any(|(lo, hi)| v >= *lo && v < *hi)
+}
+
+/// CVE-2026-98432 (CVSS 9.8): an IPv4 TCP use-after-free since 4.4, fixed
+/// in the stable series below (OSV, 2026-10-30). Distro kernels carry
+/// backports under their own numbering, so a distro kernel is judged by
+/// the mitigation, with a note to check the vendor's advisory.
+const CVE_2026_98432_FIXED: &[(Kernel, Kernel)] = &[
+    ((4, 4, 0), (5, 10, 272)),
+    ((5, 11, 0), (5, 15, 223)),
+    ((5, 16, 0), (6, 1, 190)),
+    ((6, 2, 0), (6, 6, 159)),
+    ((6, 7, 0), (6, 12, 113)),
+    ((6, 13, 0), (6, 18, 56)),
+    ((6, 19, 0), (7, 2, 10)),
+];
+
+fn drops_ip_options(r: Runner) -> bool {
+    let nft = r(&["nft", "list", "ruleset"]);
+    let nft_rule = nft.contains("hdrlength > 5") && nft.contains("drop");
+    let ipt = r(&["iptables", "-S"]);
+    let ipt_rule = ipt.contains("ipv4options") && ipt.contains("DROP");
+    nft_rule || ipt_rule
+}
+
+fn tcp_ip_options(r: Runner) -> Outcome {
+    let Some((a, b, c, raw)) = kernel_version(r) else { return Outcome::unknown("uname gave no kernel version") };
+    let distro = raw.contains('-') && !raw.ends_with("-generic-upstream");
+    let vulnerable_upstream = in_ranges((a, b, c), CVE_2026_98432_FIXED);
+    if !vulnerable_upstream {
+        return Outcome::pass(format!("kernel {raw} has the fix for CVE-2026-98432"));
+    }
+    if drops_ip_options(r) {
+        return Outcome::pass(format!(
+            "kernel {raw}: inbound TCP with IP options is dropped (CVE-2026-98432 stopgap in place); update the kernel when the fix ships"
+        ));
+    }
+    if distro {
+        Outcome::fail(format!(
+            "kernel {raw} (a distro kernel: check the vendor's advisory for a backport) and no stopgap for CVE-2026-98432"
+        ))
+    } else {
+        Outcome::fail(format!("kernel {raw} is in CVE-2026-98432's affected range and no stopgap is in place"))
+    }
+}
+
+fn mptcp(r: Runner) -> Outcome {
+    let v = r(&["cat", "/proc/sys/net/mptcp/enabled"]);
+    match v.trim() {
+        "1" => Outcome::fail(
+            "MPTCP is enabled (net.mptcp.enabled=1); almost nothing needs it, and CVE-2026-98432's public proof of concept uses it",
+        ),
+        "0" => Outcome::pass("MPTCP is off"),
+        _ => Outcome::pass("MPTCP is not built into this kernel"),
+    }
+}
+
 const fn admin(cmd: &'static str) -> Option<Fix> {
     Some(Fix { cmd, admin: true })
 }
@@ -318,6 +389,28 @@ pub static CHECKS: &[Check] = &[
         explain: "Nobody can plant a command you'd run",
     },
     Check {
+        id: "POSTURE-KERNEL-TCP-IP-OPTIONS",
+        cis: "",
+        title: "Kernel patched for CVE-2026-98432, or inbound TCP with IP options dropped",
+        severity: Severity::Critical,
+        probe: tcp_ip_options,
+        fix: admin(
+            "Update the kernel when your distro ships the fix (upstream 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10); until then drop inbound TCP with IP options: sudo nft add table inet cve_2026_98432 && sudo nft 'add chain inet cve_2026_98432 pre { type filter hook prerouting priority raw - 10; policy accept; }' && sudo nft add rule inet cve_2026_98432 pre ip hdrlength gt 5 meta l4proto tcp counter drop  (ops: mise run mitigate-cve-2026-98432 persists it)",
+        ),
+        explain: "An unauthenticated remote root through a race in TCP's handshake; packets without IP options can't reach it",
+    },
+    Check {
+        id: "POSTURE-MPTCP",
+        cis: "",
+        title: "MPTCP off",
+        severity: Severity::Medium,
+        probe: mptcp,
+        fix: admin(
+            "sudo sysctl -w net.mptcp.enabled=0 && echo 'net.mptcp.enabled = 0' | sudo tee /etc/sysctl.d/90-no-mptcp.conf",
+        ),
+        explain: "Multipath TCP is rarely used and widens the kernel's attack surface",
+    },
+    Check {
         id: "POSTURE-TIME-SYNC",
         cis: "2.1.1",
         title: "Clock synchronised",
@@ -365,6 +458,35 @@ mod tests {
         assert_eq!(setting(cfg, "Missing"), None);
         // No sshd: nothing to harden.
         assert_eq!(ssh_root_login(&machine(&[("is-active", "inactive\n")])).status, Status::Pass);
+    }
+
+    #[test]
+    fn kernel_tcp_ip_options_by_version_and_stopgap() {
+        let fixed = machine(&[("uname -r", "6.12.113\n")]);
+        assert_eq!(tcp_ip_options(&fixed).status, Status::Pass);
+        let newer = machine(&[("uname -r", "6.18.60-1-lts\n")]);
+        assert_eq!(tcp_ip_options(&newer).status, Status::Pass);
+        let old = machine(&[("uname -r", "6.8.0-45-generic\n"), ("nft list ruleset", "table inet filter {\n}\n")]);
+        let o = tcp_ip_options(&old);
+        assert_eq!(o.status, Status::Fail);
+        assert!(o.evidence.contains("distro kernel"), "{}", o.evidence);
+        let mitigated = machine(&[
+            ("uname -r", "6.8.0-45-generic\n"),
+            (
+                "nft list ruleset",
+                "table inet cve_2026_98432 {\n\tchain pre {\n\t\tip hdrlength > 5 meta l4proto tcp counter packets 0 bytes 0 drop\n\t}\n}\n",
+            ),
+        ]);
+        assert_eq!(tcp_ip_options(&mitigated).status, Status::Pass);
+        let ipt = machine(&[
+            ("uname -r", "5.15.0-100-generic\n"),
+            ("iptables -S", "-A INPUT -p tcp -m ipv4options --any-opt -j DROP\n"),
+        ]);
+        assert_eq!(tcp_ip_options(&ipt).status, Status::Pass);
+        assert_eq!(tcp_ip_options(&machine(&[])).status, Status::Unknown);
+        assert_eq!(mptcp(&machine(&[("mptcp/enabled", "1\n")])).status, Status::Fail);
+        assert_eq!(mptcp(&machine(&[("mptcp/enabled", "0\n")])).status, Status::Pass);
+        assert_eq!(mptcp(&machine(&[])).status, Status::Pass, "not built in");
     }
 
     #[test]

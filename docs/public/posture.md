@@ -52,5 +52,9 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 | SUDO-NOPASSWD | 5.3 | sudo asks for a password | Medium | admin: visudo |
 | PATH-WRITABLE | 6.2 | No world-writable directory on PATH | Medium | admin: `chmod o-w` |
 | TIME-SYNC | 2.1.1 | Clock synchronised | Low | admin: `timedatectl set-ntp true` |
+| KERNEL-TCP-IP-OPTIONS | | Running kernel outside [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432)'s affected range (upstream fixes 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10), or an nftables/iptables rule dropping inbound TCP with IP options (`ip hdrlength > 5`). A distro kernel with a backport under its own numbering passes only through the rule: check the vendor's advisory | Critical | admin: the nft stopgap (ops: `mise run mitigate-cve-2026-98432`), then the kernel update |
+| MPTCP | | `net.mptcp.enabled = 0` (or MPTCP not built) | Medium | admin: `sysctl -w net.mptcp.enabled=0` |
+
+The kernel check is the pattern for a vulnerability with no fix to install yet: the check knows the affected versions and the stopgap, passes on either, and tells you which one you are relying on. [usage.md](usage.md#exposed-with-no-fix-yet) covers `wpantry watch`, which asks OSV again about such advisories.
 
 Not covered yet: Windows (#11), Time Machine encryption, sudo timeouts (need root to read), audit logging.

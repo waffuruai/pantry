@@ -87,6 +87,18 @@ packslip_says "ok: github.com/someone/else 9.9.9"
 run && fail "a packslip for another project should fail"
 [ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed for another project's packslip"
 echo "✓ refuses a packslip signed for another project"
+
+packslip_says "ok: github.com/waffuruai/pantry 9.9.90"
+run && fail "a packslip for another version (a longer one with this prefix) should fail"
+[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed for another version's packslip"
+echo "✓ refuses a packslip for a version that merely starts with this one"
+
+packslip_says "ok: github.com/waffuruai/pantry 9.9.9"
+rm "$tmp/release/packslip.sigstore.json"
+run && fail "with packslip installed, a release without its packslip should fail, not fall back"
+[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed without the packslip"
+echo "✓ never falls back to a weaker check when the packslip is missing"
+release
 rm "$tmp/path/packslip"
 
 code=0

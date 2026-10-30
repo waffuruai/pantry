@@ -184,11 +184,15 @@ fn sudo_nopasswd(r: Runner) -> Outcome {
 }
 
 fn path_dirs(_: Runner) -> Outcome {
+    path_dirs_of(&std::env::var("PATH").unwrap_or_default())
+}
+
+/// The world-writable directories among a PATH's entries.
+fn path_dirs_of(path: &str) -> Outcome {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let bad: Vec<String> = std::env::var("PATH")
-            .unwrap_or_default()
+        let bad: Vec<String> = path
             .split(':')
             .filter(|d| !d.is_empty())
             .filter(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && m.permissions().mode() & 0o002 != 0))
@@ -200,7 +204,10 @@ fn path_dirs(_: Runner) -> Outcome {
         return Outcome::fail(format!("writable by everyone and on PATH: {}", bad.join(", ")));
     }
     #[allow(unreachable_code)]
-    Outcome::manual("not checked on this platform")
+    {
+        let _ = path;
+        Outcome::manual("not checked on this platform")
+    }
 }
 
 fn time_sync(r: Runner) -> Outcome {
@@ -381,6 +388,22 @@ mod tests {
             Status::Pass
         );
         assert_eq!(disk_encryption(&machine(&[("lsblk", "disk\npart ext4\n")])).status, Status::Fail);
-        assert_eq!(path_dirs(&machine(&[])).status, Status::Pass);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let d = crate::system::TempDir::new("path").unwrap();
+            let (safe, open) = (d.path().join("safe"), d.path().join("open"));
+            std::fs::create_dir(&safe).unwrap();
+            std::fs::create_dir(&open).unwrap();
+            std::fs::set_permissions(&safe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+            let path = |dirs: &[&std::path::Path]| {
+                dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":")
+            };
+            assert_eq!(path_dirs_of(&path(&[&safe])).status, Status::Pass);
+            let o = path_dirs_of(&path(&[&safe, &open]));
+            assert_eq!(o.status, Status::Fail);
+            assert!(o.evidence.contains("open"), "{}", o.evidence);
+        }
     }
 }

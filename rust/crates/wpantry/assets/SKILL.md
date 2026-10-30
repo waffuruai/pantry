@@ -34,7 +34,7 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 ## Triage
 
 1. Run `wpantry check --json --no-input` and group `findings` by component. One component often carries many advisories; one update clears them.
-2. Order: `hidden-text` and `repo-hook` fails first (a repo that runs a file of its own on open: don't open it, don't run its hooks, read the file it names), then malicious packages and extensions (uninstall or remove them, then rotate credentials), then committed secrets from a provider rule (rotate first, then purge history), then anything in KEV, then end-of-life runtimes, then by severity, then everything else with a fix.
+2. Order: `suspect-code`, `hidden-text` and `repo-hook` fails first (a repo that runs a file of its own on open: don't open it, don't run its hooks, read the file it names), then malicious packages and extensions (uninstall or remove them, then rotate credentials), then committed secrets from a provider rule (rotate first, then purge history), then anything in KEV, then end-of-life runtimes, then by severity, then everything else with a fix.
 3. Say what each fix touches before running it. `wpantry --update` only runs unattended, user-level updates (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, uninstalling malicious extensions). It prints the rest as steps.
 4. Never run the printed steps that need sudo (OS updates, `fix-ca-trust.sh`) yourself. Hand them to the user.
 5. A fix in a repo's lockfile is a code change. Follow that repo's contribution rules: an issue, a branch, the printed `cargo update` / `pnpm update` / `npm install` there, the repo's build and tests, and a draft PR. Never edit a shared checkout in place.

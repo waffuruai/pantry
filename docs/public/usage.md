@@ -25,6 +25,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Malicious packages | Every package name against the OpenSSF malicious-packages index |
 | AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
+| Suspicious code | Strings decoded at run time and fed to `eval`, payloads kept as arrays of numbers, hand-rolled decoders, source written as escapes; `sudo`, setuid, `curl \| sh` and persistence in scripts; credential stores read and sent; code asking a crypto wallet to sign or approve; pages loading third-party scripts without an integrity hash; traffic to bare IP addresses. In the repos, and on a machine scan in every editor, agent and browser extension installed ([suspect-code.md](suspect-code.md)) |
 | Hidden text | Unicode that reads one way and runs another (bidi overrides, Trojan Source), invisible tag and zero-width characters that smuggle instructions to an AI assistant, identifiers mixing scripts, and identifiers packed with weapon and poison vocabulary so an AI reviewer refuses to read the code (`AI-BAIT`) |
 | Repo hooks | Code a repo runs the moment it is opened or installed: Claude Code and Gemini hooks, MCP servers kept in the repo, VS Code tasks on folder open, devcontainer commands, direnv, the repo's own install scripts, gyp expansions, native addons; plus the file names, packages, hosts and hashes of known hijacked-repo campaigns |
 | The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
@@ -32,7 +33,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System and tool trust stores against known-distrusted CAs |
 
-`--no-machine` limits a run to the first seven rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
+`--no-machine` limits a run to the first eight rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
 
 ## Scope
 
@@ -126,6 +127,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
 | `--repo-hooks FILE` | Your list of hijacked-repo indicators (file names, package names, hosts, hashes) |
+| `--suspect-policy FILE` | Suspicious-code ids and `path:` entries that should warn instead of fail (a legitimate hex table, an installer that uses sudo); nothing is silenced |
 
 Policy files are one entry per line, `#` for comments. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 

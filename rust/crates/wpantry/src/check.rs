@@ -82,6 +82,9 @@ pub struct Policy {
     pub install_scripts: Option<PathBuf>,
     /// Indicators of hijacked repos (`--repo-hooks`); the bundled list by default.
     pub repo_hooks: Option<PathBuf>,
+    /// Suspicious-code exemptions (`--suspect-policy`): ids and paths that
+    /// only warn; the bundled, empty list by default.
+    pub suspect: Option<PathBuf>,
 }
 
 impl Policy {
@@ -91,6 +94,13 @@ impl Policy {
 
     pub fn licenses(&self) -> Vec<String> {
         listed(self.licenses.as_deref(), crate::defaults::LICENSES)
+    }
+
+    pub fn suspect_policy(&self) -> crate::suspect::Policy {
+        crate::suspect::Policy::parse(&match &self.suspect {
+            Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+            None => crate::defaults::SUSPECT.to_string(),
+        })
     }
 
     /// The repo-hook indicator list's text (see `hooks::Indicators::parse`).

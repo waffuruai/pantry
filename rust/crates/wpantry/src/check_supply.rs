@@ -12,7 +12,7 @@ use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
 use crate::system::{self, Component, run as sh, short, which};
-use crate::{harnesses, hidden, hooks, leaks, malicious};
+use crate::{harnesses, hidden, hooks, leaks, malicious, suspect};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -53,6 +53,7 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
     secrets(scan, &git, jobs, ran)?;
     repo_hooks(scan, &git);
     hidden_text(scan, &git);
+    suspect_code(scan, &git);
     install_scripts(scan, &repos, found);
     images(scan, &repos)?;
     let exts = if scan.opts.machine { extensions(scan)? } else { Vec::new() };
@@ -357,6 +358,99 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
             });
         }
     }
+}
+
+/// Code that behaves like an attack (decoded-then-executed strings,
+/// payload arrays, privilege escalation, credential theft, wallet
+/// signing, unpinned third-party scripts): the repos' own source, and on
+/// a machine scan the extensions and plugins installed from elsewhere.
+pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
+    let policy = scan.opts.policy.suspect_policy();
+    let mut targets: Vec<(String, PathBuf, suspect::Kind)> =
+        repos.iter().map(|(name, root)| (name.clone(), root.clone(), suspect::Kind::Repo)).collect();
+    if scan.opts.machine {
+        for (name, dir) in installed_code() {
+            targets.push((name, dir, suspect::Kind::Installed));
+        }
+    }
+    if targets.is_empty() {
+        return;
+    }
+    scan.status("Looking for code that behaves like an attack");
+    let found: Vec<Vec<suspect::Suspect>> =
+        system::par_map(&targets, system::PROBES, |(_, root, kind)| suspect::scan_dir(root, *kind, &policy));
+    for ((name, _, kind), hits) in targets.iter().zip(found) {
+        scan.count(
+            if *kind == suspect::Kind::Repo {
+                "repos checked for suspicious code"
+            } else {
+                "installed extensions and plugins checked"
+            },
+            1,
+        );
+        for h in hits {
+            scan.add(Finding {
+                kind: "suspect-code".into(),
+                component: format!("{name}/{}", h.file),
+                location: if h.line > 0 { format!("line {}", h.line) } else { String::new() },
+                vuln_id: h.id.into(),
+                status: if h.hard { "fail" } else { "warn" }.into(),
+                note: h.note.clone(),
+                fix_cmd: match h.id {
+                    "SUSPECT-THIRD-PARTY-SCRIPT" => "Pin the script with an integrity hash (SRI) and crossorigin, or serve a copy yourself".into(),
+                    "SUSPECT-WALLET-SIGNING" => "Read exactly what is signed or approved and by what; never approve an unlimited allowance to code you didn't audit".into(),
+                    "SUSPECT-PRIV-ESCALATION" | "SUSPECT-CREDENTIAL-ACCESS" => "Read it before running or installing it; if it is yours and meant to, list it in the suspect policy (--suspect-policy) so it warns instead".into(),
+                    _ => "Read what runs, not what is written: decode it yourself, or drop the dependency; a legitimate table or decoder goes in the suspect policy so it warns instead".into(),
+                },
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Code on this machine that came from somewhere else and runs with the
+/// user's rights: editor extensions, agent plugins and browser extensions.
+fn installed_code() -> Vec<(String, PathBuf)> {
+    let home = system::home();
+    let mut out = Vec::new();
+    let mut add_children = |label: &str, dir: PathBuf| {
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        entries.sort();
+        for p in entries {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with('.') {
+                continue;
+            }
+            out.push((format!("{label} {name}"), p));
+        }
+    };
+    for (editor, dir, ..) in crate::editors::EDITORS {
+        add_children(editor, home.join(dir.trim_start_matches("~/")));
+    }
+    for (harness, dir) in crate::harnesses::plugin_dirs() {
+        add_children(&harness, PathBuf::from(dir));
+    }
+    let browsers: &[(&str, &str)] = if system::MACOS {
+        &[
+            ("Chrome", "Library/Application Support/Google/Chrome/Default/Extensions"),
+            ("Brave", "Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"),
+            ("Edge", "Library/Application Support/Microsoft Edge/Default/Extensions"),
+            ("Arc", "Library/Application Support/Arc/User Data/Default/Extensions"),
+            ("Chromium", "Library/Application Support/Chromium/Default/Extensions"),
+        ]
+    } else {
+        &[
+            ("Chrome", ".config/google-chrome/Default/Extensions"),
+            ("Brave", ".config/BraveSoftware/Brave-Browser/Default/Extensions"),
+            ("Edge", ".config/microsoft-edge/Default/Extensions"),
+            ("Chromium", ".config/chromium/Default/Extensions"),
+        ]
+    };
+    for (browser, dir) in browsers {
+        add_children(&format!("{browser} extension"), home.join(dir));
+    }
+    out
 }
 
 /// Text that reads one way and runs another, or is written to fool a

@@ -77,6 +77,7 @@ fn cmd_check(a: Check) -> Result<i32> {
             licenses: a.licenses.clone(),
             install_scripts: a.install_scripts.clone(),
             repo_hooks: a.repo_hooks.clone(),
+            suspect: a.suspect_policy.clone(),
         },
         refresh: a.refresh,
         offline: a.offline,

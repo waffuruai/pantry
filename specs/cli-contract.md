@@ -15,7 +15,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 ```
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
                  [--json] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
-                 [--repo-hooks FILE]
+                 [--repo-hooks FILE] [--suspect-policy FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export --csv FILE
 wpantry breach [--enable | --disable]
@@ -38,7 +38,7 @@ wpantry skill
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
-| `--gitleaks-config`, `--install-scripts`, `--repo-hooks` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
+| `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config`. The suspect policy lists ids (`PRIV-ESCALATION`) and `path:<text>` entries whose findings warn instead of fail; nothing silences one |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `breach` | Show or set consent for the opt-in email breach check |
@@ -97,11 +97,11 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Field | Type | Meaning |
 |---|---|---|
-| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `repo-hook`, `hidden-text`, `secret`, `license`, `install-script`, `config`, `account`, `unchecked` (open set) |
+| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `repo-hook`, `hidden-text`, `suspect-code`, `secret`, `license`, `install-script`, `config`, `account`, `unchecked` (open set) |
 | `component` | string | What it is about (`openssl`, `vite`, `~/code/app/.env`) |
 | `version` | string | Installed or locked version; `""` when none |
 | `location` | string | Path, lockfile, image or source; `""` when none |
-| `vuln_id` | string | Advisory id (CVE preferred), a gitleaks rule id, or a marker: `UNCHECKED`, `MISSING`, `EOL`, `OUTDATED`, `MALICIOUS`, `DEPRECATED`, `UNPINNED`, `BROWSER`, `OS-UPDATE`, `LICENSE`, `INSTALL-SCRIPT`, `NPM-SCRIPTS`, `BREACH`; `hidden-text`: `HIDDEN-BIDI`, `HIDDEN-TAGS` (fail), `HIDDEN-ZERO-WIDTH`, `HIDDEN-HOMOGLYPH`, `AI-BAIT` (warn) |
+| `vuln_id` | string | Advisory id (CVE preferred), a gitleaks rule id, or a marker: `UNCHECKED`, `MISSING`, `EOL`, `OUTDATED`, `MALICIOUS`, `DEPRECATED`, `UNPINNED`, `BROWSER`, `OS-UPDATE`, `LICENSE`, `INSTALL-SCRIPT`, `NPM-SCRIPTS`, `BREACH`; `hidden-text`: `HIDDEN-BIDI`, `HIDDEN-TAGS` (fail), `HIDDEN-ZERO-WIDTH`, `HIDDEN-HOMOGLYPH`, `AI-BAIT` (warn); `suspect-code`: `SUSPECT-EXEC-DECODED`, `SUSPECT-ENCODED-PAYLOAD`, `SUSPECT-STRING-DECODER`, `SUSPECT-ESCAPED-SOURCE`, `SUSPECT-PRIV-ESCALATION`, `SUSPECT-CREDENTIAL-ACCESS`, `SUSPECT-WALLET-SIGNING`, `SUSPECT-THIRD-PARTY-SCRIPT`, `SUSPECT-RAW-IP` (fail where out of place for the file's language and context, warn elsewhere; `--suspect-policy` ids and paths always warn) |
 | `status` | string | `fail` or `warn` |
 | `fixed` | string | The safe version; `""` when none |
 | `kev` | bool | In CISA KEV (also true for malicious packages) |

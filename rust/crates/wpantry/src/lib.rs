@@ -40,6 +40,7 @@ pub mod re;
 pub mod repos;
 pub mod scanners;
 pub mod sha256;
+pub mod suspect;
 pub mod system;
 pub mod tools;
 pub mod versions;
@@ -64,4 +65,5 @@ pub mod defaults {
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
     pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
+    pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.txt");
 }

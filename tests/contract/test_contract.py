@@ -367,8 +367,10 @@ class Contract(unittest.TestCase):
         conn.commit()
         conn.close()
         code, out, _ = self.project_run("--json")
-        self.assertEqual(code, 0, out)
         env = self.envelope(out)
+        # A runner without gitleaks fails on the missing tool; the advisory itself never does.
+        self.assertEqual(code, 1 if any(f["status"] == "fail" for f in env["findings"]) else 0, out)
+        self.assertEqual([f["kind"] for f in env["findings"] if f["status"] == "fail"], ["tool"] * sum(f["status"] == "fail" for f in env["findings"]))
         self.assertEqual(env["unfixed"], 1)
         [f] = [f for f in env["findings"] if f["vuln_id"] == "CVE-2026-98432"]
         self.assertEqual((f["status"], f["fixed"], f["severity"], f["fix_auto"]), ("warn", "", "CRITICAL", False))

@@ -84,6 +84,8 @@ The (Python) implementation prints the same findings as one block per component.
 
 `wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
+For a browser report, run `wpantry check --html report.html`. Its **Update plan** includes **Copy agent prompt**, a prompt you can paste into an AI agent of your choice, with all findings, suggested actions and coverage context from the selected scan. Preview it and remove any local paths or details you do not want to share. The agent is asked to verify the findings, make scoped changes, run tests and rescan; copying the prompt does not send data or run updates.
+
 ## JSON
 
 `wpantry check --json` prints one object and never prompts:

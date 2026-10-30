@@ -4,7 +4,7 @@ status: in-review
 owner: Tom
 affected: [pantry]
 tracking: https://github.com/waffuruai/pantry/issues/36
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 # Optional standalone HTML reports
 
@@ -52,6 +52,7 @@ All criteria track [#36](https://github.com/waffuruai/pantry/issues/36).
 - F3: Search, status/category/KEV filters, finding details, advisory links, exact-action grouping with all affected components, an explicit Coverage tab, theme selection and printing work locally. Evidence: `tests/html/test-viewer.cjs` exercises viewer logic; visual browser verification is not evidence yet.
 - F4: Unchecked sources, unfixed advisories and unknown licenses stay visible, even with zero finding rows; CSV never establishes complete coverage. Inventory counts are not a completeness score; imported JSON/CSV cannot establish missing scope options, and finding locations are never used to guess scope. Evidence: viewer behavior tests.
 - F5: Invalid paths fail with code 3 before scanning; failures preserve the previous report and remove the staged file. Evidence: `src/html.rs` unit tests and CLI contract tests.
+- F6: Update plan offers a preview and copyable prompt for an AI agent of the user's choice. The prompt includes all findings in the selected scan regardless of filters, preserves coverage gaps and unknown imported scope, and asks for scoped changes, tests and a fresh scan. CSV omissions remain unknown. Evidence: viewer tests exercise copied prompt contents, filtered/empty/imported reports and escaped preview text.
 
 ### Performance
 
@@ -64,6 +65,7 @@ All criteria track [#36](https://github.com/waffuruai/pantry/issues/36).
 - S2: Reports contain local paths and commands; privacy mitigation is explicit opt-in, Unix mode 0600, local-only imports, and no automatic upload or browser opening. Evidence: output permission test and source inspection.
 - S3: The viewer cannot execute updates; copy controls preserve the exact proposed command, and a fresh scan is needed to verify changes. Evidence: viewer behavior tests and command-copy handler.
 - S4: An existing destination symlink is replaced, not followed; incomplete generation never truncates an older report. Evidence: atomic sibling-file write and regression tests.
+- S5: The agent prompt treats report fields and suggested commands as untrusted data to verify. It sends nothing automatically; the user can preview local details before sharing. Evidence: prompt copy handler and escaping/contents tests.
 
 ## Phases
 
@@ -80,5 +82,6 @@ Visual browser QA is pending: the available browser tool rejected `file:` naviga
 | 2026-10-29 | Require an explicit output file; keep terminal output | Optional output requested by Tom | Tom |
 | 2026-10-29 | Embed the official Waffuru PNG and use local system-font fallbacks | Works offline without additional dependencies or remote fonts | Tom's implementation |
 | 2026-10-29 | Keep schema 1 intact inside a presentation bundle | Existing consumers remain compatible | Tom's implementation |
+| 2026-10-30 | Add a report-specific prompt for any AI agent to Update plan | Requested by Tom; preserves complete scan context and asks for verification | Tom |
 
 | 2026-10-29 | Treat the supplied ZIP as a mockup, refining around actual scanner outputs | Explicit user clarification; coverage and grouped actions take precedence over the mockup layout | Tom |

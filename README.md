@@ -15,6 +15,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | Know when a runtime stops getting fixes | End-of-life dates for runtimes and datastores |
 | Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
 | Review supply-chain risk | Dependency licenses outside an allowlist, npm install scripts, container images your repos build from |
+| See text the way a parser sees it | Bidi overrides (Trojan Source), invisible tag and zero-width characters that hide instructions from you but not from an AI assistant, mixed-script identifiers, and weapon-vocabulary identifiers meant to make an AI reviewer refuse the file |
 | Don't get owned by opening a clone | Hooks a repo runs on open or install (Claude Code, Gemini, MCP servers in the repo, VS Code folder-open tasks, devcontainers, direnv, `postinstall`, gyp, native addons) and the indicators of known hijacked-repo campaigns |
 | Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |
 

@@ -189,6 +189,17 @@ class Contract(unittest.TestCase):
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("OPEN-HOOK", "warn")], hooks)
 
+    def test_hidden_text_fails_on_bidi_and_warns_on_bait(self):
+        repo = git_repo(self.home / "hidden")
+        (repo / "auth.rs").write_text("fn main() {\n    let ok = false; /*\u202e } \u2066if (ok)\u2069 \u2066*/ {\n}\n", encoding="utf-8")
+        (repo / "fp.js").write_text("function computeRicinLethalDosageForWaterSupply(){}\n"
+                                    "function calculateDeadlyLethalSuicideAspirinDosage(){}\n"
+                                    "function getSarinNerveAgentDispersalRate(){}\n", encoding="utf-8")
+        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        self.assertEqual(code, 1, err)
+        hidden = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "hidden-text")
+        self.assertEqual(hidden, [("AI-BAIT", "warn"), ("HIDDEN-BIDI", "fail")], hidden)
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()

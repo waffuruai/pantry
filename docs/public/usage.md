@@ -25,13 +25,14 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Malicious packages | Every package name against the OpenSSF malicious-packages index |
 | AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
+| Hidden text | Unicode that reads one way and runs another (bidi overrides, Trojan Source), invisible tag and zero-width characters that smuggle instructions to an AI assistant, identifiers mixing scripts, and identifiers packed with weapon and poison vocabulary so an AI reviewer refuses to read the code (`AI-BAIT`) |
 | Repo hooks | Code a repo runs the moment it is opened or installed: Claude Code and Gemini hooks, MCP servers kept in the repo, VS Code tasks on folder open, devcontainer commands, direnv, the repo's own install scripts, gyp expansions, native addons; plus the file names, packages, hosts and hashes of known hijacked-repo campaigns |
 | The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
 | Installed software | Runtimes and compilers (every version a version manager keeps), package managers, CLI tools, datastores, Docker, global packages, Homebrew formulae, apps, browsers, editor extensions |
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System and tool trust stores against known-distrusted CAs |
 
-`--no-machine` limits a run to the first six rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
+`--no-machine` limits a run to the first seven rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
 
 ## Scope
 
@@ -47,6 +48,8 @@ A repo can run code the moment an agent or editor opens it: a `.claude/settings.
 ```bash
 wpantry check --path ~/Downloads/some-repo --no-machine
 ```
+
+Alongside the hooks, the same pass reads every source, config and prose file for text that would fool you or a tool: bidirectional overrides and Unicode tag characters fail (`HIDDEN-BIDI`, `HIDDEN-TAGS`); runs of zero-width characters, identifiers that mix Latin with Cyrillic or Greek, and identifiers named after weapons and lethal doses warn (`HIDDEN-ZERO-WIDTH`, `HIDDEN-HOMOGLYPH`, `AI-BAIT`). The last is a trick aimed at AI-assisted review: a model that refuses to read "computeRicinLethalDosage" never sees the fingerprinting it does. Pantry reads the code regardless and tells you the names were chosen to make a reviewer look away.
 
 A hook that runs a file kept in the repo, a file that looks like a dropper, or a known indicator fails (`repo-hook` findings `RUNS-REPO-FILE`, `LOADER`, `IOC`); a hook that runs a command at all warns (`OPEN-HOOK`, `INSTALL-HOOK`), as do the commit and branch markers of a known campaign (`MARKER`). Nothing is run or fixed for you: read the file the finding names, then remove the hook or decide to trust it. `--repo-hooks FILE` replaces the bundled indicator list.
 

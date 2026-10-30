@@ -226,11 +226,11 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
 .dropzone.show{display:grid}
 .dropzone div{padding:28px 40px;border:2px dashed var(--tab);border-radius:14px;background:var(--panel);font-size:16px}
 
-@media (max-width:1180px){
+@media screen and (max-width:1180px){
   .trow{grid-template-columns:40px 110px minmax(140px,1fr) 150px 150px 46px}
   .trow .note,.trow .sev,.thead .h-note,.thead .h-sev{display:none}
 }
-@media (max-width:860px){
+@media screen and (max-width:860px){
   .nav,.conn{display:none}
   .gsearch{display:none}
   .item .kev.nokev{display:none}
@@ -256,7 +256,44 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
   .strip-bar .count{margin-left:0}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
-@media print { :root, :root[data-theme="dark"]{--bg:#f4efe6;--panel:#fbf8f2;--raised:#ddd5c8;--text:#0a0908;--muted:#5c554b;--line:#ddd5c8} header, aside, .tabs, .strip, .copy, .foot, .tip, .toast, .dropzone {display:none!important} .shell{display:block} .col, main{width:100%;max-width:none} body{background:white;color:black} .detail{display:block} .item{break-inside:avoid} }
+.print-report{display:none}
+@page{size:auto;margin:15mm 14mm}
+@media print{
+  :root, :root:not([data-theme="light"]), :root[data-theme="dark"]{
+    color-scheme:light;--bg:#fff;--panel:#fff;--raised:#fff;--text:#111;--muted:#444;
+    --faint:#444;--line:#bbb;--line-soft:#ddd;--red:#111;--amber:#111;--green:#111;
+    --red-bg:#fff;--amber-bg:#fff;--green-bg:#fff;
+    height:auto;padding:0;
+  }
+  body{min-height:0;background:#fff;color:#111;font:10pt/1.45 var(--sans)}
+  body::before,.shell,.tip,.toast,.dropzone,.top>:not(.brand){display:none!important}
+  .top{position:static;display:block;height:auto;padding:0 0 5mm;margin:0 0 7mm;background:#fff;border-bottom:1pt solid #111}
+  .brand{font-size:11pt;gap:3mm}.brand .waffle{width:9mm;height:9mm}
+  .print-report{display:block;width:auto;max-width:none;overflow:visible}
+  .print-report h1{font-size:24pt;font-weight:650;line-height:1.15;margin:0 0 3mm}
+  .print-report h2{font-size:14pt;font-weight:650;margin:8mm 0 3mm;break-after:avoid}
+  .print-report h3{font-size:11pt;margin:0 0 2mm;break-after:avoid}
+  .print-report p{margin:2mm 0;orphans:3;widows:3}
+  .print-report a{color:#111;text-decoration:underline}
+  .print-report .print-meta{color:#444;font-size:9pt;overflow-wrap:anywhere}
+  .print-report .print-section{margin-top:7mm}
+  .print-report .print-finding,.print-report .print-action{border-top:.5pt solid #bbb;padding:4mm 0;overflow-wrap:anywhere}
+  .print-report .print-label{font-size:8pt;font-weight:700;letter-spacing:.04em;margin-bottom:2mm;break-after:avoid}
+  .print-report .print-location{font:8.5pt/1.5 var(--mono);overflow-wrap:anywhere}
+  .print-report pre{font:8.5pt/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;max-height:none;overflow:visible;border-left:2pt solid #aaa;padding:2mm 3mm;margin:3mm 0}
+  .print-report ul{padding-left:5mm;margin:2mm 0}
+  .print-report li{margin:1mm 0}
+  .print-report .verdict{display:block;border:1pt solid #888;border-radius:0;padding:3mm 4mm;margin:5mm 0;break-inside:avoid}
+  .print-report .verdict .ico{display:none}
+  .print-report .verdict .t{font-size:11pt;font-weight:650}
+  .print-report .verdict .d,.print-report .verdict .extra{font:9pt/1.45 var(--sans);color:#333;max-width:none}
+  .print-report .tbl{padding:0!important;margin:0!important;border:0}
+  .print-report .kv{display:block;font-size:9pt;margin:2mm 0}
+  .print-report .kv dt{font-weight:650;margin-top:2mm;break-after:avoid}
+  .print-report .kv dd{font-family:var(--sans);margin:0;overflow-wrap:anywhere}
+  .print-report .notice{border:0;border-left:2pt solid #aaa;border-radius:0;padding:1mm 3mm;margin:3mm 0;font-size:9pt;background:#fff}
+  .print-report .print-end{border-top:.5pt solid #bbb;margin-top:8mm;padding-top:3mm;color:#444;font-size:8pt}
+}
 </style>
 </head>
 <body>
@@ -267,7 +304,7 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
   <label class="gsearch"><input id="q" type="search" placeholder="Search findings…" aria-label="Search findings"><span class="kbd">⌘K</span></label>
   <span class="conn" id="conn"><span class="dot"></span><span></span></span>
   <button class="btn" id="loadBtn" type="button">Load report</button>
-  <button class="btn" id="printBtn" type="button">Print</button>
+  <button class="btn" id="printBtn" type="button">Print full report</button>
   <button class="btn icon" id="themeBtn" type="button" aria-label="Switch light or dark theme" title="Switch theme">◑</button>
   <input id="file" type="file" accept=".json,.csv,application/json,text/csv" multiple hidden>
 </header>
@@ -298,6 +335,7 @@ h1{font-size:36px;font-weight:500;letter-spacing:-.01em;margin:0}
   <footer class="foot"><span class="brand-s">Pantry by Waffuru</span><span>Questions about this report or Pantry? Visit <a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> or email <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a>.</span></footer></div>
 </div>
 
+<article class="print-report" id="print-report"></article>
 <div class="tip" id="tip"></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="dropzone" id="dz"><div>Drop to add the scan</div></div>
@@ -605,6 +643,37 @@ function coverageHTML(r){
   return out+'</section>';
 }
 
+function printReportHTML(r){
+  if(!r)return '<h1>Pantry security scan</h1><p>No report selected. Load a report before printing.</p>';
+  var meta=['wpantry '+(r.version||'version not recorded'),'schema '+(r.schema==null?'not recorded':r.schema)];
+  if(!r.loadedAt && typeof bundle.generated_at==='number' && Number.isFinite(bundle.generated_at)){
+    var date=new Date(bundle.generated_at);if(!isNaN(date.getTime()))meta.push('Generated '+date.toISOString());
+  }
+  if(!r.loadedAt && typeof bundle.phase==='string')meta.push('Phase: '+bundle.phase);
+  var out='<h1>'+esc(r.title)+'</h1><p class="print-meta">'+esc(meta.join(' · '))+'</p><p class="print-meta">Full selected report · Includes all findings, regardless of screen filters or expanded rows.</p>';
+  if(r.schema!=null && r.schema!==1)out+='<p>Report schema '+esc(r.schema)+' differs from supported schema 1; some fields may be missing.</p>';
+  out+=verdictHTML(r)+coverageHTML(r)+'<section class="print-section"><h2>Findings</h2>';
+  out+=r.findings.length?r.findings.map(function(f){
+    var status=f.state==='unchecked'?'NOT CHECKED':f.state==='fail'?'FAIL':'WARN';
+    var labels=[status,kindLabel(f.kind),'Severity: '+(f.severity||'not supplied')];
+    if(f.kev)labels.push('KNOWN EXPLOITED');
+    return '<section class="print-finding"><div class="print-label">'+esc(labels.join(' · '))+'</div><h3>'+f.n+'. '+esc(f.component)+'</h3>'+
+      '<p>Found: <b>'+esc(f.version||'not supplied')+'</b> · Fixed in: <b>'+esc(f.fixed||'none supplied')+'</b></p>'+
+      '<p>Finding ID: '+esc(f.vuln_id||'not supplied')+'</p>'+
+      (f.location?'<p class="print-location">Location: '+esc(f.location)+'</p>':'')+
+      (f.note?'<p>'+ticks(f.note)+'</p>':'')+
+      (f.state==='unchecked'?'<p>Resolve this coverage gap and scan again; the affected results remain unknown.</p>':'')+'</section>';
+  }).join(''):'<p>No finding rows recorded. Review scope and coverage above; this does not establish that no work remains.</p>';
+  var items=planItems(r);
+  out+='</section><section class="print-section"><h2>Update plan</h2><p>Suggested actions only. Review applicability before use, then run a fresh scan to verify the result. Manual actions may be instructions rather than commands.</p>';
+  out+=items.length?items.map(function(item,i){
+    return '<section class="print-action"><h3>'+ (i+1)+'. '+(item.automatic?'Unattended command available':'Manual review or action')+'</h3><p>Applies to:</p><ul>'+
+      item.findings.map(function(f){return '<li>Finding '+f.n+' · '+esc(f.component)+(f.version?' '+esc(f.version):'')+'</li>'}).join('')+'</ul><pre>'+esc(item.action)+'</pre></section>';
+  }).join(''):'<p>'+(r.partial?'CSV exports do not include suggested actions. Load the full JSON report for the plan.':'No suggested actions recorded. Review findings and coverage for any remaining work.')+'</p>';
+  return out+'</section><p class="print-end">Pantry by Waffuru · waffuru.ai · This report records scan evidence, not proof that every vulnerability was checked or that remediation succeeded.</p>';
+}
+function preparePrint(){ $('print-report').innerHTML=printReportHTML(cur()); }
+
 function advisoriesHTML(r){
   var m=Object.create(null),order=[];
   r.findings.forEach(function(f){ if(!isAdvisory(f))return; if(!m[f.vuln_id]){m[f.vuln_id]=[];order.push(f.vuln_id)} m[f.vuln_id].push(f); });
@@ -695,7 +764,9 @@ document.addEventListener('mouseover',function(e){
 });
 
 // theme
-$('printBtn').addEventListener('click',function(){window.print()});
+$('printBtn').addEventListener('click',function(){preparePrint();window.print()});
+window.addEventListener('beforeprint',preparePrint);
+window.addEventListener('afterprint',function(){$('print-report').innerHTML=''});
 $('themeBtn').addEventListener('click',function(){
   var n=document.documentElement.getAttribute('data-theme')==='light'?'dark':'light';
   document.documentElement.setAttribute('data-theme',n); try{localStorage.setItem('waffuru-theme',n)}catch(e){}

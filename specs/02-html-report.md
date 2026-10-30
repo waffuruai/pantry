@@ -53,6 +53,7 @@ All criteria track [#36](https://github.com/waffuruai/pantry/issues/36).
 - F4: Unchecked sources, unfixed advisories and unknown licenses stay visible, even with zero finding rows; CSV never establishes complete coverage. Inventory counts are not a completeness score; imported JSON/CSV cannot establish missing scope options, and finding locations are never used to guess scope. Evidence: viewer behavior tests.
 - F5: Invalid paths fail with code 3 before scanning; failures preserve the previous report and remove the staged file. Evidence: `src/html.rs` unit tests and CLI contract tests.
 - F6: Update plan offers a preview and copyable prompt for an AI agent of the user's choice. The prompt includes all findings in the selected scan regardless of filters, preserves coverage gaps and unknown imported scope, and asks for scoped changes, tests and a fresh scan. CSV omissions remain unknown. Evidence: viewer tests exercise copied prompt contents, filtered/empty/imported reports and escaped preview text.
+- F7: Print produces a dedicated, light, full-report document for the selected scan: official branding, summary, scope and coverage, complete findings with explanations, and grouped suggested actions. Screen tabs, filters and expanded-row state do not remove evidence from print; controls and the agent prompt are omitted. Paths and commands wrap and headings avoid orphaned page breaks. Both the print button and browser print events prepare the document without changing screen state. Evidence: viewer tests verify contents, grouping, escaping, partial/empty states and print events; actual browser pagination and visual verification remain pending.
 
 ### Performance
 
@@ -83,5 +84,6 @@ Visual browser QA is pending: the available browser tool rejected `file:` naviga
 | 2026-10-29 | Embed the official Waffuru PNG and use local system-font fallbacks | Works offline without additional dependencies or remote fonts | Tom's implementation |
 | 2026-10-29 | Keep schema 1 intact inside a presentation bundle | Existing consumers remain compatible | Tom's implementation |
 | 2026-10-30 | Add a report-specific prompt for any AI agent to Update plan | Requested by Tom; preserves complete scan context and asks for verification | Tom |
+| 2026-10-30 | Print a dedicated full selected report instead of the active screen tab | Tom reported poor print presentation; printed evidence should not depend on filters or expanded rows | Tom |
 
 | 2026-10-29 | Treat the supplied ZIP as a mockup, refining around actual scanner outputs | Explicit user clarification; coverage and grouped actions take precedence over the mockup layout | Tom |

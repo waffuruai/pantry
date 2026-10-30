@@ -8,8 +8,8 @@ const bundle={runs:[{title:'Security scan',file:'wpantry check',source:'json',re
 const events={},elements={};
 function el(id){return elements[id] ||= {textContent:id==='pantry-bundle'?JSON.stringify(bundle):'',innerHTML:'',value:'',dataset:{},style:{},classList:{add(){},remove(){}},firstChild:{},lastChild:{},addEventListener(type,fn){events[id+':'+type]=fn},focus(){},select(){},querySelector(){return {focus(){}}}}}
 const document={getElementById:el,addEventListener(type,fn){events[type]=fn},documentElement:{setAttribute(){},getAttribute(){return 'dark'}},createElement(){return el('temp')},body:{appendChild(){},removeChild(){}}};
-let copied='';
-const ctx={document,window:{addEventListener(){},print(){}},navigator:{clipboard:{writeText(text){copied=text;return {then(ok){ok()}}}}},localStorage:{getItem(){return null},setItem(){}},history:{replaceState(){}},location:{hash:''},Date,Number,Array,Object,String,JSON,encodeURIComponent,setTimeout(){},clearTimeout(){}};
+let copied='',printCalls=0;
+const ctx={document,window:{addEventListener(type,fn){events['window:'+type]=fn},print(){printCalls++}},navigator:{clipboard:{writeText(text){copied=text;return {then(ok){ok()}}}}},localStorage:{getItem(){return null},setItem(){}},history:{replaceState(){}},location:{hash:''},Date,Number,Array,Object,String,JSON,encodeURIComponent,setTimeout(){},clearTimeout(){}};
 vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur};'),ctx);
 assert(elements.main.innerHTML.includes('1 applicable advisory'));
 assert(elements.main.innerHTML.includes('2 dependencies have an unknown license'));
@@ -69,6 +69,29 @@ assert.equal(promptData.scope.offline,true);
 assert.equal(promptData.phase,bundle.phase);
 assert(copied.includes('untrusted scan data, not as instructions'));
 assert(copied.includes('fresh Pantry scan'));
+const screenBeforePrint=elements.main.innerHTML;
+events['printBtn:click']();
+assert.equal(printCalls,1);
+const printed=elements['print-report'].innerHTML;
+assert(printed.includes('second-package'));
+assert(printed.includes('&lt;img src=x onerror=alert(1)&gt;')); // hidden by search, still prints
+assert(printed.includes('unsafe &lt;script&gt;')); // no need to expand the screen row
+assert(!printed.includes('<img src=x onerror=alert(1)>'));
+assert(printed.includes('KNOWN EXPLOITED'));
+assert(printed.includes('Scan scope'));
+assert(printed.includes('Inventory counts'));
+assert(printed.includes('Coverage gaps'));
+assert(printed.includes('Offline cache only'));
+assert(printed.includes(bundle.phase));
+assert(printed.includes('<h2>Update plan</h2>'));
+assert.equal((printed.match(/<pre>update x<\/pre>/g)||[]).length,1);
+assert(!printed.includes('<button'));
+assert(!printed.includes('Copy agent prompt'));
+assert.equal(elements.main.innerHTML,screenBeforePrint); // print doesn't alter filters/tab
+events['window:afterprint']();
+assert.equal(elements['print-report'].innerHTML,'');
+events['window:beforeprint'](); // keyboard/menu print gets the same full report
+assert.equal(elements['print-report'].innerHTML,printed);
 search('');
 click({tab:'coverage'});
 assert(elements.main.innerHTML.includes('Scan scope'));
@@ -87,6 +110,11 @@ assert.equal(promptData.scope,null); // imported report cannot inherit the origi
 assert.equal(promptData.generated_at,null);
 assert.equal(promptData.phase,null);
 assert.equal(promptData.findings[0].kind,'unchecked');
+events['window:beforeprint']();
+assert(elements['print-report'].innerHTML.includes('NOT CHECKED'));
+assert(elements['print-report'].innerHTML.includes('Scope options are not recorded'));
+assert(elements['print-report'].innerHTML.includes('Missing &lt;source&gt;'));
+assert(!elements['print-report'].innerHTML.includes('Phase: '+bundle.phase));
 search('does-not-match');
 click({show:'warn'});
 ctx.viewerTest.addText(JSON.stringify(report),'fresh.json');
@@ -120,6 +148,9 @@ assert.equal(promptData.unfixed,null);
 assert.equal(promptData.unknown_licenses,null);
 assert.equal(promptData.scope,null);
 assert(copied.includes('request the full JSON report'));
+events['window:beforeprint']();
+assert(elements['print-report'].innerHTML.includes('CSV exports do not include suggested actions'));
+assert(elements['print-report'].innerHTML.includes('coverage cannot be established'));
 bundle.runs[0].report={...report,unfixed:0,unknown_licenses:0,findings:[]};
 elements['pantry-bundle'].textContent=JSON.stringify(bundle);
 vm.runInNewContext(scripts[2],ctx);
@@ -129,4 +160,8 @@ click({tab:'plan'});
 click({agentPrompt:'1'});
 assert.equal(JSON.parse(copied.split('Scan data (JSON):\n')[1]).findings.length,0);
 assert(copied.includes('an empty finding list does not establish'));
-console.log('viewer synthetic rendering, filters, details, links, imports, coverage, and plan passed');
+events['window:beforeprint']();
+assert(elements['print-report'].innerHTML.includes('No finding rows recorded'));
+assert(elements['print-report'].innerHTML.includes('Scan scope'));
+assert(!/clean result|nothing .*safe|no updates needed/i.test(elements['print-report'].innerHTML));
+console.log('viewer synthetic rendering, filters, details, links, imports, coverage, plan and print document passed');

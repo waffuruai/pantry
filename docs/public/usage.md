@@ -86,6 +86,8 @@ The (Python) implementation prints the same findings as one block per component.
 
 For a browser report, run `wpantry check --html report.html`. Its **Update plan** includes **Copy agent prompt**, a prompt you can paste into an AI agent of your choice, with all findings, suggested actions and coverage context from the selected scan. Preview it and remove any local paths or details you do not want to share. The agent is asked to verify the findings, make scoped changes, run tests and rescan; copying the prompt does not send data or run updates.
 
+**Print full report** (or your browser's Print command) produces a paper layout with summary, scope and coverage, all findings and explanations, and grouped actions for the selected scan. Screen filters and collapsed rows do not hide printed findings. Navigation, copy controls and the AI prompt are excluded. Choose Save as PDF in the print dialog to keep a copy; disable the browser's own headers and footers there if you do not want its file URL printed.
+
 ## JSON
 
 `wpantry check --json` prints one object and never prompts:

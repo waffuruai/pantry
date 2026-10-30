@@ -2,7 +2,7 @@
 
 Contributions are welcome under the [MIT](LICENSE) license.
 
-Start with the [README](README.md) for what wpantry is, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned. We write issues, PRDs and pull requests by the rules in [waffuruai/ops `.agents`](https://github.com/waffuruai/ops/tree/dev/.agents): open an issue first, keep a PR to one change, and say in its description which spec it updated or "no PRD impact".
+Start with the [README](README.md) for what wpantry is, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned. Open an issue first (the template asks for what triage needs), keep a PR to one change, and say in its description which spec it updated or "no PRD impact".
 
 Tooling comes from [mise](https://mise.jdx.dev). Set up and test with:
 

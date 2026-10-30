@@ -300,22 +300,106 @@ impl Cache {
     }
 }
 
+/// The CVSS 3.x base score of a vector string, by the specification's
+/// formula; None for anything else.
+pub fn cvss3_base_score(vector: &str) -> Option<f64> {
+    if !vector.starts_with("CVSS:3") {
+        return None;
+    }
+    let mut m: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for part in vector.split('/').skip(1) {
+        if let Some((k, v)) = part.split_once(':') {
+            m.insert(k, v);
+        }
+    }
+    let av = match *m.get("AV")? {
+        "N" => 0.85,
+        "A" => 0.62,
+        "L" => 0.55,
+        "P" => 0.2,
+        _ => return None,
+    };
+    let ac = match *m.get("AC")? {
+        "L" => 0.77,
+        "H" => 0.44,
+        _ => return None,
+    };
+    let scope_changed = m.get("S") == Some(&"C");
+    let pr = match (*m.get("PR")?, scope_changed) {
+        ("N", _) => 0.85,
+        ("L", false) => 0.62,
+        ("L", true) => 0.68,
+        ("H", false) => 0.27,
+        ("H", true) => 0.5,
+        _ => return None,
+    };
+    let ui = match *m.get("UI")? {
+        "N" => 0.85,
+        "R" => 0.62,
+        _ => return None,
+    };
+    let cia = |k: &str| -> Option<f64> {
+        match *m.get(k)? {
+            "H" => Some(0.56),
+            "L" => Some(0.22),
+            "N" => Some(0.0),
+            _ => None,
+        }
+    };
+    let iss = 1.0 - (1.0 - cia("C")?) * (1.0 - cia("I")?) * (1.0 - cia("A")?);
+    let impact = if scope_changed { 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powi(15) } else { 6.42 * iss };
+    let exploitability = 8.22 * av * ac * pr * ui;
+    let roundup = |x: f64| (x * 10.0).ceil() / 10.0;
+    Some(if impact <= 0.0 {
+        0.0
+    } else if scope_changed {
+        roundup((1.08 * (impact + exploitability)).min(10.0))
+    } else {
+        roundup((impact + exploitability).min(10.0))
+    })
+}
+
+/// A severity label for a CVSS base score.
+pub fn severity_label(score: f64) -> &'static str {
+    if score >= 9.0 {
+        "CRITICAL"
+    } else if score >= 7.0 {
+        "HIGH"
+    } else if score >= 4.0 {
+        "MODERATE"
+    } else {
+        "LOW"
+    }
+}
+
 /// A label (CRITICAL/HIGH/MODERATE/LOW) when the record carries one, else
-/// empty.
+/// from its CVSS 3.x vector, else empty.
 pub fn severity_of(rec: &Value) -> String {
+    if let Some(v) = severity_label_of(rec) {
+        return v;
+    }
+    for s in crate::json::arr_at(rec, "severity") {
+        if let Some(score) = s.get("score").and_then(Value::as_str).and_then(cvss3_base_score) {
+            return severity_label(score).to_string();
+        }
+    }
+    String::new()
+}
+
+fn severity_label_of(rec: &Value) -> Option<String> {
     if let Some(label) = rec.get("database_specific").and_then(|d| d.get("severity")).and_then(Value::as_str)
         && !label.is_empty()
     {
-        return label.to_uppercase();
+        return Some(label.to_uppercase());
     }
     for a in crate::json::arr_at(rec, "affected") {
         if let Some(label) = a.get("ecosystem_specific").and_then(|d| d.get("severity")).and_then(Value::as_str)
             && !label.is_empty()
         {
-            return label.to_uppercase();
+            return Some(label.to_uppercase());
         }
     }
-    String::new()
+    None
 }
 
 #[cfg(test)]
@@ -327,6 +411,25 @@ mod tests {
         let dir = crate::system::TempDir::new("db").unwrap();
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
         (dir, cache)
+    }
+
+    #[test]
+    fn cvss_vectors_score_like_the_calculator() {
+        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
+        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"), Some(5.3));
+        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N"), Some(5.4));
+        assert_eq!(cvss3_base_score("CVSS:3.0/AV:L/AC:H/PR:H/UI:R/S:U/C:N/I:N/A:N"), Some(0.0));
+        assert_eq!(cvss3_base_score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"), None);
+        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N"), None);
+        assert_eq!(severity_label(9.8), "CRITICAL");
+        assert_eq!(severity_label(7.0), "HIGH");
+        assert_eq!(severity_label(3.9), "LOW");
+        let labelled = json!({"database_specific": {"severity": "low"}, "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]});
+        assert_eq!(severity_of(&labelled), "LOW", "a label wins over the vector");
+        let vector_only =
+            json!({"severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]});
+        assert_eq!(severity_of(&vector_only), "CRITICAL");
+        assert_eq!(severity_of(&json!({})), "");
     }
 
     #[test]

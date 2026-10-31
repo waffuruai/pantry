@@ -110,7 +110,12 @@ fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "can't download $base/SHA256SU
 
 expected=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")
 [ -n "$expected" ] || die "SHA256SUMS has no entry for $asset"
-if command -v sha256sum >/dev/null 2>&1; then
+# The checksum tool, by OS: shasum ships with macOS (a sha256sum found on a Mac
+# is a third-party install, sometimes built for the wrong CPU); Linux has
+# sha256sum, with shasum (perl) as the fallback on minimal images.
+if [ "$(uname -s)" = Darwin ] && command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
+elif command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "$tmp/$asset" | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then
   actual=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')

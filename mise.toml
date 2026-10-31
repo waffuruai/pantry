@@ -22,19 +22,20 @@ depends = ["build"]
 run = "rust/target/release/wpantry tools"
 
 [tasks.test]
-description = "Test suites; `all` (the default) is the Rust tests, the CA trust test and the install.sh test"
+description = "Test suites; `all` (the default) is the Rust tests, the CA trust test, the install.sh test and the Homebrew bump test"
 usage = '''
-arg "[suite]" default="all" help="all, rust, ca-trust or install" {
-  choices "all" "rust" "ca-trust" "install"
+arg "[suite]" default="all" help="all, rust, ca-trust, install or packaging" {
+  choices "all" "rust" "ca-trust" "install" "packaging"
 }
 '''
 run = '''
 cargo_test() { (cd rust && env -u RUSTUP_TOOLCHAIN cargo test --locked); }
 case "${usage_suite:-all}" in
-  all) cargo_test && ca-trust/test-ca-trust.sh && tests/install/test-install.sh ;;
+  all) cargo_test && ca-trust/test-ca-trust.sh && tests/install/test-install.sh && tests/packaging/test-bump.sh ;;
   rust) cargo_test ;;
   ca-trust) exec ca-trust/test-ca-trust.sh ;;
   install) exec tests/install/test-install.sh ;;
+  packaging) exec tests/packaging/test-bump.sh ;;
 esac
 '''
 
@@ -47,9 +48,9 @@ run = "python3 -m unittest discover -s tests/contract"
 [tasks.lint]
 description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"
 run = [
-  'for f in ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh; do bash -n "$f"; done',
+  'for f in ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh packaging/homebrew/*.sh tests/packaging/*.sh; do bash -n "$f"; done',
   # -x follows `source ca-common.sh`; .shellcheckrc resolves it relative to each script.
-  "shellcheck -x ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh",
+  "shellcheck -x ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh packaging/homebrew/*.sh tests/packaging/*.sh",
   "actionlint",
 ]
 

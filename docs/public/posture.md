@@ -38,6 +38,15 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 | XPROTECT | 5.10 | XProtect data under 45 days old | Medium | admin: `softwareupdate --background-critical` |
 | LOCKDOWN | 2.6.7 | Lockdown Mode (advisory) | Low | for people at risk of targeted attacks |
 
+## Developer tools (every OS)
+
+| Id | Check | Severity | Fix |
+|---|---|---|---|
+| EXTENSION-COOLDOWN | Every VS Code-family editor (Code, Insiders, Cursor, Windsurf, VSCodium, Positron) has `extensions.installCooldownHours` of 24 or more, so a freshly published (possibly compromised) extension version is never installed here before the marketplace has had time to pull it | High | user: `wpantry harden extension-cooldown --hours 72` (edits each editor's settings.json in place; `--update` runs it) |
+| GIT-HOOKS | A global `core.hooksPath` with a `pre-commit` hook, so a secret is stopped at the commit | Low | ops: `mise run hooks`; elsewhere point `git config --global core.hooksPath` at a directory with a gitleaks pre-commit |
+
+An editor with `extensions.autoUpdate: false` is reported as "updates by hand" (a warning): manual updates keep a bad version from arriving on its own, and the cooldown still stops it being installed by hand on the day it appears.
+
 ## Linux
 
 | Id | CIS | Check | Severity | Fix |
@@ -52,5 +61,9 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 | SUDO-NOPASSWD | 5.3 | sudo asks for a password | Medium | admin: visudo |
 | PATH-WRITABLE | 6.2 | No world-writable directory on PATH | Medium | admin: `chmod o-w` |
 | TIME-SYNC | 2.1.1 | Clock synchronised | Low | admin: `timedatectl set-ntp true` |
+| KERNEL-TCP-IP-OPTIONS | | Running kernel outside [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432)'s affected range (upstream fixes 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10), or an nftables/iptables rule dropping inbound TCP with IP options (`ip hdrlength > 5`). A distro kernel with a backport under its own numbering passes only through the rule: check the vendor's advisory. The ruleset is read as root or through `sudo -n` (never a prompt); manual when neither works | Critical | admin: the nft stopgap (ops: `mise run mitigate-cve-2026-98432`), then the kernel update |
+| MPTCP | | `net.mptcp.enabled = 0` (or MPTCP not built) | Medium | admin: `sysctl -w net.mptcp.enabled=0` |
+
+The kernel check is the pattern for a vulnerability with no fix to install yet: the check knows the affected versions and the stopgap, passes on either, and tells you which one you are relying on. [usage.md](usage.md#exposed-with-no-fix-yet) covers `wpantry watch`, which asks OSV again about such advisories.
 
 Not covered yet: Windows (#11), Time Machine encryption, sudo timeouts (need root to read), audit logging.

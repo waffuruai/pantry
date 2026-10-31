@@ -7,7 +7,8 @@
 use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] = &[
-    "check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache", "update", "report",
+    "check", "search", "export", "breach", "watch", "version", "tools", "skill", "sync", "schedule", "cache", "update",
+    "report", "harden",
 ];
 
 #[derive(Debug, Default, PartialEq)]
@@ -27,8 +28,10 @@ pub struct Check {
     pub check_licenses: bool,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
+    pub repo_hooks: Option<PathBuf>,
     pub no_posture: bool,
     pub posture_policy: Option<PathBuf>,
+    pub suspect_policy: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -37,6 +40,7 @@ pub enum Command {
     Search { query: String, applicable: bool, limit: i64, json: bool },
     Export { csv: Option<String>, jsonl: Option<String>, all: bool },
     Breach { enable: bool, disable: bool },
+    Watch { json: bool, offline: bool },
     Version { json: bool },
     Tools { json: bool },
     Report { sections: Vec<String>, since_days: i64, format: String, out: Option<String> },
@@ -44,6 +48,7 @@ pub enum Command {
     Schedule { action: String, every: String, at: String, dry_run: bool },
     Cache { action: String, older_than: i64 },
     Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
+    Harden { what: String, hours: u32 },
     Skill,
 }
 
@@ -56,17 +61,17 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str =
-    "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache,update,report} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
         "breach" => "usage: wpantry breach [-h] [--enable | --disable]",
+        "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
@@ -77,7 +82,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -87,6 +92,9 @@ fn help(cmd: &str) -> String {
         }
         "breach" => {
             "show or set consent for the email breach check\n\noptions:\n  -h, --help  show this help message and exit\n  --enable\n  --disable"
+        }
+        "watch" => {
+            "ask OSV again about the advisories the last scan found with no released fix (Critical, High, exploited in the wild): exit 10 when a fix has landed\n\noptions:\n  -h, --help  show this help message and exit\n  --offline   use only the local cache\n  --json"
         }
         "version" => {
             "print the version, implementation and JSON schema\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
@@ -110,8 +118,11 @@ fn help(cmd: &str) -> String {
         "report" => {
             "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --update ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
         }
+        "harden" => {
+            "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache,update,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -138,12 +149,15 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--gitleaks-config", true),
             ("--licenses", true),
             ("--install-scripts", true),
+            ("--repo-hooks", true),
             ("--no-posture", false),
             ("--posture-policy", true),
+            ("--suspect-policy", true),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
         "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
+        "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
         "report" => &[
             ("--help", false),
@@ -166,6 +180,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--offline", false),
             ("--version", true),
         ],
+        "harden" => &[("--help", false), ("--hours", true)],
         _ => &[("--help", false)],
     }
 }
@@ -286,7 +301,9 @@ pub fn parse(argv: &[String]) -> Parsed {
                 ("--gitleaks-config", &mut c.gitleaks_config),
                 ("--licenses", &mut c.licenses),
                 ("--install-scripts", &mut c.install_scripts),
+                ("--repo-hooks", &mut c.repo_hooks),
                 ("--posture-policy", &mut c.posture_policy),
+                ("--suspect-policy", &mut c.suspect_policy),
             ] {
                 if let Some(v) = value(opt) {
                     let p = expand(&v);
@@ -418,11 +435,28 @@ pub fn parse(argv: &[String]) -> Parsed {
                 version: value("--version"),
             }
         }
-        "version" | "tools" | "skill" => {
+        "harden" => {
+            let what = match positional.as_slice() {
+                [w] if w == "extension-cooldown" => w.clone(),
+                [w] => return fail(format!("argument what: invalid choice: '{w}' (choose from extension-cooldown)")),
+                [] => return fail("the following arguments are required: what".into()),
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
+            let hours = match value("--hours") {
+                None => 72,
+                Some(v) => match v.trim().parse::<u32>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
+                },
+            };
+            Command::Harden { what, hours }
+        }
+        "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
             }
             match cmd.as_str() {
+                "watch" => Command::Watch { json: flag("--json"), offline: flag("--offline") },
                 "version" => Command::Version { json: flag("--json") },
                 "tools" => Command::Tools { json: flag("--json") },
                 _ => Command::Skill,
@@ -486,5 +520,7 @@ mod tests {
         );
         assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
         assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
+        assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
+        assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
     }
 }

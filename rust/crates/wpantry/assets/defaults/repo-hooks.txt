@@ -1,0 +1,34 @@
+# Indicators of repos armed to run code when opened or installed, one per
+# line: `file <name>` (a file name anywhere in a repo), `package <name>` (an
+# npm package in a package.json), `host <host>` (named by a hook's target),
+# `sha256 <digest>` (a hook's target). From JFrog Security Research,
+# "Beyond testmetest: 42 hijacked GitHub repositories", 2026-10-26.
+# Comments start with #.
+file .napi_cache
+file addon.node
+file addon_win.node
+package data-pipeline-testmetest
+package event-bus-lite-testmetest
+package event-emitter-testmetest
+package log-rotate-testmetest
+package log-sink-testmetest
+package net-codec-testmetest
+package npm-publish-testmetest
+package pixel-map-testmetest
+package retry-utils-testmetest
+package test-brotli-testmetest
+package test-brotli2-testmetest
+package @iobandamwer/cache-helper
+package @iobandamwer/native-helper
+package path-stream-utils-testmetest
+package @testsecuiitytestme/cache-helper
+host 43.228.157.68
+host aiarmor.website
+host raw.githubusercontent.com/CementBeetleSteeple
+sha256 9d83919bfdb0e14018f1a6f2b8b6586de59b60dfdcfbdb5ae1a1556c23cc4793
+sha256 3dc40fc55302664c07c9d9182ffd95910aeb366fcd417fbdad0a90cdeb8ea69e
+sha256 8506042b383ab46545c27a402eb2dc973696a93af71181b175b1d87972843a43
+sha256 783a4ac906cc9b2eaf5cd13408ea95db6ce52a46d9af11aad1a5b167af69589f
+sha256 a516dd7867af83f8be0cc3e926fdfd964097f0e7665596b05fe5234be7e2b5e9
+sha256 ccfd769acc024edc409ef879198d2a2398beee60930f2b3f2771ded1e14e0c57
+sha256 7ad216b3afd2f40a147c80733c7309fb3d3a7f52ee78149c8e51672cfb617d07

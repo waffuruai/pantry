@@ -54,6 +54,7 @@ const KIND_ORDER: &[&str] = &[
     "bundled",
     "mcp",
     "repo-hook",
+    "hidden-text",
     "secret",
     "install-script",
     "license",

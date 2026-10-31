@@ -33,6 +33,8 @@ A repo can run code the moment an agent or editor opens it: a `.claude/settings.
 wpantry check --path ~/Downloads/some-repo --no-machine
 ```
 
+Alongside the hooks, the same pass reads every source, config and prose file for text that would fool you or a tool: bidirectional overrides and Unicode tag characters fail (`HIDDEN-BIDI`, `HIDDEN-TAGS`); runs of zero-width characters, identifiers that mix Latin with Cyrillic or Greek, and identifiers named after weapons and lethal doses warn (`HIDDEN-ZERO-WIDTH`, `HIDDEN-HOMOGLYPH`, `AI-BAIT`). The last is a trick aimed at AI-assisted review: a model that refuses to read "computeRicinLethalDosage" never sees the fingerprinting it does. Pantry reads the code regardless and tells you the names were chosen to make a reviewer look away.
+
 A hook that runs a file kept in the repo, a file that looks like a dropper, or a known indicator fails (`repo-hook` findings `RUNS-REPO-FILE`, `LOADER`, `IOC`); a hook that runs a command at all warns (`OPEN-HOOK`, `INSTALL-HOOK`), as do the commit and branch markers of a known campaign (`MARKER`). Nothing is run or fixed for you: read the file the finding names, then remove the hook or decide to trust it. `--repo-hooks FILE` replaces the bundled indicator list.
 
 ## Reading the report

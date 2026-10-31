@@ -11,6 +11,7 @@ wpantry inventories what is installed on your computer and what your git repos l
 | Malicious packages | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | AI harnesses | The MCP servers your repos and coding agents (Claude Code, Codex, Cursor, Gemini CLI and others) start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins, skills and bundled npm packages |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
+| Hidden text | Unicode that reads one way and runs another (bidi overrides, Trojan Source), invisible tag and zero-width characters that smuggle instructions to an AI assistant, identifiers mixing scripts, and identifiers packed with weapon and poison vocabulary so an AI reviewer refuses to read the code (`AI-BAIT`) |
 | Repo hooks | Code a repo runs the moment it is opened or installed: Claude Code and Gemini hooks, MCP servers kept in the repo, VS Code tasks on folder open, devcontainer commands, direnv, the repo's own install scripts, gyp expansions, native addons; plus the file names, packages, hosts and hashes of known hijacked-repo campaigns |
 | Licenses | With `--licenses`, dependency licenses outside an allowlist |
 | Container images | The images your repos build from |
@@ -22,7 +23,7 @@ wpantry inventories what is installed on your computer and what your git repos l
 | The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |
 | Developer-tool guardrails | Editor extensions wait 72 hours before a new version installs (`wpantry harden extension-cooldown`), git hooks that check commits |
 
-`--no-machine` limits a run to the repo rows (dependencies, secrets, malicious packages, harnesses, install scripts, repo hooks, licenses, images). What a run could not check shows up as "not checked", never as clean.
+`--no-machine` limits a run to the repo rows (dependencies, secrets, malicious packages, harnesses, install scripts, hidden text, repo hooks, licenses, images). What a run could not check shows up as "not checked", never as clean.
 
 A finding fails when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, is a committed secret from a provider-specific rule, or is a Critical or High posture setting. It warns when there is no fix yet, an app is outdated, an MCP server is unpinned, an install script runs, a generic secret rule matched, or a Medium or Low posture setting is off.
 

@@ -12,7 +12,7 @@ use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
 use crate::system::{self, Component, run as sh, short, which};
-use crate::{harnesses, hooks, leaks, malicious};
+use crate::{harnesses, hidden, hooks, leaks, malicious};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -54,6 +54,7 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
     })?;
     secrets(scan, &git, jobs, ran)?;
     repo_hooks(scan, &git);
+    hidden_text(scan, &git);
     install_scripts(scan, &repos, found);
     images(scan, &repos)?;
     let exts = if scan.opts.machine { extensions(scan)? } else { Vec::new() };
@@ -374,6 +375,36 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
                 status: status.into(),
                 note: if h.command.is_empty() { h.note } else { format!("{}: `{}`", h.note, h.command) },
                 fix_cmd,
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Text that reads one way and runs another, or is written to fool a
+/// reader or a model: bidi overrides and tag characters fail, zero-width
+/// runs, homoglyph identifiers and weapon-vocabulary identifiers warn.
+pub fn hidden_text(scan: &mut Scan, repos: &[Repo]) {
+    if repos.is_empty() {
+        return;
+    }
+    scan.status("Looking for hidden or misleading text in the repos");
+    let found: Vec<Vec<hidden::Hidden>> = system::par_map(repos, system::PROBES, |(_, root)| hidden::scan_repo(root));
+    for ((name, _), hits) in repos.iter().zip(found) {
+        scan.count("repos checked for hidden text", 1);
+        for h in hits {
+            scan.add(Finding {
+                kind: "hidden-text".into(),
+                component: format!("{name}/{}", h.file),
+                location: if h.line > 0 { format!("line {}", h.line) } else { String::new() },
+                vuln_id: h.id.into(),
+                status: if h.fails() { "fail" } else { "warn" }.into(),
+                note: h.note.clone(),
+                fix_cmd: match h.id {
+                    "AI-BAIT" => "Read the code for what it does, not what it is called; don't rely on an AI's verdict about this file".into(),
+                    "HIDDEN-HOMOGLYPH" => "Rename so every identifier is one script; compilers can refuse mixed scripts (rustc warns, Go errors)".into(),
+                    _ => "Open the file in an editor that shows invisible characters (VS Code highlights them) and remove what you didn't write".into(),
+                },
                 ..Default::default()
             });
         }

@@ -25,6 +25,7 @@ pub mod export;
 pub mod external;
 pub mod feeds;
 pub mod harnesses;
+pub mod hidden;
 pub mod history;
 pub mod hooks;
 pub mod images;

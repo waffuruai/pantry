@@ -1,0 +1,6 @@
+# What to do about an advisory that has no fix released for the package
+# yet: one line per advisory, `ID<TAB>text`. wpantry prints the text as the
+# step for an unfixed Critical, High or exploited-in-the-wild finding;
+# without a line here it says to watch for the fix. Keep each line one
+# sentence, what to change and what it costs.
+CVE-2026-98432	Until the kernel update lands: drop inbound IPv4 TCP packets that carry IP options (nftables: `ip hdrlength > 5 meta l4proto tcp drop` in a prerouting chain, see ops/scripts/mitigate-cve-2026-98432.sh) and turn off MPTCP (`sysctl -w net.mptcp.enabled=0`); neither replaces the patch, the first closes the path the bug uses. Upstream fix: 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10. Ubuntu: pending (jammy 5.15.0-203.213, noble 6.8.0-149.149).

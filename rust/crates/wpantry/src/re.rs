@@ -429,6 +429,10 @@ impl Matcher<'_> {
             let mut n = 0;
             while n < max && self.single(inner, pos + n) {
                 n += 1;
+                self.steps += 1;
+                if self.steps > MAX_STEPS {
+                    return false;
+                }
             }
             if n < min {
                 return false;

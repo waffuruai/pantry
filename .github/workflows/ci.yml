@@ -1,7 +1,7 @@
 name: CI
 
 # wpantry's build, tests and supply-chain gates and the CLI contract suite
-# against the binary, on Linux and macOS (specs/01-rust-port.md); the CA trust
+# against the binary, on Linux and macOS (specs/cli-contract.md); the CA trust
 # scripts and install.sh on both; shell and workflow lint.
 on:
   pull_request:
@@ -55,9 +55,13 @@ jobs:
   # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
   # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
   # the layer has one source, until ops publishes the image; bump OPS_REF by
-  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it.
+  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it,
+  # which a pull request from a fork can't have: this job runs only for pushes
+  # and same-repository pull requests, so a fork's PR stays green on the jobs
+  # it can run.
   container:
     name: Test (ops bootstrap container)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

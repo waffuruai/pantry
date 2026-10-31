@@ -1,0 +1,27 @@
+# Synthetic Cargo.lock for wpantry's advisory regression suite (tests/advisories).
+version = 4
+
+[[package]]
+name = "wpantry-advisory-fixture"
+version = "0.0.0"
+
+[[package]]
+name = "zip"
+version = "9.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "zip"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "wasmtime"
+version = "48.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "brotli"
+version = "8.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+

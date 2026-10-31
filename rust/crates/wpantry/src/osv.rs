@@ -288,6 +288,72 @@ fn matches(affected: &Value, eco: &str, pkg: &str) -> bool {
     have.split(':').next() == Some(eco)
 }
 
+/// The affected range of `rec` for this package that `installed` falls in,
+/// written as a reader expects (`>=7.2.0, <9.0.0`; `>=1.0.0, <=1.0.3` for a
+/// `last_affected` bound; `>=2.0.0` open-ended; `=1.2.3` when the record
+/// lists versions one by one), compared with `order`. "" when the record
+/// has no such range (a GIT range of commits, or a record that doesn't
+/// name this package).
+pub fn affected_range(
+    rec: &Value,
+    eco: &str,
+    pkg: &str,
+    installed: &str,
+    order: impl Fn(&str, &str) -> std::cmp::Ordering,
+) -> String {
+    use std::cmp::Ordering::{Greater, Less};
+    let ge = |a: &str, b: &str| order(a, b) != Less; // a >= b
+    for a in arr_at(rec, "affected").iter().filter(|a| matches(a, eco, pkg)) {
+        for r in arr_at(a, "ranges").iter().filter(|r| matches!(str_at(r, "type"), "SEMVER" | "ECOSYSTEM")) {
+            // Events in order open and close intervals: introduced, then
+            // fixed or last_affected.
+            let mut start: Option<String> = None;
+            let mut intervals: Vec<(String, Option<(bool, String)>)> = Vec::new();
+            for e in arr_at(r, "events") {
+                if let Some(v) = e.get("introduced").and_then(Value::as_str) {
+                    if let Some(s) = start.take() {
+                        intervals.push((s, None));
+                    }
+                    start = Some(v.to_string());
+                } else if let Some(v) = e.get("fixed").and_then(Value::as_str) {
+                    intervals.push((start.take().unwrap_or_else(|| "0".into()), Some((false, v.to_string()))));
+                } else if let Some(v) = e.get("last_affected").and_then(Value::as_str) {
+                    intervals.push((start.take().unwrap_or_else(|| "0".into()), Some((true, v.to_string()))));
+                }
+            }
+            if let Some(s) = start.take() {
+                intervals.push((s, None));
+            }
+            for (from, to) in intervals {
+                let after_start = from == "0" || ge(installed, &from);
+                let before_end = match &to {
+                    None => true,
+                    Some((true, last)) => order(installed, last) != Greater,
+                    Some((false, fixed)) => order(installed, fixed) == Less,
+                };
+                if after_start && before_end {
+                    let lower = if from == "0" { String::new() } else { format!(">={from}") };
+                    let upper = match &to {
+                        None => String::new(),
+                        Some((true, last)) => format!("<={last}"),
+                        Some((false, fixed)) => format!("<{fixed}"),
+                    };
+                    return match (lower.is_empty(), upper.is_empty()) {
+                        (false, false) => format!("{lower}, {upper}"),
+                        (true, false) => upper,
+                        (false, true) => lower,
+                        (true, true) => ">=0".into(),
+                    };
+                }
+            }
+        }
+        if json::strs_at(a, "versions").iter().any(|v| v == installed) {
+            return format!("={installed}");
+        }
+    }
+    String::new()
+}
+
 /// A version string, not a commit hash standing in for an unreleased fix.
 pub fn released(version: &str) -> bool {
     let hash = (12..=40).contains(&version.len()) && version.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));

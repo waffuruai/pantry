@@ -25,7 +25,7 @@ A finding fails when something here has a known vulnerability with a released fi
 
 ## Sources
 
-Every request names wpantry in its User-Agent, times out after 30 seconds, and goes through `HTTPS_PROXY` when it is set. Answers are cached in `~/.cache/wpantry/wpantry.db` for a day; `--offline` uses only the cache, and a source that can't be reached and has nothing cached is reported "not checked".
+These are the only hosts the binary will connect to: the list is compiled in (`net::HOSTS`), any other URL is refused before a connection is made, and a test checks every source against it. Every request is https, verified against your machine's own trust store (so a certificate authority you distrust is distrusted here too), names wpantry in its User-Agent, times out after 30 seconds, and goes through `HTTPS_PROXY` when it is set. Answers are cached in `~/.cache/wpantry/wpantry.db` for a day; `--offline` uses only the cache, and a source that can't be reached and has nothing cached is reported "not checked".
 
 | Source | Answers | What is sent |
 |---|---|---|

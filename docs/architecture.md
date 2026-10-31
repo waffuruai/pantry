@@ -35,7 +35,7 @@ flowchart LR
 
 ## What it is, and is not
 
-A library crate, `wpantry`, and a thin binary, `wpantry-cli`. The library has no global state and never prints; the CLI owns stdout, stderr and the exit codes. Embedders (ops, wsentinel, the control plane) depend on the library at an exact `0.x` version and accept breakage between minors; the [CLI contract](../specs/cli-contract.md) is the only stable surface, and the contract suite runs the binary rather than reading its internals.
+A library crate, `wpantry`, and a thin binary, `wpantry-cli`. The library has no global state and never prints; the CLI owns stdout, stderr and the exit codes. Embedders depend on the library at an exact `0.x` version and accept breakage between minors; the [CLI contract](../specs/cli-contract.md) is the only stable surface, and the contract suite runs the binary rather than reading its internals.
 
 It is not SAST, reachability analysis, guided remediation, an SBOM reader or an offline OSV mirror, and it does not port gitleaks or `brew vulns`: those run as external tools. Windows is [#11](https://github.com/waffuruai/pantry/issues/11).
 
@@ -140,7 +140,9 @@ What goes into the binary is reviewed like the code ([internal/dependencies.md](
 
 A release ([internal/release.md](internal/release.md)) is built from a tag with `lto`, `codegen-units = 1`, `strip`, `--remap-path-prefix` and `SOURCE_DATE_EPOCH` from the commit, twice from two paths, and fails on any difference. Each target ships with `SHA256SUMS`, a GitHub build-provenance attestation and a sigstore bundle, and the release carries a signed packslip; `install.sh` and mise verify them before installing ([public/install.md](public/install.md)). v0.2.0's binaries: 3.5 MiB for aarch64 Linux (musl, static), 4.0 MiB for x86-64 Linux, 6.5 MiB for the macOS universal binary.
 
-Programs run as scanners or data sources are `gitleaks`, `git`, `openssl`, `brew`, `docker` or `podman`, and `rpm`; the inventory also runs the inventoried tools' own version and listing commands and the OS update tools. Every program is an argument vector through `system::exec`, with stdin closed and a timeout, never a shell string. What leaves the machine, host by host, is in [public/checks-and-sources.md](public/checks-and-sources.md#sources).
+Programs run as scanners or data sources are `gitleaks`, `git`, `openssl`, `brew`, `docker` or `podman`, and `rpm`; the inventory also runs the inventoried tools' own version and listing commands and the OS update tools. Every program is an argument vector through `system::exec`, with stdin closed and a timeout, never a shell string.
+
+The network client (`net::Http`) connects only to the hosts in `net::HOSTS`, the list [public/checks-and-sources.md](public/checks-and-sources.md#sources) shows; any other URL is refused before a connection is made, and a test checks every source's URL against the list. Server certificates are verified by the platform's trust store (the keychain on macOS, the system bundle on Linux) through `rustls-platform-verifier`, so a CA the machine distrusts, with `fix-ca-trust.sh` or by hand, is distrusted by wpantry's own requests too.
 
 ## Tests
 
@@ -148,14 +150,14 @@ Programs run as scanners or data sources are `gitleaks`, `git`, `openssl`, `brew
 - The contract suite, `tests/contract/test_contract.py` (Python standard library, `mise run contract`), starts the binary with a temp `HOME` and `WPANTRY_DB`, offline, and checks stdout, stderr, exit codes and the cache file only.
 - `mise run test` runs the Rust tests, the CA trust scripts' test and the install.sh test; `mise run lint` the shell and workflow linters. CI runs the same tasks on Linux and macOS, plus `cargo deny` and `cargo vet`.
 
-## What the port left open
+## What the port left open, and where it closed
 
-The Rust port's PRD and design are archived in [specs/archived/](../specs/archived/01-rust-port.md). Checked against the code and the releases on 2026-10-31, these are what it had not closed:
+The Rust port's PRD and design are archived in [specs/archived/](../specs/archived/01-rust-port.md). Checked against the code, the releases and the open pull requests on 2026-10-31:
 
-- **TLS roots.** The binary trusts the `webpki-roots` bundle ureq's `rustls` feature brings, not the platform's store, so a CA distrusted with `fix-ca-trust.sh` is still trusted by wpantry's own requests. The owner's decision between the bundle and the platform verifier was never recorded.
-- **Hosts are documented, not enforced.** No test pins the set of hosts the binary may contact; the list in [checks-and-sources.md](public/checks-and-sources.md#sources) is kept by hand.
-- **Feeds under hostile data.** Response and depth caps are in place; a per-feed audit of what a malformed or oversized feed does is part of [#38](https://github.com/waffuruai/pantry/issues/38).
-- **Online contract cases.** The contract suite runs offline; the online paths are covered at the library level by the recording fake, not by the suite.
-- **ops still builds from a commit.** ops' `mise.toml` pins `WPANTRY_VERSION` to a commit and builds from source "until the first signed release"; the releases exist now, so ops can switch to the verified artifact.
-- **Shared audits.** Importing other organizations' `cargo vet` audits would write their auditors' email addresses into the repo, which the contribution rules forbid; an open decision.
-- The PRD's tracking issues were never filed ("Issue: pending" throughout); its criteria are met or listed here, so none are needed now.
+- **TLS roots**: the binary trusted Mozilla's bundle, not the machine's store, so a CA distrusted locally was still trusted by wpantry's own requests. Closed: server certificates are verified by the platform's trust store (above).
+- **Hosts**: the list of hosts the binary may contact was documentation only. Closed: `net::HOSTS` is enforced before any connection, with a test over every source's URL.
+- **Feeds under hostile data**: the response, depth, line and file caps were in place; the per-feed hardening (fix versions substituted into commands, capped reads of repo files, plists and caches, control characters in reports) is [#39](https://github.com/waffuruai/pantry/pull/39).
+- **Recorded online cases**: the contract suite ran offline only. [#71](https://github.com/waffuruai/pantry/pull/71) adds eleven OSV records and a KEV entry recorded on 2026-10-30, seeded into the cache, with lockfiles at the last affected and first fixed version of each.
+- **ops**: built wpantry from a pinned commit until the first signed release. Closed: ops pins release 0.2.0 and installs it through mise's packslip backend with the release workflow's signing identity pinned.
+- **Shared audits**: importing other organizations' `cargo vet` audits would write their auditors' email addresses into the repo, which the contribution rules forbid. Decided: no imports; every crate is audited or exempted here ([internal/dependencies.md](internal/dependencies.md)).
+- The PRD's tracking issues were never filed; its criteria are met or closed above, so none are needed.

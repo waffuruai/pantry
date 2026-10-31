@@ -49,7 +49,7 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 **Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 
-**What leaves the machine.** Package names and versions go to OSV.dev; feeds are fetched. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
+**What leaves the machine.** Package names and versions go to OSV.dev; feeds are fetched; the binary connects to no host outside a compiled-in list, over TLS your machine's trust store verifies. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
 
 **Agents.** `wpantry skill` prints the agent skill ([rust/crates/wpantry/assets/SKILL.md](rust/crates/wpantry/assets/SKILL.md)).
 

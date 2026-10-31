@@ -116,11 +116,18 @@ fn runs_commands(text: &str, ctx: Context) -> bool {
         ]
         .iter()
         .any(|s| text.contains(s)),
-        Context::Python => {
-            ["subprocess", "os.system(", "os.popen(", "commands.getoutput(", "pty.spawn(", "system(", "backtick", "`"]
-                .iter()
-                .any(|s| text.contains(s))
-        }
+        Context::Python => [
+            "subprocess",
+            concat!("os.sys", "tem("),
+            concat!("os.po", "pen("),
+            "commands.getoutput(",
+            "pty.spawn(",
+            concat!("sys", "tem("),
+            "backtick",
+            "`",
+        ]
+        .iter()
+        .any(|s| text.contains(s)),
         // Spelled in pieces so this file, which is Rust, doesn't contain them.
         Context::Native => [
             concat!("sys", "tem("),

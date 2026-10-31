@@ -47,6 +47,7 @@ pub mod sync;
 pub mod system;
 pub mod tools;
 pub mod versions;
+pub mod watch;
 
 pub use error::Error;
 
@@ -68,4 +69,5 @@ pub mod defaults {
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
     pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
+    pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.txt");
 }

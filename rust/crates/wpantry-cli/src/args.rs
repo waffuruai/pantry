@@ -7,7 +7,8 @@
 use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] = &[
-    "check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache", "update", "report",
+    "check", "search", "export", "breach", "watch", "version", "tools", "skill", "sync", "schedule", "cache", "update",
+    "report",
 ];
 
 #[derive(Debug, Default, PartialEq)]
@@ -37,6 +38,7 @@ pub enum Command {
     Search { query: String, applicable: bool, limit: i64, json: bool },
     Export { csv: Option<String>, jsonl: Option<String>, all: bool },
     Breach { enable: bool, disable: bool },
+    Watch { json: bool, offline: bool },
     Version { json: bool },
     Tools { json: bool },
     Report { sections: Vec<String>, since_days: i64, format: String, out: Option<String> },
@@ -57,7 +59,7 @@ pub enum Parsed {
 }
 
 const TOP_USAGE: &str =
-    "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache,update,report} ...";
+    "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -67,6 +69,7 @@ pub fn usage(cmd: &str) -> &'static str {
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
         "breach" => "usage: wpantry breach [-h] [--enable | --disable]",
+        "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
@@ -87,6 +90,9 @@ fn help(cmd: &str) -> String {
         }
         "breach" => {
             "show or set consent for the email breach check\n\noptions:\n  -h, --help  show this help message and exit\n  --enable\n  --disable"
+        }
+        "watch" => {
+            "ask OSV again about the advisories the last scan found with no released fix (Critical, High, exploited in the wild): exit 10 when a fix has landed\n\noptions:\n  -h, --help  show this help message and exit\n  --offline   use only the local cache\n  --json"
         }
         "version" => {
             "print the version, implementation and JSON schema\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
@@ -111,7 +117,7 @@ fn help(cmd: &str) -> String {
             "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --update ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache,update,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -144,6 +150,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
         "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
+        "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
         "report" => &[
             ("--help", false),
@@ -418,11 +425,12 @@ pub fn parse(argv: &[String]) -> Parsed {
                 version: value("--version"),
             }
         }
-        "version" | "tools" | "skill" => {
+        "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
             }
             match cmd.as_str() {
+                "watch" => Command::Watch { json: flag("--json"), offline: flag("--offline") },
                 "version" => Command::Version { json: flag("--json") },
                 "tools" => Command::Tools { json: flag("--json") },
                 _ => Command::Skill,
@@ -486,5 +494,7 @@ mod tests {
         );
         assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
         assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
+        assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
+        assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
     }
 }

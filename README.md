@@ -39,11 +39,12 @@ wpantry --path ~/code/myproject --no-machine  # one project, no machine inventor
 wpantry check --json --no-input               # findings for tools and agents
 wpantry search "tarfile" --applicable         # ranked search of cached advisories
 wpantry export --csv findings.csv             # id, url, component, affected and safe version
+wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 wpantry --update --dryrun                     # the update plan, change nothing
 wpantry --update                              # apply the unattended fixes, then re-check
 ```
 
-Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error. `wpantry update` checks for a newer release and installs it verified (`--check` only asks; exit 10 when one exists).
+Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).
 
 **Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config` and `--install-scripts`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
 

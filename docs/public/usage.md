@@ -95,10 +95,29 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 | 1 | Something fails, or an unattended fix failed under `--update` |
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
+| 10 | `wpantry watch` only: a fix has landed for something that had none |
 
 ## Fixing
 
 `wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
+
+## Exposed with no fix yet
+
+Most advisories are `✗` because a fixed version exists. When none does, the scan still tells you about the ones that matter (Critical, High, or exploited in the wild): a `⚠` line with `(no fix released for … yet)` and, as its step, what to do meanwhile. The steps come from a bundled list ([`mitigations.txt`](../../rust/crates/wpantry/assets/defaults/mitigations.txt), one line per advisory); an advisory with no entry says to keep checking and reduce exposure. The Moderate and Low ones are only counted (`unfixed` in the JSON). Nothing here fails the run.
+
+```
+os
+  ⚠ linux-image-generic 6.8.0-45.45 (/var/lib/dpkg/status) - (CVE-2026-98432 CRITICAL) TCP use-after-free (no fix released for Ubuntu:24.04:LTS yet). Fix: Until the kernel update lands: drop inbound IPv4 TCP packets that carry IP options (…) and turn off MPTCP (…)
+```
+
+The daily scan asks OSV about a package version once a day. For these you want to know within the hour, so `wpantry watch` asks again about exactly them, bypassing that cache, and exits 10 when a fix has landed:
+
+```bash
+wpantry watch                 # each watched advisory: "no fix yet" + the mitigation, or "FIX AVAILABLE: <component> <version>"
+wpantry watch --json          # {"schema": 1, …, "watched": [{"id", "severity", "summary", "ecosystem", "package", "version", "fixed", "mitigation"}]}
+```
+
+Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry --update --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on (see [posture.md](posture.md)).
 
 ## JSON
 
@@ -142,6 +161,7 @@ wpantry search "tarfile traversal"            # rank cached advisories (SQLite F
 wpantry search openssl --applicable --json    # only those that apply here
 wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
 wpantry export --jsonl findings.jsonl --all   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
+wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 ```
 
 Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `--update` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.

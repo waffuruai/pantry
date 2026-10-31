@@ -19,6 +19,7 @@ wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export [--csv FILE] [--jsonl FILE] [--all]
 wpantry breach [--enable | --disable]
+wpantry watch [--offline] [--json]
 wpantry version [--json]
 wpantry tools [--json]
 wpantry skill
@@ -45,6 +46,7 @@ wpantry skill
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `export --jsonl` | Latest findings as JSON Lines, one object per finding: every [finding](#finding) key, plus `aliases` (the record's other ids), `url`, `record` (the full OSV JSON, or `null`), `first_seen`, `last_seen`, `resolved_at` (`YYYY-MM-DD HH:MM UTC` strings, `null` when unknown or open), `days_exposed` and `fix` (`null`, or `{attempted_at, mode, ok, verified, succeeded}` for the latest `--update` run of its `fix_cmd`). `--all` adds the exposures a later scan of the same scope resolved and the latest scan no longer lists. `--csv` and `--jsonl` may be given together; one is required |
 | `breach` | Show or set consent for the opt-in email breach check |
+| `watch` | Ask OSV again (bypassing the daily cache) about every advisory the latest findings carry with `status == "warn"` and `fixed == ""`: the Critical, High and exploited-in-the-wild advisories no fix was released for. Prints each with `no fix yet` and its mitigation, or `FIX AVAILABLE: <component> <version>`; exits 10 when at least one has a fix now. `--offline` reads the cache only. `--json` prints `{"schema", "impl", "version", "watched": [{id, severity, summary, ecosystem, package, version, fixed (string or null), mitigation (string or null)}]}`. For an hourly cron: a non-zero exit is the signal |
 | `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
 | `skill` | Print the bundled agent skill (`SKILL.md`) to stdout |
@@ -77,7 +79,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | 1 | At least one finding has `status == "fail"`, or an unattended fix failed under `--update`. `tools` exits 1 when a required tool is missing |
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
-| 10 | `update`: a newer release exists and was not installed (`--check`, `--no-input`, no terminal, a "no", or a source build) |
+| 10 | `update`: a newer release exists and was not installed (`--check`, `--no-input`, no terminal, a "no", or a source build); `watch`: a fix has landed for an advisory that had none |
 | 130 | Interrupted (Ctrl-C) |
 
 ## `check --json`
@@ -100,7 +102,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `impl` | string | `rust` |
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
-| `unfixed` | int | Applicable advisories with no released fix (not in `findings`) |
+| `unfixed` | int | Applicable advisories with no released fix. Those rated Critical or High (by the advisory's label, else its CVSS 3.x vector) or listed in CISA KEV also appear in `findings` as `warn` with `fixed` empty and the mitigation (bundled `mitigations.txt`, else a line saying to keep checking) as `fix_cmd`; the rest are only counted |
 | `unknown_licenses` | int | Repo dependencies with no identifiable license; 0 unless `--licenses` |
 | `findings` | array of Finding | Everything that applies, failing or warning |
 

@@ -22,6 +22,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Search cached advisories, ranked | `wpantry search "tarfile traversal" --json` |
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry export --csv findings.csv` |
+| Findings as JSON Lines, each joined with its OSV record, dependency scope, lifecycle and fix outcome (`--all` adds resolved exposures) | `wpantry export --jsonl findings.jsonl --all` |
 | Which external tools are installed | `wpantry tools` |
 | What was exposed, for how long, and what was fixed (audit evidence) | `wpantry report --since 90 --format json` |
 

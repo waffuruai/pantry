@@ -202,7 +202,21 @@ fn csv_field(s: &str) -> String {
     if s.contains([',', '"', '\r', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
 }
 
-fn cmd_export(path: &str) -> Result<i32> {
+fn cmd_export(csv: Option<&str>, jsonl: Option<&str>, all: bool) -> Result<i32> {
+    if let Some(path) = jsonl {
+        let cache = Cache::open(None)?;
+        let (text, n) = wpantry::export::jsonl(&cache, all)?;
+        std::fs::write(path, text)?;
+        let what = if all { "findings and resolved exposures" } else { "findings" };
+        show(&format!("✓ wrote {n} {what} to {path}"));
+    }
+    match csv {
+        Some(path) => export_csv(path),
+        None => Ok(EXIT_OK),
+    }
+}
+
+fn export_csv(path: &str) -> Result<i32> {
     let cache = Cache::open(None)?;
     let rows: Vec<Vec<String>> = {
         let mut stmt = cache.conn.prepare(
@@ -435,7 +449,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
     match cmd {
         Command::Check(c) => cmd_check(c),
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
-        Command::Export { csv } => cmd_export(&csv),
+        Command::Export { csv, jsonl, all } => cmd_export(csv.as_deref(), jsonl.as_deref(), all),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),

@@ -29,7 +29,7 @@ pub struct Check {
 pub enum Command {
     Check(Check),
     Search { query: String, applicable: bool, limit: i64, json: bool },
-    Export { csv: String },
+    Export { csv: Option<String>, jsonl: Option<String>, all: bool },
     Breach { enable: bool, disable: bool },
     Version { json: bool },
     Tools { json: bool },
@@ -54,7 +54,7 @@ pub fn usage(cmd: &str) -> &'static str {
             "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
-        "export" => "usage: wpantry export [-h] --csv CSV",
+        "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
         "breach" => "usage: wpantry breach [-h] [--enable | --disable]",
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
@@ -71,7 +71,9 @@ fn help(cmd: &str) -> String {
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
         }
-        "export" => "write the findings as CSV\n\noptions:\n  -h, --help  show this help message and exit\n  --csv CSV",
+        "export" => {
+            "write the latest findings as CSV, or as JSON Lines joined with their OSV records, lifecycle and fix outcome\n\noptions:\n  -h, --help     show this help message and exit\n  --csv CSV      the summary columns, one finding per row\n  --jsonl JSONL  one JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix\n  --all          with --jsonl: also the resolved exposures the latest scan no longer lists"
+        }
         "breach" => {
             "show or set consent for the email breach check\n\noptions:\n  -h, --help  show this help message and exit\n  --enable\n  --disable"
         }
@@ -86,7 +88,7 @@ fn help(cmd: &str) -> String {
             "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --update ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -114,7 +116,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--install-scripts", true),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
-        "export" => &[("--help", false), ("--csv", true)],
+        "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
         "report" => &[
@@ -270,10 +272,11 @@ pub fn parse(argv: &[String]) -> Parsed {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
             }
-            match value("--csv") {
-                Some(csv) => Command::Export { csv },
-                None => return fail("the following arguments are required: --csv".into()),
+            let (csv, jsonl) = (value("--csv"), value("--jsonl"));
+            if csv.is_none() && jsonl.is_none() {
+                return fail("one of the following arguments is required: --csv, --jsonl".into());
             }
+            Command::Export { csv, jsonl, all: flag("--all") }
         }
         "breach" => {
             if !positional.is_empty() {

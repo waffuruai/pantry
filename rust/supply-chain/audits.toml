@@ -12,3 +12,9 @@ who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
 criteria = "safe-to-deploy"
 delta = "0.40.2 -> 0.41.0"
 notes = "Read the source diff (edition 2024, so most hunks wrap existing unsafe in blocks). Hooks, busy handler and authorizer now live in sqlite3_set_clientdata, fixing the use-after-free in #1899; wpantry enables none of those features. ZeroBlob and set_result use the 64-bit SQLite calls; column accessors return iterators; modern_sqlite gates dropped with the 3.45.3 minimum. No build script, no new dependency for wpantry (bundled only)."
+
+[[audits.serde_json]]
+who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "1.0.151 -> 1.0.154"
+notes = "Read the full diff. Fixes to -0 parsing, f32 infinity and UTF-8 error positions; preserve_order gains a no_std path with foldhash, a feature wpantry does not enable (std only). No build script change, no new unsafe, no new dependency for wpantry."

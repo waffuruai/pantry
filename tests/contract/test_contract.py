@@ -203,8 +203,12 @@ class Contract(unittest.TestCase):
         policy = self.home / "suspect.txt"
         policy.write_text("PRIV-ESCALATION\npath:index.html\nWALLET-SIGNING\n")
         code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
-        self.assertEqual(code, 0, err)
-        found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
+        findings = json.loads(out)["findings"]
+        # A runner without gitleaks still fails on the missing tool: the exit follows what is left.
+        fails = [f for f in findings if f["status"] == "fail"]
+        self.assertEqual(code, 1 if fails else 0, err)
+        self.assertTrue(all(f["kind"] == "tool" for f in fails), fails)
+        found = sorted((f["vuln_id"], f["status"]) for f in findings if f["kind"] == "suspect-code")
         self.assertEqual([s for _, s in found], ["warn", "warn", "warn"], found)
 
     def test_text_aimed_at_agents_and_prose_that_runs_nothing(self):
@@ -254,8 +258,11 @@ class Contract(unittest.TestCase):
         policy = self.home / "squat.txt"
         policy.write_text("TYPOSQUAT\n")
         code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
-        self.assertEqual(code, 0, err)
-        found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
+        findings = json.loads(out)["findings"]
+        fails = [f for f in findings if f["status"] == "fail"]
+        self.assertEqual(code, 1 if fails else 0, err)
+        self.assertTrue(all(f["kind"] == "tool" for f in fails), fails)
+        found = sorted((f["vuln_id"], f["status"]) for f in findings if f["kind"] == "suspect-code")
         self.assertEqual(found, [("SUSPECT-BINARY-BLOB", "warn"), ("SUSPECT-TYPOSQUAT", "warn")], found)
 
     def test_hidden_text_fails_on_bidi_and_warns_on_bait(self):

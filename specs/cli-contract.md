@@ -15,7 +15,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 ```
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
                  [--json] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
-                 [--no-posture] [--posture-policy FILE]
+                 [--no-posture] [--posture-policy FILE] [--repo-hooks FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export [--csv FILE] [--jsonl FILE] [--all]
 wpantry breach [--enable | --disable]
@@ -39,7 +39,7 @@ wpantry skill
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
-| `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` is reported (`REPO-POLICY`, warn), never obeyed |
+| `--gitleaks-config`, `--install-scripts`, `--repo-hooks` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` is reported (`REPO-POLICY`, warn), never obeyed |
 | `--jobs N` | gitleaks scans at once (default: half the cores, at most 4); each gets a share of the cores |
 | `--no-posture`, `--posture-policy FILE` | The machine's own security settings (kind `posture`) run with the machine inventory; `--no-posture` skips them, the policy file lists check ids to skip (one per line, `POSTURE-` prefix optional) |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
@@ -111,7 +111,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Field | Type | Meaning |
 |---|---|---|
-| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `secret`, `license`, `install-script`, `config`, `account`, `posture`, `unchecked` (open set) |
+| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `repo-hook`, `secret`, `license`, `install-script`, `config`, `account`, `posture`, `unchecked` (open set) |
 | `component` | string | What it is about (`openssl`, `vite`, `~/code/app/.env`) |
 | `version` | string | Installed or locked version; `""` when none |
 | `location` | string | Path, lockfile, image or source; `""` when none |

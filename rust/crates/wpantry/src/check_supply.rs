@@ -12,7 +12,7 @@ use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
 use crate::system::{self, Component, run as sh, short, which};
-use crate::{harnesses, leaks, malicious};
+use crate::{harnesses, hooks, leaks, malicious};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -53,6 +53,7 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
         Ok(ran)
     })?;
     secrets(scan, &git, jobs, ran)?;
+    repo_hooks(scan, &git);
     install_scripts(scan, &repos, found);
     images(scan, &repos)?;
     let exts = if scan.opts.machine { extensions(scan)? } else { Vec::new() };
@@ -321,6 +322,62 @@ fn secrets(
         }
     }
     Ok(())
+}
+
+/// Code each repo runs when it is opened, installed or built (agent hooks,
+/// MCP servers in the repo, editor tasks on open, install scripts, native
+/// addons), and the markers of known hijacked-repo campaigns. Running a file
+/// kept in the repo fails; running a command at all warns.
+pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
+    if repos.is_empty() {
+        return;
+    }
+    scan.status("Looking for code the repos run on open or install");
+    let iocs = hooks::Indicators::parse(&scan.opts.policy.repo_hooks());
+    let found: Vec<Vec<hooks::Hook>> = system::par_map(repos, system::PROBES, |(_, root)| {
+        let mut h = hooks::scan_repo(root, &iocs);
+        h.extend(hooks::campaign_markers(root));
+        h
+    });
+    for ((name, root), hooks) in repos.iter().zip(found) {
+        scan.count("repos checked for hooks", 1);
+        for h in hooks {
+            let fails = h.fails();
+            let (status, fix_cmd) = if fails {
+                (
+                    "fail",
+                    format!(
+                        "Don't open {} in an agent or editor until you've read {}: remove the hook, or review what it runs",
+                        short(&root.to_string_lossy()),
+                        h.file
+                    ),
+                )
+            } else if h.id == "MARKER" {
+                (
+                    "warn",
+                    "If this isn't yours: treat the repo and every token it could reach as compromised, remove the persistence first, then rotate".into(),
+                )
+            } else {
+                (
+                    "warn",
+                    format!(
+                        "Read {} before opening or installing this repo; remove the hook if you don't need it",
+                        h.file
+                    ),
+                )
+            };
+            scan.add(Finding {
+                kind: "repo-hook".into(),
+                component: format!("{name}/{}", h.file),
+                location: h.when.clone(),
+                vuln_id: h.id.into(),
+                status: status.into(),
+                note: if h.command.is_empty() { h.note } else { format!("{}: `{}`", h.note, h.command) },
+                fix_cmd,
+                ..Default::default()
+            });
+        }
+    }
 }
 
 /// Dependencies that run code at install time, outside the allowlist, and

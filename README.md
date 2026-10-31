@@ -16,6 +16,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | Know whether the machine itself is set up safely | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock (CIS benchmark items, read-only; `--no-posture` skips them) |
 | Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
 | Review supply-chain risk | Dependency licenses outside an allowlist, npm install scripts, container images your repos build from |
+| Don't get owned by opening a clone | Hooks a repo runs on open or install (Claude Code, Gemini, MCP servers in the repo, VS Code folder-open tasks, devcontainers, direnv, `postinstall`, gyp, native addons) and the indicators of known hijacked-repo campaigns |
 | Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |
 
 Every check, every source it asks and exactly what is sent to each: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md).
@@ -46,7 +47,7 @@ wpantry --update                              # apply the unattended fixes, then
 
 Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).
 
-**Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config` and `--install-scripts`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
+**Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config`, `--install-scripts` and `--repo-hooks`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
 
 **Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 

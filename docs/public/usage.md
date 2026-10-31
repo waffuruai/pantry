@@ -25,6 +25,16 @@ By default wpantry checks the machine and every git repo under your home directo
 - `--path DIR` (repeatable) limits the repo checks to the repos at or under DIR. A DIR with no git repo is scanned as one project, without the git-history checks. A missing DIR is skipped with a note.
 - `--no-machine` skips the machine inventory: repo checks only.
 
+## Cloned a repo? Check it before you open it
+
+A repo can run code the moment an agent or editor opens it: a `.claude/settings.json` SessionStart hook, a `.cursor/mcp.json` server, a `.vscode/tasks.json` task on folder open, a devcontainer command, an npm `postinstall`. Hijacked repos hide the payload in a file the hook runs (a 13 MB `.github/init.js` that code search never indexes). Before opening a clone you didn't write:
+
+```bash
+wpantry check --path ~/Downloads/some-repo --no-machine
+```
+
+A hook that runs a file kept in the repo, a file that looks like a dropper, or a known indicator fails (`repo-hook` findings `RUNS-REPO-FILE`, `LOADER`, `IOC`); a hook that runs a command at all warns (`OPEN-HOOK`, `INSTALL-HOOK`), as do the commit and branch markers of a known campaign (`MARKER`). Nothing is run or fixed for you: read the file the finding names, then remove the hook or decide to trust it. `--repo-hooks FILE` replaces the bundled indicator list.
+
 ## Reading the report
 
 While it scans, a progress line shows what it is doing (the directory it is walking, the lockfile it is reading, the advisories it is downloading) and the elapsed time. It is only drawn when the output is a terminal.
@@ -147,6 +157,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
+| `--repo-hooks FILE` | Your list of hijacked-repo indicators (file names, package names, hosts, hashes) |
 | `--no-posture` | Skip the machine's security settings |
 | `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
 

@@ -92,12 +92,15 @@ impl Finding {
 }
 
 /// The policy files a scan reads; the bundled defaults unless the caller
-/// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`).
+/// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`,
+/// `--repo-hooks`).
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
     pub gitleaks_config: Option<PathBuf>,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
+    /// Indicators of hijacked repos (`--repo-hooks`); the bundled list by default.
+    pub repo_hooks: Option<PathBuf>,
     /// Posture checks to skip (`--posture-policy`); the bundled, empty list by default.
     pub posture: Option<PathBuf>,
 }
@@ -109,6 +112,14 @@ impl Policy {
 
     pub fn licenses(&self) -> Vec<String> {
         listed(self.licenses.as_deref(), crate::defaults::LICENSES)
+    }
+
+    /// The repo-hook indicator list's text (see `hooks::Indicators::parse`).
+    pub fn repo_hooks(&self) -> String {
+        match &self.repo_hooks {
+            Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+            None => crate::defaults::REPO_HOOKS.to_string(),
+        }
     }
 
     pub fn posture_skip(&self) -> Vec<String> {

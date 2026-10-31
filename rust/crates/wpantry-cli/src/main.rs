@@ -105,6 +105,7 @@ fn cmd_check(a: Check) -> Result<i32> {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
             install_scripts: a.install_scripts.clone(),
+            repo_hooks: a.repo_hooks.clone(),
             posture: a.posture_policy.clone(),
         },
         refresh: a.refresh,

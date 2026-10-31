@@ -29,5 +29,6 @@ wpantry reads a lot of your computer to tell you what is exposed, so it is built
 - **Secrets stay redacted.** gitleaks runs with `--redact`; the cache and the report hold the rule, file, line, commit and fingerprint, never the secret.
 - **Unreachable is not clean.** A source that can't be reached, or a tool that is missing, is reported; it never makes the result look better.
 - **No credentials of its own.** It holds no token. `HIBP_API_KEY` is read from the environment when you set it.
+- **Stopgaps only when you say so.** The scripts in [`mitigations/`](mitigations/) (one per advisory that has no fix to install yet) and `ca-trust/fix-ca-trust.sh` are never run by a scan. You invoke them; they show what they will write and ask before touching anything (`--yes` for provisioning), and `--status` and `--dry-run` only read.
 
 Known gaps are listed in [specs/](specs/README.md); the release-signing plan is [specs/01-rust-port.md](specs/01-rust-port.md#security). The org-wide policies this file summarises (incident response, vulnerability management, the disclosure policy) live in [waffuruai/ops](https://github.com/waffuruai/ops/tree/dev/security).

@@ -65,7 +65,9 @@ done
 case "$(uname -s)" in
   Linux) os=linux ;;
   Darwin) os=macos ;;
-  *) die "no $NAME build for $(uname -s) yet (Windows: https://github.com/$REPO/issues/11)" ;;
+  # Git Bash, MSYS2, and Cygwin. cmd and PowerShell do not run this script.
+  MINGW* | MSYS* | CYGWIN*) os=windows ;;
+  *) die "no $NAME build for $(uname -s) yet" ;;
 esac
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
@@ -74,10 +76,19 @@ case "$(uname -m)" in
 esac
 if [ "$os" = macos ]; then
   target=universal-apple-darwin # one binary for Apple silicon and Intel
+elif [ "$os" = windows ]; then
+  # The release ships one Windows binary. arm64 Git Bash is not that build.
+  [ "$arch" = x86_64 ] || die "no $NAME build for Windows $arch yet"
+  target=x86_64-pc-windows-msvc
 else
   target="$arch-unknown-linux-musl" # static: runs on any distribution
 fi
 asset="$NAME-$target"
+dest=$NAME
+if [ "$os" = windows ]; then
+  asset="$asset.exe"
+  dest="$NAME.exe"
+fi
 
 # --- downloading -----------------------------------------------------------
 
@@ -166,9 +177,9 @@ fi
 
 mkdir -p "$dir" || die "can't create $dir"
 chmod 0755 "$tmp/$asset"
-mv -f "$tmp/$asset" "$dir/$NAME" || die "can't write $dir/$NAME"
-installed=$("$dir/$NAME" version 2>/dev/null) || die "$dir/$NAME doesn't run on this computer"
-ok "installed $installed to $dir/$NAME"
+mv -f "$tmp/$asset" "$dir/$dest" || die "can't write $dir/$dest"
+installed=$("$dir/$dest" version 2>/dev/null) || die "$dir/$dest doesn't run on this computer"
+ok "installed $installed to $dir/$dest"
 
 case ":$PATH:" in
   *":$dir:"*) ;;

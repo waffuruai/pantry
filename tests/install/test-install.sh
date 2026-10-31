@@ -106,4 +106,50 @@ env -i HOME="$tmp" PATH="$tmp/path" sh "$INSTALL" --version > "$tmp/out" 2>&1 ||
 [ "$code" = 2 ] || fail "--version without a value should be a usage error (exit 2), got $code"
 echo "✓ a missing option value is a usage error"
 
+# Git Bash reports MINGW64_NT-… or MSYS_NT-…. The host uname stays on PATH
+# for the cases above; this stub replaces it for the Windows asset only.
+real_uname="$(command -v uname)"
+host_asset="$asset"
+stub_uname() {
+  os_name="$1"
+  mach="${2:-x86_64}"
+  # `$tmp/path/uname` is a symlink to the real binary. Replace the link,
+  # or the redirect follows it and tries to overwrite /usr/bin/uname.
+  rm -f "$tmp/path/uname"
+  # $1 stays literal: it is the generated stub's argument, not this script's.
+  # shellcheck disable=SC2016
+  printf '#!/bin/sh\ncase "$1" in\n  -s) printf "%%s\\n" "%s" ;;\n  -m) printf "%%s\\n" "%s" ;;\n  *) echo "uname stub: unexpected $1" >&2; exit 1 ;;\nesac\n' \
+    "$os_name" "$mach" > "$tmp/path/uname"
+  chmod +x "$tmp/path/uname"
+}
+windows_install() {
+  stub_uname "$1" "${2:-x86_64}"
+  asset="wpantry-x86_64-pc-windows-msvc.exe"
+  release
+  if [ "${3:-install}" = fail ]; then
+    run && fail "$1 should not install"
+    return
+  fi
+  run || { cat "$tmp/out" >&2; fail "$1 should install"; }
+  [ -x "$tmp/bin/wpantry.exe" ] || fail "$1 should install wpantry.exe"
+  [ ! -e "$tmp/bin/wpantry" ] || fail "$1 should not also install a bare wpantry name"
+  [ "$("$tmp/bin/wpantry.exe" version)" = "wpantry 9.9.9 (rust, schema 1)" ] || fail "$1 binary should run"
+  grep -q "checksum matches" "$tmp/out" || fail "$1 should check SHA256SUMS"
+  echo "✓ $1 installs wpantry-x86_64-pc-windows-msvc.exe as wpantry.exe"
+}
+windows_install MINGW64_NT-10.0-26100
+windows_install MSYS_NT-10.0-26100
+windows_install CYGWIN_NT-10.0-26100
+stub_uname MINGW64_NT-10.0-26100 aarch64
+run && fail "Windows arm64 should be refused"
+grep -q "no wpantry build for Windows aarch64" "$tmp/out" || fail "Windows arm64 should name the missing build"
+echo "✓ Windows arm64 is refused"
+stub_uname Haiku
+run && fail "an unknown kernel should be refused"
+grep -q "no wpantry build for Haiku" "$tmp/out" || fail "an unknown kernel should name itself"
+echo "✓ an unknown kernel is still refused"
+asset="$host_asset"
+rm -f "$tmp/path/uname"
+ln -s "$real_uname" "$tmp/path/uname"
+
 echo "✓ install.sh: all passed"

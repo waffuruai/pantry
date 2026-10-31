@@ -44,7 +44,7 @@ wpantry skill
 | `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
 | `skill` | Print the bundled agent skill (`SKILL.md`) to stdout |
-| `report` | `report [--exposure] [--remediation] [--audit] [--since DAYS] [--format md\|json\|csv] [-o FILE]`: the logs kept across scans (default: all three, 90 days, Markdown to stdout). Exposure log: each finding from the scan that first saw it to the scan of the same scope that no longer did, with days exposed; remediation log: every unattended fix `--update` ran, its result and the scan that verified it; audit log: every scan (when, host, user, version, scope, counts) and event. `--format csv` is the exposure log. JSON: `{"schema", "version", "since_days", "exposures", "fixes", "scans", "events"}` |
+| `report` | `report [--exposure] [--remediation] [--audit] [--since DAYS] [--format md\|json\|csv] [-o FILE]`: the logs kept across scans (default: all three, 90 days, Markdown to stdout). Exposure log: each finding from the scan that first saw it to the scan of the same scope that no longer did, with days exposed; remediation log: every unattended fix `--update` ran, its result, the exposures it addressed and the complete scan that verified them gone; audit log: every scan (when, host, user, version, scope, counts) and event. `--format csv` is the exposure log. JSON: `{"schema", "version", "since_days", "exposures", "fixes", "scans", "events"}` |
 
 ### Scope walk
 
@@ -131,9 +131,9 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `casks` | `app` TEXT PK, `token`, `version` |
 | `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>` (Python), `image-packages:<id>` (Rust), `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
-| `scans` | `id` INTEGER PK, `started_at` REAL, `finished_at` REAL, `host`, `user`, `version`, `scope` TEXT, `counts` TEXT (JSON), `fails` INTEGER, `warns` INTEGER: one row per scan |
+| `scans` | `id` INTEGER PK, `started_at` REAL, `finished_at` REAL, `host`, `user`, `version`, `scope` TEXT, `counts` TEXT (JSON), `fails` INTEGER, `warns` INTEGER, `unchecked` INTEGER (sources that couldn't be asked; a scan with any resolves no exposure and verifies no fix): one row per scan |
 | `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL: a finding across scans; resolved by a scan of the same scope that no longer lists it |
-| `fixes` | `id` INTEGER PK, `scan_id` INTEGER, `at` REAL, `command` TEXT, `mode` TEXT, `ok` INTEGER, `verified_scan` INTEGER: the unattended fixes `--update` ran |
+| `fixes` | `id` INTEGER PK, `scan_id` INTEGER, `at` REAL, `command` TEXT, `mode` TEXT, `ok` INTEGER, `verified_scan` INTEGER (the complete scan after a fix that exited 0 in which none of its `targets` were listed; NULL otherwise), `targets` TEXT (JSON array of `exposures.key`): the unattended fixes `--update` ran |
 | `events` | `id` INTEGER PK, `at` REAL, `kind` TEXT (`scan`, `fix`, …), `detail` TEXT (JSON) |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |
 

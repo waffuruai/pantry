@@ -111,7 +111,14 @@ fn cmd_check(a: Check) -> Result<i32> {
     if !applied.ran.is_empty() {
         let cache = Cache::open(None)?;
         for (cmd, ok) in &applied.ran {
-            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok)?;
+            // The exposures this command was the fix for; the re-check verifies against them.
+            let targets: Vec<String> = first
+                .findings
+                .iter()
+                .filter(|f| f.fix_auto && f.fix_cmd == *cmd)
+                .map(wpantry::history::key_of)
+                .collect();
+            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets)?;
         }
         cache.close()?;
     }
@@ -378,10 +385,10 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
                 }
             }
             if want("audit") {
-                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns |\n|---|---|---|---|---|---|---|---|\n");
+                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns | Unchecked |\n|---|---|---|---|---|---|---|---|---|\n");
                 for s in &scans {
                     t.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                         s.id,
                         stamp(s.finished_at),
                         md(&s.host),
@@ -389,7 +396,8 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
                         s.version,
                         md(&s.scope),
                         s.fails,
-                        s.warns
+                        s.warns,
+                        s.unchecked
                     ));
                 }
                 t.push_str("\n### Events\n\n| When | Event | Detail |\n|---|---|---|\n");

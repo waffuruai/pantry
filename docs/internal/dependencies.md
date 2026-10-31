@@ -6,10 +6,10 @@ wpantry runs with access to the whole home directory, so what goes into it is re
 
 - **Crates**: only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`), `ureq` and `rustls` (`ring`), plus what they pull in. A new direct dependency needs a decision recorded on this page first; `rust/crates/wpantry/tests/pins.rs` fails otherwise.
 - **Pins**: every dependency `=x.y.z` in `rust/Cargo.toml` `[workspace.dependencies]`, crates take them with `.workspace = true`, `Cargo.lock` is committed and every build is `--locked`.
-- **Age**: pin a release at least two weeks old. The exception is a security fix, which goes in as soon as it's out (rustls 0.23.46 was one).
+- **Age**: pin a release at least 72 hours old: long enough for a hijacked or broken release to be noticed and yanked, short enough that fixes arrive. The exception is a security fix, which goes in as soon as it's out (rustls 0.23.46 was one). Age is a wait, not a review: every bump is still audited (below).
 - **Toolchain**: `rust/rust-toolchain.toml` names an exact version.
 - **Features**: a feature of an allowed crate that pulls new crates in is a decision too, recorded below with the crates it adds.
-- **CI tools and actions**: cargo-deny and cargo-vet versions are pinned in `.github/workflows/ci.yml`; every action is pinned by commit SHA with its version in a comment, under the same two-week rule.
+- **CI tools and actions**: cargo-deny and cargo-vet versions are pinned in `.github/workflows/ci.yml`; every action is pinned by commit SHA with its version in a comment, under the same 72-hour rule.
 
 ## Decisions
 
@@ -46,7 +46,7 @@ The audits of Mozilla, Google and the Bytecode Alliance are imported (`[imports]
 
 ## cargo deny
 
-`rust/deny.toml` checks the targets we ship. An advisory against a dependency fails CI: bump it (security fixes skip the two-week rule). Only if there is no fix and the vulnerable code is unreachable from wpantry, add the advisory id to `[advisories] ignore` with a comment saying why and when to revisit, in its own PR.
+`rust/deny.toml` checks the targets we ship. An advisory against a dependency fails CI: bump it (security fixes skip the 72-hour rule). Only if there is no fix and the vulnerable code is unreachable from wpantry, add the advisory id to `[advisories] ignore` with a comment saying why and when to revisit, in its own PR.
 
 ## The rustls tree
 

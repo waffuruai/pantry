@@ -9,7 +9,9 @@
 mod args;
 mod progress;
 mod report;
+mod schedule;
 mod style;
+mod update;
 
 use args::{Check, Command, Parsed};
 use rusqlite::types::ValueRef;
@@ -25,16 +27,23 @@ const EXIT_OK: i32 = 0;
 const EXIT_FAIL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_INTERNAL: i32 = 3;
+/// `update --check`: a newer release exists.
+const EXIT_UPDATE_AVAILABLE: i32 = 10;
 
-/// A line of data on stdout, never coloured (JSON, search results, the
-/// skill).
+/// A line of text on stdout, never coloured (search results, the skill),
+/// with terminal escapes from scanned content dropped.
 fn say(line: &str) {
-    println!("{line}");
+    println!("{}", style::clean(line));
+}
+
+/// JSON on stdout, as is: it escapes control characters itself.
+fn emit(json: &str) {
+    println!("{json}");
 }
 
 /// A line of the report on stdout, coloured by its mark on a terminal.
 fn show(line: &str) {
-    println!("{}", Style::stdout().line(line));
+    println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
 /// `check --json`: the findings plus what was checked (schema 1).
@@ -59,7 +68,24 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
         }
     };
     let note = |m: &str| progress.eprintln(&Style::stderr().line(m));
-    let status = |m: &str| progress.set(m);
+    // WPANTRY_TIMINGS=1: every step with the seconds since the scan began,
+    // on stderr, so a slow run says where the time went.
+    let started = std::time::Instant::now();
+    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some();
+    // One line per step, not per file: a step whose message starts the same
+    // way as the last one within a quarter second is the same step.
+    let last = std::sync::Mutex::new((String::new(), std::time::Instant::now()));
+    let status = |m: &str| {
+        if timings {
+            let head: String = m.split_whitespace().next().unwrap_or("").to_string();
+            let mut last = last.lock().expect("lock");
+            if head != last.0 || last.1.elapsed() > std::time::Duration::from_millis(250) {
+                progress.eprintln(&format!("[{:7.2}s] {m}", started.elapsed().as_secs_f64()));
+                *last = (head, std::time::Instant::now());
+            }
+        }
+        progress.set(m);
+    };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
     let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask).run();
@@ -79,16 +105,20 @@ fn cmd_check(a: Check) -> Result<i32> {
         },
         refresh: a.refresh,
         offline: a.offline,
+        jobs: a.jobs,
         licenses: a.check_licenses,
         ask: !(a.json || a.dryrun || a.no_input),
     };
     let first = scan(opts.clone(), a.json, &net)?;
     if a.json {
-        say(&envelope(&first).dumps_indent(1));
+        emit(&envelope(&first).dumps_indent(1));
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
     }
     let db = db::path().to_string_lossy().into_owned();
     let status = report::report(&first, &db, &mut |l| show(l));
+    if let Some(n) = update::notice(&net, a.offline) {
+        eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
+    }
     if !(a.update || a.dryrun) {
         return Ok(status);
     }
@@ -111,7 +141,14 @@ fn cmd_check(a: Check) -> Result<i32> {
     if !applied.ran.is_empty() {
         let cache = Cache::open(None)?;
         for (cmd, ok) in &applied.ran {
-            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok)?;
+            // The exposures this command was the fix for; the re-check verifies against them.
+            let targets: Vec<String> = first
+                .findings
+                .iter()
+                .filter(|f| f.fix_auto && f.fix_cmd == *cmd)
+                .map(wpantry::history::key_of)
+                .collect();
+            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets)?;
         }
         cache.close()?;
     }
@@ -184,7 +221,7 @@ fn cmd_search(query: &str, applicable_only: bool, limit: i64, json: bool) -> Res
                 ])
             })
             .collect();
-        say(&J::Arr(items).dumps_indent(1));
+        emit(&J::Arr(items).dumps_indent(1));
     } else {
         for (_, id, _, summary, severity, hit, kev, _) in &out {
             let flags: Vec<&str> =
@@ -267,7 +304,7 @@ fn cmd_breach(enable: bool, disable: bool) -> Result<i32> {
 
 fn cmd_version(json: bool) -> Result<i32> {
     if json {
-        say(&obj([("version", VERSION.into()), ("impl", IMPL.into()), ("schema", J::Int(SCHEMA))]).dumps());
+        emit(&obj([("version", VERSION.into()), ("impl", IMPL.into()), ("schema", J::Int(SCHEMA))]).dumps());
     } else {
         say(&format!("wpantry {VERSION} ({IMPL}, schema {SCHEMA})"));
     }
@@ -285,7 +322,7 @@ fn cmd_tools(json: bool) -> Result<i32> {
             ("version", VERSION.into()),
             ("tools", J::Arr(found.iter().map(|t| t.to_json()).collect())),
         ]);
-        say(&env.dumps_indent(1));
+        emit(&env.dumps_indent(1));
     } else {
         for t in &found {
             let mark = if t.found {
@@ -392,10 +429,10 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
                 }
             }
             if want("audit") {
-                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns |\n|---|---|---|---|---|---|---|---|\n");
+                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns | Unchecked |\n|---|---|---|---|---|---|---|---|---|\n");
                 for s in &scans {
                     t.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                         s.id,
                         stamp(s.finished_at),
                         md(&s.host),
@@ -403,7 +440,8 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
                         s.version,
                         md(&s.scope),
                         s.fails,
-                        s.warns
+                        s.warns,
+                        s.unchecked
                     ));
                 }
                 t.push_str("\n### Events\n\n| When | Event | Detail |\n|---|---|---|\n");
@@ -438,6 +476,84 @@ fn md(s: &str) -> String {
     s.replace('|', "\\|").chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
+/// `sync`: refresh what the cache knows, with the progress line.
+fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
+    let net = wpantry::net::Http::new();
+    let progress = progress::Progress::start();
+    let status = |m: &str| progress.set(m);
+    let cache = Cache::open(None)?;
+    let synced = wpantry::sync::run(&cache, &net, refresh, &status);
+    cache.close()?;
+    progress.finish();
+    let synced = synced?;
+    if json {
+        say(&obj([
+            ("refreshed", J::Arr(synced.refreshed.iter().map(|s| s.as_str().into()).collect())),
+            (
+                "failed",
+                J::Arr(
+                    synced
+                        .failed
+                        .iter()
+                        .map(|(n, w)| obj([("source", n.as_str().into()), ("why", w.as_str().into())]))
+                        .collect(),
+                ),
+            ),
+            ("packages", J::Int(synced.packages as i64)),
+        ])
+        .dumps_indent(1));
+    } else {
+        for name in &synced.refreshed {
+            show(&format!("  ✓ {name}"));
+        }
+        for (name, why) in &synced.failed {
+            show(&format!("  ⚠ {name} - {why}"));
+        }
+        show(&format!(
+            "{} {} sources refreshed, {} package versions re-asked of OSV{}",
+            if synced.failed.is_empty() { "✓" } else { "⚠" },
+            synced.refreshed.len(),
+            synced.packages,
+            if synced.failed.is_empty() { String::new() } else { format!(", {} unreachable", synced.failed.len()) }
+        ));
+    }
+    Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
+}
+
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
+    match action {
+        "install" => {
+            let every = schedule::Every::parse(every).expect("validated");
+            let (h, m) = at.split_once(':').expect("validated");
+            schedule::install(every, (h.parse().expect("validated"), m.parse().expect("validated")), dry_run)
+        }
+        "status" => schedule::status(),
+        "uninstall" => schedule::uninstall(),
+        _ => schedule::run(),
+    }
+}
+
+/// `cache prune`: what no scan has used in `days`, then VACUUM.
+fn cmd_cache_prune(days: i64) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let before = std::fs::metadata(cache.file()).map(|m| m.len()).unwrap_or(0);
+    let (queries, vulns, runs) = cache.prune(days as f64 * wpantry::db::DAY)?;
+    let file = cache.file().to_path_buf();
+    cache.close()?;
+    let after = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+    say(&format!(
+        "pruned {queries} package versions, {vulns} advisories and {runs} cached runs older than {days} days; {} → {} ({})",
+        mb(before),
+        mb(after),
+        file.display()
+    ));
+    Ok(EXIT_OK)
+}
+
+fn mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -456,6 +572,12 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Skill => cmd_skill(),
         Command::Report { sections, since_days, format, out } => {
             cmd_report(&sections, since_days, &format, out.as_deref())
+        }
+        Command::Sync { refresh, json } => cmd_sync(refresh, json),
+        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
+        Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
+        Command::Update { check, yes, no_input, offline, version } => {
+            update::run(update::Update { check, yes, no_input, offline, version })
         }
     }
 }

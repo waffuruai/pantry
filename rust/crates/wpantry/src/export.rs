@@ -259,7 +259,15 @@ mod tests {
         assert!(row["first_seen"].is_string() && row["resolved_at"].is_null());
         assert_eq!(row["fix"], Value::Null, "nothing ran yet");
         // The fix runs; the next scan no longer lists the finding: resolved and verified.
-        history::record_fix(&c, Some(s1), cmd, "auto", true).unwrap();
+        let targets: Vec<String> = c
+            .conn
+            .prepare("SELECT key FROM exposures")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        history::record_fix(&c, Some(s1), cmd, "auto", true, &targets).unwrap();
         c.replace_findings(&[]).unwrap();
         let s2 = history::record_scan(&c, crate::system::now(), &[], &[], &opts).unwrap();
         history::verify_fixes(&c, s1, s2).unwrap();

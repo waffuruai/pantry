@@ -4,8 +4,8 @@
 
 | Log | What it answers | Rows |
 |---|---|---|
-| Exposure (`--exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`): severity, KEV, the fix version, first seen, last seen, resolved, days exposed. A finding is resolved by a scan of the same scope (machine or repos, the same `--path`s) that no longer lists it; a scan of one repo says nothing about the others |
-| Remediation (`--remediation`) | What was done about it | One per unattended fix `--update` ran: when, the command, whether it exited 0, and the scan that re-checked afterwards |
+| Exposure (`--exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`): severity, KEV, the fix version, first seen, last seen, resolved, days exposed. A finding is resolved by a scan of the same scope (machine or repos, the same `--path`s, `--licenses` and policy files) that no longer lists it and that had no source `unchecked`: a scan with a gap resolves nothing, so an outage leaves exposures open rather than closing them; a scan of one repo says nothing about the others |
+| Remediation (`--remediation`) | What was done about it | One per unattended fix `--update` ran: when, the command, whether it exited 0, the exposures it addressed, and the scan that verified it: a complete re-check (no source `unchecked`) in which none of those exposures were still listed. A failed fix, an incomplete re-check, or a finding still present leaves it blank |
 | Audit (`--audit`) | That the checks happened | One per scan (when, host, user, wpantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
 
 `--since DAYS` bounds all three (default 90). `--format md` (default) is Markdown with a summary line (open exposures, resolved, median days to resolve); `--format json` is one document with every section asked for; `--format csv` is the exposure log alone. `-o FILE` writes instead of printing.
@@ -19,7 +19,7 @@
 | Remediation (CC7.4, CC7.5) | The remediation log: the command, when, the result, and the scan that verified the finding gone; the exposure log's days-exposed and median time to resolve |
 | Change management (CC8.1) | The remediation log doubles as the record of dependency and tool updates wpantry made unattended; manual steps it printed are in the scan's findings (`export --csv`) |
 
-What it is not: proof that nothing was missed. A source that couldn't be reached is in the findings as `unchecked` and in that scan's `warns`; an exposure resolved because a repo was deleted looks the same as one that was fixed. Keep the report with the context that explains it.
+What it is not: proof that nothing was missed. A source that couldn't be reached is in the findings as `unchecked` and in that scan's `unchecked` count, and such a scan resolves no exposure and verifies no fix, so an outage shows as open exposures and unverified fixes, never as remediation; an exposure resolved because a repo was deleted looks the same as one that was fixed. Keep the report with the context that explains it.
 
 ## Retention
 

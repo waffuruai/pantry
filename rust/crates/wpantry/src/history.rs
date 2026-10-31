@@ -5,8 +5,12 @@
 //! to, for how long, what was done about it and when.
 //!
 //! An exposure is resolved by a scan of the same scope that no longer
-//! lists it: a repo-only scan says nothing about the machine, and a scan
-//! of one repo says nothing about the others.
+//! lists it: a repo-only scan says nothing about the machine, a scan of one
+//! repo says nothing about the others, and a scan without `--licenses` or
+//! with other policy files says nothing about what those would have found.
+//! A scan with an `unchecked` source resolves nothing: a gap in the evidence
+//! is not a fix. A fix is verified only by a complete scan after it ran
+//! that no longer lists what it addressed; a failed fix never is.
 
 use crate::check::{Finding, Options};
 use crate::db::Cache;
@@ -18,7 +22,7 @@ use serde_json::{Value, json};
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS scans (
   id INTEGER PRIMARY KEY, started_at REAL, finished_at REAL, host TEXT, user TEXT,
-  version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER);
+  version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER, unchecked INTEGER);
 CREATE TABLE IF NOT EXISTS exposures (
   key TEXT PRIMARY KEY, scope TEXT, kind TEXT, component TEXT, version TEXT, location TEXT,
   vuln_id TEXT, status TEXT, severity TEXT, kev INTEGER, fixed TEXT, note TEXT,
@@ -28,21 +32,39 @@ CREATE TABLE IF NOT EXISTS exposures (
 CREATE INDEX IF NOT EXISTS exposures_open ON exposures (resolved_at, scope);
 CREATE TABLE IF NOT EXISTS fixes (
   id INTEGER PRIMARY KEY, scan_id INTEGER, at REAL, command TEXT, mode TEXT, ok INTEGER,
-  verified_scan INTEGER);
+  verified_scan INTEGER, targets TEXT);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY, at REAL, kind TEXT, detail TEXT);
 ";
 
-/// The scope a scan covers, as a string two scans can be compared by.
+/// The scope a scan covers, as a string two scans can be compared by:
+/// what it looked at, and what it looked for (`--licenses`, the policy
+/// files). Two scans with different scopes say nothing about each other.
 pub fn scope_of(opts: &Options) -> String {
     let mut paths: Vec<String> =
         opts.paths.as_deref().unwrap_or(&[]).iter().map(|p| p.to_string_lossy().into_owned()).collect();
     paths.sort();
-    format!(
+    let mut scope = format!(
         "{}:{}",
         if opts.machine { "machine" } else { "repos" },
         if paths.is_empty() { "~".into() } else { paths.join(",") }
-    )
+    );
+    if opts.licenses {
+        scope.push_str("+licenses");
+    }
+    let policy: Vec<String> = [
+        ("gitleaks", &opts.policy.gitleaks_config),
+        ("licenses", &opts.policy.licenses),
+        ("install-scripts", &opts.policy.install_scripts),
+    ]
+    .iter()
+    .filter_map(|(name, p)| p.as_ref().map(|p| format!("{name}={}", p.to_string_lossy())))
+    .collect();
+    if !policy.is_empty() {
+        scope.push_str(";policy:");
+        scope.push_str(&policy.join(","));
+    }
+    scope
 }
 
 /// The key one exposure is tracked under across scans.
@@ -51,8 +73,9 @@ pub fn key_of(f: &Finding) -> String {
 }
 
 /// Record a finished scan: its row, the exposures it saw (new ones
-/// opened, known ones touched) and the ones of its scope it no longer
-/// sees (resolved), plus a `scan` event. Returns the scan id.
+/// opened, known ones touched) and, when every source answered, the ones
+/// of its scope it no longer sees (resolved), plus a `scan` event. A scan
+/// with an `unchecked` finding resolves nothing. Returns the scan id.
 pub fn record_scan(
     cache: &Cache,
     started_at: f64,
@@ -64,10 +87,12 @@ pub fn record_scan(
     let scope = scope_of(opts);
     let fails = findings.iter().filter(|f| f.status == "fail").count() as i64;
     let warns = findings.iter().filter(|f| f.status == "warn").count() as i64;
+    let unchecked = findings.iter().filter(|f| f.kind == "unchecked").count() as i64;
     let counts_json = Value::Object(counts.iter().map(|(k, n)| (k.clone(), json!(n))).collect()).to_string();
     cache.conn.execute(
-        "INSERT INTO scans (started_at, finished_at, host, user, version, scope, counts, fails, warns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![started_at, at, host(), user(), crate::VERSION, scope, counts_json, fails, warns],
+        "INSERT INTO scans (started_at, finished_at, host, user, version, scope, counts, fails, warns, unchecked) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![started_at, at, host(), user(), crate::VERSION, scope, counts_json, fails, warns, unchecked],
     )?;
     let id = cache.conn.last_insert_rowid();
     let mut seen: Vec<String> = Vec::new();
@@ -106,39 +131,87 @@ pub fn record_scan(
             ],
         )?;
     }
-    // Open exposures of this scope the scan didn't list are over.
-    let mut stmt = cache.conn.prepare("SELECT key FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
-    let open: Vec<String> = stmt.query_map([&scope], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-    drop(stmt);
-    for key in open.iter().filter(|k| !seen.contains(k)) {
-        cache
-            .conn
-            .execute("UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?", params![id, at, key])?;
+    // Open exposures of this scope the scan didn't list are over, when every
+    // source answered: a source that couldn't be asked may be where they were.
+    if unchecked == 0 {
+        let mut stmt = cache.conn.prepare("SELECT key FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
+        let open: Vec<String> = stmt.query_map([&scope], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for key in open.iter().filter(|k| !seen.contains(k)) {
+            cache.conn.execute(
+                "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?",
+                params![id, at, key],
+            )?;
+        }
     }
     event(
         cache,
         "scan",
-        &json!({"scan": id, "scope": scope, "fails": fails, "warns": warns, "seconds": (at - started_at).round()}),
+        &json!({"scan": id, "scope": scope, "fails": fails, "warns": warns, "unchecked": unchecked,
+                "seconds": (at - started_at).round()}),
     )?;
     Ok(id)
 }
 
-/// Record one applied (or dry-run) fix command and its outcome.
-pub fn record_fix(cache: &Cache, scan_id: Option<i64>, command: &str, mode: &str, ok: bool) -> Result<()> {
+/// Record one applied (or dry-run) fix command, its outcome, and the
+/// exposures (`key_of`) it was meant to clear.
+pub fn record_fix(
+    cache: &Cache,
+    scan_id: Option<i64>,
+    command: &str,
+    mode: &str,
+    ok: bool,
+    targets: &[String],
+) -> Result<()> {
     cache.conn.execute(
-        "INSERT INTO fixes (scan_id, at, command, mode, ok, verified_scan) VALUES (?, ?, ?, ?, ?, NULL)",
-        params![scan_id, now(), command, mode, ok as i64],
+        "INSERT INTO fixes (scan_id, at, command, mode, ok, verified_scan, targets) VALUES (?, ?, ?, ?, ?, NULL, ?)",
+        params![scan_id, now(), command, mode, ok as i64, json!(targets).to_string()],
     )?;
-    event(cache, "fix", &json!({"scan": scan_id, "command": command, "mode": mode, "ok": ok}))
+    event(cache, "fix", &json!({"scan": scan_id, "command": command, "mode": mode, "ok": ok, "targets": targets}))
 }
 
-/// The scan after the fixes ran verifies them.
-pub fn verify_fixes(cache: &Cache, applied_in: i64, verified_by: i64) -> Result<()> {
-    cache.conn.execute(
-        "UPDATE fixes SET verified_scan = ? WHERE scan_id = ? AND verified_scan IS NULL",
-        params![verified_by, applied_in],
-    )?;
-    Ok(())
+/// The scan after the fixes ran verifies them: a fix is verified when it
+/// exited 0, when that scan had every source answer, and when none of the
+/// exposures it addressed were still listed by it. A failed fix, an
+/// incomplete re-check, or a fix with no known target stays unverified.
+/// Returns how many were verified.
+pub fn verify_fixes(cache: &Cache, applied_in: i64, verified_by: i64) -> Result<usize> {
+    let complete = cache
+        .conn
+        .query_row("SELECT unchecked FROM scans WHERE id = ?", [verified_by], |r| r.get::<_, Option<i64>>(0))
+        .ok()
+        .flatten()
+        == Some(0);
+    if !complete {
+        return Ok(0);
+    }
+    let mut stmt =
+        cache.conn.prepare("SELECT id, targets FROM fixes WHERE scan_id = ? AND verified_scan IS NULL AND ok = 1")?;
+    let candidates: Vec<(i64, String)> = stmt
+        .query_map([applied_in], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    let mut verified = 0;
+    for (fix_id, targets) in candidates {
+        let targets: Vec<String> = serde_json::from_str(&targets).unwrap_or_default();
+        if targets.is_empty() {
+            continue;
+        }
+        let still_listed = targets.iter().any(|key| {
+            cache
+                .conn
+                .query_row("SELECT 1 FROM exposures WHERE key = ? AND last_scan = ?", params![key, verified_by], |_| {
+                    Ok(())
+                })
+                .is_ok()
+        });
+        if still_listed {
+            continue;
+        }
+        cache.conn.execute("UPDATE fixes SET verified_scan = ? WHERE id = ?", params![verified_by, fix_id])?;
+        verified += 1;
+    }
+    Ok(verified)
 }
 
 pub fn event(cache: &Cache, kind: &str, detail: &Value) -> Result<()> {
@@ -196,7 +269,10 @@ pub struct Fix {
     pub mode: String,
     pub ok: bool,
     pub scan_id: Option<i64>,
+    /// The complete scan that no longer listed what this fix addressed.
     pub verified_scan: Option<i64>,
+    /// The exposures (`key_of`) the fix was meant to clear.
+    pub targets: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -217,6 +293,8 @@ pub struct ScanRow {
     pub scope: String,
     pub fails: i64,
     pub warns: i64,
+    /// Sources that couldn't be asked; a scan with any resolves nothing.
+    pub unchecked: i64,
 }
 
 /// Exposures first seen, last seen or resolved since `since` (seconds
@@ -257,10 +335,11 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
 }
 
 pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
-    let mut stmt = cache
-        .conn
-        .prepare("SELECT at, command, mode, ok, scan_id, verified_scan FROM fixes WHERE at >= ? ORDER BY at")?;
+    let mut stmt = cache.conn.prepare(
+        "SELECT at, command, mode, ok, scan_id, verified_scan, targets FROM fixes WHERE at >= ? ORDER BY at",
+    )?;
     let rows = stmt.query_map([since], |r| {
+        let targets: Option<String> = r.get(6)?;
         Ok(Fix {
             at: r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
             command: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -268,6 +347,7 @@ pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
             ok: r.get::<_, Option<i64>>(3)?.unwrap_or(0) != 0,
             scan_id: r.get(4)?,
             verified_scan: r.get(5)?,
+            targets: targets.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -288,7 +368,8 @@ pub fn events(cache: &Cache, since: f64) -> Result<Vec<Event>> {
 
 pub fn scans(cache: &Cache, since: f64) -> Result<Vec<ScanRow>> {
     let mut stmt = cache.conn.prepare(
-        "SELECT id, started_at, finished_at, host, user, version, scope, fails, warns FROM scans WHERE finished_at >= ? ORDER BY id",
+        "SELECT id, started_at, finished_at, host, user, version, scope, fails, warns, unchecked FROM scans \
+         WHERE finished_at >= ? ORDER BY id",
     )?;
     let rows = stmt.query_map([since], |r| {
         Ok(ScanRow {
@@ -301,6 +382,7 @@ pub fn scans(cache: &Cache, since: f64) -> Result<Vec<ScanRow>> {
             scope: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
             fails: r.get::<_, Option<i64>>(7)?.unwrap_or(0),
             warns: r.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            unchecked: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -321,7 +403,7 @@ impl Exposure {
 impl Fix {
     pub fn to_json(&self) -> Value {
         json!({"at": self.at, "when": stamp(self.at), "command": self.command, "mode": self.mode, "ok": self.ok,
-               "scan_id": self.scan_id, "verified_scan": self.verified_scan})
+               "scan_id": self.scan_id, "verified_scan": self.verified_scan, "targets": self.targets})
     }
 }
 
@@ -335,7 +417,7 @@ impl ScanRow {
     pub fn to_json(&self) -> Value {
         json!({"id": self.id, "started_at": self.started_at, "finished_at": self.finished_at, "when": stamp(self.finished_at),
                "host": self.host, "user": self.user, "version": self.version, "scope": self.scope,
-               "fails": self.fails, "warns": self.warns})
+               "fails": self.fails, "warns": self.warns, "unchecked": self.unchecked})
     }
 }
 
@@ -438,10 +520,103 @@ mod tests {
         assert!(exposures(&c, 0.0).unwrap().iter().all(|e| e.resolved_at.is_none()));
         assert_eq!(scans(&c, 0.0).unwrap().len(), 4);
         assert_eq!(events(&c, 0.0).unwrap().iter().filter(|e| e.kind == "scan").count(), 4);
-        record_fix(&c, Some(4), "brew upgrade x", "auto", true).unwrap();
-        verify_fixes(&c, 4, 5).unwrap();
+        // A fix for CVE-2, verified by the next complete scan of the scope that no longer lists it.
+        record_fix(&c, Some(4), "brew upgrade x", "auto", true, &[key_of(&finding("CVE-2", "warn"))]).unwrap();
+        let s5 = record_scan(&c, now(), &[finding("CVE-1", "fail")], &[], &opts).unwrap();
+        assert_eq!(verify_fixes(&c, 4, s5).unwrap(), 1);
         let f = fixes(&c, 0.0).unwrap();
         assert_eq!((f.len(), f[0].ok, f[0].verified_scan), (1, true, Some(5)));
+        assert_eq!(f[0].targets, [key_of(&finding("CVE-2", "warn"))]);
+        assert_eq!(scans(&c, 0.0).unwrap()[4].unchecked, 0);
+        c.close().unwrap();
+    }
+
+    fn gap() -> Finding {
+        Finding {
+            kind: "unchecked".into(),
+            component: "repo dependencies against OSV".into(),
+            vuln_id: "UNCHECKED".into(),
+            status: "warn".into(),
+            note: "offline and not cached".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_incomplete_recheck_resolves_nothing() {
+        let d = crate::system::TempDir::new("history-gap").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
+        record_scan(&c, 1.0, &[finding("CVE-1", "fail")], &[], &opts).unwrap();
+        // The source is down: the scan lists only the gap. The exposure stays open.
+        let s2 = record_scan(&c, 2.0, &[gap()], &[], &opts).unwrap();
+        let e = exposures(&c, 0.0).unwrap();
+        assert_eq!(e.len(), 1);
+        assert!(e[0].resolved_at.is_none(), "a source outage is not a fix: {e:?}");
+        assert_eq!(scans(&c, 0.0).unwrap()[1].unchecked, 1);
+        assert_eq!(events(&c, 0.0).unwrap()[1].detail["unchecked"], 1);
+        // Back online and still listed: still open. Back online and gone: resolved.
+        record_scan(&c, 3.0, &[finding("CVE-1", "fail")], &[], &opts).unwrap();
+        assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none());
+        let s4 = record_scan(&c, 4.0, &[], &[], &opts).unwrap();
+        let e = exposures(&c, 0.0).unwrap();
+        assert!(e[0].resolved_at.is_some());
+        assert!(s2 < s4);
+        c.close().unwrap();
+    }
+
+    #[test]
+    fn scope_includes_what_the_scan_looked_for() {
+        let repos = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
+        assert_eq!(scope_of(&repos), "repos:/r");
+        let licenses = Options { licenses: true, ..repos.clone() };
+        assert_eq!(scope_of(&licenses), "repos:/r+licenses");
+        let policy = Options {
+            policy: crate::check::Policy { install_scripts: Some("/p/allow.txt".into()), ..Default::default() },
+            ..repos.clone()
+        };
+        assert_eq!(scope_of(&policy), "repos:/r;policy:install-scripts=/p/allow.txt");
+        // A scan without --licenses never resolves what a licenses scan found.
+        let d = crate::system::TempDir::new("history-scope").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        let license = Finding { kind: "license".into(), vuln_id: "LICENSE".into(), ..finding("LICENSE", "warn") };
+        record_scan(&c, 1.0, &[license], &[], &licenses).unwrap();
+        record_scan(&c, 2.0, &[], &[], &repos).unwrap();
+        assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none());
+        record_scan(&c, 3.0, &[], &[], &licenses).unwrap();
+        assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
+        c.close().unwrap();
+    }
+
+    #[test]
+    fn a_fix_is_verified_only_by_complete_negative_evidence() {
+        let d = crate::system::TempDir::new("history-fix").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
+        let target = key_of(&finding("CVE-1", "fail"));
+        let s1 = record_scan(&c, 1.0, &[finding("CVE-1", "fail")], &[], &opts).unwrap();
+        // A failed fix is never verified, whatever the re-check says.
+        record_fix(&c, Some(s1), "npm install -g x@2", "auto", false, std::slice::from_ref(&target)).unwrap();
+        let s2 = record_scan(&c, 2.0, &[], &[], &opts).unwrap();
+        assert_eq!(verify_fixes(&c, s1, s2).unwrap(), 0);
+        assert_eq!(fixes(&c, 0.0).unwrap()[0].verified_scan, None, "a failed fix marked verified");
+        // A successful fix, re-checked by a scan with a gap: not verified.
+        let s3 = record_scan(&c, 3.0, &[finding("CVE-1", "fail")], &[], &opts).unwrap();
+        record_fix(&c, Some(s3), "npm install -g x@2", "auto", true, std::slice::from_ref(&target)).unwrap();
+        let s4 = record_scan(&c, 4.0, &[gap()], &[], &opts).unwrap();
+        assert_eq!(verify_fixes(&c, s3, s4).unwrap(), 0);
+        // Re-checked by a complete scan that still lists it: not verified.
+        let s5 = record_scan(&c, 5.0, &[finding("CVE-1", "fail")], &[], &opts).unwrap();
+        assert_eq!(verify_fixes(&c, s3, s5).unwrap(), 0);
+        // Re-checked by a complete scan that no longer lists it: verified.
+        let s6 = record_scan(&c, 6.0, &[], &[], &opts).unwrap();
+        assert_eq!(verify_fixes(&c, s3, s6).unwrap(), 1);
+        let f = fixes(&c, 0.0).unwrap();
+        assert_eq!((f[0].verified_scan, f[1].verified_scan), (None, Some(s6)));
+        // A fix with no known target has nothing to verify against.
+        record_fix(&c, Some(s6), "brew upgrade", "auto", true, &[]).unwrap();
+        let s7 = record_scan(&c, 7.0, &[], &[], &opts).unwrap();
+        assert_eq!(verify_fixes(&c, s6, s7).unwrap(), 0);
         c.close().unwrap();
     }
 

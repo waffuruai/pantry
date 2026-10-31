@@ -5,7 +5,7 @@ use wpantry::check::{Finding, Outcome};
 use wpantry::system::short;
 use wpantry::versions;
 
-pub const MISE_FIX: &str = "mise: manual, bump MISE_VERSION in ops, then rerun its scripts/bootstrap.sh";
+pub const MISE_FIX: &str = "mise: manual, update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it";
 
 /// Many packages inside one thing: one entry per thing.
 fn bundle(kind: &str) -> Option<&'static str> {
@@ -287,7 +287,10 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
     type Component<'a> = (&'a str, &'a str, &'a str, &'a str);
     let mut groups: Vec<(Component, Vec<&Finding>)> = Vec::new();
     for f in findings {
-        let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), f.location.as_str());
+        // Every hit in one file is one decision (rotate, or allow the file),
+        // not one step per line.
+        let location = if f.kind == "secret" { "" } else { f.location.as_str() };
+        let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), location);
         match groups.iter_mut().find(|(key, _)| *key == k) {
             Some((_, v)) => v.push(f),
             None => groups.push((k, vec![f])),
@@ -297,8 +300,13 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let (mut seen, mut auto, mut manual, mut optional) = (HashSet::new(), Vec::new(), Vec::new(), Vec::new());
     for (_, fs) in &groups {
         let f = covering(fs);
-        let (cmd, unattended) =
-            if upgrades_mise(&f.fix_cmd) { (MISE_FIX.to_string(), false) } else { (f.fix_cmd.clone(), f.fix_auto) };
+        let (cmd, unattended) = if upgrades_mise(&f.fix_cmd) {
+            (MISE_FIX.to_string(), false)
+        } else if f.kind == "secret" && fs.len() > 1 {
+            (secrets_fix(fs), false)
+        } else {
+            (f.fix_cmd.clone(), f.fix_auto)
+        };
         if cmd.is_empty() || !seen.insert(cmd.clone()) {
             continue;
         }
@@ -311,6 +319,33 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
         }
     }
     (auto, manual, optional)
+}
+
+/// One step for every hit in a file: `component` is `repo/file`, and each
+/// finding's own fix names its fingerprint.
+fn secrets_fix(fs: &[&Finding]) -> String {
+    let file = fs[0].component.as_str();
+    let generic = fs.iter().all(|f| f.status != "fail");
+    let ignore = fs[0]
+        .fix_cmd
+        .rsplit_once(" to ")
+        .map(|(_, path)| path.to_string())
+        .unwrap_or_else(|| "its repo's .gitleaksignore".to_string());
+    let fps: Vec<&str> = fs
+        .iter()
+        .filter_map(|f| f.fix_cmd.strip_prefix("If it's real: rotate it, then purge it from history. If not: add "))
+        .filter_map(|rest| rest.split_once(" to ").map(|(fp, _)| fp))
+        .collect();
+    let listed = if fps.len() <= 3 {
+        fps.join(", ")
+    } else {
+        format!("the {} fingerprints (each hit's `fix_cmd` in `wpantry check --json` names one)", fps.len())
+    };
+    format!(
+        "{} hits in {file}{}: if any is real, rotate it, then purge it from history; if none are, add {listed} to {ignore}",
+        fs.len(),
+        if generic { " (generic rules: review)" } else { "" }
+    )
 }
 
 /// Whether a fix would update mise, which only a human bumps (ops pins
@@ -358,10 +393,7 @@ pub fn apply(
             continue;
         }
         out(&format!("  → {cmd}"));
-        let ok = shlex_split(cmd)
-            .filter(|w| !w.is_empty())
-            .and_then(|w| std::process::Command::new(&w[0]).args(&w[1..]).status().ok())
-            .is_some_and(|s| s.success());
+        let ok = shlex_split(cmd).filter(|w| !w.is_empty()).is_some_and(|w| run_bounded(&w, APPLY_TIMEOUT));
         if !ok {
             out(&format!("  ✗ failed: {cmd}"));
             status = 1;
@@ -380,6 +412,32 @@ pub fn apply(
         }
     }
     Applied { status, ran }
+}
+
+/// How long one unattended fix may take (a package manager download).
+const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Run `argv` as is (no shell), with the terminal, killing it after
+/// `timeout`; whether it exited 0.
+fn run_bounded(argv: &[String], timeout: std::time::Duration) -> bool {
+    let Ok(mut child) =
+        std::process::Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).spawn()
+    else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => return false,
+        }
+    }
 }
 
 /// POSIX shell word splitting, as Python's `shlex.split`; None on an
@@ -471,6 +529,42 @@ mod tests {
                 vec!["sudo apt-get install b".to_string()],
                 vec!["Update App".to_string()]
             )
+        );
+    }
+
+    /// Seventeen generic hits in one test-vector file are one decision in
+    /// the plan, not seventeen steps.
+    #[test]
+    fn secret_hits_in_one_file_are_one_step() {
+        let hit = |n: i64| Finding {
+            kind: "secret".into(),
+            component: "repo/TestVectors/xts.txt".into(),
+            location: format!("line {n}, commit abc"),
+            vuln_id: "generic-api-key".into(),
+            status: "warn".into(),
+            fix_cmd: format!(
+                "If it's real: rotate it, then purge it from history. If not: add abc:TestVectors/xts.txt:generic-api-key:{n} to ~/repo/.gitleaksignore"
+            ),
+            ..Default::default()
+        };
+        let fs: Vec<Finding> = (1..=5).map(hit).collect();
+        let (auto, manual, optional) = plan(&fs);
+        assert!(auto.is_empty() && manual.is_empty());
+        assert_eq!(optional.len(), 1, "{optional:?}");
+        assert!(
+            optional[0].starts_with("5 hits in repo/TestVectors/xts.txt (generic rules: review): "),
+            "{}",
+            optional[0]
+        );
+        assert!(optional[0].ends_with("to ~/repo/.gitleaksignore"), "{}", optional[0]);
+        assert!(optional[0].contains("the 5 fingerprints"), "{}", optional[0]);
+        let two: Vec<Finding> = (1..=2).map(hit).collect();
+        let (_, _, optional) = plan(&two);
+        assert!(
+            optional[0]
+                .contains("abc:TestVectors/xts.txt:generic-api-key:1, abc:TestVectors/xts.txt:generic-api-key:2"),
+            "{}",
+            optional[0]
         );
     }
 

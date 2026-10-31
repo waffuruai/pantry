@@ -1,4 +1,8 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.serde_json]]
+who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "1.0.151 -> 1.0.154"
+notes = "Read the full diff. Fixes to -0 parsing, f32 infinity and UTF-8 error positions; preserve_order gains a no_std path with foldhash, a feature wpantry does not enable (std only). No build script change, no new unsafe, no new dependency for wpantry."

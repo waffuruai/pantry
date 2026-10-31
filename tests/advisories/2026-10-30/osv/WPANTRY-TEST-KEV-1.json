@@ -1,0 +1,34 @@
+{
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "crates.io",
+        "name": "brotli"
+      },
+      "ranges": [
+        {
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "8.0.2"
+            }
+          ],
+          "type": "SEMVER"
+        }
+      ]
+    }
+  ],
+  "aliases": [
+    "CVE-2026-111497"
+  ],
+  "database_specific": {
+    "severity": "HIGH"
+  },
+  "details": "Synthetic. CVE-2026-111497 is in CISA KEV (added 2026-10-27); the affected range below is made up so a fixture lockfile can carry a KEV-marked finding offline.",
+  "id": "WPANTRY-TEST-KEV-1",
+  "modified": "2026-10-31T00:00:00Z",
+  "published": "2026-10-31T00:00:00Z",
+  "summary": "SYNTHETIC wpantry regression control: a crates.io brotli range invented to exercise KEV decoration; not the real advisory"
+}

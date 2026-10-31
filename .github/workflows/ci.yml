@@ -192,6 +192,43 @@ jobs:
           WPANTRY: rust/target/release/wpantry
         run: python3 -m unittest discover -s tests/contract -v
 
+  # Windows (#11): the repo checks are portable Rust, so the crate builds and
+  # tests there and the contract suite runs against the binary; the machine
+  # inventory reports itself unchecked. No mise, shell scripts or Docker.
+  rust-windows:
+    name: Rust (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --locked
+
+      - name: build (release)
+        run: cargo build --locked --release
+
+      - name: smoke test
+        run: |
+          ./target/release/wpantry.exe version --json
+          ./target/release/wpantry.exe tools --json > /dev/null || true
+
+      - name: contract tests (rust)
+        working-directory: .
+        env:
+          WPANTRY: rust/target/release/wpantry.exe
+        run: python -m unittest discover -s tests/contract -v
+
   # S2: cargo deny (advisories, crates.io-only sources, license allowlist)
   # and cargo vet (every dependency audited or explicitly exempted). Either
   # failing blocks the merge. The tools are installed at exact versions from

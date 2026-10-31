@@ -61,6 +61,10 @@ wpantry skill
 
 The default scope walks `$HOME` to depth 6 without following symlinks and only looks at directory entries. A directory with a `.git` directory is a repo and is not descended into. A `.git` file (linked worktree, submodule) ends the descent and counts only when it is the `--path` itself. Pruned by name: `.git`, `node_modules`, `target`, `.build`, `vendor`, `.cache`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, `.next`, `Library`, `.Trash`, `.rustup`, `.npm`, `.pnpm-store`, any `*.app`; by path: `go/pkg`, `.cargo/registry`, `.cargo/git`, `.local/share`. The count lands in `checked["git repos"]`.
 
+## Platforms
+
+macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 2026-10-31): the repo checks (`check --no-machine`: lockfiles, secrets, install scripts, images, MCP servers), `search`, `export`, `report`, `version`, `tools`, `skill` and `breach`, with the same output as on Linux for the same repo. A machine scan on Windows reports one `unchecked` finding (`machine inventory on Windows`) and nothing else about the machine: winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet. `~` is `HOME`, else `USERPROFILE`; the cache default is `%LOCALAPPDATA%\wpantry\wpantry.db` when neither `XDG_CACHE_HOME` nor `HOME` is set. PATH is split as the platform does, and a tool name also matches its `.exe`, `.cmd` or `.bat`.
+
 ## Environment
 
 | Variable | Effect |

@@ -30,7 +30,7 @@ mise use -g packslip:github.com/waffuruai/pantry                                
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # without mise
 ```
 
-Both verify the release before installing: mise against the release's signed packslip, and `install.sh` against `SHA256SUMS` and a signature (packslip, `gh` or `cosign`, whichever you have). [docs/public/install.md](docs/public/install.md) has the details, manual verification, crates.io and building from source. Releases cover macOS (one binary for Apple silicon and Intel) and Linux (x86-64 and arm64, static); Windows: [#11](https://github.com/waffuruai/pantry/issues/11). Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10).
+Both verify the release before installing: mise against the release's signed packslip, and `install.sh` against `SHA256SUMS` and a signature (packslip, `gh` or `cosign`, whichever you have). [docs/public/install.md](docs/public/install.md) has the details, manual verification, crates.io and building from source. Releases cover macOS (one binary for Apple silicon and Intel), Linux (x86-64 and arm64, static) and Windows x86-64 (repo checks only; the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)). Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10).
 
 `wpantry tools` lists the external tools it uses (`git`, `gitleaks`, `openssl`; `brew` and `docker` when present) and which are missing.
 

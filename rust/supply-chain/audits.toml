@@ -1,4 +1,8 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.ureq]]
+who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
+criteria = "safe-to-deploy"
+delta = "3.4.2 -> 3.5.0"
+notes = "Read the source diff. Per-read and per-write timeouts, TLS handshake I/O bounded by the remaining connect budget, Agent::shutdown, EINTR retry on socket reads, proxy credentials decoded once, header_raw. The SOCKS rewrite is behind socks-proxy, which wpantry does not enable; the socks dependency is gone. The rustls connector and RootCerts::PlatformVerifier path are unchanged apart from the clock passed to the transport adapter. Minimum rustls is 0.23.46, the version wpantry pins. No unsafe, no process, env or filesystem access added."

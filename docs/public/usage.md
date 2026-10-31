@@ -125,6 +125,12 @@ wpantry search openssl --applicable --json    # only those that apply here
 wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
 ```
 
+## Advisories with no fix yet
+
+Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. For a few of those there is something a host can do meanwhile, and that is a script in [`mitigations/`](../../mitigations/), one per advisory. The first is [`mitigations/cve-2026-98432.sh`](../../mitigations/cve-2026-98432.sh), for the Linux kernel's IPv4 TCP use-after-free (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, reloaded at boot, and MPTCP off.
+
+Every script works the same way. `--status` says whether the host is exposed (exit 0 fixed or mitigated, 1 exposed, 2 when it needs root it does not have) and changes nothing, `--dry-run` prints what it would write, a plain run shows the same plan and asks before writing (`--yes` skips the question, for provisioning and CI), and `--remove` takes the stopgap away once the real fix is installed. A scan never runs one; it prints the script as the step. They are a reduction of exposure, not the patch: update when the fix ships, then `--remove`.
+
 ## What leaves your machine
 
 - To OSV.dev: the (ecosystem, name, version) of what is installed or locked. No file contents, paths or secrets.

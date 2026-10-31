@@ -26,15 +26,20 @@ const EXIT_FAIL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_INTERNAL: i32 = 3;
 
-/// A line of data on stdout, never coloured (JSON, search results, the
-/// skill).
+/// A line of text on stdout, never coloured (search results, the skill),
+/// with terminal escapes from scanned content dropped.
 fn say(line: &str) {
-    println!("{line}");
+    println!("{}", style::clean(line));
+}
+
+/// JSON on stdout, as is: it escapes control characters itself.
+fn emit(json: &str) {
+    println!("{json}");
 }
 
 /// A line of the report on stdout, coloured by its mark on a terminal.
 fn show(line: &str) {
-    println!("{}", Style::stdout().line(line));
+    println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
 /// `check --json`: the findings plus what was checked (schema 1).
@@ -85,7 +90,7 @@ fn cmd_check(a: Check) -> Result<i32> {
     };
     let first = scan(opts.clone(), a.json, &net)?;
     if a.json {
-        say(&envelope(&first).dumps_indent(1));
+        emit(&envelope(&first).dumps_indent(1));
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
     }
     let db = db::path().to_string_lossy().into_owned();
@@ -173,7 +178,7 @@ fn cmd_search(query: &str, applicable_only: bool, limit: i64, json: bool) -> Res
                 ])
             })
             .collect();
-        say(&J::Arr(items).dumps_indent(1));
+        emit(&J::Arr(items).dumps_indent(1));
     } else {
         for (_, id, _, summary, severity, hit, kev, _) in &out {
             let flags: Vec<&str> =
@@ -242,7 +247,7 @@ fn cmd_breach(enable: bool, disable: bool) -> Result<i32> {
 
 fn cmd_version(json: bool) -> Result<i32> {
     if json {
-        say(&obj([("version", VERSION.into()), ("impl", IMPL.into()), ("schema", J::Int(SCHEMA))]).dumps());
+        emit(&obj([("version", VERSION.into()), ("impl", IMPL.into()), ("schema", J::Int(SCHEMA))]).dumps());
     } else {
         say(&format!("wpantry {VERSION} ({IMPL}, schema {SCHEMA})"));
     }
@@ -260,7 +265,7 @@ fn cmd_tools(json: bool) -> Result<i32> {
             ("version", VERSION.into()),
             ("tools", J::Arr(found.iter().map(|t| t.to_json()).collect())),
         ]);
-        say(&env.dumps_indent(1));
+        emit(&env.dumps_indent(1));
     } else {
         for t in &found {
             let mark = if t.found {

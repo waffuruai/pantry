@@ -16,6 +16,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const DAY: f64 = 86400.0;
+/// How far ahead of now a cached timestamp may be and still count (clocks
+/// drift; a cache edited to the far future does not).
+pub const CLOCK_SKEW: f64 = 300.0;
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -69,9 +72,22 @@ impl Cache {
     pub fn open(file: Option<&Path>) -> Result<Cache> {
         let file = file.map(Path::to_path_buf).unwrap_or_else(path);
         if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)?;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(dir)?;
         }
         let conn = Connection::open(&file)?;
+        // The cache names what is installed and where secrets sit: ours only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        }
         // Readers and the writer coexist (a scheduled scan beside a manual
         // one), and a minute of waiting beats failing a scan outright.
         conn.busy_timeout(std::time::Duration::from_secs(60))?;
@@ -247,9 +263,11 @@ impl Cache {
         offline: bool,
     ) -> Result<Value> {
         let run = self.run(key)?.filter(|(fp, _, _)| fp == fingerprint);
+        // A timestamp in the future is not fresh: an edited cache can't make
+        // a result permanent.
         if let Some((_, at, res)) = &run
             && !refresh
-            && (offline || *at > now() - max_age)
+            && (offline || (*at > now() - max_age && *at <= now() + CLOCK_SKEW))
         {
             return Ok(res.clone());
         }
@@ -329,6 +347,28 @@ pub fn severity_of(rec: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A cached run stamped in the future (an edited cache) is stale, not
+    /// fresh forever.
+    #[test]
+    fn a_future_timestamp_is_not_fresh() {
+        let dir = crate::system::TempDir::new("db").unwrap();
+        let c = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
+        c.conn
+            .execute(
+                "INSERT INTO runs(source, fingerprint, ran_at, result) VALUES (?, ?, ?, ?)",
+                ("k", "fp", 1e12, "[1]"),
+            )
+            .unwrap();
+        let v = c.memo("k", || Ok(json!([2])), DAY, "fp", false, false).unwrap();
+        assert_eq!(v, json!([2]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir.path().join("w.db")), 0o600);
+        }
+    }
 
     pub fn temp_cache() -> (crate::system::TempDir, Cache) {
         let dir = crate::system::TempDir::new("db").unwrap();

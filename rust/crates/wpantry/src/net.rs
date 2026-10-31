@@ -126,6 +126,7 @@ impl Http {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
             .http_status_as_error(false)
+            .https_only(true)
             .max_idle_connections(32)
             .max_idle_connections_per_host(16)
             .build();

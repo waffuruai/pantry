@@ -358,7 +358,7 @@ pub fn install_scripts(files: &[PathBuf]) -> Vec<(PathBuf, String)> {
     for f in files {
         match f.file_name().and_then(|n| n.to_str()) {
             Some("package-lock.json" | "npm-shrinkwrap.json") => {
-                let Ok(bytes) = std::fs::read(f) else { continue };
+                let Ok(bytes) = crate::system::read_capped_bytes(f, crate::json::MAX_DOCUMENT as u64) else { continue };
                 let Ok(data) = crate::json::parse(&bytes, crate::json::MAX_DOCUMENT) else { continue };
                 if let Some(pkgs) = data.get("packages").and_then(|p| p.as_object()) {
                     for (k, v) in pkgs {

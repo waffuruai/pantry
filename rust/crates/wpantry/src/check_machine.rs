@@ -153,7 +153,7 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
             fix_cmd: c.fix.clone(),
             fix_auto: false,
             note: format!(
-                "mise {} is behind {latest}. mise is foundational infrastructure: bump MISE_VERSION in ops and rerun its scripts/bootstrap.sh; wpantry never updates it.",
+                "mise {} is behind {latest}. mise is foundational infrastructure: update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it.",
                 c.version
             ),
             ..Finding::of(c)
@@ -612,7 +612,7 @@ mod tests {
         );
         assert_eq!(
             f.note,
-            "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: bump MISE_VERSION in ops and rerun its scripts/bootstrap.sh; wpantry never updates it."
+            "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it."
         );
         // Cached for a day: GitHub isn't asked again.
         let quiet = Fake::new(|_| panic!("cached"));

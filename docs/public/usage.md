@@ -21,7 +21,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Area | What |
 |---|---|
 | Your repos' dependencies | The lockfiles in every git repo it finds (Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer and more) |
-| Committed secrets | Each repo's whole git history, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit |
+| Committed secrets | Each repo's whole git history once, then only the commits its branches gained since, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit. A repo's own `.gitleaks.toml` is reported, not obeyed; its `.gitleaksignore` is |
 | Malicious packages | Every package name against the OpenSSF malicious-packages index |
 | AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
@@ -72,6 +72,38 @@ not checked
 
 The (Python) implementation prints the same findings as one block per component.
 
+## Reports: what you were exposed to, and what was done
+
+Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `--update` records the fixes it ran and the scan that verified them.
+
+```bash
+wpantry report                              # exposure, remediation and audit logs, last 90 days, Markdown
+wpantry report --exposure --since 365 --format csv -o exposures.csv
+wpantry report --remediation --format json
+```
+
+[reports.md](reports.md) says what each log holds and how it maps onto SOC 2 evidence.
+## Keeping the cache fresh, and scanning on a schedule
+
+```bash
+wpantry sync                          # refresh the feeds and every answer the cache holds
+wpantry schedule install              # daily at 09:30: sync, then check (never --update)
+wpantry schedule install --every weekly --at 07:00
+wpantry schedule status               # scheduled? when did it last run, what did it find
+wpantry schedule uninstall
+wpantry cache prune                   # drop what no scan has used in 90 days, compact the file
+```
+
+`sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `check --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the check's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry --update` yourself when the morning report says so.
+## Keeping wpantry current
+
+```bash
+wpantry update --check     # exit 10 when a newer release exists, 0 when you have the latest
+wpantry update             # asks, then installs the verified release (--yes to skip the question)
+```
+
+An update is verified before anything is replaced (see [install.md](install.md#upgrade-and-uninstall)); a mise, cargo or Homebrew install is updated through that tool. `check` mentions a newer release on stderr once a day; `WPANTRY_NO_UPDATE_CHECK=1` silences it.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -108,6 +140,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 |---|---|
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
+| `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
 | `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
@@ -123,7 +156,16 @@ Answers live in one SQLite file: `~/.cache/wpantry/wpantry.db`, or `$XDG_CACHE_H
 wpantry search "tarfile traversal"            # rank cached advisories (SQLite FTS5 syntax: "exact phrase", tls AND cert, rust*)
 wpantry search openssl --applicable --json    # only those that apply here
 wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
+wpantry export --jsonl findings.jsonl --all   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
 ```
+
+Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `--update` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
+
+## Advisories with no fix yet
+
+Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. For a few of those there is something a host can do meanwhile, and that is a script in [`mitigations/`](../../mitigations/), one per advisory. The first is [`mitigations/cve-2026-98432.sh`](../../mitigations/cve-2026-98432.sh), for the Linux kernel's IPv4 TCP use-after-free (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, reloaded at boot, and MPTCP off.
+
+Every script works the same way. `--status` says whether the host is exposed (exit 0 fixed or mitigated, 1 exposed, 2 when it needs root it does not have) and changes nothing, `--dry-run` prints what it would write, a plain run shows the same plan and asks before writing (`--yes` skips the question, for provisioning and CI), and `--remove` takes the stopgap away once the real fix is installed. A scan never runs one; it prints the script as the step. They are a reduction of exposure, not the patch: update when the fix ships, then `--remove`.
 
 ## What leaves your machine
 
@@ -140,6 +182,7 @@ Every request names wpantry in its User-Agent and times out after 30 seconds.
 | `WPANTRY_DB` | The cache file |
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
+| `WPANTRY_TIMINGS` | Any value: each scan step on stderr with the seconds since the scan began, to see where a slow run spends its time |
 | `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
 | `HTTPS_PROXY` | Requests go through the proxy |
 

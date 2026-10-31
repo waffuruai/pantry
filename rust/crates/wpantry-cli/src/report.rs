@@ -350,10 +350,7 @@ pub fn apply(
             continue;
         }
         out(&format!("  → {cmd}"));
-        let ok = shlex_split(cmd)
-            .filter(|w| !w.is_empty())
-            .and_then(|w| std::process::Command::new(&w[0]).args(&w[1..]).status().ok())
-            .is_some_and(|s| s.success());
+        let ok = shlex_split(cmd).filter(|w| !w.is_empty()).is_some_and(|w| run_bounded(&w, APPLY_TIMEOUT));
         if !ok {
             out(&format!("  ✗ failed: {cmd}"));
             status = 1;
@@ -371,6 +368,32 @@ pub fn apply(
         }
     }
     status
+}
+
+/// How long one unattended fix may take (a package manager download).
+const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Run `argv` as is (no shell), with the terminal, killing it after
+/// `timeout`; whether it exited 0.
+fn run_bounded(argv: &[String], timeout: std::time::Duration) -> bool {
+    let Ok(mut child) =
+        std::process::Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).spawn()
+    else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => return false,
+        }
+    }
 }
 
 /// POSIX shell word splitting, as Python's `shlex.split`; None on an

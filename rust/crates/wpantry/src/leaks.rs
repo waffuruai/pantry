@@ -43,15 +43,18 @@ fn version(exe: &Path) -> String {
     v
 }
 
-/// One repo's scan: the binary, the config it uses (the repo's own
-/// .gitleaks.toml replaces the default) and the fingerprint its cached
-/// result is kept under.
+/// One repo's scan: the binary, the config it uses (always the caller's
+/// policy: a repo's own .gitleaks.toml could allow everything, so it is
+/// reported, not obeyed) and the fingerprint its cached result is kept
+/// under.
 pub struct Job {
     exe: PathBuf,
     repo: PathBuf,
     config: PathBuf,
     key: String,
     fingerprint: String,
+    /// The repo carries its own `.gitleaks.toml`, which this scan ignores.
+    pub own_policy: bool,
 }
 
 /// What scanning `repo` takes, without the cache: [`stale`] says whether to
@@ -63,15 +66,22 @@ pub fn job(repo: &Path, default_config: &Path) -> Result<Job> {
         &[OsStr::new("git"), OsStr::new("-C"), repo.as_os_str(), OsStr::new("rev-parse"), OsStr::new("HEAD")],
         Duration::from_secs(15),
     );
-    let own = repo.join(".gitleaks.toml");
-    let config = if own.is_file() { own } else { default_config.to_path_buf() };
+    let own_policy = repo.join(".gitleaks.toml").is_file();
+    let config = default_config.to_path_buf();
     let fingerprint = format!(
         "{}:{}:{}",
         head.trim(),
         version(&exe),
         fingerprint(&[config.as_path(), repo.join(".gitleaksignore").as_path()])
     );
-    Ok(Job { key: format!("gitleaks:{}", repo.display()), exe, repo: repo.to_path_buf(), config, fingerprint })
+    Ok(Job {
+        key: format!("gitleaks:{}", repo.display()),
+        exe,
+        repo: repo.to_path_buf(),
+        config,
+        fingerprint,
+        own_policy,
+    })
 }
 
 /// Whether [`finish`] would scan again rather than reuse the cached result

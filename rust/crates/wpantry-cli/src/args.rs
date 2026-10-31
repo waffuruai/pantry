@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] = &[
     "check", "search", "export", "breach", "watch", "version", "tools", "skill", "sync", "schedule", "cache", "update",
-    "report",
+    "report", "harden",
 ];
 
 #[derive(Debug, Default, PartialEq)]
@@ -46,6 +46,7 @@ pub enum Command {
     Schedule { action: String, every: String, at: String, dry_run: bool },
     Cache { action: String, older_than: i64 },
     Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
+    Harden { what: String, hours: u32 },
     Skill,
 }
 
@@ -58,8 +59,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str =
-    "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -116,8 +116,11 @@ fn help(cmd: &str) -> String {
         "report" => {
             "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --update ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
         }
+        "harden" => {
+            "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -173,6 +176,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--offline", false),
             ("--version", true),
         ],
+        "harden" => &[("--help", false), ("--hours", true)],
         _ => &[("--help", false)],
     }
 }
@@ -424,6 +428,22 @@ pub fn parse(argv: &[String]) -> Parsed {
                 offline: flag("--offline"),
                 version: value("--version"),
             }
+        }
+        "harden" => {
+            let what = match positional.as_slice() {
+                [w] if w == "extension-cooldown" => w.clone(),
+                [w] => return fail(format!("argument what: invalid choice: '{w}' (choose from extension-cooldown)")),
+                [] => return fail("the following arguments are required: what".into()),
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
+            let hours = match value("--hours") {
+                None => 72,
+                Some(v) => match v.trim().parse::<u32>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
+                },
+            };
+            Command::Harden { what, hours }
         }
         "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {

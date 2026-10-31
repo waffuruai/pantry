@@ -19,6 +19,7 @@ wpantry inventories what is installed on your computer and what your git repos l
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
 | The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |
+| Developer-tool guardrails | Editor extensions wait 72 hours before a new version installs (`wpantry harden extension-cooldown`), git hooks that check commits |
 
 `--no-machine` limits a run to the repo rows (dependencies, secrets, malicious packages, harnesses, install scripts, licenses, images). What a run could not check shows up as "not checked", never as clean.
 

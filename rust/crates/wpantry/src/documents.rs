@@ -243,18 +243,23 @@ fn pdf(file: &str, bytes: &[u8], out: &mut Vec<Doc>) {
             true,
         );
     }
-    if js > 0 && open > 0 {
+    if js > 0 && js_runs_on_open(&decoded) {
         push(
             out,
             "DOC-JS-ON-OPEN",
-            format!("JavaScript ({js}) with an open or page action ({open}): it runs when the file is opened{hidden}"),
+            format!(
+                "JavaScript ({js}) wired to the open action or the document's name tree: it runs when the file is opened{hidden}"
+            ),
             true,
         );
     } else if js > 0 {
         push(
             out,
             "DOC-JAVASCRIPT",
-            format!("JavaScript inside the PDF ({js} reference(s)); a form or a trick{hidden}"),
+            format!(
+                "JavaScript inside the PDF ({js} reference(s)){}: form-field scripts look like this, so do exploits{hidden}",
+                if open > 0 { " beside an open action that doesn't run it" } else { "" }
+            ),
             false,
         );
     }
@@ -285,6 +290,64 @@ fn pdf(file: &str, bytes: &[u8], out: &mut Vec<Doc>) {
             );
         }
     }
+}
+
+/// Whether the PDF's JavaScript runs when the file opens: a document-level
+/// script (`/JavaScript` as a key of the `/Names` tree, not the value of
+/// `/S`), or an `/OpenAction` that is a JavaScript action, inline or by
+/// reference. Field and page scripts (`/AA`, `/A` on an annotation) run on
+/// events, and a form full of them is ordinary.
+fn js_runs_on_open(text: &[u8]) -> bool {
+    let mut from = 0;
+    while let Some(i) = find(&text[from..], b"/JavaScript") {
+        let at = from + i;
+        from = at + 11;
+        let is_name =
+            text.get(at + 11).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-' || *c == b'.'));
+        let before: Vec<u8> =
+            text[..at].iter().rev().skip_while(|c| c.is_ascii_whitespace()).take(2).copied().collect();
+        if is_name && before != b"S/" {
+            return true; // a key, as in `/Names << /JavaScript 7 0 R >>`
+        }
+    }
+    from = 0;
+    while let Some(i) = find(&text[from..], b"/OpenAction") {
+        let at = from + i + 11;
+        from = at;
+        let rest = &text[at..];
+        let rest = &rest[rest.iter().take_while(|c| c.is_ascii_whitespace()).count()..];
+        if rest.starts_with(b"<<") {
+            let end = find(rest, b">>").unwrap_or(rest.len().min(400));
+            if find(&rest[..end], b"/JavaScript").is_some() || count_names(&rest[..end], b"/JS") > 0 {
+                return true;
+            }
+        } else if let Some(obj) = referenced_object(text, rest)
+            && (find(obj, b"/JavaScript").is_some() || count_names(obj, b"/JS") > 0)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The body of object `N` when `rest` starts with `N 0 R`, up to `endobj`.
+fn referenced_object<'a>(text: &'a [u8], rest: &[u8]) -> Option<&'a [u8]> {
+    let digits: Vec<u8> = rest.iter().take_while(|c| c.is_ascii_digit()).copied().collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let needle = format!("{} 0 obj", String::from_utf8_lossy(&digits));
+    let mut from = 0;
+    while let Some(i) = find(&text[from..], needle.as_bytes()) {
+        let at = from + i;
+        from = at + needle.len();
+        if at == 0 || !text[at - 1].is_ascii_digit() {
+            let start = at + needle.len();
+            let end = find(&text[start..], b"endobj").map(|e| start + e).unwrap_or((start + 4000).min(text.len()));
+            return Some(&text[start..end]);
+        }
+    }
+    None
 }
 
 /// The PDF outside its stream data, with object streams (`/ObjStm`,
@@ -1300,6 +1363,30 @@ mod tests {
         assert_eq!(inflate(&[0xff; 64], 1 << 20), None);
     }
 
+    /// Real streams against zlib's answer: `WPANTRY_INFLATE_FIXTURES=<dir>`
+    /// holding `*.raw` (zlib-wrapped or raw deflate) and `*.out` pairs.
+    #[test]
+    #[ignore]
+    fn inflate_matches_zlib_on_real_streams() {
+        let Ok(dir) = std::env::var("WPANTRY_INFLATE_FIXTURES") else { return };
+        let mut n = 0;
+        for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("raw") {
+                continue;
+            }
+            let raw = std::fs::read(&path).unwrap();
+            let want = std::fs::read(path.with_extension("out")).unwrap();
+            // a zlib header (0x78 …) wraps raw deflate: skip the two bytes
+            let body = if raw.first() == Some(&0x78) { &raw[2..] } else { &raw[..] };
+            let got = inflate(body, 64 << 20);
+            assert_eq!(got.as_deref().map(|g| g.len()), Some(want.len()), "{}: length", path.display());
+            assert!(got.as_deref() == Some(&want[..]), "{}: content differs", path.display());
+            n += 1;
+        }
+        assert!(n > 0);
+    }
+
     #[test]
     fn pdfs() {
         let plain = b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R /OpenAction 3 0 R >> endobj\n%%EOF\n";
@@ -1311,10 +1398,24 @@ mod tests {
         assert_eq!(ids(&scan_bytes("a.pdf", js_only)), [("DOC-JAVASCRIPT", false)]);
         let launch = b"%PDF-1.7\n1 0 obj << /S /Launch /F (cmd.exe) >> endobj\n%%EOF";
         assert_eq!(ids(&scan_bytes("a.pdf", launch)), [("DOC-LAUNCH", true)]);
-        let escaped = b"%PDF-1.7\n1 0 obj << /S /J#61vaScript /J#53 (x) /OpenAction 1 0 R >> endobj\n%%EOF";
+        let escaped = b"%PDF-1.7\n1 0 obj << /Type /Catalog /OpenAction 2 0 R >> endobj\n2 0 obj << /S /J#61vaScript /J#53 (x) >> endobj\n%%EOF";
         let got = scan_bytes("a.pdf", escaped);
         assert!(ids(&got).contains(&("DOC-OBFUSCATED", true)), "{got:?}");
-        assert!(ids(&got).contains(&("DOC-JS-ON-OPEN", true)), "decoded names still count: {got:?}");
+        assert!(
+            ids(&got).contains(&("DOC-JS-ON-OPEN", true)),
+            "decoded names still count, through the reference: {got:?}"
+        );
+        // A fillable worksheet: field scripts and a go-to-page open action. Not on open.
+        let form = b"%PDF-1.6\n1 0 obj << /Type /Catalog /OpenAction 3 0 R /AcroForm 4 0 R >> endobj\n3 0 obj << /S /GoTo /D [5 0 R /Fit] >> endobj\n6 0 obj << /FT /Tx /AA << /F << /S /JavaScript /JS (AFNumber_Format(2)) >> /K << /S /JavaScript /JS (AFNumber_Keystroke(2)) >> >> >> endobj\n%%EOF";
+        let got = scan_bytes("worksheet.pdf", form);
+        assert_eq!(ids(&got), [("DOC-JAVASCRIPT", false)], "{got:?}");
+        assert!(got[0].note.contains("doesn't run it"), "{}", got[0].note);
+        let tree = b"%PDF-1.6\n1 0 obj << /Type /Catalog /Names << /JavaScript 7 0 R >> /OpenAction 3 0 R >> endobj\n7 0 obj << /Names [(init) 8 0 R] >> endobj\n8 0 obj << /S /JavaScript /JS (this.print()) >> endobj\n%%EOF";
+        assert_eq!(
+            ids(&scan_bytes("tree.pdf", tree)),
+            [("DOC-JS-ON-OPEN", true)],
+            "a document-level script runs at open"
+        );
         let mut trailer = b"%PDF-1.4\n%%EOF\n".to_vec();
         trailer.extend(std::iter::repeat_n(b'x', 5000));
         assert_eq!(ids(&scan_bytes("a.pdf", &trailer)), [("DOC-TRAILER", false)]);
@@ -1329,14 +1430,16 @@ mod tests {
         // spelled `/JS` by chance); the same names in an inflated object stream do.
         let binary = b"%PDF-1.4\n1 0 obj << /Length 40 /Filter /FlateDecode >> stream\n\x00\xffIP/JS\x16\x10xx/AA\x01 /OpenAction /Launch\nendstream\nendobj\n%%EOF";
         assert!(scan_bytes("paper.pdf", binary).is_empty());
+        // The catalog lives in a compressed object stream: `/Names << /JavaScript 3 0 R >>`.
         let mut objstm =
-            b"%PDF-1.5\n5 0 obj << /Type /ObjStm /N 2 /First 8 /Filter /FlateDecode /Length 82 >> stream\n".to_vec();
+            b"%PDF-1.5\n5 0 obj << /Type /ObjStm /N 2 /First 8 /Filter /FlateDecode /Length 94 >> stream\n".to_vec();
         objstm.extend_from_slice(&[
             0x33, 0x54, 0x30, 0x50, 0x30, 0x52, 0x30, 0x33, 0x50, 0xb0, 0xb1, 0x51, 0xd0, 0x0f, 0xa9, 0x2c, 0x48, 0x55,
-            0xd0, 0x77, 0x4e, 0x2c, 0x49, 0xcc, 0xc9, 0x4f, 0x57, 0xd0, 0xf7, 0x2f, 0x48, 0xcd, 0x73, 0x4c, 0x2e, 0xc9,
-            0xcc, 0xcf, 0x03, 0x2a, 0x31, 0x50, 0x08, 0x52, 0xb0, 0xb3, 0x03, 0x2b, 0x0b, 0x56, 0xd0, 0xf7, 0x4a, 0x2c,
-            0x4b, 0x0c, 0x4e, 0x2e, 0xca, 0x2c, 0x28, 0x01, 0xb2, 0x83, 0x15, 0x34, 0x12, 0x0b, 0x0a, 0xf4, 0x12, 0x73,
-            0x52, 0x8b, 0x4a, 0x34, 0x0c, 0x35, 0x35, 0x81, 0xea, 0x00,
+            0xd0, 0x77, 0x4e, 0x2c, 0x49, 0xcc, 0xc9, 0x4f, 0x57, 0xd0, 0xf7, 0x4b, 0xcc, 0x4d, 0x2d, 0x06, 0x4b, 0x78,
+            0x25, 0x96, 0x25, 0x06, 0x27, 0x17, 0x65, 0x16, 0x94, 0x28, 0x18, 0x03, 0x35, 0x04, 0x29, 0xd8, 0xd9, 0x29,
+            0xe8, 0xfb, 0x17, 0xa4, 0xe6, 0x39, 0x26, 0x97, 0x64, 0xe6, 0xe7, 0x01, 0x4d, 0x80, 0x0a, 0x82, 0x14, 0x07,
+            0x2b, 0xe8, 0xbb, 0xe7, 0x87, 0xe4, 0x2b, 0xe8, 0xbb, 0x28, 0x44, 0x9b, 0x82, 0x25, 0xf4, 0xdd, 0x32, 0x4b,
+            0x62, 0x81, 0xd2, 0x00,
         ]);
         objstm.extend_from_slice(b"\nendstream\nendobj\n%%EOF");
         let got = scan_bytes("hidden.pdf", &objstm);

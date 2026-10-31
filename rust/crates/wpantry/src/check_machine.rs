@@ -28,14 +28,18 @@ fn manual(formula: &str) -> Option<&'static str> {
 pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
     // The probes that need nothing from the scan run beside it: the trust
     // stores and Software Update's last scan, seconds of subprocesses each.
+    // brew vulns takes minutes on a first run: it starts now, beside the
+    // inventory and the OSV round trips, and is read at the end.
+    let brew_job = scanners::brew_job(&scan.cache, scan.opts.refresh, scan.opts.offline)?;
     std::thread::scope(|s| {
         let trust = s.spawn(catrust::check);
         let updates = s.spawn(apps_mod::macos_updates);
+        let brew_ran = brew_job.as_ref().filter(|j| j.stale).map(|j| s.spawn(move || scanners::brew_scan(j)));
         let found = inventory(scan);
         components(scan, &found)?;
         apps(scan)?;
         os_updates(scan, joined(updates))?;
-        brew(scan)?;
+        brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;
         ca_trust(scan, joined(trust));
         Ok(found)
     })
@@ -115,6 +119,11 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
     } else {
         Vec::new()
     };
+    // endoflife.date is one request per product: fetch the stale ones side
+    // by side before the loop asks for each.
+    let products: Vec<String> = found.iter().filter_map(|c| c.eol.as_ref().map(|(p, _)| p.clone())).collect();
+    scan.status("Fetching end-of-life dates");
+    feeds::eol_prefetch(&scan.cache, scan.net, &products, scan.opts.offline)?;
     for c in found {
         let recs = c.osv.as_ref().and_then(|o| answers.get(o)).cloned().unwrap_or_default();
         let mut failing = scan.advisories(c, &recs, c.osv.as_ref().and_then(|o| newer.get(o)), "fail", None);
@@ -144,7 +153,7 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
             fix_cmd: c.fix.clone(),
             fix_auto: false,
             note: format!(
-                "mise {} is behind {latest}. mise is foundational infrastructure: bump MISE_VERSION in ops and rerun its scripts/bootstrap.sh; wpantry never updates it.",
+                "mise {} is behind {latest}. mise is foundational infrastructure: update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it.",
                 c.version
             ),
             ..Finding::of(c)
@@ -464,9 +473,9 @@ fn distro(scan: &mut Scan, rel: &BTreeMap<String, String>, res: Advisories) {
 
 // Homebrew ----------------------------------------------------------------------
 
-pub fn brew(scan: &mut Scan) -> Result<()> {
+pub fn brew(scan: &mut Scan, job: Option<&scanners::BrewJob>, ran: Option<Result<Value>>) -> Result<()> {
     scan.status("Checking Homebrew formulae (brew vulns)");
-    let res = match scanners::brew_vulns(&scan.cache, scan.opts.refresh, scan.opts.offline) {
+    let res = match scanners::brew_vulns(&scan.cache, job, ran, scan.opts.refresh, scan.opts.offline) {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(()),
         Err(Error::Missing(_)) => {
@@ -603,7 +612,7 @@ mod tests {
         );
         assert_eq!(
             f.note,
-            "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: bump MISE_VERSION in ops and rerun its scripts/bootstrap.sh; wpantry never updates it."
+            "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it."
         );
         // Cached for a day: GitHub isn't asked again.
         let quiet = Fake::new(|_| panic!("cached"));

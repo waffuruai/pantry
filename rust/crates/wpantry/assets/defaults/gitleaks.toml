@@ -6,15 +6,23 @@
 useDefault = true
 
 [[allowlists]]
-description = "Hashes, ids and names the generic rule mistakes for keys"
+description = "Hashes, ids and names the generic rules mistake for keys"
 targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = [
-  '''^[0-9a-f]{40}$''',                                                 # SHA-1, git object ids
-  '''^[0-9a-f]{64}$''',                                                 # SHA-256
-  '''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''', # UUIDs
+  '''^[0-9a-fA-F]{16,}$''',                                             # hex: hashes, git object ids, keys and ciphertexts in test vectors
+  '''(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''', # UUIDs
   '''^[A-Z][A-Z0-9_]+$''',                                              # environment variable names
   '''^[a-z][a-z0-9]*([._/-][a-z0-9]+)+$''',                             # lowercase dotted / dashed / slashed identifiers
+]
+
+[[allowlists]]
+description = "Known-answer tests and fixtures: keys there are published on purpose"
+targetRules = ["generic-api-key"]
+paths = [
+  '''(?i)(^|/)(test[-_]?vectors?|testvectors|testdata|fixtures?|__fixtures__|kat|vectors|golden)(/|$)''',
+  '''(?i)\.(rsp|kat|tv|vec)$''',
+  '''(?i)(^|/)(cryptopp|supercop|wycheproof)/''',
 ]
 
 [[allowlists]]

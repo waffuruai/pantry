@@ -21,7 +21,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Area | What |
 |---|---|
 | Your repos' dependencies | The lockfiles in every git repo it finds (Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer and more) |
-| Committed secrets | Each repo's whole git history, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit |
+| Committed secrets | Each repo's whole git history once, then only the commits its branches gained since, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit. A repo's own `.gitleaks.toml` is reported, not obeyed; its `.gitleaksignore` is |
 | Malicious packages | Every package name against the OpenSSF malicious-packages index |
 | AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
@@ -116,6 +116,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 |---|---|
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
+| `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
 | `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
@@ -133,6 +134,12 @@ wpantry search openssl --applicable --json    # only those that apply here
 wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
 ```
 
+## Advisories with no fix yet
+
+Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. For a few of those there is something a host can do meanwhile, and that is a script in [`mitigations/`](../../mitigations/), one per advisory. The first is [`mitigations/cve-2026-98432.sh`](../../mitigations/cve-2026-98432.sh), for the Linux kernel's IPv4 TCP use-after-free (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, reloaded at boot, and MPTCP off.
+
+Every script works the same way. `--status` says whether the host is exposed (exit 0 fixed or mitigated, 1 exposed, 2 when it needs root it does not have) and changes nothing, `--dry-run` prints what it would write, a plain run shows the same plan and asks before writing (`--yes` skips the question, for provisioning and CI), and `--remove` takes the stopgap away once the real fix is installed. A scan never runs one; it prints the script as the step. They are a reduction of exposure, not the patch: update when the fix ships, then `--remove`.
+
 ## What leaves your machine
 
 - To OSV.dev: the (ecosystem, name, version) of what is installed or locked. No file contents, paths or secrets.
@@ -148,6 +155,7 @@ Every request names wpantry in its User-Agent and times out after 30 seconds.
 | `WPANTRY_DB` | The cache file |
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
+| `WPANTRY_TIMINGS` | Any value: each scan step on stderr with the seconds since the scan began, to see where a slow run spends its time |
 | `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
 | `HTTPS_PROXY` | Requests go through the proxy |
 

@@ -61,10 +61,10 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 ```bash
 mise bootstrap   # the pinned tools, then build wpantry and run `wpantry tools` to confirm them
-mise run test    # the Rust tests, the CA trust test and the install.sh test, offline
+mise run test    # the Rust tests, the CA trust and mitigation script tests and the install.sh test, offline
 ```
 
-`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md)); the standalone CA trust check and fix are in `ca-trust/`.
+`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test mitigations`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md)); the standalone CA trust check and fix are in `ca-trust/`, and the stopgap scripts for advisories that have no fix to install yet are in [`mitigations/`](mitigations/).
 
 The CLI contract wpantry keeps is [specs/cli-contract.md](specs/cli-contract.md); all specs are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

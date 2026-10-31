@@ -29,15 +29,20 @@ const EXIT_INTERNAL: i32 = 3;
 /// `update --check`: a newer release exists.
 const EXIT_UPDATE_AVAILABLE: i32 = 10;
 
-/// A line of data on stdout, never coloured (JSON, search results, the
-/// skill).
+/// A line of text on stdout, never coloured (search results, the skill),
+/// with terminal escapes from scanned content dropped.
 fn say(line: &str) {
-    println!("{line}");
+    println!("{}", style::clean(line));
+}
+
+/// JSON on stdout, as is: it escapes control characters itself.
+fn emit(json: &str) {
+    println!("{json}");
 }
 
 /// A line of the report on stdout, coloured by its mark on a terminal.
 fn show(line: &str) {
-    println!("{}", Style::stdout().line(line));
+    println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
 /// `check --json`: the findings plus what was checked (schema 1).
@@ -62,7 +67,24 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
         }
     };
     let note = |m: &str| progress.eprintln(&Style::stderr().line(m));
-    let status = |m: &str| progress.set(m);
+    // WPANTRY_TIMINGS=1: every step with the seconds since the scan began,
+    // on stderr, so a slow run says where the time went.
+    let started = std::time::Instant::now();
+    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some();
+    // One line per step, not per file: a step whose message starts the same
+    // way as the last one within a quarter second is the same step.
+    let last = std::sync::Mutex::new((String::new(), std::time::Instant::now()));
+    let status = |m: &str| {
+        if timings {
+            let head: String = m.split_whitespace().next().unwrap_or("").to_string();
+            let mut last = last.lock().expect("lock");
+            if head != last.0 || last.1.elapsed() > std::time::Duration::from_millis(250) {
+                progress.eprintln(&format!("[{:7.2}s] {m}", started.elapsed().as_secs_f64()));
+                *last = (head, std::time::Instant::now());
+            }
+        }
+        progress.set(m);
+    };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
     let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask).run();
@@ -82,12 +104,13 @@ fn cmd_check(a: Check) -> Result<i32> {
         },
         refresh: a.refresh,
         offline: a.offline,
+        jobs: a.jobs,
         licenses: a.check_licenses,
         ask: !(a.json || a.dryrun || a.no_input),
     };
     let first = scan(opts.clone(), a.json, &net)?;
     if a.json {
-        say(&envelope(&first).dumps_indent(1));
+        emit(&envelope(&first).dumps_indent(1));
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
     }
     let db = db::path().to_string_lossy().into_owned();
@@ -178,7 +201,7 @@ fn cmd_search(query: &str, applicable_only: bool, limit: i64, json: bool) -> Res
                 ])
             })
             .collect();
-        say(&J::Arr(items).dumps_indent(1));
+        emit(&J::Arr(items).dumps_indent(1));
     } else {
         for (_, id, _, summary, severity, hit, kev, _) in &out {
             let flags: Vec<&str> =
@@ -247,7 +270,7 @@ fn cmd_breach(enable: bool, disable: bool) -> Result<i32> {
 
 fn cmd_version(json: bool) -> Result<i32> {
     if json {
-        say(&obj([("version", VERSION.into()), ("impl", IMPL.into()), ("schema", J::Int(SCHEMA))]).dumps());
+        emit(&obj([("version", VERSION.into()), ("impl", IMPL.into()), ("schema", J::Int(SCHEMA))]).dumps());
     } else {
         say(&format!("wpantry {VERSION} ({IMPL}, schema {SCHEMA})"));
     }
@@ -265,7 +288,7 @@ fn cmd_tools(json: bool) -> Result<i32> {
             ("version", VERSION.into()),
             ("tools", J::Arr(found.iter().map(|t| t.to_json()).collect())),
         ]);
-        say(&env.dumps_indent(1));
+        emit(&env.dumps_indent(1));
     } else {
         for t in &found {
             let mark = if t.found {

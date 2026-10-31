@@ -163,6 +163,11 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], width: usize, f: impl Fn(&T) -> R 
     done.into_iter().map(|(_, r)| r).collect()
 }
 
+/// The machine's logical cores (1 when unknown).
+pub fn cores() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
 /// Run `argv` with stdin closed and `NO_COLOR=1`, killing it after
 /// `timeout`. An error only when it can't start or times out. The deadline
 /// covers the program and its output: a process it started in the
@@ -225,12 +230,28 @@ pub fn run<S: AsRef<OsStr>>(argv: &[S], timeout: Duration) -> String {
 
 /// A file's text, refusing anything over `max` bytes (S7).
 pub fn read_capped(path: &Path, max: u64) -> Result<String> {
-    let meta = std::fs::metadata(path)?;
+    Ok(String::from_utf8_lossy(&read_capped_bytes(path, max)?).into_owned())
+}
+
+/// A file's bytes, refusing anything over `max` bytes and anything that
+/// isn't a regular file: the size is read from the opened handle and the
+/// read stops at the cap, so a device or FIFO a repo links to (`/dev/zero`)
+/// can't be read without end.
+pub fn read_capped_bytes(path: &Path, max: u64) -> Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(Error::Invalid(format!("{} is not a regular file", path.display())));
+    }
     if meta.len() > max {
         return Err(Error::Invalid(format!("{} is over {} bytes", path.display(), max)));
     }
-    let bytes = std::fs::read(path)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let mut bytes = Vec::with_capacity(meta.len().min(max) as usize);
+    (&mut file).take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(Error::Invalid(format!("{} is over {} bytes", path.display(), max)));
+    }
+    Ok(bytes)
 }
 
 /// Changes when any file is added, removed, touched or resized.
@@ -546,7 +567,15 @@ impl TempDir {
             stamp,
             N.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(&dir)?;
+        // Exclusive and private: a path someone else made first is an error,
+        // never reused, and nothing extracted there is readable by others.
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&dir)?;
         Ok(TempDir(dir))
     }
 
@@ -564,6 +593,25 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_reads_refuse_devices_and_oversize() {
+        let dir = TempDir::new("read").unwrap();
+        let f = dir.path().join("f");
+        std::fs::write(&f, b"hello").unwrap();
+        assert_eq!(read_capped(&f, 5).unwrap(), "hello");
+        assert!(read_capped(&f, 4).is_err());
+        #[cfg(unix)]
+        {
+            // A symlink into a repo pointing at a device: not a file, so never read.
+            let link = dir.path().join("zero");
+            std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
+            assert!(read_capped_bytes(&link, 1 << 20).is_err());
+            assert!(read_capped_bytes(Path::new("/dev/zero"), 1 << 20).is_err());
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+    }
 
     #[test]
     fn caskroom_lists_one_version_per_cask() {

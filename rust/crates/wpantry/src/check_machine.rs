@@ -40,12 +40,36 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         apps(scan)?;
         os_updates(scan, joined(updates))?;
         brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;
+        downloads(scan);
         ca_trust(scan, joined(trust));
         if !scan.opts.no_posture {
             posture(scan);
         }
         Ok(found)
     })
+}
+
+/// The top of `~/Downloads` and `~/Desktop`: the documents and images
+/// people are sent, read for the shapes malware takes, and ClamAV over
+/// them when it is installed.
+fn downloads(scan: &mut Scan) {
+    let home = crate::system::home();
+    let dirs: Vec<std::path::PathBuf> =
+        ["Downloads", "Desktop"].iter().map(|d| home.join(d)).filter(|d| d.is_dir()).collect();
+    if dirs.is_empty() {
+        return;
+    }
+    scan.status("Reading the documents and images in Downloads and Desktop");
+    let mut files = Vec::new();
+    for dir in &dirs {
+        for d in crate::documents::scan_dir(dir, 1) {
+            let component = crate::system::short(&dir.join(&d.file).to_string_lossy());
+            crate::check_supply::add_doc(scan, &component, d);
+        }
+        files.extend(crate::documents::files_under(dir, 1));
+    }
+    scan.count("documents and images in Downloads and Desktop", files.len() as i64);
+    crate::check_supply::clamav(scan, &files, "Downloads and Desktop");
 }
 
 /// A probe's result; its panic, if it had one, carries on here.
@@ -92,7 +116,11 @@ fn inventory_local(scan: &mut Scan) -> Vec<Component> {
         }
     }
     scan.status("Listing Python installs and their pip packages");
-    found.extend(packages::pythons());
+    let (pythons, unread) = packages::pythons();
+    found.extend(pythons);
+    for (py, why) in unread {
+        scan.unchecked(&format!("pip packages of {py}"), &why.join("; "));
+    }
     scan.status("Listing global npm packages");
     let npm = packages::node_packages(&found);
     found.extend(npm);

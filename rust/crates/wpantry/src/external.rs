@@ -10,6 +10,7 @@ use std::time::Duration;
 /// (name, required, version arguments, what wpantry uses it for)
 pub const TOOLS: &[(&str, bool, &[&str], &str)] = &[
     ("gitleaks", true, &["version"], "secrets in the repos' git history"),
+    ("clamscan", false, &["--version"], "malware signatures over documents and images (ClamAV)"),
     ("git", true, &["--version"], "repo HEADs, upstream release tags, the malicious-package index"),
     ("openssl", true, &["version"], "the CA trust check"),
     (

@@ -29,6 +29,8 @@ const EXIT_USAGE: i32 = 2;
 const EXIT_INTERNAL: i32 = 3;
 /// `update --check`: a newer release exists.
 const EXIT_UPDATE_AVAILABLE: i32 = 10;
+/// `watch`: a fix has landed for something that had none.
+const EXIT_AVAILABLE: i32 = 10;
 
 /// A line of text on stdout, never coloured (search results, the skill),
 /// with terminal escapes from scanned content dropped.
@@ -103,7 +105,9 @@ fn cmd_check(a: Check) -> Result<i32> {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
             install_scripts: a.install_scripts.clone(),
+            repo_hooks: a.repo_hooks.clone(),
             posture: a.posture_policy.clone(),
+            suspect: a.suspect_policy.clone(),
         },
         refresh: a.refresh,
         offline: a.offline,
@@ -556,6 +560,74 @@ fn mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1e6)
 }
 
+/// The advisories the last scan found with no released fix, asked about
+/// again now; exit 10 when any has a fix.
+fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let net = wpantry::net::Http::new();
+    let style = Style::stderr();
+    let status = |s: &str| {
+        if !json && std::io::stderr().is_terminal() {
+            eprintln!("{}", style.dim(s));
+        }
+    };
+    let watched = wpantry::watch::run(&cache, &net, offline, &status)?;
+    let landed = watched.iter().filter(|w| w.fixed.is_some()).count();
+    if json {
+        say(&wpantry::watch::report_json(&watched));
+    } else if watched.is_empty() {
+        say("Nothing to watch: the last scan found no Critical, High or exploited advisory without a released fix.");
+    } else {
+        let out = Style::stdout();
+        for w in &watched {
+            let (mark, state) = match &w.fixed {
+                Some(v) => (out.green("✓"), out.green(&format!("FIX AVAILABLE: {} {v}", w.item.1))),
+                None => (out.yellow("⚠"), out.yellow("no fix yet")),
+            };
+            say(&format!(
+                "{mark} {} {} {} ({}) - {} {}",
+                w.item.1,
+                w.item.2,
+                out.dim(&w.item.0),
+                out.bold(&w.id),
+                w.summary,
+                state
+            ));
+            match (&w.fixed, &w.mitigation) {
+                (Some(_), _) => say("    Fix: run wpantry --update --dryrun for the step"),
+                (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
+                (None, None) => {
+                    say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
+                }
+            }
+        }
+        say(&format!(
+            "{} advisories watched, {landed} with a fix now{}",
+            watched.len(),
+            if landed > 0 { ". Re-run wpantry check to see the update plan" } else { "" }
+        ));
+    }
+    Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
+}
+
+/// `harden extension-cooldown`: the one posture fix that edits files.
+fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
+    let changed = wpantry::posture::tools::set_extension_cooldown(hours)?;
+    if changed.is_empty() {
+        let editors = wpantry::posture::tools::editor_settings();
+        if editors.is_empty() {
+            show("  no VS Code-family editor is installed");
+        } else {
+            show(&format!("  every editor already waits {hours} hours"));
+        }
+    }
+    for c in &changed {
+        show(&format!("  ✓ {c}"));
+    }
+    show("  Extensions wait that long after a version is published before it installs here (restart the editor).");
+    Ok(EXIT_OK)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -569,6 +641,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
         Command::Export { csv, jsonl, all } => cmd_export(csv.as_deref(), jsonl.as_deref(), all),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
+        Command::Watch { json, offline } => cmd_watch(json, offline),
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
@@ -581,6 +654,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
+        Command::Harden { what: _, hours } => cmd_harden_cooldown(hours),
     }
 }
 

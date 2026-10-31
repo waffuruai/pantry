@@ -23,6 +23,9 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry export --csv findings.csv` |
 | Which external tools are installed | `wpantry tools` |
+| Refresh the cache so `--offline` checks are current | `wpantry sync` |
+| Scan daily without anyone running it (sync + check, never --update) | `wpantry schedule install`; `wpantry schedule status` |
+| The last scheduled run's findings | `~/.local/state/wpantry/last.json` |
 | Is there a newer wpantry (exit 10 when there is); install it verified | `wpantry update --check`; `wpantry update --yes` |
 
 `search` takes SQLite FTS5 syntax (`"exact phrase"`, `tls AND certificate`, `rust*`). Results rank by text relevance, then whether the advisory applies to this machine, then whether it is in CISA KEV.

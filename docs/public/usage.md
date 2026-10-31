@@ -71,6 +71,18 @@ not checked
 
 The (Python) implementation prints the same findings as one block per component.
 
+## Keeping the cache fresh, and scanning on a schedule
+
+```bash
+wpantry sync                          # refresh the feeds and every answer the cache holds
+wpantry schedule install              # daily at 09:30: sync, then check (never --update)
+wpantry schedule install --every weekly --at 07:00
+wpantry schedule status               # scheduled? when did it last run, what did it find
+wpantry schedule uninstall
+wpantry cache prune                   # drop what no scan has used in 90 days, compact the file
+```
+
+`sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `check --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the check's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry --update` yourself when the morning report says so.
 ## Keeping wpantry current
 
 ```bash

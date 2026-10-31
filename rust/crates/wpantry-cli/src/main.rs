@@ -9,6 +9,7 @@
 mod args;
 mod progress;
 mod report;
+mod schedule;
 mod style;
 mod update;
 
@@ -306,6 +307,84 @@ fn cmd_tools(json: bool) -> Result<i32> {
     Ok(if found.iter().any(|t| t.required && !t.found) { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// `sync`: refresh what the cache knows, with the progress line.
+fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
+    let net = wpantry::net::Http::new();
+    let progress = progress::Progress::start();
+    let status = |m: &str| progress.set(m);
+    let cache = Cache::open(None)?;
+    let synced = wpantry::sync::run(&cache, &net, refresh, &status);
+    cache.close()?;
+    progress.finish();
+    let synced = synced?;
+    if json {
+        say(&obj([
+            ("refreshed", J::Arr(synced.refreshed.iter().map(|s| s.as_str().into()).collect())),
+            (
+                "failed",
+                J::Arr(
+                    synced
+                        .failed
+                        .iter()
+                        .map(|(n, w)| obj([("source", n.as_str().into()), ("why", w.as_str().into())]))
+                        .collect(),
+                ),
+            ),
+            ("packages", J::Int(synced.packages as i64)),
+        ])
+        .dumps_indent(1));
+    } else {
+        for name in &synced.refreshed {
+            show(&format!("  ✓ {name}"));
+        }
+        for (name, why) in &synced.failed {
+            show(&format!("  ⚠ {name} - {why}"));
+        }
+        show(&format!(
+            "{} {} sources refreshed, {} package versions re-asked of OSV{}",
+            if synced.failed.is_empty() { "✓" } else { "⚠" },
+            synced.refreshed.len(),
+            synced.packages,
+            if synced.failed.is_empty() { String::new() } else { format!(", {} unreachable", synced.failed.len()) }
+        ));
+    }
+    Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
+}
+
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
+    match action {
+        "install" => {
+            let every = schedule::Every::parse(every).expect("validated");
+            let (h, m) = at.split_once(':').expect("validated");
+            schedule::install(every, (h.parse().expect("validated"), m.parse().expect("validated")), dry_run)
+        }
+        "status" => schedule::status(),
+        "uninstall" => schedule::uninstall(),
+        _ => schedule::run(),
+    }
+}
+
+/// `cache prune`: what no scan has used in `days`, then VACUUM.
+fn cmd_cache_prune(days: i64) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let before = std::fs::metadata(cache.file()).map(|m| m.len()).unwrap_or(0);
+    let (queries, vulns, runs) = cache.prune(days as f64 * wpantry::db::DAY)?;
+    let file = cache.file().to_path_buf();
+    cache.close()?;
+    let after = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+    say(&format!(
+        "pruned {queries} package versions, {vulns} advisories and {runs} cached runs older than {days} days; {} → {} ({})",
+        mb(before),
+        mb(after),
+        file.display()
+    ));
+    Ok(EXIT_OK)
+}
+
+fn mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -322,6 +401,9 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
+        Command::Sync { refresh, json } => cmd_sync(refresh, json),
+        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
+        Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }

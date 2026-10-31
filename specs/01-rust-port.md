@@ -119,7 +119,7 @@ Status, 2026-10-28: the parity runs are done (F3 evidence) and `python/` is remo
 
 
 - OSV rate limits, and possibly API keys later: one `querybatch` per 1000 queries with backoff; a key would arrive as an additive env var.
-- Air-gapped use is unsupported: CI and first runs need egress to `api.osv.dev`; `--offline` is cache only.
+- Air-gapped use is unsupported: CI and first runs need egress to `api.osv.dev`; `--offline` is cache only, and `sync` (run by `schedule`) keeps that cache fresh for what has been scanned before.
 - Distro ecosystem-string correctness: a wrong string is a silent "clean", so the F7 fixtures and the F3 container diffs gate removing osv-scanner.
 - `brew vulns` output drift: an unexpected shape is reported `unchecked`.
 - gitleaks stays an external tool.

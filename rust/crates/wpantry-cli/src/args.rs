@@ -6,7 +6,8 @@
 
 use std::path::PathBuf;
 
-pub const SUBCOMMANDS: &[&str] = &["check", "search", "export", "breach", "version", "tools", "skill", "update"];
+pub const SUBCOMMANDS: &[&str] =
+    &["check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache", "update"];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -35,6 +36,9 @@ pub enum Command {
     Breach { enable: bool, disable: bool },
     Version { json: bool },
     Tools { json: bool },
+    Sync { refresh: bool, json: bool },
+    Schedule { action: String, every: String, at: String, dry_run: bool },
+    Cache { action: String, older_than: i64 },
     Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
     Skill,
 }
@@ -48,7 +52,8 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,update} ...";
+const TOP_USAGE: &str =
+    "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache,update} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -84,11 +89,20 @@ fn help(cmd: &str) -> String {
             "list the external tools this implementation uses\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
+        "sync" => {
+            "refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so check --offline has fresh answers\n\noptions:\n  -h, --help  show this help message and exit\n  --refresh   ask every source again, even when its answer is fresh\n  --json      print what was refreshed as JSON"
+        }
+        "schedule" => {
+            "run sync and check on a schedule (launchd, a systemd user timer, or cron); never --update\n\npositional arguments:\n  {install,status,uninstall,run}\n\noptions:\n  -h, --help       show this help message and exit\n  --every WHEN     hourly, daily (default) or weekly\n  --at HH:MM       the time of day (default 09:30; weekly: Mondays)\n  --dry-run        print the job definition without installing it"
+        }
+        "cache" => {
+            "maintain the cache\n\npositional arguments:\n  {prune}               drop what no scan has used in a while, then compact the file\n\noptions:\n  -h, --help            show this help message and exit\n  --older-than DAYS     what counts as unused (default 90)"
+        }
         "update" => {
             "check for a newer wpantry release and, after a yes, install it verified\n\noptions:\n  -h, --help       show this help message and exit\n  --check          only say whether a newer release exists (exit 10 when one does)\n  --yes            install without asking\n  --no-input       never ask: report only\n  --offline        use only the cached answer\n  --version VER    this release instead of the latest"
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,update}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    update              check for a newer release and install it verified\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache,update}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -120,6 +134,9 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "export" => &[("--help", false), ("--csv", true)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
+        "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
+        "schedule" => &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false)],
+        "cache" => &[("--help", false), ("--older-than", true)],
         "update" => &[
             ("--help", false),
             ("--check", false),
@@ -291,6 +308,54 @@ pub fn parse(argv: &[String]) -> Parsed {
                 return fail("argument --disable: not allowed with argument --enable".into());
             }
             Command::Breach { enable, disable }
+        }
+        "sync" => {
+            if !positional.is_empty() {
+                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
+            }
+            Command::Sync { refresh: flag("--refresh"), json: flag("--json") }
+        }
+        "schedule" => {
+            let action = match positional.as_slice() {
+                [a] if ["install", "status", "uninstall", "run"].contains(&a.as_str()) => a.clone(),
+                [a] => {
+                    return fail(format!(
+                        "argument action: invalid choice: '{a}' (choose from install, status, uninstall, run)"
+                    ));
+                }
+                [] => return fail("the following arguments are required: action".into()),
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
+            let every = value("--every").unwrap_or_else(|| "daily".into());
+            if !["hourly", "daily", "weekly"].contains(&every.as_str()) {
+                return fail(format!(
+                    "argument --every: invalid choice: '{every}' (choose from hourly, daily, weekly)"
+                ));
+            }
+            let at = value("--at").unwrap_or_else(|| "09:30".into());
+            let ok_time = at.split_once(':').is_some_and(|(h, m)| {
+                h.parse::<u32>().is_ok_and(|h| h < 24) && m.len() == 2 && m.parse::<u32>().is_ok_and(|m| m < 60)
+            });
+            if !ok_time {
+                return fail(format!("argument --at: expected HH:MM, got '{at}'"));
+            }
+            Command::Schedule { action, every, at, dry_run: flag("--dry-run") }
+        }
+        "cache" => {
+            let action = match positional.as_slice() {
+                [a] if a == "prune" => a.clone(),
+                [a] => return fail(format!("argument action: invalid choice: '{a}' (choose from prune)")),
+                [] => return fail("the following arguments are required: action".into()),
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
+            let older_than = match value("--older-than") {
+                None => 90,
+                Some(v) => match v.trim().parse::<i64>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return fail(format!("argument --older-than: expected a number of days, got '{v}'")),
+                },
+            };
+            Command::Cache { action, older_than }
         }
         "update" => {
             if !positional.is_empty() {

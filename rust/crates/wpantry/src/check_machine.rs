@@ -116,7 +116,11 @@ fn inventory_local(scan: &mut Scan) -> Vec<Component> {
         }
     }
     scan.status("Listing Python installs and their pip packages");
-    found.extend(packages::pythons());
+    let (pythons, unread) = packages::pythons();
+    found.extend(pythons);
+    for (py, why) in unread {
+        scan.unchecked(&format!("pip packages of {py}"), &why.join("; "));
+    }
     scan.status("Listing global npm packages");
     let npm = packages::node_packages(&found);
     found.extend(npm);

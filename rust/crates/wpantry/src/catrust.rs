@@ -180,10 +180,6 @@ impl Checker {
         Ok(out)
     }
 
-    fn trusts(&self, anchors: &Path) -> bool {
-        self.verify(anchors) == Verdict::Trusts
-    }
-
     /// One store to check, once per real path; None when it doesn't exist
     /// (or is an empty file or a directory without hashed certificates,
     /// which trust nothing). A store that can't be read or holds no
@@ -243,6 +239,28 @@ impl Checker {
     }
 }
 
+/// pip's trust store when `PIP_CERT` is `pc`: the file, verified like any
+/// store (unreadable or malformed, it is unchecked, never clean), or, when
+/// it names no file, a store already judged unchecked. None for an empty
+/// file, which trusts nothing.
+fn pip_cert_store(c: &mut Checker, pc: &str) -> Option<Pending> {
+    let shown = format!("PIP_CERT={pc}");
+    let hint = "Point PIP_CERT at a bundle without the leaked CAs, or unset it";
+    if Path::new(pc).is_file() {
+        return c.store("pip", &shown, Path::new(pc), hint);
+    }
+    Some(Pending {
+        store: Store {
+            label: "pip".into(),
+            shown,
+            trusts: false,
+            unchecked: Some("PIP_CERT names no file".into()),
+            hint: hint.into(),
+        },
+        bundle: PathBuf::from(pc),
+    })
+}
+
 /// A store found and not yet verified.
 struct Pending {
     store: Store,
@@ -295,9 +313,12 @@ pub fn check() -> Result<Vec<Store>> {
     if MACOS && sh(&[OsStr::new("xcode-select"), OsStr::new("-p")]).starts_with('/') {
         pythons.push("/usr/bin/python3".into());
     }
-    // pip reads PIP_CERT instead of its own bundle when it is set.
-    let pip_cert = std::env::var("PIP_CERT").ok().filter(|p| Path::new(p).is_file());
-    let pip_cert_clean = pip_cert.is_some_and(|pc| !c.trusts(Path::new(&pc)));
+    // pip reads PIP_CERT instead of its vendored bundle when it is set: then
+    // that file is pip's store, and the vendored bundles aren't what pip trusts.
+    let pip_cert = std::env::var("PIP_CERT").ok().filter(|p| !p.is_empty());
+    if let Some(pc) = &pip_cert {
+        add(pip_cert_store(&mut c, pc));
+    }
     let path_of = |py: &str, code: &str| {
         sh(&[OsStr::new(py), OsStr::new("-I"), OsStr::new("-c"), OsStr::new(code)])
             .trim()
@@ -316,7 +337,7 @@ pub fn check() -> Result<Vec<Store>> {
         if certifi.starts_with('/') {
             add(c.store("certifi", &certifi, Path::new(&certifi), &format!("Run: {py} -m pip install -U certifi")));
         }
-        if !pip_ca.starts_with('/') || pip_cert_clean {
+        if !pip_ca.starts_with('/') || pip_cert.is_some() {
             continue;
         }
         add(c.store(
@@ -383,11 +404,41 @@ mod tests {
     use super::*;
 
     impl Checker {
+        fn trusts(&self, anchors: &Path) -> bool {
+            self.verify(anchors) == Verdict::Trusts
+        }
+
         /// One store, found and verified.
         fn check_one(&mut self, label: &str, shown: &str, bundle: &Path, hint: &str) -> Option<Store> {
             let p = self.store(label, shown, bundle, hint)?;
             self.finish(vec![p]).pop()
         }
+    }
+
+    /// PIP_CERT is pip's store: judged like any bundle, unchecked when it
+    /// can't be, and never skipped as clean.
+    #[test]
+    fn pip_cert_is_pips_store_and_one_that_cant_be_judged_is_unchecked() {
+        let Some(openssl) = which("openssl") else { return };
+        let mut c = Checker::new(openssl).unwrap();
+        let bad = c.dir.path().join("pipcert-bad.pem");
+        std::fs::write(&bad, include_str!("../assets/distrusted-ca/roots.pem")).unwrap();
+        let junk = c.dir.path().join("pipcert-junk.pem");
+        std::fs::write(&junk, "not a certificate\n").unwrap();
+        let empty = c.dir.path().join("pipcert-empty.pem");
+        std::fs::write(&empty, "").unwrap();
+        let missing = c.dir.path().join("pipcert-missing.pem");
+        let judged = |c: &mut Checker, p: &Path| {
+            let pending = pip_cert_store(c, &p.display().to_string())?;
+            c.finish(vec![pending]).pop()
+        };
+        let s = judged(&mut c, &bad).unwrap();
+        assert!(s.trusts && s.unchecked.is_none() && s.label == "pip" && s.shown.starts_with("PIP_CERT="), "{s:?}");
+        let s = judged(&mut c, &junk).unwrap();
+        assert!(!s.trusts && s.unchecked.as_deref() == Some("no PEM certificate in the file"), "{s:?}");
+        let s = judged(&mut c, &missing).unwrap();
+        assert!(!s.trusts && s.unchecked.as_deref() == Some("PIP_CERT names no file"), "{s:?}");
+        assert!(judged(&mut c, &empty).is_none(), "an empty bundle trusts nothing");
     }
 
     #[test]

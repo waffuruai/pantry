@@ -45,6 +45,9 @@ jobs:
       - name: CA trust test
         run: PATH="$TASK_PATH" mise run test ca-trust
 
+      - name: mitigation scripts
+        run: PATH="$TASK_PATH" mise run test mitigations
+
       - name: install.sh test
         run: PATH="$TASK_PATH" mise run test install
 
@@ -102,7 +105,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD/pantry:/home/waffuru/waffuru/pantry" \
             -w /home/waffuru/waffuru/pantry "$IMAGE" \
-            bash -ec 'mise run test ca-trust && mise run test install'
+            bash -ec 'mise run test ca-trust && mise run test mitigations && mise run test install'
 
   lint:
     name: Lint

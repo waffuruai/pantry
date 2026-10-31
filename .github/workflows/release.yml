@@ -247,7 +247,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - uses: jdx/packslip@7b32cd29a9240927882ee18b3db1dcfd8e0328b4 # v1.7.0
+      - uses: jdx/packslip@b934a22ba187f1d3928441170b9413c5119360bf # v1.11.2
         id: packslip
         with:
           artifacts: >-

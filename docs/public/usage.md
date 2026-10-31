@@ -71,6 +71,15 @@ not checked
 
 The (Python) implementation prints the same findings as one block per component.
 
+## Keeping wpantry current
+
+```bash
+wpantry update --check     # exit 10 when a newer release exists, 0 when you have the latest
+wpantry update             # asks, then installs the verified release (--yes to skip the question)
+```
+
+An update is verified before anything is replaced (see [install.md](install.md#upgrade-and-uninstall)); a mise, cargo or Homebrew install is updated through that tool. `check` mentions a newer release on stderr once a day; `WPANTRY_NO_UPDATE_CHECK=1` silences it.
+
 ## Exit codes
 
 | Code | Meaning |

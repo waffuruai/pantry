@@ -45,9 +45,11 @@ pub mod repos;
 pub mod scanners;
 pub mod selfinstall;
 pub mod sha256;
+pub mod suspect;
 pub mod sync;
 pub mod system;
 pub mod tools;
+pub mod typosquat;
 pub mod versions;
 pub mod watch;
 
@@ -73,4 +75,6 @@ pub mod defaults {
     pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
     pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
     pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.txt");
+    pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.txt");
+    pub const POPULAR: &str = include_str!("../assets/defaults/popular.txt");
 }

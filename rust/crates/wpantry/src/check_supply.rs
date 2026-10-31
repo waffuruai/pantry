@@ -12,7 +12,7 @@ use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
 use crate::system::{self, Component, run as sh, short, which};
-use crate::{harnesses, hidden, hooks, leaks, malicious};
+use crate::{harnesses, hidden, hooks, leaks, malicious, suspect};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -55,6 +55,7 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
     secrets(scan, &git, jobs, ran)?;
     repo_hooks(scan, &git);
     hidden_text(scan, &git);
+    suspect_code(scan, &git);
     install_scripts(scan, &repos, found);
     images(scan, &repos)?;
     let exts = if scan.opts.machine { extensions(scan)? } else { Vec::new() };
@@ -146,6 +147,7 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
             Err(e) => return Err(e),
         }
     }
+    typosquats(scan, &read);
     if !unsupported.is_empty() {
         let kinds: Vec<String> = unsupported.iter().map(|(k, n)| format!("{k} ({n})")).collect();
         scan.unchecked(
@@ -181,6 +183,47 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
         licenses(scan, &read)?;
     }
     Ok(())
+}
+
+/// Dependencies one keystroke from a popular package (`lodahs`): a warning,
+/// a failure when the popular one is in the same lockfile too (a typo that
+/// pulled in a stranger's package). The suspect policy downgrades by id or
+/// lockfile path.
+fn typosquats(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) {
+    let policy = scan.opts.policy.suspect_policy();
+    for (f, pkgs) in read {
+        let file = short(&f.to_string_lossy());
+        for s in crate::typosquat::find(pkgs) {
+            let mut probe = vec![suspect::Suspect {
+                file: file.clone(),
+                id: "SUSPECT-TYPOSQUAT",
+                line: 0,
+                note: format!(
+                    "`{}` is one keystroke from the popular `{}`{}",
+                    s.name,
+                    s.near,
+                    if s.both {
+                        ", and both are in the lockfile: a typo that pulled in a stranger's package beside the one meant"
+                    } else {
+                        ""
+                    }
+                ),
+                hard: s.both,
+            }];
+            suspect::apply_policy(&mut probe, &policy);
+            let p = probe.remove(0);
+            scan.add(Finding {
+                kind: "suspect-code".into(),
+                component: format!("{} ({})", s.name, s.ecosystem),
+                location: file.clone(),
+                vuln_id: p.id.into(),
+                status: if p.hard { "fail" } else { "warn" }.into(),
+                note: p.note,
+                fix_cmd: "Check the package page (publisher, age, downloads); if it isn't the one you meant, remove it and rotate anything the install could have read. A package you do mean goes in the suspect policy (--suspect-policy) so it warns instead".into(),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 /// Dependencies whose license isn't in the allowlist warn; ones with no
@@ -381,6 +424,105 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     }
 }
 
+/// Code that behaves like an attack (decoded-then-executed strings,
+/// payload arrays, privilege escalation, credential theft, wallet
+/// signing, unpinned third-party scripts): the repos' own source, and on
+/// a machine scan the extensions and plugins installed from elsewhere.
+pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
+    let policy = scan.opts.policy.suspect_policy();
+    let mut targets: Vec<(String, PathBuf, suspect::Kind)> =
+        repos.iter().map(|(name, root)| (name.clone(), root.clone(), suspect::Kind::Repo)).collect();
+    if scan.opts.machine {
+        for (name, dir) in installed_code() {
+            targets.push((name, dir, suspect::Kind::Installed));
+        }
+    }
+    if targets.is_empty() {
+        return;
+    }
+    scan.status("Looking for code that behaves like an attack");
+    let found: Vec<Vec<suspect::Suspect>> = system::par_map(&targets, system::PROBES, |(_, root, kind)| {
+        let mut s = suspect::scan_dir(root, *kind, &policy);
+        if *kind == suspect::Kind::Repo {
+            s.extend(suspect::dependency_blobs(root, &policy));
+        }
+        s
+    });
+    for ((name, _, kind), hits) in targets.iter().zip(found) {
+        scan.count(
+            if *kind == suspect::Kind::Repo {
+                "repos checked for suspicious code"
+            } else {
+                "installed extensions and plugins checked"
+            },
+            1,
+        );
+        for h in hits {
+            scan.add(Finding {
+                kind: "suspect-code".into(),
+                component: format!("{name}/{}", h.file),
+                location: if h.line > 0 { format!("line {}", h.line) } else { String::new() },
+                vuln_id: h.id.into(),
+                status: if h.hard { "fail" } else { "warn" }.into(),
+                note: h.note.clone(),
+                fix_cmd: match h.id {
+                    "SUSPECT-THIRD-PARTY-SCRIPT" => "Pin the script with an integrity hash (SRI) and crossorigin, or serve a copy yourself".into(),
+                    "SUSPECT-WALLET-SIGNING" => "Read exactly what is signed or approved and by what; never approve an unlimited allowance to code you didn't audit".into(),
+                    "SUSPECT-PRIV-ESCALATION" | "SUSPECT-CREDENTIAL-ACCESS" => "Read it before running or installing it; if it is yours and meant to, list it in the suspect policy (--suspect-policy) so it warns instead".into(),
+                    "SUSPECT-BINARY-BLOB" => "Prefer a dependency that builds from source, or check the publisher and pin the package by version; a binary you've verified goes in the suspect policy (path:) so it warns instead".into(),
+                    _ => "Read what runs, not what is written: decode it yourself, or drop the dependency; a legitimate table or decoder goes in the suspect policy so it warns instead".into(),
+                },
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Code on this machine that came from somewhere else and runs with the
+/// user's rights: editor extensions, agent plugins and browser extensions.
+fn installed_code() -> Vec<(String, PathBuf)> {
+    let home = system::home();
+    let mut out = Vec::new();
+    let mut add_children = |label: &str, dir: PathBuf| {
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        entries.sort();
+        for p in entries {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with('.') {
+                continue;
+            }
+            out.push((format!("{label} {name}"), p));
+        }
+    };
+    for (editor, dir, ..) in crate::editors::EDITORS {
+        add_children(editor, home.join(dir.trim_start_matches("~/")));
+    }
+    for (harness, dir) in crate::harnesses::plugin_dirs() {
+        add_children(&harness, PathBuf::from(dir));
+    }
+    let browsers: &[(&str, &str)] = if system::MACOS {
+        &[
+            ("Chrome", "Library/Application Support/Google/Chrome/Default/Extensions"),
+            ("Brave", "Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"),
+            ("Edge", "Library/Application Support/Microsoft Edge/Default/Extensions"),
+            ("Arc", "Library/Application Support/Arc/User Data/Default/Extensions"),
+            ("Chromium", "Library/Application Support/Chromium/Default/Extensions"),
+        ]
+    } else {
+        &[
+            ("Chrome", ".config/google-chrome/Default/Extensions"),
+            ("Brave", ".config/BraveSoftware/Brave-Browser/Default/Extensions"),
+            ("Edge", ".config/microsoft-edge/Default/Extensions"),
+            ("Chromium", ".config/chromium/Default/Extensions"),
+        ]
+    };
+    for (browser, dir) in browsers {
+        add_children(&format!("{browser} extension"), home.join(dir));
+    }
+    out
+}
+
 /// Text that reads one way and runs another, or is written to fool a
 /// reader or a model: bidi overrides and tag characters fail, zero-width
 /// runs, homoglyph identifiers and weapon-vocabulary identifiers warn.
@@ -402,6 +544,13 @@ pub fn hidden_text(scan: &mut Scan, repos: &[Repo]) {
                 note: h.note.clone(),
                 fix_cmd: match h.id {
                     "AI-BAIT" => "Read the code for what it does, not what it is called; don't rely on an AI's verdict about this file".into(),
+                    "AGENT-INSTRUCTIONS" => "Text that addresses an AI agent where a person is addressed: don't let an agent act on it; if it's yours, move it to an agent config file (CLAUDE.md, .cursor/rules)".into(),
+                    "HIDDEN-PROMPT" => "Instructions hidden from the reader: treat the repo as hostile to agents until the text is removed; read it in a raw view, not rendered".into(),
+                    "HIDDEN-HTML" => "Read the hidden text in a raw view; remove it unless you know why it is there".into(),
+                    "EXFIL-LINK" => "A link that carries data away when rendered or followed: don't let an agent render or fetch it; drop the query parameters".into(),
+                    "DANGEROUS-URI" => "Replace the javascript:/data: URI with a plain link; never follow it from a rendered page".into(),
+                    "HIDDEN-FILENAME" => "Rename or delete the file: a name that hides its extension or its direction is meant to be clicked by mistake".into(),
+                    "CONFUSABLE-NAME" | "CONFUSABLE-DOMAIN" => "Check the name character by character (the note shows the look-alike); a domain in another script is not the one it resembles".into(),
                     "HIDDEN-HOMOGLYPH" => "Rename so every identifier is one script; compilers can refuse mixed scripts (rustc warns, Go errors)".into(),
                     _ => "Open the file in an editor that shows invisible characters (VS Code highlights them) and remove what you didn't write".into(),
                 },

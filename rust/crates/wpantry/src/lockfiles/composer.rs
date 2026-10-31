@@ -3,21 +3,24 @@
 //! versions (`dev-main`, `1.0.x-dev`). Versions are reported as Composer
 //! writes them (`v6.4.0`); the Packagist comparator reads the "v".
 
-use super::{Package, plausible};
+use super::{Package, Scope, plausible};
 use crate::error::Result;
 use crate::json::{self, arr_at, str_at};
 
 pub fn parse(text: &str) -> Result<Vec<Package>> {
     let data = json::parse(text.as_bytes(), json::MAX_DOCUMENT)?;
     let mut out = Vec::new();
-    for p in arr_at(&data, "packages").iter().chain(arr_at(&data, "packages-dev")) {
-        let path = |k: &str| p.get(k).map(|d| str_at(d, "type")) == Some("path");
-        let version = str_at(p, "version");
-        let bare = version.strip_prefix(['v', 'V']).unwrap_or(version);
-        if path("dist") || path("source") || !plausible(bare) || version.ends_with("-dev") {
-            continue;
+    let sections = [("packages", Scope::Runtime), ("packages-dev", Scope::Dev)];
+    for (section, scope) in sections {
+        for p in arr_at(&data, section) {
+            let path = |k: &str| p.get(k).map(|d| str_at(d, "type")) == Some("path");
+            let version = str_at(p, "version");
+            let bare = version.strip_prefix(['v', 'V']).unwrap_or(version);
+            if path("dist") || path("source") || !plausible(bare) || version.ends_with("-dev") {
+                continue;
+            }
+            out.push(Package::new("Packagist", str_at(p, "name"), version).scoped(scope));
         }
-        out.push(Package::new("Packagist", str_at(p, "name"), version));
     }
     Ok(out)
 }
@@ -36,7 +39,10 @@ mod tests {
           "packages-dev": [{"name": "psr/container", "version": "2.0.2"}]}"#;
         assert_eq!(
             parse(text).unwrap(),
-            [Package::new("Packagist", "symfony/yaml", "v6.4.0"), Package::new("Packagist", "psr/container", "2.0.2")]
+            [
+                Package::new("Packagist", "symfony/yaml", "v6.4.0").scoped(Scope::Runtime),
+                Package::new("Packagist", "psr/container", "2.0.2").scoped(Scope::Dev)
+            ]
         );
     }
 }

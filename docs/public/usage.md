@@ -162,13 +162,13 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
-| `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
+| `--install-scripts FILE` | Your allowlist of npm packages whose install scripts are accepted, each at a version range (`esbuild@^0.28`); a locked version outside its entry still warns |
 | `--repo-hooks FILE` | Your list of hijacked-repo indicators (file names, package names, hosts, hashes) |
 | `--no-posture` | Skip the machine's security settings |
 | `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
 | `--suspect-policy FILE` | Suspicious-code ids and `path:` entries that should warn instead of fail (a legitimate hex table, an installer that uses sudo); nothing is silenced |
 
-Policy files are one entry per line, `#` for comments. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
+Policy files are one entry per line, `#` for comments. An install-scripts entry is `name@1.2.3` (that version), `name@^1.2` or `name@~1.2` (npm's caret and tilde ranges, so `^0.28` is `>=0.28.0 <0.29.0`), or a bare `name` for every version, which is allowed and discouraged: the allowlist is the only thing that decides whether an install script runs unremarked, so each entry should name the versions someone has read. The bundled list ([`install-scripts.txt`](../../rust/crates/wpantry/assets/defaults/install-scripts.txt)) explains itself. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 
 ## The cache, search and export
 

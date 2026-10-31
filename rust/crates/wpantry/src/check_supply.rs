@@ -7,6 +7,7 @@
 
 use crate::check::{Finding, REMOVE, Scan, as_source};
 use crate::error::{Error, Result};
+use crate::install_scripts::{self, Verdict};
 use crate::json::str_at;
 use crate::lockfiles;
 use crate::osv::{self, Item};
@@ -663,20 +664,44 @@ pub fn clamav(scan: &mut Scan, files: &[PathBuf], what: &str) {
 /// whether npm runs them by default on this machine.
 pub fn install_scripts(scan: &mut Scan, repos: &[Repo], found: &[Component]) {
     scan.status("Checking which dependencies run install scripts");
-    let allowed: HashSet<String> = scan.opts.policy.install_scripts().into_iter().collect();
+    let allows = install_scripts::parse_entries(&scan.opts.policy.install_scripts());
     let files: Vec<PathBuf> = repos.iter().flat_map(|(_, r)| repos::lockfiles(r)).collect();
-    for (where_, name) in repos::install_scripts(&files) {
-        if allowed.contains(&name) {
-            continue;
-        }
+    for s in repos::install_scripts(&files) {
+        let name = &s.name;
+        let (note, fix_cmd) = match install_scripts::verdict(&allows, name, &s.versions) {
+            Verdict::Allowed => continue,
+            Verdict::NotListed => (
+                "runs code when installed".to_string(),
+                format!(
+                    "Check what {name}'s install script does; then allow it in {INSTALL_SCRIPTS} ({name}@<range>), or drop it from the build allowlist"
+                ),
+            ),
+            Verdict::OutsideRange { allowed, locked } => {
+                let locked = locked.join(", ");
+                (
+                    format!(
+                        "runs code when installed; allowed at {allowed} but {locked} is locked: re-read its install script before widening the entry"
+                    ),
+                    format!(
+                        "Re-read {name}'s install script at {locked}; then widen its entry in {INSTALL_SCRIPTS}, or drop the package"
+                    ),
+                )
+            }
+            Verdict::UnknownVersion { allowed } => (
+                format!("runs code when installed; allowed at {allowed} but the locked version couldn't be read"),
+                format!(
+                    "Check which {name} the lockfile pins and what its install script does; then fix the lockfile or its entry in {INSTALL_SCRIPTS}"
+                ),
+            ),
+        };
         scan.add(Finding {
             kind: "install-script".into(),
             component: name.clone(),
-            location: where_.to_string_lossy().into_owned(),
+            location: s.file.to_string_lossy().into_owned(),
             vuln_id: "INSTALL-SCRIPT".into(),
             status: "warn".into(),
-            note: "runs code when installed".into(),
-            fix_cmd: format!("Check what {name}'s install script does; then allow it in {INSTALL_SCRIPTS}, or drop it from the build allowlist"),
+            note,
+            fix_cmd,
             ..Default::default()
         });
     }

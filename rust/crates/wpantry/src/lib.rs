@@ -30,6 +30,7 @@ pub mod hidden;
 pub mod history;
 pub mod hooks;
 pub mod images;
+pub mod install_scripts;
 pub mod json;
 pub mod leaks;
 pub mod licenses;

@@ -573,7 +573,8 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "").unwrap();
         }
-        let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
+        let got: Vec<String> =
+            lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string().replace('\\', "/")).collect();
         assert_eq!(got, ["Cargo.lock", "py/requirements-dev.txt", "web/pnpm-lock.yaml"]);
         // npm-shrinkwrap.json is a lockfile, and wins over package-lock.json beside it.
         for f in ["a/npm-shrinkwrap.json", "b/npm-shrinkwrap.json", "b/package-lock.json", "c/package-lock.json"] {
@@ -584,7 +585,8 @@ mod tests {
         // The listing is memoised for a scan; a new scan forgets it.
         assert_eq!(lockfiles(d).len(), 3, "memoised");
         forget_walks();
-        let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
+        let got: Vec<String> =
+            lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string().replace('\\', "/")).collect();
         assert_eq!(
             got,
             [

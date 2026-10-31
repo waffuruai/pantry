@@ -91,6 +91,11 @@ fn wanted(path: &str) -> bool {
     !pruned && (lockfiles::supported(name) || (name.starts_with("requirements") && name.ends_with(".txt")))
 }
 
+/// A path as the tar spells it, `/`-separated, whatever the host uses.
+fn slash(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// A relative path inside the image root, or None when it would escape it.
 fn inside(name: &str) -> Option<PathBuf> {
     let p = Path::new(name.trim_start_matches("./").trim_start_matches('/'));
@@ -191,7 +196,7 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
                 continue;
             }
             b'0' | 0 | b'7' => {
-                if let Some(rel) = inside(&name).filter(|p| wanted(&p.to_string_lossy())).filter(|_| size <= MAX_FILE) {
+                if let Some(rel) = inside(&name).filter(|p| wanted(&slash(p))).filter(|_| size <= MAX_FILE) {
                     let mut data = vec![0u8; size as usize];
                     r.read_exact(&mut data).map_err(|_| truncated())?;
                     r.seek_relative((padded - size) as i64)?;
@@ -204,10 +209,10 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
                 }
             }
             b'1' | b'2' => {
-                if let Some(rel) = inside(&name).filter(|p| wanted(&p.to_string_lossy())) {
+                if let Some(rel) = inside(&name).filter(|p| wanted(&slash(p))) {
                     // A symlink is relative to its directory, unless absolute (then the image root).
                     let target = if kind == b'2' && !link.starts_with('/') {
-                        rel.parent().map(|d| d.join(&link).to_string_lossy().into_owned()).unwrap_or(link.clone())
+                        rel.parent().map(|d| slash(&d.join(&link))).unwrap_or(link.clone())
                     } else {
                         link.clone()
                     };
@@ -290,7 +295,7 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
     }
     let files = crate::repos::lockfiles(root);
     for f in files {
-        let shown = format!("/{}", f.strip_prefix(root).unwrap_or(&f).display());
+        let shown = format!("/{}", slash(f.strip_prefix(root).unwrap_or(&f)));
         match lockfiles::extract(&f) {
             Ok(Some(found)) => pkgs.extend(found.into_iter().map(|p: Package| ImagePackage {
                 ecosystem: p.ecosystem,

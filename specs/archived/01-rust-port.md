@@ -56,7 +56,7 @@ Removed: the Python runtime requirement (phase 3) and osv-scanner as a required 
 
 ## What it is
 
-A Rust workspace (`rust/crates/wpantry` library, `rust/crates/wpantry-cli` binary) that does everything the Python implementation (`python/`, since removed) did, behind the same CLI, JSON and cache. In our usage osv-scanner does no local version matching: it sends (ecosystem, name, version) to OSV `querybatch`, exactly like the former `python/wscanner/osv.py`. So the port is extractors plus the client we already have, not a vulnerability-matching engine. Detail lives in [design/rust-port.md](design/rust-port.md).
+A Rust workspace (`rust/crates/wpantry` library, `rust/crates/wpantry-cli` binary) that does everything the Python implementation (`python/`, since removed) did, behind the same CLI, JSON and cache. In our usage osv-scanner does no local version matching: it sends (ecosystem, name, version) to OSV `querybatch`, exactly like the former `python/wscanner/osv.py`. So the port is extractors plus the client we already have, not a vulnerability-matching engine. Detail lives in [rust-port-design.md](rust-port-design.md).
 
 **Not:** SAST; reachability analysis; guided remediation; SBOM input; an offline OSV mirror; a gitleaks or `brew vulns` port; Windows (yet).
 

@@ -24,6 +24,56 @@ fn allowed(var: &dyn Fn(&str) -> Option<String>) -> bool {
     var("NO_COLOR").is_none_or(|v| v.is_empty()) && var("TERM").is_none_or(|t| t != "dumb")
 }
 
+/// `s` without terminal control characters and escape sequences (C0 except
+/// tab, DEL, C1, and whole CSI/OSC sequences): a package, file or server
+/// name from a repo is data, never an escape that redraws or hides a line.
+pub fn clean(s: &str) -> String {
+    if !s.chars().any(is_control) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' | '\u{9b}' | '\u{9d}' => {
+                // ESC [ … final byte (CSI), ESC ] … BEL or ESC \ (OSC), else ESC + one char.
+                let kind = if c == '\u{9b}' {
+                    '['
+                } else if c == '\u{9d}' {
+                    ']'
+                } else {
+                    chars.next().unwrap_or(' ')
+                };
+                match kind {
+                    '[' => {
+                        for n in chars.by_ref() {
+                            if ('\x40'..='\x7e').contains(&n) {
+                                break;
+                            }
+                        }
+                    }
+                    ']' => {
+                        while let Some(n) = chars.next() {
+                            if n == '\x07' || (n == '\x1b' && chars.peek() == Some(&'\\')) {
+                                chars.next_if_eq(&'\\');
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            c if is_control(c) => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn is_control(c: char) -> bool {
+    (c.is_control() && c != '\t') || ('\u{80}'..='\u{9f}').contains(&c)
+}
+
 impl Style {
     pub fn new(on: bool) -> Style {
         Style { on }
@@ -127,6 +177,14 @@ impl Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_characters_are_dropped() {
+        assert_eq!(clean("plain\tkept"), "plain\tkept");
+        assert_eq!(clean("a\x1b[2K\x1b[1Ab\u{9b}2Kc\x07\x7f"), "abc");
+        assert_eq!(clean("x\x1b]52;c;aGVsbG8=\x07y\x1b]8;;http://e\x1b\\z"), "xyz");
+        assert_eq!(clean("plain \x1b"), "plain ");
+    }
 
     const LINES: &[&str] = &[
         "==> Security scan (~/.cache/wpantry/wpantry.db)",

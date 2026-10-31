@@ -56,7 +56,7 @@ body:
         - **Coverage**: the ecosystem, file format or distro, a public
           sample file, and the OSV ecosystem string or feed it maps to.
         - **Feature / perf**: the change, the spec section and criteria
-          it serves (`specs/01-rust-port.md#functionality`, F4), and
+          it serves (`specs/cli-contract.md#finding`, the `kind`), and
           the acceptance check. Prior art links welcome.
         - **Discussion**: the question or idea, plus what you've
           already considered.
@@ -84,7 +84,7 @@ body:
       placeholder: |
         wpantry 0.1.0 (rust, schema 1)
         macOS 26.1 (M2) / Debian 13 / Alpine 3.22
-        osv-scanner 2.7.0, gitleaks 8.30.1, Python 3.9.6
+        gitleaks 8.30.1, git 2.51.0, openssl 3.6.0
     validations:
       required: false
 
@@ -96,8 +96,8 @@ body:
         What this is blocked by, what it blocks, and related PRs. Use full
         URLs for anything in another repository so they cross-link.
       placeholder: |
-        Spec: specs/01-rust-port.md#functionality (F4)
-        Blocked by: https://github.com/waffuruai/ops/issues/95
+        Spec: specs/cli-contract.md#finding
+        Blocked by: https://github.com/waffuruai/pantry/issues/32
         Blocks: #12
         PRs: #21
     validations:

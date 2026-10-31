@@ -2,19 +2,19 @@
 # cargo-vet audits file
 
 [[audits.libsqlite3-sys]]
-who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "0.38.2 -> 0.39.1"
 notes = "build.rs: bundled-sqlcipher moves to the optional sqlcipher-src crate (not pulled in by the bundled feature), SQLITE_ENABLE_MEMORY_MANAGEMENT dropped, rerun-if-env-changed for the prefixed env vars, bindgen 0.73 and syn 3 only under buildtime_bindgen or loadable_extension. The bundled sqlite3.c is the official 3.54.1 amalgamation: its SHA3-256 e2b869d3003b33c942b7dd7063604fbc53553e1b66609570df39b9b7b558ee81 matches sqlite.org's release log for 3.54.1 (2026-10-16)."
 
 [[audits.rusqlite]]
-who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "0.40.2 -> 0.41.0"
 notes = "Read the source diff (edition 2024, so most hunks wrap existing unsafe in blocks). Hooks, busy handler and authorizer now live in sqlite3_set_clientdata, fixing the use-after-free in #1899; wpantry enables none of those features. ZeroBlob and set_result use the 64-bit SQLite calls; column accessors return iterators; modern_sqlite gates dropped with the 3.45.3 minimum. No build script, no new dependency for wpantry (bundled only)."
 
 [[audits.serde_json]]
-who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "1.0.151 -> 1.0.154"
 notes = "Read the full diff. Fixes to -0 parsing, f32 infinity and UTF-8 error positions; preserve_order gains a no_std path with foldhash, a feature wpantry does not enable (std only). No build script change, no new unsafe, no new dependency for wpantry."

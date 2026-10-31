@@ -51,6 +51,12 @@ jobs:
       - name: install.sh test
         run: PATH="$TASK_PATH" mise run test install
 
+      - name: Install pinned Node for the offline viewer tests
+        run: mise install node
+
+      - name: HTML viewer behavior
+        run: PATH="$TASK_PATH" mise run test html
+
   # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
   # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
   # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so

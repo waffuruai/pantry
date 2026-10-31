@@ -134,8 +134,45 @@ impl Http {
     }
 }
 
+/// Tries per request: a dropped connection or a 429/502/503/504 is tried
+/// again after 250 ms, then 500 ms (plus jitter), honouring Retry-After up
+/// to 10 s. Every request here is idempotent (GETs, and OSV's querybatch).
+const TRIES: u32 = 3;
+
 impl Net for Http {
     fn send(&self, req: &Request) -> Result<Response> {
+        let mut last = None;
+        for attempt in 0..TRIES {
+            match self.send_once(req) {
+                Ok((resp, retry_after)) if attempt + 1 < TRIES && matches!(resp.status, 429 | 502 | 503 | 504) => {
+                    std::thread::sleep(retry_after.unwrap_or_else(|| backoff(attempt)));
+                    last = Some(Ok(resp));
+                }
+                Ok((resp, _)) => return Ok(resp),
+                Err(e @ Error::Offline(_)) if attempt + 1 < TRIES => {
+                    std::thread::sleep(backoff(attempt));
+                    last = Some(Err(e));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        last.expect("at least one try")
+    }
+}
+
+/// 250 ms, 500 ms, …, each with up to a quarter of jitter.
+fn backoff(attempt: u32) -> std::time::Duration {
+    let base = 250u64 << attempt;
+    let jitter =
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)
+            as u64)
+            % (base / 4 + 1);
+    std::time::Duration::from_millis(base + jitter)
+}
+
+impl Http {
+    /// One try: the response and the server's Retry-After (capped), if any.
+    fn send_once(&self, req: &Request) -> Result<(Response, Option<std::time::Duration>)> {
         let offline = |e: ureq::Error| Error::Offline(format!("{}: {e}", req.url));
         let mut resp = match &req.body {
             Some(body) => {
@@ -155,11 +192,17 @@ impl Net for Http {
         };
         let status = resp.status().as_u16();
         let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|s| std::time::Duration::from_secs(s.min(10)));
         let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(|e| match e {
             ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{}: response over {MAX_BODY} bytes", req.url)),
             e => offline(e),
         })?;
-        Ok(Response { status, body, etag })
+        Ok((Response { status, body, etag }, retry_after))
     }
 }
 
@@ -200,6 +243,15 @@ mod tests {
     #[test]
     fn user_agent_names_the_project() {
         assert_eq!(USER_AGENT, format!("wpantry/{} (+https://github.com/waffuruai/pantry)", crate::VERSION));
+    }
+
+    #[test]
+    fn backoff_grows_and_jitters_within_bounds() {
+        for attempt in 0..3u32 {
+            let base = 250u64 << attempt;
+            let b = backoff(attempt).as_millis() as u64;
+            assert!((base..=base + base / 4).contains(&b), "attempt {attempt}: {b}");
+        }
     }
 
     #[test]

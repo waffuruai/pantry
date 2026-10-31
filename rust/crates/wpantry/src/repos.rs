@@ -5,8 +5,9 @@
 //! (`specs/cli-contract.md#scope-walk`).
 
 use crate::system::{Status, short};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 pub const LOCKFILES: &[&str] = &[
     "Cargo.lock",
@@ -94,7 +95,37 @@ pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
         }
     }
     let mut found = Vec::new();
-    visit(root, 0, &mut found, status);
+    // The top level fans out: each of root's folders is searched on its own
+    // thread (a home directory has a few dozen, each a tree of its own).
+    let Ok(rd) = std::fs::read_dir(root) else { return found };
+    let entries: Vec<std::fs::DirEntry> = rd.filter_map(|e| e.ok()).collect();
+    if entries.iter().any(|e| e.file_name() == ".git") {
+        visit(root, 0, &mut found, status);
+    } else if DISCOVER_DEPTH > 0 {
+        let parent = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut tops: Vec<PathBuf> = entries
+            .iter()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter(|e| !skip(&parent, &e.file_name().to_string_lossy()))
+            .map(|e| e.path())
+            .collect();
+        tops.sort();
+        status(&format!("Looking for git repos in {} ({} folders)", short(&root.to_string_lossy()), tops.len()));
+        let seen = std::sync::atomic::AtomicUsize::new(0);
+        let per_top = crate::system::par_map(&tops, crate::system::PROBES, |top| {
+            let mut mine = Vec::new();
+            visit(top, 1, &mut mine, &crate::system::quiet);
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            status(&format!(
+                "Looking for git repos in {} ({}/{} folders)",
+                short(&top.to_string_lossy()),
+                n,
+                tops.len()
+            ));
+            mine
+        });
+        found.extend(per_top.into_iter().flatten());
+    }
     found.sort();
     found
 }
@@ -159,7 +190,28 @@ pub fn is_git(path: &Path) -> bool {
 }
 
 /// (dir, files) under root, skipping build output and dependency dirs.
+/// Memoised for the process: the lockfile, install-script and image
+/// checks each want the same listing of every repo; [`forget_walks`]
+/// drops the memo between scans.
 pub fn walk(root: &Path, depth: usize) -> Vec<(PathBuf, Vec<String>)> {
+    let key = (root.to_path_buf(), depth);
+    if let Some(hit) = WALKS.lock().expect("lock").get(&key).cloned() {
+        return (*hit).clone();
+    }
+    let out = Arc::new(walk_uncached(root, depth));
+    WALKS.lock().expect("lock").insert(key, out.clone());
+    (*out).clone()
+}
+
+type Walks = HashMap<(PathBuf, usize), Arc<Vec<(PathBuf, Vec<String>)>>>;
+static WALKS: std::sync::LazyLock<Mutex<Walks>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Drop the memoised listings: a new scan may see changed files.
+pub fn forget_walks() {
+    WALKS.lock().expect("lock").clear();
+}
+
+fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, Vec<String>)> {
     fn visit(d: &Path, level: usize, depth: usize, out: &mut Vec<(PathBuf, Vec<String>)>) {
         let Ok(rd) = std::fs::read_dir(d) else { return };
         let (mut dirs, mut files) = (Vec::new(), Vec::new());
@@ -494,6 +546,9 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "").unwrap();
         }
+        // The listing is memoised for a scan; a new scan forgets it.
+        assert_eq!(lockfiles(d).len(), 3, "memoised");
+        forget_walks();
         let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
         assert_eq!(
             got,

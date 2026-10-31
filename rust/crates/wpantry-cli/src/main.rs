@@ -64,7 +64,24 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
         }
     };
     let note = |m: &str| progress.eprintln(&Style::stderr().line(m));
-    let status = |m: &str| progress.set(m);
+    // WPANTRY_TIMINGS=1: every step with the seconds since the scan began,
+    // on stderr, so a slow run says where the time went.
+    let started = std::time::Instant::now();
+    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some();
+    // One line per step, not per file: a step whose message starts the same
+    // way as the last one within a quarter second is the same step.
+    let last = std::sync::Mutex::new((String::new(), std::time::Instant::now()));
+    let status = |m: &str| {
+        if timings {
+            let head: String = m.split_whitespace().next().unwrap_or("").to_string();
+            let mut last = last.lock().expect("lock");
+            if head != last.0 || last.1.elapsed() > std::time::Duration::from_millis(250) {
+                progress.eprintln(&format!("[{:7.2}s] {m}", started.elapsed().as_secs_f64()));
+                *last = (head, std::time::Instant::now());
+            }
+        }
+        progress.set(m);
+    };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
     let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask).run();

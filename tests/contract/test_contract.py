@@ -193,6 +193,20 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("pruned", out)
         self.assertTrue(self.db.exists())
+    def test_update_check_offline_reports_and_exits_0_or_10(self):
+        code, out, err = self.run_bin("update", "--check", "--offline")
+        # Offline with an empty cache: nothing known, so no update is claimed.
+        self.assertEqual(code, 0, err)
+        self.assertIn("couldn't check", out)
+        code, out, err = self.run_bin("update", "--check", "--version", "99.0.0", "--offline")
+        self.assertEqual(code, 10, out + err)
+        self.assertIn("99.0.0", out)
+        # The binary under test is a build in a checkout: reported, never replaced.
+        code, out, err = self.run_bin("update", "--no-input", "--version", "99.0.0", "--offline")
+        self.assertEqual(code, 10, out + err)
+        self.assertIn("built from a checkout", out)
+        code, out, err = self.run_bin("update", "--version", "nope", "--offline")
+        self.assertEqual(code, 3, out + err)
 
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"

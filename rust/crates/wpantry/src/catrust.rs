@@ -171,7 +171,7 @@ impl Checker {
         names.sort();
         let mut pem = String::new();
         for n in names {
-            if let Ok(b) = std::fs::read(&n) {
+            if let Ok(b) = crate::system::read_capped_bytes(&n, MAX_STORE) {
                 pem.push_str(&certificates(&String::from_utf8_lossy(&b)).concat());
             }
         }
@@ -202,7 +202,7 @@ impl Checker {
             if std::fs::metadata(bundle).map_or(true, |m| m.len() == 0) {
                 return None;
             }
-            match std::fs::read(bundle) {
+            match crate::system::read_capped_bytes(bundle, MAX_STORE) {
                 Ok(b) if certificates(&String::from_utf8_lossy(&b)).is_empty() => {
                     unchecked = Some("no PEM certificate in the file".to_string())
                 }
@@ -251,6 +251,8 @@ struct Pending {
 
 /// Stores verified at once; each runs its intermediates at once as well.
 const STORES_AT_ONCE: usize = 4;
+/// The largest trust store read (a system bundle is a few hundred KiB).
+const MAX_STORE: u64 = 16 << 20;
 
 fn sh(argv: &[&OsStr]) -> String {
     run(argv, Duration::from_secs(30))

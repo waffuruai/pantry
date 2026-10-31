@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] =
-    &["check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache"];
+    &["check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache", "update"];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -19,6 +19,8 @@ pub struct Check {
     pub offline: bool,
     pub json: bool,
     pub no_input: bool,
+    /// `--jobs N`: CPU-bound scans at once.
+    pub jobs: Option<usize>,
     pub gitleaks_config: Option<PathBuf>,
     /// `--licenses [FILE]`: check dependency licenses (off by default).
     pub check_licenses: bool,
@@ -37,6 +39,7 @@ pub enum Command {
     Sync { refresh: bool, json: bool },
     Schedule { action: String, every: String, at: String, dry_run: bool },
     Cache { action: String, older_than: i64 },
+    Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
     Skill,
 }
 
@@ -49,12 +52,13 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache} ...";
+const TOP_USAGE: &str =
+    "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache,update} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] --csv CSV",
@@ -69,7 +73,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -94,8 +98,11 @@ fn help(cmd: &str) -> String {
         "cache" => {
             "maintain the cache\n\npositional arguments:\n  {prune}               drop what no scan has used in a while, then compact the file\n\noptions:\n  -h, --help            show this help message and exit\n  --older-than DAYS     what counts as unused (default 90)"
         }
+        "update" => {
+            "check for a newer wpantry release and, after a yes, install it verified\n\noptions:\n  -h, --help       show this help message and exit\n  --check          only say whether a newer release exists (exit 10 when one does)\n  --yes            install without asking\n  --no-input       never ask: report only\n  --offline        use only the cached answer\n  --version VER    this release instead of the latest"
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache,update}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -118,6 +125,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--offline", false),
             ("--json", false),
             ("--no-input", false),
+            ("--jobs", true),
             ("--gitleaks-config", true),
             ("--licenses", true),
             ("--install-scripts", true),
@@ -129,6 +137,14 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
         "schedule" => &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false)],
         "cache" => &[("--help", false), ("--older-than", true)],
+        "update" => &[
+            ("--help", false),
+            ("--check", false),
+            ("--yes", false),
+            ("--no-input", false),
+            ("--offline", false),
+            ("--version", true),
+        ],
         _ => &[("--help", false)],
     }
 }
@@ -238,6 +254,12 @@ pub fn parse(argv: &[String]) -> Parsed {
                 .filter_map(|(_, v)| v.as_deref().map(PathBuf::from))
                 .collect();
             c.path = (!paths.is_empty()).then_some(paths);
+            if let Some(v) = value("--jobs") {
+                match v.parse::<usize>() {
+                    Ok(n) if n >= 1 => c.jobs = Some(n),
+                    _ => return fail(format!("argument --jobs: expected a number of 1 or more, got {v}")),
+                }
+            }
             for (opt, slot) in [
                 ("--gitleaks-config", &mut c.gitleaks_config),
                 ("--licenses", &mut c.licenses),
@@ -334,6 +356,18 @@ pub fn parse(argv: &[String]) -> Parsed {
                 },
             };
             Command::Cache { action, older_than }
+        }
+        "update" => {
+            if !positional.is_empty() {
+                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
+            }
+            Command::Update {
+                check: flag("--check"),
+                yes: flag("--yes"),
+                no_input: flag("--no-input"),
+                offline: flag("--offline"),
+                version: value("--version"),
+            }
         }
         "version" | "tools" | "skill" => {
             if !positional.is_empty() {

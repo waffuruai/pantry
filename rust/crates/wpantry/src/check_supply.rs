@@ -38,7 +38,9 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
         .filter_map(|(i, (j, stale))| j.as_ref().ok().filter(|_| *stale).map(|j| (i, j)))
         .collect();
     let ran = std::thread::scope(|s| -> Result<Vec<Option<Result<Value>>>> {
-        let running = s.spawn(|| system::par_map(&todo, GITLEAKS_AT_ONCE, |(_, job)| leaks::run_job(job)));
+        let at_once = gitleaks_at_once(scan);
+        let todo = &todo;
+        let running = s.spawn(move || system::par_map(todo, at_once, |(_, job)| leaks::run_job(job)));
         projects(scan, &repos)?;
         if !todo.is_empty() {
             scan.status(&format!("Scanning {} repos' git history for secrets (gitleaks)", todo.len()));
@@ -218,21 +220,26 @@ fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Res
     Ok(())
 }
 
-/// gitleaks scans run at once on a first run: each keeps a core busy.
-const GITLEAKS_AT_ONCE: usize = 4;
+/// gitleaks scans run at once on a first run (`--jobs`): each is CPU-bound,
+/// so together they get the machine's cores, not each of them all of them.
+fn gitleaks_at_once(scan: &Scan) -> usize {
+    scan.opts.jobs.unwrap_or_else(|| (system::cores() / 2).clamp(1, 4))
+}
 
-/// Each repo's gitleaks job, its fingerprint read at once, and whether its
-/// cached result is stale.
+/// Each repo's gitleaks job, its fingerprint and ref tips read at once, and
+/// whether its cached result is stale.
 fn secret_jobs(scan: &Scan, repos: &[Repo]) -> Result<Vec<(Result<leaks::Job>, bool)>> {
     if repos.is_empty() {
         return Ok(Vec::new());
     }
     let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
-    let jobs = system::par_map(repos, system::PROBES, |(_, root)| leaks::job(root, &config));
-    jobs.into_iter()
-        .map(|job| {
+    let threads = (system::cores() / gitleaks_at_once(scan)).max(1);
+    repos
+        .iter()
+        .map(|(_, root)| {
+            let job = leaks::job(&scan.cache, root, &config, threads);
             let stale = match &job {
-                Ok(j) => leaks::stale(&scan.cache, j, scan.opts.refresh, scan.opts.offline)?,
+                Ok(j) => leaks::stale(j, scan.opts.refresh, scan.opts.offline),
                 Err(_) => false,
             };
             Ok((job, stale))
@@ -253,6 +260,17 @@ fn secrets(
     let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
     for (((name, root), (job, _)), ran) in repos.iter().zip(jobs).zip(ran) {
         scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
+        if job.as_ref().is_ok_and(|j| j.own_policy) {
+            scan.add(Finding {
+                kind: "secret".into(),
+                component: format!("{name}/.gitleaks.toml"),
+                vuln_id: "REPO-POLICY".into(),
+                status: "warn".into(),
+                note: "the repo's own gitleaks config was ignored; the scan used your policy".into(),
+                fix_cmd: "Review the repo's .gitleaks.toml; pass it with --gitleaks-config to scan with it".into(),
+                ..Default::default()
+            });
+        }
         let found = match job.and_then(|job| leaks::finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
             Err(Error::Missing(_)) => {

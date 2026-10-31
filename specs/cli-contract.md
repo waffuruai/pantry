@@ -14,7 +14,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 
 ```
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
-                 [--json] [--no-input] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
+                 [--json] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export --csv FILE
 wpantry breach [--enable | --disable]
@@ -37,7 +37,8 @@ wpantry skill
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
-| `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` still wins over `--gitleaks-config` |
+| `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` is reported (`REPO-POLICY`, warn), never obeyed |
+| `--jobs N` | gitleaks scans at once (default: half the cores, at most 4); each gets a share of the cores |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `breach` | Show or set consent for the opt-in email breach check |
@@ -47,6 +48,7 @@ wpantry skill
 | `sync` | `sync [--refresh] [--json]`: refresh what the cache already knows, without an inventory: the feeds (CISA KEV, the malicious-package index, the cask catalog and browser releases, VS Code's lists, the latest wpantry), end-of-life dates for every product on record, and OSV's answers for every package version asked about before. Exit 0, or 1 when a source was unreachable. `--json`: `{"refreshed": [...], "failed": [{"source", "why"}], "packages": n}` |
 | `schedule` | `schedule install [--every hourly|daily|weekly] [--at HH:MM] [--dry-run]`, `status`, `uninstall`, `run`: a scheduled `sync` then `check --json --no-input` (never `--update`) through launchd (`~/Library/LaunchAgents/ai.waffuru.wpantry.plist`), a systemd user timer (`~/.config/systemd/user/wpantry.{service,timer}`) or cron. `run` writes `$XDG_STATE_HOME/wpantry/last.json` (default `~/.local/state/wpantry/`) and appends one line to `schedule.log`; one run at a time (`schedule.lock`). Default daily at 09:30 |
 | `cache` | `cache prune [--older-than DAYS]` (default 90): drop package versions not asked about since then, the advisories only they referred to, and cached runs that old, then `VACUUM` |
+| `update` | `update [--check] [--yes] [--no-input] [--offline] [--version VER]`: is there a newer release; after a yes (or `--yes`), install it. The download is checked against the release `SHA256SUMS` and then verified by the first installed verifier (packslip with the release signer pinned, `gh attestation verify` against `release.yml` at the tag, cosign against the same identity); with none, nothing is installed. An install mise, cargo or Homebrew made is updated through that tool; a source build is only reported. `check` prints one stderr line when a newer release is cached (`WPANTRY_NO_UPDATE_CHECK=1` turns it off) |
 
 ### Scope walk
 
@@ -59,6 +61,8 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The retired Python implementation's cache (`WSCANNER_DB`, default `…/wscanner/wscanner.db`) has the same schema |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
+| `WPANTRY_NO_UPDATE_CHECK` | Set to anything: `check` never mentions a newer wpantry release |
+| `WPANTRY_TIMINGS` | Set to anything: every scan step is printed to stderr with the seconds since the scan began (for finding slow steps; not under `--json`) |
 | `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
 
 ## Exit codes
@@ -69,6 +73,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | 1 | At least one finding has `status == "fail"`, or an unattended fix failed under `--update`. `tools` exits 1 when a required tool is missing |
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
+| 10 | `update`: a newer release exists and was not installed (`--check`, `--no-input`, no terminal, a "no", or a source build) |
 | 130 | Interrupted (Ctrl-C) |
 
 ## `check --json`
@@ -103,7 +108,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `component` | string | What it is about (`openssl`, `vite`, `~/code/app/.env`) |
 | `version` | string | Installed or locked version; `""` when none |
 | `location` | string | Path, lockfile, image or source; `""` when none |
-| `vuln_id` | string | Advisory id (CVE preferred), a gitleaks rule id, or a marker: `UNCHECKED`, `MISSING`, `EOL`, `OUTDATED`, `MALICIOUS`, `DEPRECATED`, `UNPINNED`, `BROWSER`, `OS-UPDATE`, `LICENSE`, `INSTALL-SCRIPT`, `NPM-SCRIPTS`, `BREACH` |
+| `vuln_id` | string | Advisory id (CVE preferred), a gitleaks rule id, or a marker: `UNCHECKED`, `MISSING`, `EOL`, `OUTDATED`, `MALICIOUS`, `DEPRECATED`, `UNPINNED`, `BROWSER`, `OS-UPDATE`, `LICENSE`, `INSTALL-SCRIPT`, `NPM-SCRIPTS`, `BREACH`, `REPO-POLICY` |
 | `status` | string | `fail` or `warn` |
 | `fixed` | string | The safe version; `""` when none |
 | `kev` | bool | In CISA KEV (also true for malicious packages) |

@@ -37,6 +37,7 @@ pub mod plist;
 pub mod re;
 pub mod repos;
 pub mod scanners;
+pub mod selfinstall;
 pub mod sha256;
 pub mod sync;
 pub mod system;

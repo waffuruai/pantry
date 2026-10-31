@@ -26,7 +26,13 @@ curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.2.0/install
 less install.sh && sh install.sh
 ```
 
-**With Homebrew**: coming; see [#10](https://github.com/waffuruai/pantry/issues/10). Windows: see [#11](https://github.com/waffuruai/pantry/issues/11).
+**With Homebrew** (macOS and Linux, no mise):
+
+```bash
+brew install waffuruai/tap/wpantry
+```
+
+The formula installs the same release binary the other two ways do and checks its SHA-256 against the digest the formula carries, which the release workflow copied from that release's `SHA256SUMS`. Homebrew verifies the digest, not the signature; to check provenance as well, run `gh attestation verify "$(brew --prefix wpantry)/bin/wpantry" --repo waffuruai/pantry` after installing (the binary is unchanged, so the attestation still matches). `brew upgrade wpantry` follows new releases once the tap's bump PR for them is merged. Windows: see [#11](https://github.com/waffuruai/pantry/issues/11).
 
 wpantry needs nothing else to run. It uses `git`, `gitleaks` and `openssl` for some checks: `wpantry tools` lists which are missing, and a missing one is reported, never skipped silently.
 
@@ -150,4 +156,4 @@ cargo build --release --locked                  # target/release/wpantry
 
 ## Upgrade and uninstall
 
-With mise: `mise upgrade packslip:github.com/waffuruai/pantry`, or change the pinned version. Otherwise, install a newer release the same way, and verify it again. To uninstall, delete the binary; the cache is `~/.cache/wpantry/` (or `$XDG_CACHE_HOME/wpantry/`, or wherever `WPANTRY_DB` points) and can be deleted too.
+With mise: `mise upgrade packslip:github.com/waffuruai/pantry`, or change the pinned version. With Homebrew: `brew upgrade wpantry`, and `brew uninstall wpantry` to remove it. Otherwise, install a newer release the same way, and verify it again. To uninstall, delete the binary; the cache is `~/.cache/wpantry/` (or `$XDG_CACHE_HOME/wpantry/`, or wherever `WPANTRY_DB` points) and can be deleted too.

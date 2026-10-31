@@ -16,8 +16,9 @@ A tag `vX.Y.Z` on `main`. Pushing it runs the release workflow:
    - It publishes `wpantry`, then `wpantry-cli`, to crates.io through trusted publishing.
 4. **packslip**: in a job that can't write the release, [packslip](https://packslip.dev) (`jdx/packslip`, pinned) signs a manifest of the three binaries: digests, platforms, and the command name `wpantry`. It links the publish job's attestations. mise's `packslip:` backend and `packslip verify` check releases against it.
 5. **release**: attaches the manifest to the draft as `packslip.sigstore.json`, checks the draft has every asset, and publishes it as the latest release. Then it dispatches the website's release receiver (`waffuruai/website` `release.yml`) with the `WEBSITE_DISPATCH_TOKEN` secret, so `https://waffuru.ai/pantry/install.sh` serves the new release within minutes. Without the secret, or if the dispatch fails, it warns; the next site deploy picks the release up. If a job before this one fails, the release stays a draft: fix the cause and rerun the failed jobs.
+6. **tap**: renders the Homebrew formula for the release ([`packaging/homebrew/bump.sh`](../../packaging/homebrew/bump.sh) writes the tag and the three digests from `SHA256SUMS` into [`packaging/homebrew/wpantry.rb`](../../packaging/homebrew/wpantry.rb)) and, with the `HOMEBREW_TAP_TOKEN` secret, pushes `bump/wpantry-vX.Y.Z` to `waffuruai/homebrew-tap` and opens the PR there; merging it is what makes `brew upgrade wpantry` see the release. Without the secret it warns and leaves the rendered formula as the `homebrew-formula` workflow artifact, to copy into the tap's `Formula/wpantry.rb` by hand. It can't fail the workflow.
 
-Nothing that signs or publishes holds a long-lived secret: attestations, cosign certificates, the packslip signature and crates.io tokens all come from the job's short-lived GitHub OIDC identity. The one secret, `WEBSITE_DISPATCH_TOKEN`, can only start the website's deploy, which verifies `install.sh` itself.
+Nothing that signs or publishes holds a long-lived secret: attestations, cosign certificates, the packslip signature and crates.io tokens all come from the job's short-lived GitHub OIDC identity. The two secrets, `WEBSITE_DISPATCH_TOKEN` and `HOMEBREW_TAP_TOKEN`, can only start the website's deploy, which verifies `install.sh` itself, and open a pull request on the tap, which a maintainer still merges.
 
 ## Versions
 
@@ -37,6 +38,7 @@ Done once per repository by an org owner; check it before the first release.
 5. **Trusted publishing** (after the first publish, crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`; until it is, the workflow skips the crates.io step.
 6. **Arm64 runners**: the build uses GitHub's `ubuntu-24.04-arm` runner; make sure the org can use it.
 7. **Website dispatch**: the repository secret `WEBSITE_DISPATCH_TOKEN`, a fine-grained token with Actions: write on `waffuruai/website`, as wrunner's release has. The website's own `GH_TOKEN` needs Contents: read on `waffuruai/pantry` while the repository is private.
+8. **Homebrew tap**: the repository `waffuruai/homebrew-tap` (public, default branch `main`, a `Formula/` directory holding `wpantry.rb` copied from `packaging/homebrew/wpantry.rb`, and a README that says `brew install waffuruai/tap/wpantry`), with branch protection on `main` so the bump PR is reviewed. Then the secret `HOMEBREW_TAP_TOKEN` in the `release` environment: a fine-grained token on that one repository with Contents: write and Pull requests: write, nothing else, expiring within a year. Until both exist the `tap` job warns and keeps the formula as an artifact. Later: homebrew-core, once the project meets its notability rules; that formula builds from source with the pinned toolchain.
 
 ## Before the release
 
@@ -100,6 +102,7 @@ Record the result (who verified, on what) as a comment on the release's tracking
 ## After the release
 
 - **ops**: a PR in `waffuruai/ops` that bumps the pinned version and its SHA-256 per platform (from `SHA256SUMS`), and verifies the attestation before install.
+- **Homebrew tap**: merge the `wpantry vX.Y.Z` PR the `tap` job opened on `waffuruai/homebrew-tap` (check the digests against the release's `SHA256SUMS`: `packaging/homebrew/bump.sh --check Formula/wpantry.rb vX.Y.Z SHA256SUMS`). If the job warned that the token is unset, copy the `homebrew-formula` artifact in by hand. Then `brew update && brew upgrade wpantry` on a Mac confirms it.
 - **wsentinel** and other embedders: bump the `=X.Y.Z` pin.
 - Close the release's tracking issue.
 

@@ -306,3 +306,73 @@ jobs:
           fi
           gh workflow run release.yml --repo waffuruai/website --ref main \
             -f product=pantry -f tag="$GITHUB_REF_NAME"
+
+  # The Homebrew tap (waffuruai/homebrew-tap, docs/internal/release.md): its
+  # formula installs the published binaries, so it is rendered from the
+  # release's SHA256SUMS by packaging/homebrew/bump.sh. With HOMEBREW_TAP_TOKEN
+  # (a fine-grained token on the tap alone: Contents and Pull requests, write)
+  # the job pushes a branch and opens the bump PR there; without it, it warns
+  # and keeps the rendered formula as an artifact to copy by hand. The release
+  # is out either way, so this job never fails the workflow.
+  tap:
+    name: Homebrew tap
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAP: waffuruai/homebrew-tap
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Render the formula from the release's SHA256SUMS
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir release
+          mkdir -p Formula
+          packaging/homebrew/bump.sh -o Formula/wpantry.rb packaging/homebrew/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
+          packaging/homebrew/bump.sh --check Formula/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
+          cat Formula/wpantry.rb
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homebrew-formula
+          path: Formula/wpantry.rb
+          if-no-files-found: error
+
+      # The token reaches git only through gh's credential helper, configured
+      # in the environment (nothing written to disk, nothing in a URL).
+      - name: Open the bump PR on the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is unset; the tap was not bumped for $GITHUB_REF_NAME. Copy the homebrew-formula artifact to $TAP as Formula/wpantry.rb."
+            exit 0
+          fi
+          export GH_TOKEN="$TAP_TOKEN"
+          export GIT_CONFIG_COUNT=3
+          export GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='!gh auth git-credential'
+          export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1='github-actions[bot]'
+          export GIT_CONFIG_KEY_2=user.email GIT_CONFIG_VALUE_2='41898282+github-actions[bot]@users.noreply.github.com'
+          git clone --depth 1 "https://github.com/$TAP" tap
+          branch="bump/wpantry-$GITHUB_REF_NAME"
+          mkdir -p tap/Formula
+          cp Formula/wpantry.rb tap/Formula/wpantry.rb
+          cd tap
+          if git diff --quiet -- Formula/wpantry.rb && git ls-files --error-unmatch Formula/wpantry.rb >/dev/null 2>&1; then
+            echo "the tap already has wpantry $GITHUB_REF_NAME"
+            exit 0
+          fi
+          git checkout -b "$branch"
+          git add Formula/wpantry.rb
+          git commit -m "wpantry $GITHUB_REF_NAME"
+          git push -u origin "$branch"
+          gh pr create --repo "$TAP" --base main --head "$branch" \
+            --title "wpantry $GITHUB_REF_NAME" \
+            --body "Formula for https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME, rendered from its SHA256SUMS by the release workflow (packaging/homebrew/bump.sh)."

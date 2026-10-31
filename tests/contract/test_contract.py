@@ -443,9 +443,9 @@ class Contract(unittest.TestCase):
                       "https://osv.dev/vulnerability/GHSA-k", json.dumps(record(None))))
         conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "kern", "1.0.0", 4_000_000_000, "GHSA-k"))
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      ("project", "kern", "1.0.0", "/w/package-lock.json", "CVE-2026-98432", "warn", "", 0, "CRITICAL",
-                      "TCP use-after-free (no fix released for npm yet)", "Until the fix lands: …", 0))
+                      "TCP use-after-free (no fix released for npm yet)", "Until the fix lands: …", 0, "", None, ""))
         conn.commit()
         conn.close()
 

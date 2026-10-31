@@ -38,7 +38,7 @@ done
 release() {
   rm -rf "${tmp:?}/release" && mkdir "$tmp/release"
   printf '#!/bin/sh\necho "wpantry 9.9.9 (rust, schema 1)"\n' > "$tmp/release/$asset"
-  (cd "$tmp/release" && if command -v sha256sum >/dev/null; then sha256sum "$asset"; else shasum -a 256 "$asset"; fi) \
+  (cd "$tmp/release" && if [ "$(uname -s)" = Darwin ] || ! command -v sha256sum >/dev/null; then shasum -a 256 "$asset"; else sha256sum "$asset"; fi) \
     > "$tmp/release/SHA256SUMS"
   echo '{}' > "$tmp/release/packslip.sigstore.json"
 }

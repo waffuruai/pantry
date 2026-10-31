@@ -163,6 +163,11 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], width: usize, f: impl Fn(&T) -> R 
     done.into_iter().map(|(_, r)| r).collect()
 }
 
+/// The machine's logical cores (1 when unknown).
+pub fn cores() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
 /// Run `argv` with stdin closed and `NO_COLOR=1`, killing it after
 /// `timeout`. An error only when it can't start or times out. The deadline
 /// covers the program and its output: a process it started in the

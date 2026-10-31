@@ -84,6 +84,7 @@ fn cmd_check(a: Check) -> Result<i32> {
         },
         refresh: a.refresh,
         offline: a.offline,
+        jobs: a.jobs,
         licenses: a.check_licenses,
         ask: !(a.json || a.dryrun || a.no_input),
     };

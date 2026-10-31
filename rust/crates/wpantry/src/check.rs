@@ -162,6 +162,9 @@ pub struct Options {
     pub licenses: bool,
     pub refresh: bool,
     pub offline: bool,
+    /// How many CPU-bound scans (gitleaks) run at once (`--jobs`); None
+    /// picks from the machine's cores.
+    pub jobs: Option<usize>,
     /// Whether the scan may ask the user something (the breach consent);
     /// the question goes to [`Scan::with_ask`]'s answerer.
     pub ask: bool,

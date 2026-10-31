@@ -21,7 +21,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Area | What |
 |---|---|
 | Your repos' dependencies | The lockfiles in every git repo it finds (Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer and more) |
-| Committed secrets | Each repo's whole git history, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit |
+| Committed secrets | Each repo's whole git history once, then only the commits its branches gained since, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit. A repo's own `.gitleaks.toml` is reported, not obeyed; its `.gitleaksignore` is |
 | Malicious packages | Every package name against the OpenSSF malicious-packages index |
 | AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
@@ -107,6 +107,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 |---|---|
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
+| `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
 | `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |

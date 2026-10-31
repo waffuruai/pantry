@@ -10,7 +10,7 @@
 //! else came with them. v5 and v6 also flag each package `dev: true|false`.
 
 use super::{Package, Scope, lines, plausible};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 
 fn unquote(s: &str) -> &str {
@@ -57,6 +57,9 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
     let mut asked: BTreeMap<(String, String), Scope> = BTreeMap::new();
     let mut v5 = false;
     let mut section = "";
+    // Spaces per level: pnpm writes two, but a lockfile reindented by hand
+    // is still the lockfile, so the first indented line sets the unit.
+    let mut unit = 0;
     let mut current: Option<Entry> = None;
     let mut flush = |cur: &mut Option<Entry>| {
         if let Some(e) = cur.take()
@@ -75,23 +78,41 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
         let item = line.trim();
         if indent == 0 {
             flush(&mut current);
-            if let Some(v) = line.strip_prefix("lockfileVersion:") {
-                v5 = unquote(v).starts_with('5');
+            let (key, value) = item.split_once(':').map_or((item, ""), |(k, v)| (k.trim(), v.trim()));
+            if key == "lockfileVersion" {
+                let v = unquote(value);
+                if !plausible(v) {
+                    return Err(Error::Invalid(format!("lockfileVersion: {value} isn't a version")));
+                }
+                v5 = v.starts_with('5');
             }
-            section = match item.trim_end_matches(':') {
+            // A section is a block (its entries follow, indented) or empty
+            // (`{}`); anything else isn't a lockfile pnpm wrote, and reading
+            // it as "no packages" would be a clean check of nothing.
+            if matches!(key, "packages" | "importers") && !matches!(value, "" | "{}") {
+                return Err(Error::Invalid(format!("{key}: {value} isn't a section")));
+            }
+            section = match key {
                 "packages" => "packages",
                 "importers" => "importers",
                 _ => "",
             };
             continue;
         }
+        if unit == 0 {
+            unit = indent;
+        }
+        if indent % unit != 0 {
+            return Err(Error::Invalid(format!("a line indented {indent} spaces in a file indented by {unit}")));
+        }
+        let level = indent / unit;
         match section {
             "packages" => {
-                if indent == 2 && item.ends_with(':') {
+                if level == 1 && item.ends_with(':') {
                     flush(&mut current);
                     let (name, version) = split_key(&item[..item.len() - 1], v5);
                     current = Some(Entry { name, version, dev: None });
-                } else if indent == 4
+                } else if level == 2
                     && let Some(cur) = current.as_mut()
                 {
                     if let Some(n) = item.strip_prefix("name:") {
@@ -103,8 +124,8 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
                     }
                 }
             }
-            "importers" => match indent {
-                4 => {
+            "importers" => match level {
+                2 => {
                     imp_scope = match item.trim_end_matches(':') {
                         "dependencies" => Some(Scope::Runtime),
                         "devDependencies" => Some(Scope::Dev),
@@ -113,8 +134,8 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
                     };
                     imp_name = None;
                 }
-                6 if imp_scope.is_some() => imp_name = Some(unquote(item.trim_end_matches(':')).to_string()),
-                8 => {
+                3 if imp_scope.is_some() => imp_name = Some(unquote(item.trim_end_matches(':')).to_string()),
+                4 => {
                     if let (Some(scope), Some(name), Some(v)) = (imp_scope, &imp_name, item.strip_prefix("version:")) {
                         let (alias, version) = resolved(v);
                         let key = (alias.unwrap_or_else(|| name.clone()), version);
@@ -180,5 +201,26 @@ mod tests {
         let got = parse(v6).unwrap();
         assert_eq!((got[0].scope, got[0].direct), (Scope::Dev, None), "no importers: directness unknown");
         assert_eq!(got[1].scope, Scope::Runtime);
+    }
+
+    /// A file with pnpm's keys but not pnpm's shape is an error, never a
+    /// lockfile with no packages; one reindented by hand still reads.
+    #[test]
+    fn a_shape_pnpm_doesnt_write_is_an_error_and_indentation_is_followed() {
+        for text in [
+            "lockfileVersion: [\n",
+            "lockfileVersion: '9.0'\n\npackages: {\n",
+            "lockfileVersion: '9.0'\n\nimporters: [\n",
+            "lockfileVersion: '9.0'\n\npackages:\n  a@1.0.0:\n   resolution: {integrity: sha512-x}\n",
+        ] {
+            assert!(matches!(parse(text), Err(crate::error::Error::Invalid(_))), "{text:?}");
+        }
+        assert_eq!(parse("lockfileVersion: '9.0'\n\npackages: {}\n").unwrap(), []);
+        let two = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      debug:\n        specifier: 2.6.8\n        version: 2.6.8\n\npackages:\n\n  debug@2.6.8:\n    resolution: {integrity: sha512-x}\n\n  ms@2.0.0:\n    resolution: {integrity: sha512-x}\n";
+        let four = "lockfileVersion: '9.0'\n\nimporters:\n\n    .:\n        dependencies:\n            debug:\n                specifier: 2.6.8\n                version: 2.6.8\n\npackages:\n\n    debug@2.6.8:\n        resolution: {integrity: sha512-x}\n\n    ms@2.0.0:\n        resolution: {integrity: sha512-x}\n";
+        let got = parse(four).unwrap();
+        assert_eq!(got, parse(two).unwrap());
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].name.as_str(), got[0].direct), ("debug", Some(true)));
     }
 }

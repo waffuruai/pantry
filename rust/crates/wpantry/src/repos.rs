@@ -5,7 +5,7 @@
 //! (`specs/cli-contract.md#scope-walk`).
 
 use crate::system::{Status, short};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -350,11 +350,22 @@ pub fn compose_images(path: &Path) -> Vec<String> {
     out
 }
 
-/// [(lockfile or workspace file, package)] for dependencies that run code at
-/// install time: npm's `hasInstallScript`, and the builds a pnpm workspace
-/// allows (pnpm 10+ blocks the rest).
-pub fn install_scripts(files: &[PathBuf]) -> Vec<(PathBuf, String)> {
-    let mut out = BTreeSet::new();
+/// A dependency that runs code at install time: the lockfile or workspace
+/// file that says so, the package, and the versions the lockfile pins
+/// (empty when none could be read).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InstallScript {
+    pub file: PathBuf,
+    pub name: String,
+    pub versions: Vec<String>,
+}
+
+/// The dependencies that run code at install time: npm's `hasInstallScript`
+/// (with the entry's `version`), and the builds a pnpm workspace allows
+/// (pnpm 10+ blocks the rest), at the versions the sibling `pnpm-lock.yaml`
+/// pins.
+pub fn install_scripts(files: &[PathBuf]) -> Vec<InstallScript> {
+    let mut out: BTreeMap<(PathBuf, String), BTreeSet<String>> = BTreeMap::new();
     for f in files {
         match f.file_name().and_then(|n| n.to_str()) {
             Some("package-lock.json" | "npm-shrinkwrap.json") => {
@@ -367,21 +378,32 @@ pub fn install_scripts(files: &[PathBuf]) -> Vec<(PathBuf, String)> {
                             .is_some_and(|h| !matches!(h, serde_json::Value::Null | serde_json::Value::Bool(false)));
                         if !k.is_empty() && truthy {
                             let name = k.rsplit("node_modules/").next().unwrap_or(k);
-                            out.insert((f.clone(), name.to_string()));
+                            let versions = out.entry((f.clone(), name.to_string())).or_default();
+                            if let Some(ver) = v.get("version").and_then(|x| x.as_str()) {
+                                versions.insert(ver.to_string());
+                            }
                         }
                     }
                 }
             }
             Some("pnpm-lock.yaml") => {
                 let ws = f.with_file_name("pnpm-workspace.yaml");
-                for name in pnpm_allowed_builds(&ws) {
-                    out.insert((ws.clone(), name));
+                let allowed = pnpm_allowed_builds(&ws);
+                if allowed.is_empty() {
+                    continue;
+                }
+                let locked = crate::lockfiles::pnpm::parse(&text(f)).unwrap_or_default();
+                for name in allowed {
+                    let versions = out.entry((ws.clone(), name.clone())).or_default();
+                    versions.extend(locked.iter().filter(|p| p.name == name).map(|p| p.version.clone()));
                 }
             }
             _ => {}
         }
     }
-    out.into_iter().collect()
+    out.into_iter()
+        .map(|((file, name), versions)| InstallScript { file, name, versions: versions.into_iter().collect() })
+        .collect()
 }
 
 /// Names under `onlyBuiltDependencies:` (a list) or `allowBuilds:` (a map of
@@ -514,13 +536,27 @@ mod tests {
         let tmp = TempDir::new("scripts").unwrap();
         let d = tmp.path();
         let lock = d.join("package-lock.json");
-        std::fs::write(&lock, r#"{"packages": {"": {}, "node_modules/esbuild": {"hasInstallScript": true}, "node_modules/@x/y": {"hasInstallScript": true}, "node_modules/z": {}}}"#).unwrap();
-        std::fs::write(d.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        std::fs::write(&lock, r#"{"packages": {"": {}, "node_modules/esbuild": {"version": "0.28.1", "hasInstallScript": true}, "node_modules/@x/y": {"hasInstallScript": true}, "node_modules/z": {"version": "1.0.0"}}}"#).unwrap();
+        std::fs::write(
+            d.join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n\npackages:\n\n  sharp@0.35.5:\n    resolution: {integrity: sha512-x}\n\n  workerd@1.20261019.1:\n    resolution: {integrity: sha512-y}\n\n  workerd@1.20261031.1:\n    resolution: {integrity: sha512-z}\n",
+        )
+        .unwrap();
         std::fs::write(d.join("pnpm-workspace.yaml"), "packages:\n  - .\nonlyBuiltDependencies:\n  - sharp\n  - 'unrs-resolver'\nallowBuilds:\n  workerd: true\n  core-js: false\n").unwrap();
-        let mut got: Vec<String> =
-            install_scripts(&[lock, d.join("pnpm-lock.yaml")]).into_iter().map(|(_, n)| n).collect();
-        got.sort();
-        assert_eq!(got, ["@x/y", "esbuild", "sharp", "unrs-resolver", "workerd"]);
+        let got: Vec<(String, Vec<String>)> =
+            install_scripts(&[lock, d.join("pnpm-lock.yaml")]).into_iter().map(|s| (s.name, s.versions)).collect();
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            [
+                ("@x/y".to_string(), s(&[])),
+                ("esbuild".to_string(), s(&["0.28.1"])),
+                ("sharp".to_string(), s(&["0.35.5"])),
+                ("unrs-resolver".to_string(), s(&[])),
+                ("workerd".to_string(), s(&["1.20261019.1", "1.20261031.1"])),
+            ],
+            "npm entries carry their version, pnpm builds the lock's versions, unknown ones none"
+        );
     }
 
     #[test]

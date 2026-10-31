@@ -92,14 +92,20 @@ impl Finding {
 }
 
 /// The policy files a scan reads; the bundled defaults unless the caller
-/// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`).
+/// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`,
+/// `--repo-hooks`).
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
     pub gitleaks_config: Option<PathBuf>,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
+    /// Indicators of hijacked repos (`--repo-hooks`); the bundled list by default.
+    pub repo_hooks: Option<PathBuf>,
     /// Posture checks to skip (`--posture-policy`); the bundled, empty list by default.
     pub posture: Option<PathBuf>,
+    /// Suspicious-code exemptions (`--suspect-policy`): ids and paths that
+    /// only warn; the bundled, empty list by default.
+    pub suspect: Option<PathBuf>,
 }
 
 impl Policy {
@@ -109,6 +115,21 @@ impl Policy {
 
     pub fn licenses(&self) -> Vec<String> {
         listed(self.licenses.as_deref(), crate::defaults::LICENSES)
+    }
+
+    pub fn suspect_policy(&self) -> crate::suspect::Policy {
+        crate::suspect::Policy::parse(&match &self.suspect {
+            Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+            None => crate::defaults::SUSPECT.to_string(),
+        })
+    }
+
+    /// The repo-hook indicator list's text (see `hooks::Indicators::parse`).
+    pub fn repo_hooks(&self) -> String {
+        match &self.repo_hooks {
+            Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+            None => crate::defaults::REPO_HOOKS.to_string(),
+        }
     }
 
     pub fn posture_skip(&self) -> Vec<String> {
@@ -149,6 +170,24 @@ pub fn display_id(rec: &Value) -> String {
         .chain(crate::json::strs_at(rec, "aliases"))
         .find(|a| a.starts_with("CVE-"))
         .unwrap_or_else(|| id.to_string())
+}
+
+/// The step for an advisory with no fix released, from the mitigations
+/// list (bundled, or `--mitigations FILE`).
+pub fn mitigation(id: &str) -> Option<String> {
+    mitigation_in(crate::defaults::MITIGATIONS, id)
+}
+
+pub fn mitigation_in(text: &str, id: &str) -> Option<String> {
+    text.lines().filter(|l| !l.starts_with('#')).find_map(|l| {
+        let (k, v) = l.split_once('\t').or_else(|| l.split_once("  "))?;
+        (k.trim().eq_ignore_ascii_case(id)).then(|| v.trim().to_string())
+    })
+}
+
+/// Severities worth a warning even with no fix to apply.
+pub fn high_impact(severity: &str) -> bool {
+    matches!(severity, "CRITICAL" | "HIGH")
 }
 
 pub fn is_kev(rec: &Value, kev: &HashSet<String>) -> bool {
@@ -425,6 +464,30 @@ impl<'a> Scan<'a> {
                 .max_by(|a, b| order.cmp(a, b));
             let Some(safe) = safe else {
                 self.unfixed += 1;
+                // No released fix: still worth knowing when it is Critical,
+                // High or exploited in the wild. A warning with the
+                // mitigation, and `wpantry watch` asks again often.
+                let severity = severity_of(main);
+                let kev = group.iter().any(|r| is_kev(r, &self.kev));
+                if high_impact(&severity) || kev {
+                    let id = display_id(main);
+                    let step = mitigation(&id).unwrap_or_else(|| {
+                        "No fix released for this package yet: keep checking (wpantry watch, or an hourly schedule) and reduce exposure where you can".into()
+                    });
+                    self.add(Finding {
+                        vuln_id: id,
+                        status: "warn".into(),
+                        kev,
+                        severity,
+                        note: format!(
+                            "{} (no fix released for {} yet)",
+                            str_at(main, "summary"),
+                            if eco.is_empty() { "it" } else { &eco }
+                        ),
+                        fix_cmd: step,
+                        ..Finding::of(c)
+                    });
+                }
                 continue;
             };
             failing = failing || status == "fail";
@@ -617,6 +680,45 @@ mod tests {
         assert_eq!(s.unfixed, 1);
     }
 
+    /// A Critical advisory with no fix anywhere still appears, as a warning
+    /// with the mitigation as its step; a Moderate one only counts.
+    #[test]
+    fn unfixed_high_impact_advisories_warn_with_a_mitigation() {
+        let net = Fake::offline();
+        let dir = crate::system::TempDir::new("check").unwrap();
+        let mut s = scan(&net, &dir);
+        let mut c = Component::new("os", "linux-image", "6.8.0-45.45", "/var/lib/dpkg/status");
+        c.osv = Some(("Ubuntu:24.04:LTS".into(), "linux-image".into(), "6.8.0-45.45".into()));
+        let open = json!([{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]);
+        let recs = vec![
+            json!({"id": "UBUNTU-CVE-2026-98432", "aliases": ["CVE-2026-98432"], "summary": "TCP use-after-free",
+                   "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                   "affected": [{"package": {"ecosystem": "Ubuntu:24.04:LTS", "name": "linux-image"}, "ranges": open}]}),
+            json!({"id": "UBUNTU-CVE-2026-1", "aliases": ["CVE-2026-1"], "summary": "minor",
+                   "database_specific": {"severity": "MODERATE"},
+                   "affected": [{"package": {"ecosystem": "Ubuntu:24.04:LTS", "name": "linux-image"}, "ranges": open}]}),
+        ];
+        assert!(!s.advisories(&c, &recs, None, "fail", Some(osv::group_by_alias(&recs))), "a warning doesn't fail");
+        assert_eq!(s.unfixed, 2);
+        assert_eq!(s.findings.len(), 1);
+        let f = &s.findings[0];
+        assert_eq!(
+            (f.vuln_id.as_str(), f.status.as_str(), f.fixed.as_str(), f.severity.as_str()),
+            ("CVE-2026-98432", "warn", "", "CRITICAL")
+        );
+        assert!(f.note.contains("no fix released"), "{}", f.note);
+        assert!(f.fix_cmd.contains("hdrlength"), "{}", f.fix_cmd);
+        assert!(!f.fix_auto);
+    }
+
+    #[test]
+    fn mitigations_are_looked_up_by_id() {
+        assert!(mitigation("CVE-2026-98432").unwrap().contains("mptcp"));
+        assert!(mitigation("cve-2026-98432").is_some());
+        assert_eq!(mitigation("CVE-2000-1"), None);
+        assert_eq!(mitigation_in("# c\nX-1\tdo this\n", "X-1").as_deref(), Some("do this"));
+    }
+
     #[test]
     fn unchecked_is_reported_once() {
         let net = Fake::offline();
@@ -633,7 +735,7 @@ mod tests {
 
     #[test]
     fn listed_files_and_bundled_defaults() {
-        assert!(listed(None, crate::defaults::INSTALL_SCRIPTS).contains(&"esbuild".to_string()));
+        assert!(listed(None, crate::defaults::INSTALL_SCRIPTS).iter().any(|l| l.starts_with("esbuild@")));
         assert!(listed(Some(Path::new("/nonexistent")), "x").is_empty());
     }
 }

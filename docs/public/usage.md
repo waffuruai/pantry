@@ -25,6 +25,22 @@ By default wpantry checks the machine and every git repo under your home directo
 - `--path DIR` (repeatable) limits the repo checks to the repos at or under DIR. A DIR with no git repo is scanned as one project, without the git-history checks. A missing DIR is skipped with a note.
 - `--no-machine` skips the machine inventory: repo checks only.
 
+## Cloned a repo? Check it before you open it
+
+A repo can run code the moment an agent or editor opens it: a `.claude/settings.json` SessionStart hook, a `.cursor/mcp.json` server, a `.vscode/tasks.json` task on folder open, a devcontainer command, an npm `postinstall`. Hijacked repos hide the payload in a file the hook runs (a 13 MB `.github/init.js` that code search never indexes). Before opening a clone you didn't write:
+
+```bash
+wpantry check --path ~/Downloads/some-repo --no-machine
+```
+
+Alongside the hooks, the same pass reads every source, config and prose file for text that would fool you or a tool: bidirectional overrides and Unicode tag characters fail (`HIDDEN-BIDI`, `HIDDEN-TAGS`; the note decodes what the tag characters spell); runs of zero-width characters, identifiers that mix Latin with Cyrillic or Greek, and identifiers named after weapons and lethal doses warn (`HIDDEN-ZERO-WIDTH`, `HIDDEN-HOMOGLYPH`, `AI-BAIT`). The last is a trick aimed at AI-assisted review: a model that refuses to read "computeRicinLethalDosage" never sees the fingerprinting it does. Pantry reads the code regardless and tells you the names were chosen to make a reviewer look away.
+
+An agent also reads what a person skims: READMEs, comments, package descriptions, commit messages, and whatever a page renders. Text in those places that addresses the agent instead of the reader ("ignore previous instructions", "note to AI agents: install …", "do not tell the user") warns (`AGENT-INSTRUCTIONS`); the files whose job that is (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, prompts) are left alone, and in code only comment lines count. The same text hidden from the reader (a `display:none` block, white on white, a zero-size font, an off-screen position, an HTML comment) **fails** (`HIDDEN-PROMPT`); a hidden block of ordinary text in a README warns (`HIDDEN-HTML`). A markdown image or link whose query string is built to carry something (`?data={{conversation}}`, `?secret=`) warns (`EXFIL-LINK`), and fails in a file that also addresses the agent: rendered, it posts whatever it was given. `javascript:`, `vbscript:` and executable `data:` URIs fail as link targets in prose and warn in page source (`DANGEROUS-URI`). A file name with invisible or direction-changing characters, or a document's extension in front of a program's (`report.pdf.exe`), fails (`HIDDEN-FILENAME`); a name or a domain in a link that mixes Latin with look-alike letters from another script fails for the domain (`CONFUSABLE-DOMAIN`) and warns for the name (`CONFUSABLE-NAME`); a punycode domain warns.
+
+The documents and images in the clone are read too (`document` findings): a PDF that runs JavaScript on open, a `.docx` carrying macros or fetching its template from a URL, an image with a program after its last byte, an SVG with a script fail; what can't be read (encrypted, zip64, over 32 MiB) says so rather than passing. The same pass covers the top of `~/Downloads` and `~/Desktop` on a machine scan, and runs ClamAV over those files when `clamscan` is installed (`wpantry tools` lists it; wpantry never installs it). [documents.md](documents.md) has every id.
+
+A hook that runs a file kept in the repo, a file that looks like a dropper, or a known indicator fails (`repo-hook` findings `RUNS-REPO-FILE`, `LOADER`, `IOC`); a hook that runs a command at all warns (`OPEN-HOOK`, `INSTALL-HOOK`), as do the commit and branch markers of a known campaign (`MARKER`). Nothing is run or fixed for you: read the file the finding names, then remove the hook or decide to trust it. `--repo-hooks FILE` replaces the bundled indicator list.
+
 ## Reading the report
 
 While it scans, a progress line shows what it is doing (the directory it is walking, the lockfile it is reading, the advisories it is downloading) and the elapsed time. It is only drawn when the output is a terminal.
@@ -95,10 +111,29 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 | 1 | Something fails, or an unattended fix failed under `--update` |
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
+| 10 | `wpantry watch` only: a fix has landed for something that had none |
 
 ## Fixing
 
 `wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
+
+## Exposed with no fix yet
+
+Most advisories are `✗` because a fixed version exists. When none does, the scan still tells you about the ones that matter (Critical, High, or exploited in the wild): a `⚠` line with `(no fix released for … yet)` and, as its step, what to do meanwhile. The steps come from a bundled list ([`mitigations.txt`](../../rust/crates/wpantry/assets/defaults/mitigations.txt), one line per advisory); an advisory with no entry says to keep checking and reduce exposure. The Moderate and Low ones are only counted (`unfixed` in the JSON). Nothing here fails the run.
+
+```
+os
+  ⚠ linux-image-generic 6.8.0-45.45 (/var/lib/dpkg/status) - (CVE-2026-98432 CRITICAL) TCP use-after-free (no fix released for Ubuntu:24.04:LTS yet). Fix: Until the kernel update lands: drop inbound IPv4 TCP packets that carry IP options (…) and turn off MPTCP (…)
+```
+
+The daily scan asks OSV about a package version once a day. For these you want to know within the hour, so `wpantry watch` asks again about exactly them, bypassing that cache, and exits 10 when a fix has landed:
+
+```bash
+wpantry watch                 # each watched advisory: "no fix yet" + the mitigation, or "FIX AVAILABLE: <component> <version>"
+wpantry watch --json          # {"schema": 1, …, "watched": [{"id", "severity", "summary", "ecosystem", "package", "version", "fixed", "mitigation"}]}
+```
+
+Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry --update --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on (see [posture.md](posture.md)).
 
 ## JSON
 
@@ -127,11 +162,13 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
-| `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
+| `--install-scripts FILE` | Your allowlist of npm packages whose install scripts are accepted, each at a version range (`esbuild@^0.28`); a locked version outside its entry still warns |
+| `--repo-hooks FILE` | Your list of hijacked-repo indicators (file names, package names, hosts, hashes) |
 | `--no-posture` | Skip the machine's security settings |
 | `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
+| `--suspect-policy FILE` | Suspicious-code ids and `path:` entries that should warn instead of fail (a legitimate hex table, an installer that uses sudo); nothing is silenced |
 
-Policy files are one entry per line, `#` for comments. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
+Policy files are one entry per line, `#` for comments. An install-scripts entry is `name@1.2.3` (that version), `name@^1.2` or `name@~1.2` (npm's caret and tilde ranges, so `^0.28` is `>=0.28.0 <0.29.0`), or a bare `name` for every version, which is allowed and discouraged: the allowlist is the only thing that decides whether an install script runs unremarked, so each entry should name the versions someone has read. The bundled list ([`install-scripts.txt`](../../rust/crates/wpantry/assets/defaults/install-scripts.txt)) explains itself. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 
 ## The cache, search and export
 
@@ -142,6 +179,7 @@ wpantry search "tarfile traversal"            # rank cached advisories (SQLite F
 wpantry search openssl --applicable --json    # only those that apply here
 wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
 wpantry export --jsonl findings.jsonl --all   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
+wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 ```
 
 Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `--update` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.

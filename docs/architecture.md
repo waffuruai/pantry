@@ -65,10 +65,12 @@ flowchart TB
 
 The rule every module follows: when wpantry cannot tell, it says so, and never lets the gap make the result look better.
 
-- A missing tool fails (`MISSING`); an unreachable source warns (`unchecked`). An OSV answer older than a day that couldn't be refreshed, and an advisory OSV names but can't serve, are reported unchecked while the findings they do give still stand. A `querybatch` answer that isn't an object is an error, not "no advisories".
+- A missing tool fails (`MISSING`); an unreachable source warns (`unchecked`). An OSV answer older than a day that couldn't be refreshed, and an advisory OSV names but can't serve, are reported unchecked while the findings they do give still stand; an advisory OSV changed but can't serve keeps its old record, which still counts, and is reported until the new revision arrives. A `querybatch` answer that isn't an object, or whose `vulns` isn't a list of advisories with ids, is an error, not "no advisories", and never replaces an earlier answer.
 - A malicious-package report that can't be fetched is reported unchecked and asked again next run; nothing is made up for it.
-- A lockfile that isn't the format it is named as (no `lockfileVersion`, no `module` line), or that links outside its repo, is reported unchecked instead of read as empty. `npm-shrinkwrap.json` is read, and wins over a `package-lock.json` beside it, as npm does.
-- A trust store openssl can't load is unchecked, not "doesn't trust the distrusted CAs". A posture check that can't tell is reported as such, never as a pass.
+- A lockfile that isn't the format it is named as (no `lockfileVersion`, no `module` line, a `packages` that isn't the section npm or pnpm writes), or that links outside its repo, is reported unchecked instead of read as empty. `npm-shrinkwrap.json` is read, and wins over a `package-lock.json` beside it, as npm does.
+- A trust store openssl can't load is unchecked, not "doesn't trust the distrusted CAs"; `PIP_CERT`, when set, is pip's store and is judged like any other. A posture check that can't tell is reported as such, never as a pass.
+- A gitleaks run that leaves no report, or one that isn't a list of findings, is a failed run (unchecked), never a repo with no secrets; only `[]` is none.
+- A Python distribution whose metadata is missing, unreadable or names no version is a gap in that interpreter's packages, reported unchecked, never a package that isn't installed.
 - An advisory whose only fixes are older than the installed version (it came back in a later release) counts as unfixed, not as a fix that would be a downgrade.
 - A container export cut short is an error, not an image with fewer files; an image whose packages can't be read (rpm-based) is unchecked.
 - A program that leaves a background process holding its output pipes can't hold the scan past its timeout.

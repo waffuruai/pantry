@@ -15,7 +15,7 @@ repository = "https://github.com/waffuruai/pantry"
 serde = { version = "=1.0.229", default-features = false, features = ["std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 rusqlite = { version = "=0.41.0", features = ["bundled"] }
-ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "platform-verifier"] }
+ureq = { version = "=3.5.0", default-features = false, features = ["rustls", "platform-verifier"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 wpantry = { path = "crates/wpantry", version = "=0.2.0" }
 

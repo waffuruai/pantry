@@ -40,6 +40,6 @@ mise run test
 
 A change to the CLI, the JSON output, the exit codes or the cache schema updates [specs/cli-contract.md](specs/cli-contract.md) in the same PR and follows its change rule: additive only, or bump `schema`.
 
-Keep examples and fixtures generic. Do not commit secrets, tokens, real email addresses, usernames, machine identifiers, personal paths or captured scan output. The one exception is `rust/supply-chain/imports.lock`, which copies other projects' published `cargo vet` audits with the auditor identities those projects publish. A finding from your own machine is reported as a minimal reproducer, never as a pasted report.
+Keep examples and fixtures generic. Do not commit secrets, tokens, real email addresses, usernames, machine identifiers, personal paths or captured scan output. The exceptions are under `rust/supply-chain/`: `imports.lock` copies other projects' published `cargo vet` audits with the auditor identities those projects publish, and `audits.toml` records ours under the team identity `Waffuru AI, Inc. <security@waffuru.ai>` (the commit says who did the work). A finding from your own machine is reported as a minimal reproducer, never as a pasted report.
 
 Security reports do not go in a pull request or a public issue. Follow [SECURITY.md](SECURITY.md).

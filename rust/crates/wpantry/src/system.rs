@@ -87,12 +87,14 @@ impl Drop for TestHome {
     }
 }
 
-/// $HOME (Python: `os.path.expanduser("~")`).
+/// $HOME (Python: `os.path.expanduser("~")`); on Windows, `%USERPROFILE%`
+/// when HOME is unset.
 pub fn home() -> PathBuf {
     if let Some(h) = HOME_OVERRIDE.with(|h| h.borrow().clone()) {
         return h;
     }
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    let set = |k: &str| std::env::var_os(k).filter(|h| !h.is_empty()).map(PathBuf::from);
+    set("HOME").or_else(|| if cfg!(windows) { set("USERPROFILE") } else { None }).unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// `~/x` for paths under $HOME, as the report shows them. Matches Python's
@@ -110,14 +112,27 @@ pub fn github(repo: &str) -> String {
     format!("https://github.com/{repo}.git")
 }
 
-/// The first executable called `name` on PATH (Python: `shutil.which`).
+/// PATH's directories, in order, split as the platform does (`:` on unix,
+/// `;` on Windows); an empty entry stays "" (the current directory).
+pub fn path_dirs() -> Vec<String> {
+    match std::env::var_os("PATH") {
+        Some(p) => std::env::split_paths(&p).map(|d| d.to_string_lossy().into_owned()).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The first executable called `name` on PATH (Python: `shutil.which`). On
+/// Windows a bare name also matches `name.exe`, `.cmd` and `.bat`.
 pub fn which(name: &str) -> Option<PathBuf> {
-    if name.contains('/') {
+    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
         let p = PathBuf::from(name);
         return is_executable(&p).then_some(p);
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| is_executable(p))
+    let suffixes: &[&str] = if cfg!(windows) && !name.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    std::env::split_paths(&path)
+        .flat_map(|d| suffixes.iter().map(move |s| d.join(format!("{name}{s}"))))
+        .find(|p| is_executable(p))
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -469,7 +484,7 @@ pub fn owner(real: &str) -> &'static str {
 /// Every distinct executable called `name` on PATH, then in the `extra`
 /// directory globs, as (shown path, real path).
 pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
+    let mut dirs: Vec<String> = path_dirs();
     dirs.extend(expand(extra));
     let mut seen = Vec::new();
     let mut out = Vec::new();
@@ -601,6 +616,7 @@ impl Drop for TempDir {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn capped_reads_refuse_devices_and_oversize() {
         let dir = TempDir::new("read").unwrap();
@@ -653,6 +669,7 @@ mod tests {
         assert!(par_map(&[] as &[u8], 8, |&b| b).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn exec_captures_and_times_out() {
         let o = exec(
@@ -668,6 +685,7 @@ mod tests {
 
     /// A background process holding the pipes doesn't hold the call: not
     /// when the program is killed at the deadline, nor when it exits first.
+    #[cfg(unix)]
     #[test]
     fn exec_deadline_covers_processes_left_holding_the_pipes() {
         for script in ["sleep 5 & wait", "sleep 5 &"] {

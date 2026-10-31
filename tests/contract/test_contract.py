@@ -131,7 +131,10 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.run_bin("check", "--help")[0], 0)
 
     def test_exit_3_when_the_cache_cant_be_opened(self):
-        env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
+        # A path under a regular file can't be created on any platform.
+        blocker = Path(self.tmp.name, "not-a-dir")
+        blocker.write_text("")
+        env = dict(self.env, WPANTRY_DB=str(blocker / "w.db"))
         code, _, err = self.run_bin("search", "x", env=env)
         self.assertEqual(code, 3)
         self.assertIn(f"{NAME}:", err)

@@ -105,6 +105,17 @@ pub fn cmp(a: &str, b: &str) -> Ordering {
     key(a).cmp(&key(b))
 }
 
+/// Whether a version from a feed can be put into a command as is: one
+/// word of version characters, never a flag, a quote or a second argument.
+/// Fix commands are built by substitution, so anything else stays a
+/// finding without a command (S5).
+pub fn is_safe_token(v: &str) -> bool {
+    let mut chars = v.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
+        && v.len() <= 100
+        && chars.all(|c| c.is_ascii_alphanumeric() || ".+~_:-".contains(c))
+}
+
 pub fn lt(a: &str, b: &str) -> bool {
     cmp(a, b) == Ordering::Less
 }
@@ -179,6 +190,19 @@ pub fn same_or_newer(installed: &str, latest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_plain_version_token_is_safe() {
+        for ok in ["4.17.21", "1.0.0-beta.1+build.5", "2:1.35+dfsg-3ubuntu0.4", "v2", "20260101", "1.2.3_r1~pre"] {
+            assert!(is_safe_token(ok), "{ok}");
+        }
+        for bad in
+            ["", "4.17.21 evil-pkg", "--registry=evil", "-1", "1'; rm -rf /", "1.0\n2.0", "1.0\t", "a/b", "1.0$", "é.1"]
+        {
+            assert!(!is_safe_token(bad), "{bad:?}");
+        }
+        assert!(!is_safe_token(&"9".repeat(101)));
+    }
 
     // The test vectors the Python implementation had (`Versions`).
     #[test]

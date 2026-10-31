@@ -11,7 +11,7 @@ use crate::feeds;
 use crate::osdb;
 use crate::osv::{self, Item};
 use crate::system::{self, Component, MACOS, now};
-use crate::{apps as apps_mod, catrust, packages, scanners, tools, versions};
+use crate::{apps as apps_mod, catrust, cellar, packages, scanners, tools, versions};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -28,15 +28,22 @@ fn manual(formula: &str) -> Option<&'static str> {
 pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
     // The probes that need nothing from the scan run beside it: the trust
     // stores and Software Update's last scan, seconds of subprocesses each.
+    // brew vulns takes minutes on a first run: it starts now, beside the
+    // inventory and the OSV round trips, and is read at the end.
+    let brew_job = scanners::brew_job(&scan.cache, scan.opts.refresh, scan.opts.offline)?;
     std::thread::scope(|s| {
         let trust = s.spawn(catrust::check);
         let updates = s.spawn(apps_mod::macos_updates);
+        let brew_ran = brew_job.as_ref().filter(|j| j.stale).map(|j| s.spawn(move || scanners::brew_scan(j)));
         let found = inventory(scan);
         components(scan, &found)?;
         apps(scan)?;
         os_updates(scan, joined(updates))?;
-        brew(scan)?;
+        brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;
         ca_trust(scan, joined(trust));
+        if !scan.opts.no_posture {
+            posture(scan);
+        }
         Ok(found)
     })
 }
@@ -61,6 +68,29 @@ pub fn inventory(scan: &mut Scan) -> Vec<Component> {
 fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     scan.status("Finding installed tools, runtimes and package managers");
     let mut found = tools::tools();
+    // Bottles poured without the `brew` command (mise's brew: engine): read
+    // from the Cellar, since `brew vulns` can't run and `tools` leaves
+    // Cellar-owned binaries to it. With brew present, brew vulns covers them.
+    if system::which("brew").is_none() {
+        scan.status("Reading the Homebrew Cellar (no brew)");
+        if let Some((cellar, inv)) = cellar::inventory() {
+            scan.count("Homebrew formulae (Cellar, no brew)", inv.components.len() as i64);
+            if !inv.unmapped.is_empty() {
+                let shown: Vec<&str> = inv.unmapped.iter().take(6).map(String::as_str).collect();
+                let more = if inv.unmapped.len() > 6 { ", …" } else { "" };
+                scan.unchecked(
+                    "Homebrew formulae wpantry can't map to OSV",
+                    &format!(
+                        "{} formulae in {} ({}{more}) have no catalog entry",
+                        inv.unmapped.len(),
+                        cellar.display(),
+                        shown.join(", ")
+                    ),
+                );
+            }
+            found.extend(inv.components);
+        }
+    }
     scan.status("Listing Python installs and their pip packages");
     found.extend(packages::pythons());
     scan.status("Listing global npm packages");
@@ -115,6 +145,11 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
     } else {
         Vec::new()
     };
+    // endoflife.date is one request per product: fetch the stale ones side
+    // by side before the loop asks for each.
+    let products: Vec<String> = found.iter().filter_map(|c| c.eol.as_ref().map(|(p, _)| p.clone())).collect();
+    scan.status("Fetching end-of-life dates");
+    feeds::eol_prefetch(&scan.cache, scan.net, &products, scan.opts.offline)?;
     for c in found {
         let recs = c.osv.as_ref().and_then(|o| answers.get(o)).cloned().unwrap_or_default();
         let mut failing = scan.advisories(c, &recs, c.osv.as_ref().and_then(|o| newer.get(o)), "fail", None);
@@ -131,6 +166,41 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
     Ok(())
 }
 
+/// The machine's own security settings (`posture`): a failing Critical or
+/// High check fails, the rest warn, a check that can't tell says so.
+pub fn posture(scan: &mut Scan) {
+    use crate::posture::{self, Severity, Status};
+    scan.status("Checking the machine's security settings");
+    let skip = scan.opts.policy.posture_skip();
+    let results = posture::run(&skip, &posture::real_runner);
+    scan.count("security settings checked", results.len() as i64);
+    for (c, o) in results {
+        let (status, note) = match o.status {
+            Status::Pass => continue,
+            Status::Fail if matches!(c.severity, Severity::Critical | Severity::High) => ("fail", o.evidence),
+            Status::Fail => ("warn", o.evidence),
+            Status::Manual => ("warn", o.evidence),
+            Status::Unknown => ("warn", format!("couldn't tell: {}", o.evidence)),
+        };
+        let (fix_cmd, fix_auto) = match &c.fix {
+            Some(f) => (f.cmd.to_string(), !f.admin && o.status == Status::Fail),
+            None => (c.explain.to_string(), false),
+        };
+        scan.add(Finding {
+            kind: "posture".into(),
+            component: c.title.into(),
+            location: if c.cis.is_empty() { String::new() } else { format!("CIS {}", c.cis) },
+            vuln_id: c.id.into(),
+            status: status.into(),
+            severity: c.severity.as_str().into(),
+            note,
+            fix_cmd,
+            fix_auto,
+            ..Default::default()
+        });
+    }
+}
+
 /// A newer mise release only warns (OSV decides failures): a human bumps it
 /// in ops, so the fix is never unattended.
 pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
@@ -144,7 +214,7 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
             fix_cmd: c.fix.clone(),
             fix_auto: false,
             note: format!(
-                "mise {} is behind {latest}. mise is foundational infrastructure: bump MISE_VERSION in ops and rerun its scripts/bootstrap.sh; wpantry never updates it.",
+                "mise {} is behind {latest}. mise is foundational infrastructure: update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it.",
                 c.version
             ),
             ..Finding::of(c)
@@ -458,15 +528,16 @@ fn distro(scan: &mut Scan, rel: &BTreeMap<String, String>, res: Advisories) {
             note: p.issues.iter().take(4).cloned().collect::<Vec<_>>().join(", "),
             fix_cmd: system::os_fix(rel, &p.name),
             fix_auto: false,
+            ..Default::default()
         });
     }
 }
 
 // Homebrew ----------------------------------------------------------------------
 
-pub fn brew(scan: &mut Scan) -> Result<()> {
+pub fn brew(scan: &mut Scan, job: Option<&scanners::BrewJob>, ran: Option<Result<Value>>) -> Result<()> {
     scan.status("Checking Homebrew formulae (brew vulns)");
-    let res = match scanners::brew_vulns(&scan.cache, scan.opts.refresh, scan.opts.offline) {
+    let res = match scanners::brew_vulns(&scan.cache, job, ran, scan.opts.refresh, scan.opts.offline) {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(()),
         Err(Error::Missing(_)) => {
@@ -603,7 +674,7 @@ mod tests {
         );
         assert_eq!(
             f.note,
-            "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: bump MISE_VERSION in ops and rerun its scripts/bootstrap.sh; wpantry never updates it."
+            "mise 2026.10.19 is behind 2026.10.21. mise is foundational infrastructure: update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it."
         );
         // Cached for a day: GitHub isn't asked again.
         let quiet = Fake::new(|_| panic!("cached"));

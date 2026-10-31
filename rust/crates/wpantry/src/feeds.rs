@@ -86,33 +86,57 @@ pub struct Eol {
     pub supported: Vec<String>,
 }
 
+/// Fetch every product's endoflife.date page that isn't fresh, side by
+/// side, and store them; a product that can't be fetched is left for
+/// [`eol`] to report.
+pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: bool) -> Result<()> {
+    if offline {
+        return Ok(());
+    }
+    let mut stale: Vec<String> = Vec::new();
+    for p in products {
+        if !stale.contains(p) && !cache.fresh(&format!("eol_at:{p}"), 7.0 * DAY)? {
+            stale.push(p.clone());
+        }
+    }
+    let fetched =
+        crate::system::par_map(&stale, 8, |p| net::get_json(net, &format!("https://endoflife.date/api/{p}.json"), &[]));
+    for (p, r) in stale.iter().zip(fetched) {
+        match r {
+            Ok(data) => eol_store(cache, p, data.as_ref())?,
+            Err(e) if e.is_source() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
+    cache.conn.execute("DELETE FROM eol WHERE product = ?", [product])?;
+    let rows = data.and_then(Value::as_array).cloned().unwrap_or_default();
+    for c in rows {
+        let cyc = match &c["cycle"] {
+            Value::String(s) => s.clone(),
+            Value::Null => continue,
+            other => other.to_string(),
+        };
+        let latest = match c.get("latest") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            Some(other) => other.to_string(),
+        };
+        let end = c.get("eol").cloned().unwrap_or(Value::Null).to_string();
+        cache.conn.execute("INSERT OR REPLACE INTO eol VALUES (?, ?, ?, ?)", params![product, cyc, end, latest])?;
+    }
+    cache.touch(&format!("eol_at:{product}"))
+}
+
 /// endoflife.date's view of `cycle` of `product`, or None when it doesn't
 /// know the cycle.
 pub fn eol(cache: &Cache, net: &dyn Net, product: &str, cycle: &str, offline: bool) -> Result<Option<Eol>> {
     if !(offline || cache.fresh(&format!("eol_at:{product}"), 7.0 * DAY)?) {
         match net::get_json(net, &format!("https://endoflife.date/api/{product}.json"), &[]) {
-            Ok(data) => {
-                cache.conn.execute("DELETE FROM eol WHERE product = ?", [product])?;
-                let rows = data.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
-                for c in rows {
-                    let cyc = match &c["cycle"] {
-                        Value::String(s) => s.clone(),
-                        Value::Null => continue,
-                        other => other.to_string(),
-                    };
-                    let latest = match c.get("latest") {
-                        Some(Value::String(s)) => s.clone(),
-                        Some(Value::Null) | None => String::new(),
-                        Some(other) => other.to_string(),
-                    };
-                    let end = c.get("eol").cloned().unwrap_or(Value::Null).to_string();
-                    cache.conn.execute(
-                        "INSERT OR REPLACE INTO eol VALUES (?, ?, ?, ?)",
-                        params![product, cyc, end, latest],
-                    )?;
-                }
-                cache.touch(&format!("eol_at:{product}"))?;
-            }
+            Ok(data) => eol_store(cache, product, data.as_ref())?,
             Err(e) if e.is_source() => {}
             Err(e) => return Err(e),
         }
@@ -642,5 +666,30 @@ mod tests {
         assert_eq!(eol(&c, &net, "nodejs", "16", true).unwrap().unwrap().ended.as_deref(), Some("True"));
         assert_eq!(eol(&c, &net, "nodejs", "24", true).unwrap().unwrap().ended, None);
         assert_eq!(eol(&c, &net, "nodejs", "99", true).unwrap(), None);
+    }
+
+    /// The prefetch asks once per stale product, side by side, and the loop
+    /// after it finds everything cached; a product that fails is left for
+    /// `eol` to report.
+    #[test]
+    fn eol_prefetch_asks_once_per_product() {
+        let (_d, c) = cache();
+        let net = Fake::new(|req| {
+            if req.url.ends_with("/down.json") {
+                return Err(Error::Offline("down".into()));
+            }
+            Ok(Response::ok(json!([{"cycle": "1", "eol": false, "latest": "1.2.3"}]).to_string()))
+        });
+        let products: Vec<String> = ["a", "b", "a", "down"].iter().map(|s| s.to_string()).collect();
+        eol_prefetch(&c, &net, &products, false).unwrap();
+        let asked: Vec<String> = net.requests().iter().map(|r| r.url.clone()).collect();
+        assert_eq!(asked.len(), 3, "{asked:?}");
+        assert_eq!(eol(&c, &net, "a", "1", false).unwrap().unwrap().latest, "1.2.3");
+        assert_eq!(net.requests().len(), 3, "a was cached by the prefetch");
+        assert!(matches!(eol(&c, &net, "down", "1", true), Err(Error::Offline(_))));
+        eol_prefetch(&c, &net, &products, true).unwrap();
+        assert_eq!(net.requests().len(), 3, "offline asks nothing");
+        eol_prefetch(&c, &net, &products, false).unwrap();
+        assert_eq!(net.requests().len(), 4, "only the product that failed is asked again");
     }
 }

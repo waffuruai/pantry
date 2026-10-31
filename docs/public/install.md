@@ -43,7 +43,17 @@ wpantry version
 - Pin a version with `packslip:github.com/waffuruai/pantry@0.10.0`, or put that line in a project's `mise.toml`.
 - mise puts `wpantry` on PATH only in a shell where it's active. If `wpantry` isn't found, add `eval "$(mise activate zsh)"` (or `bash`, `fish`) to your shell's rc file and open a new shell, or put `~/.local/share/mise/shims` on PATH. If an older `wpantry` runs instead, `command -v wpantry` shows which one: remove it.
 
-Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10). Windows: [#11](https://github.com/waffuruai/pantry/issues/11).
+**With Homebrew** (macOS and Linux, no mise):
+
+```bash
+brew install waffuruai/tap/wpantry
+```
+
+- The formula installs the same release binary and checks its SHA-256 against the digest it carries, which the release workflow copied from that release's `SHA256SUMS`.
+- Homebrew verifies the digest, not the signature. To check provenance too: `gh attestation verify "$(brew --prefix wpantry)/bin/wpantry" --repo waffuruai/pantry` (the binary is unchanged, so the attestation still matches).
+- `brew upgrade wpantry` follows new releases once the tap's bump PR for them is merged.
+
+Windows: [#11](https://github.com/waffuruai/pantry/issues/11).
 
 Pantry needs nothing else. Some checks use `git` and `openssl`; `wpantry tools` lists which are missing, and a missing one is reported, never skipped silently.
 
@@ -212,6 +222,7 @@ wpantry update            # asks, then installs it (--yes to skip the question)
    mise unuse -g packslip:github.com/waffuruai/pantry      # mise
    rm ~/.local/bin/wpantry ~/.local/bin/wpantry.old        # install.sh or by hand
    cargo uninstall wpantry-cli                             # cargo
+   brew uninstall wpantry                                  # Homebrew
    ```
 
 3. Optionally, delete what Pantry keeps:

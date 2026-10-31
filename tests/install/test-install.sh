@@ -19,9 +19,10 @@ fail() {
 }
 
 case "$(uname -s)/$(uname -m)" in
-  Darwin/*) target=universal-apple-darwin ;;
-  Linux/x86_64 | Linux/amd64) target=x86_64-unknown-linux-musl ;;
-  Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-musl ;;
+  Darwin/*) target=universal-apple-darwin; binname=wpantry ;;
+  Linux/x86_64 | Linux/amd64) target=x86_64-unknown-linux-musl; binname=wpantry ;;
+  Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-musl; binname=wpantry ;;
+  MINGW*/x86_64 | MSYS*/x86_64 | CYGWIN*/x86_64) target=x86_64-pc-windows-msvc.exe; binname=wpantry.exe ;;
   *) echo "skipped: no wpantry build for $(uname -s)/$(uname -m)"; exit 0 ;;
 esac
 asset="wpantry-$target"
@@ -57,19 +58,19 @@ packslip_says() {
 
 release
 run || { cat "$tmp/out" >&2; fail "a good release should install"; }
-[ "$("$tmp/bin/wpantry" version)" = "wpantry 9.9.9 (rust, schema 1)" ] || fail "the installed binary should run"
+[ "$("$tmp/bin/$binname" version)" = "wpantry 9.9.9 (rust, schema 1)" ] || fail "the installed binary should run"
 grep -q "checksum matches" "$tmp/out" || fail "it should say the checksum matched"
 grep -q "only the checksum was checked" "$tmp/out" || fail "without a verifier it should say only the checksum was checked"
 echo "✓ installs a good release, and says when only the checksum was checked"
 
 run WPANTRY_REQUIRE_SIGNATURE=1 && fail "WPANTRY_REQUIRE_SIGNATURE=1 with no verifier should fail"
-[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed when the signature is required and can't be checked"
+[ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed when the signature is required and can't be checked"
 echo "✓ WPANTRY_REQUIRE_SIGNATURE=1 refuses an install it can't verify"
 
 echo "tampered" >> "$tmp/release/$asset"
 run && fail "a tampered binary should fail"
 grep -q "checksum mismatch" "$tmp/out" || fail "it should report the checksum mismatch"
-[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed after a mismatch"
+[ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed after a mismatch"
 echo "✓ refuses a binary that doesn't match SHA256SUMS"
 
 release
@@ -85,18 +86,18 @@ echo "✓ verifies the packslip when packslip is installed"
 
 packslip_says "ok: github.com/someone/else 9.9.9"
 run && fail "a packslip for another project should fail"
-[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed for another project's packslip"
+[ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed for another project's packslip"
 echo "✓ refuses a packslip signed for another project"
 
 packslip_says "ok: github.com/waffuruai/pantry 9.9.90"
 run && fail "a packslip for another version (a longer one with this prefix) should fail"
-[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed for another version's packslip"
+[ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed for another version's packslip"
 echo "✓ refuses a packslip for a version that merely starts with this one"
 
 packslip_says "ok: github.com/waffuruai/pantry 9.9.9"
 rm "$tmp/release/packslip.sigstore.json"
 run && fail "with packslip installed, a release without its packslip should fail, not fall back"
-[ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed without the packslip"
+[ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed without the packslip"
 echo "✓ never falls back to a weaker check when the packslip is missing"
 release
 rm "$tmp/path/packslip"

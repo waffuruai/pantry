@@ -6,8 +6,9 @@
 
 use std::path::PathBuf;
 
-pub const SUBCOMMANDS: &[&str] =
-    &["check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache", "update"];
+pub const SUBCOMMANDS: &[&str] = &[
+    "check", "search", "export", "breach", "version", "tools", "skill", "sync", "schedule", "cache", "update", "report",
+];
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -36,6 +37,7 @@ pub enum Command {
     Breach { enable: bool, disable: bool },
     Version { json: bool },
     Tools { json: bool },
+    Report { sections: Vec<String>, since_days: i64, format: String, out: Option<String> },
     Sync { refresh: bool, json: bool },
     Schedule { action: String, every: String, at: String, dry_run: bool },
     Cache { action: String, older_than: i64 },
@@ -53,7 +55,7 @@ pub enum Parsed {
 }
 
 const TOP_USAGE: &str =
-    "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache,update} ...";
+    "usage: wpantry [-h] {check,search,export,breach,version,tools,skill,sync,schedule,cache,update,report} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -101,8 +103,11 @@ fn help(cmd: &str) -> String {
         "update" => {
             "check for a newer wpantry release and, after a yes, install it verified\n\noptions:\n  -h, --help       show this help message and exit\n  --check          only say whether a newer release exists (exit 10 when one does)\n  --yes            install without asking\n  --no-input       never ask: report only\n  --offline        use only the cached answer\n  --version VER    this release instead of the latest"
         }
+        "report" => {
+            "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --update ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache,update}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,version,tools,skill,sync,schedule,cache,update,report}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV\n    breach              show or set consent for the email breach check\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -110,7 +115,7 @@ fn help(cmd: &str) -> String {
 
 /// Other spellings an option answers to, matched before prefixes are:
 /// `--license` for `--licenses`.
-const ALIASES: &[(&str, &str)] = &[("--license", "--licenses")];
+const ALIASES: &[(&str, &str)] = &[("--license", "--licenses"), ("-o", "--out")];
 
 /// (option, takes a value) for each subcommand.
 fn options(cmd: &str) -> &'static [(&'static str, bool)] {
@@ -134,6 +139,16 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "export" => &[("--help", false), ("--csv", true)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
+        "report" => &[
+            ("--help", false),
+            ("--exposure", false),
+            ("--remediation", false),
+            ("--audit", false),
+            ("--all", false),
+            ("--since", true),
+            ("--format", true),
+            ("--out", true),
+        ],
         "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
         "schedule" => &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false)],
         "cache" => &[("--help", false), ("--older-than", true)],
@@ -308,6 +323,31 @@ pub fn parse(argv: &[String]) -> Parsed {
                 return fail("argument --disable: not allowed with argument --enable".into());
             }
             Command::Breach { enable, disable }
+        }
+        "report" => {
+            if !positional.is_empty() {
+                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
+            }
+            let mut sections: Vec<String> = ["exposure", "remediation", "audit"]
+                .iter()
+                .filter(|s| flag(&format!("--{s}")))
+                .map(|s| s.to_string())
+                .collect();
+            if sections.is_empty() || flag("--all") {
+                sections = vec!["all".into()];
+            }
+            let since_days = match value("--since") {
+                None => 90,
+                Some(v) => match v.trim().trim_end_matches('d').parse::<i64>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return fail(format!("argument --since: expected a number of days, got '{v}'")),
+                },
+            };
+            let format = value("--format").unwrap_or_else(|| "md".into());
+            if !["md", "json", "csv"].contains(&format.as_str()) {
+                return fail(format!("argument --format: invalid choice: '{format}' (choose from md, json, csv)"));
+            }
+            Command::Report { sections, since_days, format, out: value("--out") }
         }
         "sync" => {
             if !positional.is_empty() {

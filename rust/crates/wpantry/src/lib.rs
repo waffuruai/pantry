@@ -23,6 +23,7 @@ pub mod error;
 pub mod external;
 pub mod feeds;
 pub mod harnesses;
+pub mod history;
 pub mod images;
 pub mod json;
 pub mod leaks;

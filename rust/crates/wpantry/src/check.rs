@@ -173,6 +173,8 @@ pub struct Options {
 /// What a finished scan found.
 #[derive(Debug, Default)]
 pub struct Outcome {
+    /// This scan's row in the cache's `scans` table.
+    pub scan_id: i64,
     pub findings: Vec<Finding>,
     /// What was checked and how many, in the order first counted.
     pub counts: Vec<(String, i64)>,
@@ -315,6 +317,7 @@ impl<'a> Scan<'a> {
     // the scan --------------------------------------------------------------
 
     pub fn run(mut self) -> Result<Outcome> {
+        let started_at = crate::system::now();
         repos::forget_walks();
         self.status("Fetching CISA's known-exploited list");
         let kev = feeds::kev(&self.cache, self.net, self.opts.offline);
@@ -327,12 +330,14 @@ impl<'a> Scan<'a> {
         check_supply::run(&mut self, &found)?;
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
+        let scan_id = crate::history::record_scan(&self.cache, started_at, &self.findings, &self.counts, &self.opts)?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,
             counts: self.counts,
             unfixed: self.unfixed,
             unknown_licenses: self.unknown_licenses,
+            scan_id,
         })
     }
 

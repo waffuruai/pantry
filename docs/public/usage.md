@@ -71,6 +71,17 @@ not checked
 
 The (Python) implementation prints the same findings as one block per component.
 
+## Reports: what you were exposed to, and what was done
+
+Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `--update` records the fixes it ran and the scan that verified them.
+
+```bash
+wpantry report                              # exposure, remediation and audit logs, last 90 days, Markdown
+wpantry report --exposure --since 365 --format csv -o exposures.csv
+wpantry report --remediation --format json
+```
+
+[reports.md](reports.md) says what each log holds and how it maps onto SOC 2 evidence.
 ## Keeping the cache fresh, and scanning on a schedule
 
 ```bash

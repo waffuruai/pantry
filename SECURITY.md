@@ -18,7 +18,7 @@ Security research on wpantry done in good faith is welcome. Test only your own m
 
 ## Credit
 
-We name you in the fix's release notes and security advisory if you want that, in the form you choose. There is no bug bounty today. Duplicate reports are credited to the first.
+We name you in the fix's release notes and security advisory if you want that, in the form you choose. A reward is at our discretion, based on the severity of the impact; there is no published bounty programme yet. Duplicate reports are credited to the first.
 
 ## Threat model
 

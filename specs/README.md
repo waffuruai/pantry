@@ -1,6 +1,6 @@
 # Specs
 
-PRDs and design docs for wpantry, written per the [Waffuru PRD rules](https://github.com/waffuruai/ops/tree/dev/.agents). How wpantry works today is [docs/architecture.md](../docs/architecture.md).
+PRDs and design docs for wpantry: a PRD states the problem, the functional, security and performance criteria, and the phases; a design doc says how. How wpantry works today is [docs/architecture.md](../docs/architecture.md).
 
 | Spec | What | Status |
 |---|---|---|

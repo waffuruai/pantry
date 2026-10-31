@@ -22,11 +22,17 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Search cached advisories, ranked | `wpantry search "tarfile traversal" --json` |
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry export --csv findings.csv` |
+| Findings as JSON Lines, each joined with its OSV record, dependency scope, lifecycle and fix outcome (`--all` adds resolved exposures) | `wpantry export --jsonl findings.jsonl --all` |
 | Which external tools are installed | `wpantry tools` |
+| What was exposed, for how long, and what was fixed (audit evidence) | `wpantry report --since 90 --format json` |
+| Refresh the cache so `--offline` checks are current | `wpantry sync` |
+| Scan daily without anyone running it (sync + check, never --update) | `wpantry schedule install`; `wpantry schedule status` |
+| The last scheduled run's findings | `~/.local/state/wpantry/last.json` |
+| Is there a newer wpantry (exit 10 when there is); install it verified | `wpantry update --check`; `wpantry update --yes` |
 
 `search` takes SQLite FTS5 syntax (`"exact phrase"`, `tls AND certificate`, `rust*`). Results rank by text relevance, then whether the advisory applies to this machine, then whether it is in CISA KEV.
 
-Exit codes: 0 clean (warnings and "not checked" included), 1 a failing finding or a failed unattended fix, 2 usage error, 3 internal error.
+Exit codes: 0 clean (warnings and "not checked" included), 1 a failing finding or a failed unattended fix, 2 usage error, 3 internal error, 10 (`update` only) a newer release exists and wasn't installed.
 
 For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readonly ~/.cache/wpantry/wpantry.db`. Tables: `findings` (latest scan), `vulns` (OSV records; `record` is the full JSON), `queries` (package/version → advisory ids, with when we asked), `kev`, `eol`, `casks`, `malicious` (the malicious-package name index), `runs` (cached `brew vulns`, gitleaks, feed and image results), `meta`.
 

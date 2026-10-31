@@ -97,7 +97,7 @@ body:
         URLs for anything in another repository so they cross-link.
       placeholder: |
         Spec: specs/cli-contract.md#finding
-        Blocked by: https://github.com/waffuruai/ops/issues/95
+        Blocked by: https://github.com/waffuruai/pantry/issues/32
         Blocks: #12
         PRs: #21
     validations:

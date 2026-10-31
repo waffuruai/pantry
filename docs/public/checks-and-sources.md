@@ -7,7 +7,7 @@ wpantry inventories what is installed on your computer and what your git repos l
 | Area | What |
 |---|---|
 | Your repos' dependencies | The lockfiles in every git repo it finds: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Pipenv, Bundler, Composer, Maven, Gradle, NuGet, Pub, Hex, Conan |
-| Committed secrets | Each repo's whole git history, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit |
+| Committed secrets | Each repo's whole git history once, then only the commits its branches gained since, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit. A repo's own `.gitleaks.toml` is reported, not obeyed; its `.gitleaksignore` is |
 | Malicious packages | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | AI harnesses | The MCP servers your repos and coding agents (Claude Code, Codex, Cursor, Gemini CLI and others) start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins, skills and bundled npm packages |
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
@@ -15,6 +15,7 @@ wpantry inventories what is installed on your computer and what your git repos l
 | Container images | The images your repos build from |
 | The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
 | Installed software | Runtimes and compilers (every version a version manager keeps, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`), apps, browsers, Electron apps, editor extensions; mise itself against OSV and its latest release |
+| Homebrew without `brew` | Bottles poured into the Cellar by mise's `brew:` engine (no `brew` command, so no `brew vulns`): each formula the tool catalog knows is checked against OSV and endoflife.date; the rest are reported "not checked" |
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
 | The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |

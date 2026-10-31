@@ -6,7 +6,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 
 | What you get | What it checks |
 |---|---|
-| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`); mise itself against OSV and its latest release (behind warns; `--update` never updates it) |
+| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--update` never updates it) |
 | Catch vulnerable dependencies before they ship | Lockfiles in every git repo: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer, Maven, Gradle, NuGet and more |
 | Catch malware, not just CVEs | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | Find leaked credentials in history | Secrets committed anywhere in each repo's git history (`gitleaks`) |
@@ -43,7 +43,7 @@ wpantry --update --dryrun                     # the update plan, change nothing
 wpantry --update                              # apply the unattended fixes, then re-check
 ```
 
-Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error.
+Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error. `wpantry update` checks for a newer release and installs it verified (`--check` only asks; exit 10 when one exists).
 
 **Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config` and `--install-scripts`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
 

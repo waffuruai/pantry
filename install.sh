@@ -125,19 +125,27 @@ fi
 [ "$actual" = "$expected" ] || die "checksum mismatch for $asset: expected $expected, got $actual"
 ok "checksum matches SHA256SUMS"
 
+# A verifier that is installed must pass: a failed check is never skipped
+# for a weaker one, and a release without its packslip is an error.
 signed=""
-if command -v packslip >/dev/null 2>&1 && fetch "$base/packslip.sigstore.json" "$tmp/packslip.sigstore.json" 2>/dev/null; then
+if command -v packslip >/dev/null 2>&1; then
+  fetch "$base/packslip.sigstore.json" "$tmp/packslip.sigstore.json" ||
+    die "can't download $base/packslip.sigstore.json (the release's signed manifest)"
   out=$(packslip verify "$tmp/packslip.sigstore.json" --artifact "$tmp/$asset" 2>&1) ||
     die "packslip verification failed: $out"
-  # packslip trusts the project the bundle names, so check it's this one.
+  # packslip trusts the project the bundle names, so check it's this one, at
+  # exactly this version (0.1.1, not 0.1.10).
   case "$(printf '%s\n' "$out" | head -n 1)" in
-    "ok: github.com/$REPO ${version#v}"*) signed="packslip (github.com/$REPO ${version#v})" ;;
+    "ok: github.com/$REPO ${version#v}" | "ok: github.com/$REPO ${version#v} "*) signed="packslip (github.com/$REPO ${version#v})" ;;
     *) die "the packslip is for another project or version: $(printf '%s\n' "$out" | head -n 1)" ;;
   esac
 elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  gh attestation verify "$tmp/$asset" --repo "$REPO" >/dev/null 2>&1 ||
-    die "the GitHub attestation doesn't verify for $asset"
-  signed="GitHub attestation ($REPO)"
+  # Pinned to the release workflow at this tag: an attestation from another
+  # workflow, or for another release, is not this release.
+  gh attestation verify "$tmp/$asset" --repo "$REPO" \
+    --signer-workflow "$REPO/.github/workflows/release.yml" --source-ref "refs/tags/$version" >/dev/null 2>&1 ||
+    die "the GitHub attestation doesn't verify for $asset (release.yml at $version)"
+  signed="GitHub attestation ($REPO, release.yml@$version)"
 elif command -v cosign >/dev/null 2>&1 && fetch "$base/$asset.sigstore.json" "$tmp/$asset.sigstore.json" 2>/dev/null; then
   cosign verify-blob "$tmp/$asset" --bundle "$tmp/$asset.sigstore.json" \
     --certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$version" \

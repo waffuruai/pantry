@@ -347,6 +347,7 @@ mod tests {
     use super::*;
 
     #[cfg(unix)] // `npm link` symlinks
+    #[cfg(unix)] // `npm link` symlinks
     #[test]
     fn global_packages_reads_npm_root() {
         let d = crate::system::TempDir::new("npmroot").unwrap();

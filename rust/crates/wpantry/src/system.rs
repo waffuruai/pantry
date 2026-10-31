@@ -611,6 +611,8 @@ impl TempDir {
         ));
         // Exclusive and private: a path someone else made first is an error,
         // never reused, and nothing extracted there is readable by others.
+        // `mode` is unix-only, so this binding is mutable only there.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -656,6 +658,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // `latest` and the renamed cask are symlinks
     #[test]
     fn caskroom_lists_one_version_per_cask() {
         let d = TempDir::new("caskroom").unwrap();

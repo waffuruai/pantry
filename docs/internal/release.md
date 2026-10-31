@@ -1,6 +1,6 @@
 # Release playbook
 
-How we publish wpantry: the `wpantry` and `wpantry-cli` crates on crates.io, and signed, reproducible binaries on GitHub Releases. The automation is [`.github/workflows/release.yml`](../../.github/workflows/release.yml); this page is the human side around it. What users do with a release is [docs/public/install.md](../public/install.md). The requirements are S1–S4 in [specs/01-rust-port.md](../../specs/01-rust-port.md).
+How we publish wpantry: the `wpantry` and `wpantry-cli` crates on crates.io, and signed, reproducible binaries on GitHub Releases. The automation is [`.github/workflows/release.yml`](../../.github/workflows/release.yml); this page is the human side around it. What users do with a release is [docs/public/install.md](../public/install.md). The requirements: every dependency pinned and built `--locked`, `cargo deny` and `cargo vet` green, two builds of a tag byte-identical, and every artifact shipped with `SHA256SUMS`, an attestation and a signature ([docs/architecture.md](../architecture.md#the-binary)).
 
 ## What a release is
 

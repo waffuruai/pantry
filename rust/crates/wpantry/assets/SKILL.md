@@ -28,7 +28,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 
 Exit codes: 0 clean (warnings and "not checked" included), 1 a failing finding or a failed unattended fix, 2 usage error, 3 internal error.
 
-For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readonly ~/.cache/wpantry/wpantry.db`. Tables: `findings` (latest scan), `vulns` (OSV records; `record` is the full JSON), `queries` (package/version → advisory ids, with when we asked), `kev`, `eol`, `casks`, `malicious` (the malicious-package name index), `runs` (cached osv-scanner, `brew vulns` and gitleaks results), `meta`.
+For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readonly ~/.cache/wpantry/wpantry.db`. Tables: `findings` (latest scan), `vulns` (OSV records; `record` is the full JSON), `queries` (package/version → advisory ids, with when we asked), `kev`, `eol`, `casks`, `malicious` (the malicious-package name index), `runs` (cached `brew vulns`, gitleaks, feed and image results), `meta`.
 
 ## Triage
 

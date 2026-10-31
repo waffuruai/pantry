@@ -1,6 +1,6 @@
 # Using wpantry
 
-wpantry finds the vulnerabilities that actually apply to your computer and your git repos: it inventories what is installed and what your repos lock, and asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions. Every check and every source is listed in [checks.md](checks.md); this page is how to run it and read what it says. Install it first: [install.md](install.md).
+wpantry finds the vulnerabilities that actually apply to your computer and your git repos: it inventories what is installed and what your repos lock, and asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions. Every check and every source is listed in [checks-and-sources.md](checks-and-sources.md); this page is how to run it and read what it says. Install it first: [install.md](install.md).
 
 ## Quick start
 
@@ -16,7 +16,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 
 ## What it checks
 
-Dependencies, committed secrets, malicious packages, AI harnesses, install scripts, the OS, installed software, end of life, certificate authorities and the machine's own settings: the full table, with what each source is asked and what is sent, is [checks.md](checks.md). `--no-machine` limits a run to the repo checks. What a run could not check shows up as "not checked", never as clean.
+Dependencies, committed secrets, malicious packages, AI harnesses, install scripts, the OS, installed software, end of life, certificate authorities and the machine's own settings: the full table, with what each source is asked and what is sent, is [checks-and-sources.md](checks-and-sources.md). `--no-machine` limits a run to the repo checks. What a run could not check shows up as "not checked", never as clean.
 
 ## Scope
 
@@ -54,8 +54,6 @@ not checked
 - `⚠` warns: no fix yet, an outdated app, an unpinned MCP server, an install script, a generic secret rule to review.
 - `KEV` marks a vulnerability CISA has seen exploited in the wild. Fix those first.
 - **not checked** lists sources that couldn't be reached and had nothing cached. Those areas are unknown, not clean; re-run when you're online.
-
-The (Python) implementation prints the same findings as one block per component.
 
 ## Exit codes
 
@@ -114,7 +112,7 @@ wpantry export --csv findings.csv             # id, aliases, url, component, kin
 
 ## What leaves your machine
 
-Package names and versions go to OSV.dev; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks.md](checks.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
+Package names and versions go to OSV.dev; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks-and-sources.md](checks-and-sources.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
 
 ## Environment
 

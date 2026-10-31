@@ -1,7 +1,7 @@
 """The CLI contract (specs/cli-contract.md), tested from the outside: run the
 binary named by WPANTRY with a temp HOME and cache, offline, and check only
 its stdout, stderr, exit codes and cache file. Every implementation must pass
-(specs/01-rust-port.md F2). Standard library only, Python 3.9+:
+(specs/cli-contract.md). Standard library only, Python 3.9+:
 
     WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
 """

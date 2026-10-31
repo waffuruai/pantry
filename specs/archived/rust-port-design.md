@@ -1,6 +1,8 @@
 # Rust port: design detail
 
-Detail for [01-rust-port.md](../01-rust-port.md). The PRD holds the criteria; this page holds the tables they point at. Status: draft, 2026-10-25; updated 2026-10-27 with what the port settled (marked "settled"). Everything here is proposed until its criterion has evidence.
+> Archived 2026-10-31 with [01-rust-port.md](01-rust-port.md). The tables here were carried into [docs/architecture.md](../../docs/architecture.md), which is kept current; this copy is the record of what the port proposed and settled.
+
+Detail for [01-rust-port.md](01-rust-port.md). The PRD holds the criteria; this page holds the tables they point at. Status: draft, 2026-10-25; updated 2026-10-27 with what the port settled (marked "settled"). Everything here is proposed until its criterion has evidence.
 
 ## Workspace
 

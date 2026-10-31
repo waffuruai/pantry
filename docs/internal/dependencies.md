@@ -1,10 +1,10 @@
 # Dependencies and supply chain
 
-wpantry runs with access to the whole home directory, so what goes into it is reviewed like the code. The rules come from the PRD's decision log ([specs/01-rust-port.md](../../specs/01-rust-port.md), S1 and S2); this page is how to follow them.
+wpantry runs with access to the whole home directory, so what goes into it is reviewed like the code. The rules were set in the Rust port's decision log ([specs/archived/01-rust-port.md](../../specs/archived/01-rust-port.md)); this page is the rules and how to follow them.
 
 ## The rules
 
-- **Crates**: only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`), `ureq` and `rustls` (`ring`), plus what they pull in. A new direct dependency needs a decision in the PRD's log first; `rust/crates/wpantry/tests/pins.rs` fails otherwise.
+- **Crates**: only `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`), `ureq` and `rustls` (`ring`), plus what they pull in. A new direct dependency needs a decision recorded on this page first; `rust/crates/wpantry/tests/pins.rs` fails otherwise.
 - **Pins**: every dependency `=x.y.z` in `rust/Cargo.toml` `[workspace.dependencies]`, crates take them with `.workspace = true`, `Cargo.lock` is committed and every build is `--locked`.
 - **Age**: pin a release at least two weeks old. The exception is a security fix, which goes in as soon as it's out (rustls 0.23.46 was one).
 - **Toolchain**: `rust/rust-toolchain.toml` names an exact version.

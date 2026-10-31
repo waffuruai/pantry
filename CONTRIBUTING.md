@@ -8,7 +8,7 @@ Thanks for your interest. Pantry is a small, focused project; these rules keep c
 - One logical change per PR, written up in the [PR template](.github/PULL_REQUEST_TEMPLATE.md). Tests and docs land with the code that needs them.
 - AI-assisted contributions are welcome; disclose how you used AI in the issue and PR templates.
 
-Start with the [README](README.md) for what wpantry is, [docs/public/checks.md](docs/public/checks.md) for what it checks and asks, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned.
+Start with the [README](README.md) for what wpantry is, [docs/architecture.md](docs/architecture.md) for how it works, [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md) for what it checks and asks, [specs/cli-contract.md](specs/cli-contract.md) for the surface every change must keep, and [specs/](specs/README.md) for what is planned.
 
 ## Open an issue first
 

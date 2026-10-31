@@ -1,6 +1,6 @@
 # What wpantry checks, and where the answers come from
 
-wpantry inventories what is installed on your computer and what your git repos lock, then asks a few public sources only about those exact versions. This page lists every check and every source. For running it, see [usage.md](usage.md); for installing it, [install.md](install.md).
+wpantry inventories what is installed on your computer and what your git repos lock, then asks a few public sources only about those exact versions. This page lists every check and every source. For running it, see [usage.md](usage.md); for installing it, [install.md](install.md); for how the scanner is put together, [architecture.md](../architecture.md).
 
 ## What it checks
 

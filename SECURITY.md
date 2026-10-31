@@ -10,7 +10,7 @@ wpantry reads a lot of your computer to tell you what is exposed, so it is built
 - **Unreachable is not clean.** A source that can't be reached, or a tool that is missing, is reported; it never makes the result look better.
 - **No credentials of its own.** It holds no token. `HIBP_API_KEY` is read from the environment when you set it.
 
-Known gaps are listed in [specs/](specs/README.md); the release-signing plan is [specs/01-rust-port.md](specs/01-rust-port.md#security).
+Known gaps are tracked as issues and listed in [docs/architecture.md](docs/architecture.md#what-the-port-left-open); how releases are built, signed and verified is [docs/internal/release.md](docs/internal/release.md) and [docs/public/install.md](docs/public/install.md).
 
 ## Reporting vulnerabilities
 

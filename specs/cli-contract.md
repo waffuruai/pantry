@@ -2,7 +2,7 @@
 
 Status: frozen at schema 1, 2026-10-25. Owner: Eric.
 
-The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (the Rust implementation, [01-rust-port.md](01-rust-port.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals. The Python reference implementation, `wscanner`, passed the same tests until phase 3 removed it (2026-10-28); where the name appears in output (`skill`'s front matter, the `<name>:` error prefix), each used its own.
+The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (how it is built: [docs/architecture.md](../docs/architecture.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals.
 
 ## Change rule
 
@@ -55,7 +55,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Variable | Effect |
 |---|---|
-| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The retired Python implementation's cache (`WSCANNER_DB`, default `…/wscanner/wscanner.db`) has the same schema |
+| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
 | `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
@@ -87,7 +87,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | Key | Type | Meaning |
 |---|---|---|
 | `schema` | int | Contract version, 1 |
-| `impl` | string | `rust` (`python` from the retired reference implementation) |
+| `impl` | string | `rust` |
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
 | `unfixed` | int | Applicable advisories with no released fix (not in `findings`) |
@@ -130,7 +130,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `kev` | `cve` TEXT PK, `added`, `name` |
 | `eol` | `product`, `cycle` TEXT (PK together), `eol`, `latest` |
 | `casks` | `app` TEXT PK, `token`, `version` |
-| `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>` (Python), `image-packages:<id>` (Rust), `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
+| `runs` | `source` TEXT PK (`gitleaks:<repo>`, `brew-vulns`, `tags:<repo>`, `image-packages:<id>`, the feeds' keys such as `arch-tracker` and `firefox`, …; rows an earlier implementation wrote are left alone), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |
 

@@ -2,7 +2,7 @@
 //! tests that answers from a closure and records every request. Every
 //! request names us and times out after 30 s; callers decide what an offline
 //! machine means for their source. Only the hosts in
-//! `specs/design/rust-port.md#network` are ever asked (S5).
+//! `docs/public/checks-and-sources.md#sources` are ever asked.
 
 use crate::error::{Error, Result};
 use crate::json;

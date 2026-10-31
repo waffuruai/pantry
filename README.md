@@ -18,7 +18,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | Review supply-chain risk | Dependency licenses outside an allowlist, npm install scripts, container images your repos build from |
 | Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |
 
-Every check, every source it asks and exactly what is sent to each: [docs/public/checks.md](docs/public/checks.md).
+Every check, every source it asks and exactly what is sent to each: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md).
 
 ## Install
 
@@ -49,7 +49,7 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 **Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 
-**What leaves the machine.** Package names and versions go to OSV.dev; feeds are fetched. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks.md](docs/public/checks.md#sources).
+**What leaves the machine.** Package names and versions go to OSV.dev; feeds are fetched. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
 
 **Agents.** `wpantry skill` prints the agent skill ([rust/crates/wpantry/assets/SKILL.md](rust/crates/wpantry/assets/SKILL.md)).
 
@@ -57,7 +57,8 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 ## Docs
 
-- [Install and verify a release](docs/public/install.md), [use wpantry](docs/public/usage.md), [what it checks and its sources](docs/public/checks.md), and [the machine's settings it checks](docs/public/posture.md).
+- [Install and verify a release](docs/public/install.md), [use wpantry](docs/public/usage.md), [what it checks and its sources](docs/public/checks-and-sources.md), and [the machine's settings it checks](docs/public/posture.md).
+- [How it works](docs/architecture.md): the run, the readers, the cache, the binary, and what is still open.
 - For maintainers: the [release playbook](docs/internal/release.md), [publishing to crates.io](docs/internal/crates-io.md) and [dependency rules](docs/internal/dependencies.md).
 
 ## Development
@@ -67,9 +68,9 @@ mise bootstrap   # the pinned tools, then build wpantry and run `wpantry tools` 
 mise run test    # the Rust tests, the CA trust test and the install.sh test, offline
 ```
 
-`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md)); the standalone CA trust check and fix are in `ca-trust/`.
+`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md) maps the source; [docs/architecture.md](docs/architecture.md) is how it works); the standalone CA trust check and fix are in `ca-trust/`.
 
-The CLI contract wpantry keeps is [specs/cli-contract.md](specs/cli-contract.md); all specs are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+The CLI contract wpantry keeps is [specs/cli-contract.md](specs/cli-contract.md); the specs, current and archived, are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Acknowledgements
 

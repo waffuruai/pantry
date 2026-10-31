@@ -45,7 +45,7 @@ pub mod versions;
 
 pub use error::Error;
 
-/// The implementation's version (the Python one is the same).
+/// The implementation's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Which implementation this is, in every JSON envelope.
 pub const IMPL: &str = "rust";

@@ -132,8 +132,10 @@ windows_install() {
     return
   fi
   run || { cat "$tmp/out" >&2; fail "$1 should install"; }
-  [ -x "$tmp/bin/wpantry.exe" ] || fail "$1 should install wpantry.exe"
-  [ ! -e "$tmp/bin/wpantry" ] || fail "$1 should not also install a bare wpantry name"
+  # Git Bash `test -e wpantry` finds `wpantry.exe`. Look at the directory entry.
+  names=$(ls -1 "$tmp/bin")
+  printf '%s\n' "$names" | grep -qx 'wpantry.exe' || fail "$1 should install wpantry.exe"
+  printf '%s\n' "$names" | grep -qx 'wpantry' && fail "$1 should not also install a bare wpantry name" || true
   [ "$("$tmp/bin/wpantry.exe" version)" = "wpantry 9.9.9 (rust, schema 1)" ] || fail "$1 binary should run"
   grep -q "checksum matches" "$tmp/out" || fail "$1 should check SHA256SUMS"
   echo "✓ $1 installs wpantry-x86_64-pc-windows-msvc.exe as wpantry.exe"

@@ -1,7 +1,7 @@
 """The CLI contract (specs/cli-contract.md), tested from the outside: run the
 binary named by WPANTRY with a temp HOME and cache, offline, and check only
 its stdout, stderr, exit codes and cache file. Every implementation must pass
-(specs/01-rust-port.md F2). Standard library only, Python 3.9+:
+(specs/cli-contract.md). Standard library only, Python 3.9+:
 
     WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
 """
@@ -27,14 +27,16 @@ NAME = BIN.name
 
 ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
 FINDING = {"kind": str, "component": str, "version": str, "location": str, "vuln_id": str, "status": str,
-           "fixed": str, "kev": bool, "severity": str, "note": str, "fix_cmd": str, "fix_auto": bool}
+           "fixed": str, "kev": bool, "severity": str, "note": str, "fix_cmd": str, "fix_auto": bool,
+           "dep_scope": str, "dep_direct": (bool, type(None)), "affected_range": str}
+SCOPES = {"runtime", "dev", "optional", "unknown"}
 TOOL = {"name": str, "required": bool, "found": bool, "path": str, "version": str, "purpose": str}
 CACHE = {
     "meta": ["key", "value"],
     "vulns": ["id", "aliases", "summary", "details", "severity", "published", "modified", "url", "record"],
     "queries": ["ecosystem", "package", "version", "checked_at", "vuln_ids"],
     "findings": ["kind", "component", "version", "location", "vuln_id", "status", "fixed", "kev", "severity", "note",
-                 "fix_cmd", "fix_auto"],
+                 "fix_cmd", "fix_auto", "dep_scope", "dep_direct", "affected_range"],
     "kev": ["cve", "added", "name"],
     "eol": ["product", "cycle", "eol", "latest"],
     "casks": ["app", "token", "version"],
@@ -80,8 +82,11 @@ class Contract(unittest.TestCase):
         self.assertEqual(set(env), ENVELOPE)
         self.assertEqual(env["schema"], 1)
         for f in env["findings"]:
-            self.assertEqual({k: type(v) for k, v in f.items()}, FINDING, f)
+            self.assertEqual(set(f), set(FINDING), f)
+            for k, want in FINDING.items():
+                self.assertIsInstance(f[k], want, (k, f))
             self.assertIn(f["status"], ("fail", "warn"))
+            self.assertIn(f["dep_scope"], SCOPES, f)
         return env
 
     # version, tools, skill -------------------------------------------------
@@ -178,6 +183,74 @@ class Contract(unittest.TestCase):
         code, _, err = self.run_bin("--posture-policy", str(self.home / "missing.txt"))
         self.assertEqual(code, 2, err)
 
+    def test_report_keeps_scan_history(self):
+        self.project_run()
+        self.project_run()
+        code, out, err = self.run_bin("report", "--format", "json", "--since", "7")
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual(set(data), {"schema", "version", "since_days", "exposures", "fixes", "scans", "events"})
+        self.assertEqual(len(data["scans"]), 2, data["scans"])
+        self.assertTrue(all(s["scope"].startswith("repos:") for s in data["scans"]), data["scans"])
+        self.assertEqual([e["kind"] for e in data["events"]], ["scan", "scan"])
+        code, out, err = self.run_bin("report", "--audit")
+        self.assertEqual(code, 0, err)
+        self.assertIn("## Audit log", out)
+        self.assertNotIn("## Exposure log", out)
+        code, out, err = self.run_bin("report", "--exposure", "--format", "csv")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("kind,component,version,location,vuln_id,"), out[:80])
+        code, _, err = self.run_bin("report", "--format", "pdf")
+        self.assertEqual(code, 2, err)
+        conn = sqlite3.connect(str(self.db))
+        for table in ("scans", "exposures", "fixes", "events"):
+            self.assertTrue(conn.execute(f"PRAGMA table_info({table})").fetchall(), table)
+        conn.close()
+
+    def test_sync_offline_reports_unreachable_sources(self):
+        # No network in the contract suite: every source is unreachable, none is "clean".
+        code, out, err = self.run_bin("sync", "--json", env=dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9"))
+        self.assertEqual(code, 1, err)
+        data = json.loads(out)
+        self.assertEqual(set(data), {"refreshed", "failed", "packages"})
+        self.assertTrue(data["failed"], data)
+        self.assertEqual(data["packages"], 0)
+
+    def test_schedule_dry_run_and_cache_prune(self):
+        code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
+        self.assertEqual(code, 0, err)
+        self.assertIn("schedule", out)
+        # launchd (integers), systemd (HH:MM) or cron (M H) spell the time differently.
+        self.assertTrue("07:05" in out or ("<integer>7</integer>" in out and "<integer>5</integer>" in out)
+                        or out.startswith("5 7 "), out)
+        code, _, err = self.run_bin("schedule", "install", "--at", "25:00")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("schedule", "dance")
+        self.assertEqual(code, 2, err)
+        code, out, err = self.run_bin("schedule", "status", env=dict(self.env, XDG_STATE_HOME=str(self.home / "state")))
+        self.assertEqual(code, 0, err)
+        self.assertIn("last run: never", out)
+        self.project_run()
+        code, out, err = self.run_bin("cache", "prune", "--older-than", "1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("pruned", out)
+        self.assertTrue(self.db.exists())
+
+    def test_update_check_offline_reports_and_exits_0_or_10(self):
+        code, out, err = self.run_bin("update", "--check", "--offline")
+        # Offline with an empty cache: nothing known, so no update is claimed.
+        self.assertEqual(code, 0, err)
+        self.assertIn("couldn't check", out)
+        code, out, err = self.run_bin("update", "--check", "--version", "99.0.0", "--offline")
+        self.assertEqual(code, 10, out + err)
+        self.assertIn("99.0.0", out)
+        # The binary under test is a build in a checkout: reported, never replaced.
+        code, out, err = self.run_bin("update", "--no-input", "--version", "99.0.0", "--offline")
+        self.assertEqual(code, 10, out + err)
+        self.assertIn("built from a checkout", out)
+        code, out, err = self.run_bin("update", "--version", "nope", "--offline")
+        self.assertEqual(code, 3, out + err)
+
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"
         proj.mkdir()
@@ -265,11 +338,27 @@ class Contract(unittest.TestCase):
         except sqlite3.OperationalError:
             pass  # this SQLite has no FTS5; the binary's may
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      ("project", "vite", "8.0.0", "/w/pnpm-lock.yaml", "CVE-2026-1", "fail", "8.0.1", 1, "HIGH",
-                      "traversal", "cd /w && pnpm update vite@8.0.1", 0))
+                      "traversal", "cd /w && pnpm update vite@8.0.1", 0, "dev", 1, "<8.0.1"))
         conn.commit()
         conn.close()
+
+        jl = Path(self.tmp.name, "f.jsonl")
+        code, out, err = self.run_bin("export", "--jsonl", str(jl), "--all")
+        self.assertEqual(code, 0, err)
+        rows = [json.loads(line) for line in jl.read_text().splitlines()]
+        self.assertEqual(len(rows), 1, rows)
+        row = rows[0]
+        self.assertEqual(set(row), set(FINDING) | {"schema", "aliases", "url", "record", "first_seen", "last_seen",
+                                                   "resolved_at", "days_exposed", "fix"})
+        self.assertEqual((row["schema"], row["vuln_id"], row["dep_scope"], row["dep_direct"], row["affected_range"]),
+                         (1, "CVE-2026-1", "dev", True, "<8.0.1"))
+        self.assertEqual((row["aliases"], row["url"]), (["GHSA-b"], "https://osv.dev/vulnerability/GHSA-b"))
+        self.assertEqual(row["record"]["summary"], rec["summary"], "the full OSV record rides along")
+        self.assertIsNone(row["fix"])
+        self.assertIsNone(row["first_seen"], "no scan recorded this hand-written finding")
+        self.assertEqual(self.run_bin("export", "--jsonl", str(jl), "--csv", str(Path(self.tmp.name, "g.csv")))[0], 0)
 
         code, out, _ = self.run_bin("search", "traversal", "--json")
         self.assertEqual(code, 0)
@@ -295,6 +384,44 @@ class Contract(unittest.TestCase):
         self.assertIn("yes", self.run_bin("breach")[1])
         self.assertEqual(self.run_bin("breach", "--disable")[0], 0)
         self.assertIn("no", self.run_bin("breach")[1])
+
+    def test_findings_carry_the_dependency_relationship(self):
+        """A dev dependency the root asks for: dep_scope dev, dep_direct true, and
+        the advisory range the locked version fell in, from a seeded cache."""
+        self.project_run()
+        proj = git_repo(self.home / "app")
+        (proj / "package-lock.json").write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {"": {"devDependencies": {"minimist": "1.2.5"}},
+                         "node_modules/minimist": {"version": "1.2.5", "dev": True},
+                         "node_modules/debug/node_modules/ms": {"version": "2.0.0"}}}))
+        rec = {"id": "GHSA-m", "aliases": ["CVE-2026-7"], "summary": "minimist prototype pollution",
+               "database_specific": {"severity": "MODERATE"},
+               "affected": [{"package": {"ecosystem": "npm", "name": "minimist"},
+                             "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.2.6"}]}]}]}
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("GHSA-m", "CVE-2026-7", rec["summary"], "", "MODERATE", "", "", "", json.dumps(rec)))
+        now = __import__("time").time()
+        conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "minimist", "1.2.5", now, "GHSA-m"))
+        conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "ms", "2.0.0", now, ""))
+        conn.commit()
+        conn.close()
+        code, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--no-input", "--json")
+        env = self.envelope(out)
+        hits = [f for f in env["findings"] if f["vuln_id"] == "CVE-2026-7"]
+        self.assertEqual(len(hits), 1, env["findings"])
+        f = hits[0]
+        self.assertEqual((f["component"], f["version"], f["fixed"], f["status"]), ("minimist", "1.2.5", "1.2.6", "fail"))
+        self.assertEqual((f["dep_scope"], f["dep_direct"], f["affected_range"]), ("dev", True, ">=1.0.0, <1.2.6"))
+        self.assertEqual(code, 1)
+        jl = Path(self.tmp.name, "deps.jsonl")
+        self.assertEqual(self.run_bin("export", "--jsonl", str(jl))[0], 0)
+        rows = [json.loads(line) for line in jl.read_text().splitlines()]
+        row = next(r for r in rows if r["vuln_id"] == "CVE-2026-7")
+        self.assertEqual((row["dep_scope"], row["dep_direct"], row["record"]["id"]), ("dev", True, "GHSA-m"))
+        self.assertIsNotNone(row["first_seen"], "the scan recorded the exposure")
+        self.assertIsNone(row["resolved_at"])
 
     def test_watch_re_asks_about_unfixed_advisories_and_exits_10_when_a_fix_lands(self):
         self.project_run()

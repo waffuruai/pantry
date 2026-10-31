@@ -1,8 +1,11 @@
 //! HTTP behind a trait: one `ureq` + `rustls` implementation, and a fake for
 //! tests that answers from a closure and records every request. Every
 //! request names us and times out after 30 s; callers decide what an offline
-//! machine means for their source. Only the hosts in
-//! `specs/design/rust-port.md#network` are ever asked (S5).
+//! machine means for their source. Only the hosts in [`HOSTS`] (the list in
+//! `docs/public/checks-and-sources.md#sources`) are ever asked: [`Http`]
+//! refuses any other URL before a connection is made. TLS is verified
+//! against the platform's trust store, so a CA this machine distrusts is
+//! distrusted here too.
 
 use crate::error::{Error, Result};
 use crate::json;
@@ -12,8 +15,49 @@ use std::time::Duration;
 
 pub const USER_AGENT: &str = concat!("wpantry/", env!("CARGO_PKG_VERSION"), " (+https://github.com/waffuruai/pantry)");
 pub const TIMEOUT: Duration = Duration::from_secs(30);
-/// The largest response body read (S7); a bigger one is `Invalid`.
+/// The largest response body read; a bigger one is `Invalid`.
 pub const MAX_BODY: u64 = 128 << 20;
+
+/// Every host wpantry asks, and the only ones [`Http`] will connect to. A
+/// source that moves, or a new one, is added here and in
+/// `docs/public/checks-and-sources.md`, in the same change.
+pub const HOSTS: &[&str] = &[
+    "api.osv.dev",
+    "www.cisa.gov",
+    "endoflife.date",
+    "formulae.brew.sh",
+    "security.archlinux.org",
+    "versionhistory.googleapis.com",
+    "product-details.mozilla.org",
+    "www.postgresql.org",
+    "main.vscode-cdn.net",
+    "marketplace.visualstudio.com",
+    "open-vsx.org",
+    "api.github.com",
+    "api.deps.dev",
+    "haveibeenpwned.com",
+    "api.xposedornot.com",
+];
+
+/// The host of an `https://` URL, lowercased and without a port; `None` for
+/// any other scheme, a missing host, or userinfo (`https://a@b/`).
+pub fn host_of(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    if host.is_empty() { None } else { Some(host.to_ascii_lowercase()) }
+}
+
+/// `Ok` when `url` is https to a host in [`HOSTS`].
+fn allowed(url: &str) -> Result<()> {
+    match host_of(url) {
+        Some(h) if HOSTS.contains(&h.as_str()) => Ok(()),
+        _ => Err(Error::Invalid(format!("{url}: not a host wpantry asks (docs/public/checks-and-sources.md)"))),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
@@ -106,8 +150,10 @@ pub fn github_headers() -> Vec<(String, String)> {
     h
 }
 
-/// The real network: blocking `ureq` over `rustls`, proxy from the
-/// environment (`HTTPS_PROXY`, `ALL_PROXY`).
+/// The real network: blocking `ureq` over `rustls`, server certificates
+/// verified by the platform (the keychain on macOS, the system bundle on
+/// Linux), proxy from the environment (`HTTPS_PROXY`, `ALL_PROXY`), and
+/// only the hosts in [`HOSTS`].
 pub struct Http {
     agent: ureq::Agent,
 }
@@ -123,9 +169,12 @@ impl Http {
         // Keep a connection for each parallel fetch (OSV records, deps.dev):
         // ureq keeps 3 per host by default, so the rest paid a TLS handshake
         // per request.
+        let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
         let config = ureq::Agent::config_builder()
+            .tls_config(tls)
             .timeout_global(Some(TIMEOUT))
             .http_status_as_error(false)
+            .https_only(true)
             .max_idle_connections(32)
             .max_idle_connections_per_host(16)
             .build();
@@ -133,8 +182,46 @@ impl Http {
     }
 }
 
+/// Tries per request: a dropped connection or a 429/502/503/504 is tried
+/// again after 250 ms, then 500 ms (plus jitter), honouring Retry-After up
+/// to 10 s. Every request here is idempotent (GETs, and OSV's querybatch).
+const TRIES: u32 = 3;
+
 impl Net for Http {
     fn send(&self, req: &Request) -> Result<Response> {
+        allowed(&req.url)?;
+        let mut last = None;
+        for attempt in 0..TRIES {
+            match self.send_once(req) {
+                Ok((resp, retry_after)) if attempt + 1 < TRIES && matches!(resp.status, 429 | 502 | 503 | 504) => {
+                    std::thread::sleep(retry_after.unwrap_or_else(|| backoff(attempt)));
+                    last = Some(Ok(resp));
+                }
+                Ok((resp, _)) => return Ok(resp),
+                Err(e @ Error::Offline(_)) if attempt + 1 < TRIES => {
+                    std::thread::sleep(backoff(attempt));
+                    last = Some(Err(e));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        last.expect("at least one try")
+    }
+}
+
+/// 250 ms, 500 ms, …, each with up to a quarter of jitter.
+fn backoff(attempt: u32) -> std::time::Duration {
+    let base = 250u64 << attempt;
+    let jitter =
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)
+            as u64)
+            % (base / 4 + 1);
+    std::time::Duration::from_millis(base + jitter)
+}
+
+impl Http {
+    /// One try: the response and the server's Retry-After (capped), if any.
+    fn send_once(&self, req: &Request) -> Result<(Response, Option<std::time::Duration>)> {
         let offline = |e: ureq::Error| Error::Offline(format!("{}: {e}", req.url));
         let mut resp = match &req.body {
             Some(body) => {
@@ -154,11 +241,17 @@ impl Net for Http {
         };
         let status = resp.status().as_u16();
         let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|s| std::time::Duration::from_secs(s.min(10)));
         let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(|e| match e {
             ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{}: response over {MAX_BODY} bytes", req.url)),
             e => offline(e),
         })?;
-        Ok(Response { status, body, etag })
+        Ok((Response { status, body, etag }, retry_after))
     }
 }
 
@@ -199,6 +292,50 @@ mod tests {
     #[test]
     fn user_agent_names_the_project() {
         assert_eq!(USER_AGENT, format!("wpantry/{} (+https://github.com/waffuruai/pantry)", crate::VERSION));
+    }
+
+    #[test]
+    fn every_source_is_on_the_host_list_and_nothing_else_is_asked() {
+        use crate::{feeds, licenses, osv};
+        let sources = [
+            feeds::KEV_URL,
+            feeds::ARCH_URL,
+            feeds::CASKS_URL,
+            feeds::CHROME_URL,
+            feeds::FIREFOX,
+            feeds::POSTGRES_URL,
+            feeds::VSCODE_LISTS,
+            feeds::MARKETPLACE,
+            feeds::OPENVSX,
+            feeds::GITHUB_LATEST,
+            licenses::API,
+            osv::API,
+            "https://haveibeenpwned.com/api/v3/breachedaccount/x",
+            "https://api.xposedornot.com/v1/check-email/x",
+        ];
+        for url in sources {
+            assert!(allowed(url).is_ok(), "{url}");
+        }
+        assert_eq!(host_of("https://API.OSV.DEV:443/v1/querybatch?x#y").as_deref(), Some("api.osv.dev"));
+        assert_eq!(host_of("http://api.osv.dev/v1"), None, "plain http is never used");
+        assert_eq!(host_of("https://api.osv.dev@evil.example/"), None, "userinfo can't dress a host up");
+        assert_eq!(host_of("https:///path"), None);
+        // The real client refuses before any connection is made: no network here.
+        let http = Http::new();
+        for url in ["https://evil.example/", "https://api.osv.dev.evil.example/v1", "http://api.osv.dev/v1", "ftp://x/"]
+        {
+            let req = Request { method: "GET", url: url.into(), headers: Vec::new(), body: None };
+            assert!(matches!(http.send(&req), Err(Error::Invalid(_))), "{url}");
+        }
+    }
+
+    #[test]
+    fn backoff_grows_and_jitters_within_bounds() {
+        for attempt in 0..3u32 {
+            let base = 250u64 << attempt;
+            let b = backoff(attempt).as_millis() as u64;
+            assert!((base..=base + base / 4).contains(&b), "attempt {attempt}: {b}");
+        }
     }
 
     #[test]

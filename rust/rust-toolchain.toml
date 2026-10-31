@@ -1,4 +1,4 @@
-# The exact toolchain every build uses (specs/01-rust-port.md S1). Bump by PR.
+# The exact toolchain every build uses (docs/internal/dependencies.md). Bump by PR.
 [toolchain]
 channel = "1.97.0"
 profile = "minimal"

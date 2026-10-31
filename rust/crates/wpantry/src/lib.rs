@@ -12,6 +12,7 @@ pub mod apps;
 pub mod breach;
 pub mod catalog;
 pub mod catrust;
+pub mod cellar;
 pub mod check;
 pub mod check_machine;
 pub mod check_supply;
@@ -20,9 +21,11 @@ pub mod db;
 pub mod distros;
 pub mod editors;
 pub mod error;
+pub mod export;
 pub mod external;
 pub mod feeds;
 pub mod harnesses;
+pub mod history;
 pub mod images;
 pub mod json;
 pub mod leaks;
@@ -38,7 +41,9 @@ pub mod posture;
 pub mod re;
 pub mod repos;
 pub mod scanners;
+pub mod selfinstall;
 pub mod sha256;
+pub mod sync;
 pub mod system;
 pub mod tools;
 pub mod versions;
@@ -46,7 +51,7 @@ pub mod watch;
 
 pub use error::Error;
 
-/// The implementation's version (the Python one is the same).
+/// The implementation's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Which implementation this is, in every JSON envelope.
 pub const IMPL: &str = "rust";

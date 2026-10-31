@@ -1,6 +1,6 @@
-//! The local cache: one SQLite file per machine, the same schema the Python
-//! implementation reads and writes (`specs/cli-contract.md#cache-sqlite`), so
-//! switching implementation keeps the cache.
+//! The local cache: one SQLite file per machine, with the schema the CLI
+//! contract fixes (`specs/cli-contract.md#cache-sqlite`), so a cache outlives
+//! releases.
 //!
 //! It holds OSV records for what this machine has (never a mirror of OSV),
 //! the answers to "which advisories affect package P at version V" with when
@@ -16,6 +16,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const DAY: f64 = 86400.0;
+/// How far ahead of now a cached timestamp may be and still count (clocks
+/// drift; a cache edited to the far future does not).
+pub const CLOCK_SKEW: f64 = 300.0;
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -28,7 +31,7 @@ CREATE TABLE IF NOT EXISTS queries (
 CREATE TABLE IF NOT EXISTS findings (
   kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
   status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
-  fix_auto INTEGER);
+  fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT);
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, added TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS eol (
   product TEXT, cycle TEXT, eol TEXT, latest TEXT, PRIMARY KEY (product, cycle));
@@ -38,6 +41,31 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS malicious (ecosystem TEXT, name TEXT, id TEXT);
 CREATE INDEX IF NOT EXISTS malicious_name ON malicious (ecosystem, name);
 ";
+
+/// Columns added since a table was first created, as (table, column,
+/// type): a cache from an earlier release gains them here. Only additions,
+/// never a rename or a type change (the contract's schema rule).
+const ADDED: &[(&str, &str, &str)] = &[
+    ("findings", "dep_scope", "TEXT"),
+    ("findings", "dep_direct", "INTEGER"),
+    ("findings", "affected_range", "TEXT"),
+    ("exposures", "dep_scope", "TEXT"),
+    ("exposures", "dep_direct", "INTEGER"),
+    ("exposures", "affected_range", "TEXT"),
+    ("exposures", "fix_cmd", "TEXT"),
+];
+
+fn migrate(conn: &Connection) -> Result<()> {
+    for (table, column, kind) in ADDED {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let have: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        if !have.iter().any(|c| c == column) {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+        }
+    }
+    Ok(())
+}
 
 /// WPANTRY_DB, else $XDG_CACHE_HOME/wpantry/wpantry.db, else
 /// ~/.cache/wpantry/wpantry.db. The malicious-packages clone sits beside it.
@@ -69,11 +97,33 @@ impl Cache {
     pub fn open(file: Option<&Path>) -> Result<Cache> {
         let file = file.map(Path::to_path_buf).unwrap_or_else(path);
         if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)?;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(dir)?;
         }
         let conn = Connection::open(&file)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // The cache names what is installed and where secrets sit: ours only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        }
+        // Readers and the writer coexist (a scheduled scan beside a manual
+        // one), and a minute of waiting beats failing a scan outright.
+        conn.busy_timeout(std::time::Duration::from_secs(60))?;
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::history::SCHEMA)?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
+             CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
+        )?;
+        migrate(&conn)?;
         let fts = conn
             .execute_batch(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS vulns_fts USING fts5(\
@@ -192,6 +242,66 @@ impl Cache {
             .optional()?)
     }
 
+    /// Every (ecosystem, package, version) ever asked of OSV.
+    pub fn queried(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT ecosystem, package, version FROM queries ORDER BY 1, 2, 3")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<(Option<String>, Option<String>, Option<String>)>>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(e, p, v)| (e.unwrap_or_default(), p.unwrap_or_default(), v.unwrap_or_default()))
+            .filter(|(e, p, _)| !e.is_empty() && !p.is_empty())
+            .collect())
+    }
+
+    /// Every product with end-of-life rows.
+    pub fn eol_products(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT product FROM eol ORDER BY 1")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().flatten().collect())
+    }
+
+    /// Drop what a scan hasn't touched in `max_age` seconds: package
+    /// versions not asked about since then (and the advisories only they
+    /// referred to), cached runs that old, then compact the file. Returns
+    /// (queries, vulns, runs) removed.
+    pub fn prune(&self, max_age: f64) -> Result<(usize, usize, usize)> {
+        let cutoff = now() - max_age;
+        let queries = self.conn.execute("DELETE FROM queries WHERE checked_at < ?", [cutoff])?;
+        let runs = self.conn.execute("DELETE FROM runs WHERE ran_at < ?", [cutoff])?;
+        let mut keep: HashSet<String> = HashSet::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT vuln_ids FROM queries")?;
+            for ids in stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten() {
+                keep.extend(ids.split_whitespace().map(str::to_string));
+            }
+            let mut stmt = self.conn.prepare("SELECT vuln_id FROM findings")?;
+            keep.extend(stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten());
+        }
+        let mut gone: Vec<String> = Vec::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT id, aliases FROM vulns")?;
+            for row in stmt.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))? {
+                let (id, aliases) = row?;
+                let Some(id) = id else { continue };
+                let referenced =
+                    keep.contains(&id) || aliases.as_deref().unwrap_or("").split_whitespace().any(|a| keep.contains(a));
+                if !referenced {
+                    gone.push(id);
+                }
+            }
+        }
+        for id in &gone {
+            self.conn.execute("DELETE FROM vulns WHERE id = ?", [id])?;
+            if self.fts {
+                let _ = self.conn.execute("DELETE FROM vulns_fts WHERE id = ?", [id]);
+            }
+        }
+        self.conn.execute_batch("COMMIT; VACUUM; BEGIN")?;
+        Ok((queries, gone.len(), runs))
+    }
+
     pub fn put_query(&self, eco: &str, pkg: &str, ver: &str, ids: &[String]) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO queries VALUES (?, ?, ?, ?, ?)",
@@ -240,9 +350,11 @@ impl Cache {
         offline: bool,
     ) -> Result<Value> {
         let run = self.run(key)?.filter(|(fp, _, _)| fp == fingerprint);
+        // A timestamp in the future is not fresh: an edited cache can't make
+        // a result permanent.
         if let Some((_, at, res)) = &run
             && !refresh
-            && (offline || *at > now() - max_age)
+            && (offline || (*at > now() - max_age && *at <= now() + CLOCK_SKEW))
         {
             return Ok(res.clone());
         }
@@ -267,7 +379,10 @@ impl Cache {
 
     pub fn replace_findings(&self, findings: &[Finding]) -> Result<()> {
         self.conn.execute("DELETE FROM findings", [])?;
-        let mut stmt = self.conn.prepare("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
+             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )?;
         for f in findings {
             stmt.execute(params![
                 f.kind,
@@ -281,7 +396,10 @@ impl Cache {
                 f.severity,
                 f.note,
                 f.fix_cmd,
-                f.fix_auto as i64
+                f.fix_auto as i64,
+                f.dep_scope,
+                f.dep_direct.map(i64::from),
+                f.affected_range
             ])?;
         }
         Ok(())
@@ -407,6 +525,61 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A cached run stamped in the future (an edited cache) is stale, not
+    /// fresh forever.
+    #[test]
+    fn a_future_timestamp_is_not_fresh() {
+        let dir = crate::system::TempDir::new("db").unwrap();
+        let c = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
+        c.conn
+            .execute(
+                "INSERT INTO runs(source, fingerprint, ran_at, result) VALUES (?, ?, ?, ?)",
+                ("k", "fp", 1e12, "[1]"),
+            )
+            .unwrap();
+        let v = c.memo("k", || Ok(json!([2])), DAY, "fp", false, false).unwrap();
+        assert_eq!(v, json!([2]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir.path().join("w.db")), 0o600);
+        }
+    }
+
+    /// A cache from before the dependency columns existed gains them on
+    /// open, and keeps its rows.
+    #[test]
+    fn older_caches_gain_the_added_columns() {
+        let d = crate::system::TempDir::new("migrate").unwrap();
+        let file = d.path().join("old.db");
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE findings (kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT, status TEXT, \
+             fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT, fix_auto INTEGER); \
+             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1);",
+        )
+        .unwrap();
+        conn.close().unwrap();
+        let c = Cache::open(Some(&file)).unwrap();
+        let cols: Vec<String> = c
+            .conn
+            .prepare("PRAGMA table_info(findings)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(&cols[12..], ["dep_scope", "dep_direct", "affected_range"]);
+        let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1);
+        let f = crate::export::findings(&c).unwrap();
+        assert_eq!((f[0].dep_scope.as_str(), f[0].dep_direct, f[0].affected_range.as_str()), ("", None, ""));
+        c.close().unwrap();
+        // Opening again is a no-op.
+        Cache::open(Some(&file)).unwrap().close().unwrap();
+    }
+
     pub fn temp_cache() -> (crate::system::TempDir, Cache) {
         let dir = crate::system::TempDir::new("db").unwrap();
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
@@ -455,7 +628,10 @@ mod tests {
                 "severity",
                 "note",
                 "fix_cmd",
-                "fix_auto"
+                "fix_auto",
+                "dep_scope",
+                "dep_direct",
+                "affected_range"
             ]
         );
     }

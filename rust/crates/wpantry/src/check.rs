@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn listed_files_and_bundled_defaults() {
-        assert!(listed(None, crate::defaults::INSTALL_SCRIPTS).contains(&"esbuild".to_string()));
+        assert!(listed(None, crate::defaults::INSTALL_SCRIPTS).iter().any(|l| l.starts_with("esbuild@")));
         assert!(listed(Some(Path::new("/nonexistent")), "x").is_empty());
     }
 }

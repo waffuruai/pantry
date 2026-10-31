@@ -169,7 +169,7 @@ class Contract(unittest.TestCase):
         proj = self.home / "p"
         proj.mkdir()
         (proj / "package-lock.json").write_text(
-            '{"lockfileVersion": 3, "packages": {"": {}, "node_modules/esbuild": {"version": "0.25.0", '
+            '{"lockfileVersion": 3, "packages": {"": {}, "node_modules/esbuild": {"version": "0.28.1", '
             '"hasInstallScript": true}, "node_modules/foo": {"version": "1.0.0", "hasInstallScript": true}}}')
         allow = Path(self.tmp.name, "allow.txt")
         allow.write_text("# ours\nfoo\n")
@@ -178,8 +178,20 @@ class Contract(unittest.TestCase):
         _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
                                  str(allow))
         got = [f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"]
-        self.assertEqual([f["component"] for f in got], ["esbuild"])  # bundled list allows it; this one doesn't
+        self.assertEqual([f["component"] for f in got], ["esbuild"])  # the bundled list allows 0.28.x; this one doesn't list it
         self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
+        # A pinned entry: the locked version is outside it, so it warns and names both.
+        allow.write_text("# ours\nfoo\nesbuild@^0.24\n")
+        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
+                                 str(allow))
+        got = [f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"]
+        self.assertEqual([(f["component"], f["vuln_id"], f["status"]) for f in got], [("esbuild", "INSTALL-SCRIPT", "warn")])
+        self.assertIn("allowed at ^0.24 but 0.28.1 is locked", got[0]["note"])
+        self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
+        allow.write_text("# ours\nfoo\nesbuild@^0.28\n")
+        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
+                                 str(allow))
+        self.assertEqual([f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"], [])
 
     def test_licenses_are_opt_in(self):
         proj = self.home / "p"

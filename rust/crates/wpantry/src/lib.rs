@@ -24,6 +24,7 @@ pub mod external;
 pub mod feeds;
 pub mod harnesses;
 pub mod images;
+pub mod install_scripts;
 pub mod json;
 pub mod leaks;
 pub mod licenses;

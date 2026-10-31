@@ -114,7 +114,9 @@ fn repo_scan_end_to_end() {
         ("smallvec", "1.6.0", "CVE-2021-25900", "fail", "1.6.1", true, "CRITICAL")
     );
     assert_eq!(f.location, dir.join("Cargo.lock").to_string_lossy());
-    assert_eq!(f.fix_cmd, format!("cd {} && cargo update -p smallvec --precise 1.6.1", dir.display()));
+    // The directory is shell-quoted when it needs it (Windows' `\\?\C:\…`).
+    let quoted = wpantry::check_supply::quote(&dir.display().to_string());
+    assert_eq!(f.fix_cmd, format!("cd {quoted} && cargo update -p smallvec --precise 1.6.1"));
     assert!(
         !out.findings.iter().any(|f| f.component.contains("licenses")),
         "licenses are checked only with --licenses"

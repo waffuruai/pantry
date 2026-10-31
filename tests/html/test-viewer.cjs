@@ -10,7 +10,7 @@ function el(id){return elements[id] ||= {textContent:id==='pantry-bundle'?JSON.s
 const document={getElementById:el,addEventListener(type,fn){events[type]=fn},documentElement:{setAttribute(){},getAttribute(){return 'dark'}},createElement(){return el('temp')},body:{appendChild(){},removeChild(){}}};
 let copied='',printCalls=0;
 const ctx={document,window:{addEventListener(type,fn){events['window:'+type]=fn},print(){printCalls++}},navigator:{clipboard:{writeText(text){copied=text;return {then(ok){ok()}}}}},localStorage:{getItem(){return null},setItem(){}},history:{replaceState(){}},location:{hash:''},Date,Number,Array,Object,String,JSON,encodeURIComponent,setTimeout(){},clearTimeout(){}};
-vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur};'),ctx);
+vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate};'),ctx);
 assert(elements.main.innerHTML.includes('1 applicable advisory'));
 assert(elements.main.innerHTML.includes('2 dependencies have an unknown license'));
 assert(elements.main.innerHTML.includes('&lt;img src=x onerror=alert(1)&gt;'));
@@ -153,7 +153,7 @@ assert(elements['print-report'].innerHTML.includes('CSV exports do not include s
 assert(elements['print-report'].innerHTML.includes('coverage cannot be established'));
 bundle.runs[0].report={...report,unfixed:0,unknown_licenses:0,findings:[]};
 elements['pantry-bundle'].textContent=JSON.stringify(bundle);
-vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur};'),ctx);
+vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate};'),ctx);
 assert(elements.main.innerHTML.includes('0 findings in this report'));
 assert(!/clean result|nothing .*safe|no updates needed/i.test(elements.main.innerHTML));
 click({tab:'plan'});
@@ -214,4 +214,37 @@ ctx.viewerTest.addText(JSON.stringify({schema:1,exposures:[],scans:[]}), 'histor
 assert.equal(elements.main.innerHTML,beforeHistory);
 ctx.viewerTest.addText(JSON.stringify({...dependency,schema:1,resolved_at:'2026-10-30'}), 'history.jsonl');
 assert.equal(elements.main.innerHTML,beforeHistory);
+// Celebrate only a scoped, online scan with positive inventory and no missing evidence.
+const cleanBundle={...bundle,phase:'after updates',scope:{...bundle.scope,offline:false},
+  runs:[{title:'Security scan',file:'wpantry check',report:{...report,checked:{'git repos':1},unfixed:0,unknown_licenses:0,findings:[]}}]};
+function reload(data){
+  elements['pantry-bundle'].textContent=JSON.stringify(data);
+  el('waffuru-mark').src='data:image/png;base64,AAAA';
+  vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate};'),ctx);
+}
+reload(cleanBundle);
+assert(elements.main.innerHTML.includes('All clear. Nicely done.'));
+assert(elements.main.innerHTML.includes('The recheck found no findings'));
+assert(elements.main.innerHTML.includes('Pantry by Waffuru'));
+assert(elements.main.innerHTML.includes('<img src="data:image/png;base64,AAAA" alt="">'));
+events['window:beforeprint']();
+assert(elements['print-report'].innerHTML.includes('All clear. Nicely done.'));
+assert(elements['print-report'].innerHTML.includes('checked scope'));
+for(const [label,change] of [
+  ['unfixed',{unfixed:1}],['unknown licenses',{unknown_licenses:1}],['empty inventory',{checked:{}}],
+  ['zero inventory',{checked:{'git repos':0}}],['unchecked',{findings:[{...f,kind:'unchecked',status:'warn'}]}],
+  ['warning',{findings:[{...f,status:'warn'}]}],['failure',{findings:[f]}]
+]){
+  reload({...cleanBundle,runs:[{...cleanBundle.runs[0],report:{...cleanBundle.runs[0].report,...change}}]});
+  assert(!elements.main.innerHTML.includes('All clear. Nicely done.'),label);
+}
+for(const change of [{scope:null},{scope:{...cleanBundle.scope,offline:true}},{phase:'after updates (an update command failed)'}]){
+  reload({...cleanBundle,...change});
+  assert(!elements.main.innerHTML.includes('All clear. Nicely done.'));
+}
+reload(cleanBundle);
+ctx.viewerTest.addText(JSON.stringify(cleanBundle.runs[0].report),'empty-import.json');
+assert(!elements.main.innerHTML.includes('All clear. Nicely done.'));
+ctx.viewerTest.addText(header,'empty-export.csv');
+assert(!elements.main.innerHTML.includes('All clear. Nicely done.'));
 console.log('viewer synthetic rendering, filters, details, links, imports, coverage, plan and print document passed');

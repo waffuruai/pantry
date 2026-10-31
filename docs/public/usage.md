@@ -121,6 +121,8 @@ For a browser report, run `wpantry check --html report.html`. Its **Update plan*
 
 Finding details include dependency scope, direct or transitive relationships, and affected-version ranges when the scanner supplies them. Repo hooks, hidden text, suspicious code, document checks and security-setting findings are rules rather than public advisories. **Coverage** records whether posture checks were requested, their configured exclusions, suspicious-code warning exemptions and policy file choices. The local history scan number identifies the corresponding entry in `wpantry report`.
 
+A scan with no findings or recorded coverage gaps gets a quiet **All clear. Nicely done.** finish with the Waffuru mark. It applies only to the checked scope: empty imports, zero inventory, offline scans, unknown licenses, unfixed advisories and failed updates do not trigger it.
+
 The viewer imports `check --json` reports and `export --csv` findings. History reports and lifecycle JSONL exports use different formats and are not scan imports; use `wpantry report` or a JSONL consumer for those. Older JSON reports remain readable, with missing dependency and scope information shown as unknown.
 
 **Print full report** (or your browser's Print command) produces a paper layout with summary, scope and coverage, all findings and explanations, and grouped actions for the selected scan. Screen filters and collapsed rows do not hide printed findings. Navigation, copy controls and the AI prompt are excluded. Choose Save as PDF in the print dialog to keep a copy; disable the browser's own headers and footers there if you do not want its file URL printed.

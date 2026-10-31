@@ -58,6 +58,8 @@ All criteria track [#36](https://github.com/waffuruai/pantry/issues/36).
 - F8: Current finding fields (`dep_scope`, `dep_direct`, `affected_range`) survive rendering, printing and copying the agent prompt; missing fields in older schema-1 reports remain unknown. Repo hooks, posture, hidden text, suspicious code and document rules stay visible without invented advisory URLs. Evidence: viewer regression tests and CLI JSON/HTML equality.
 - F9: Generated reports identify their local history scan, effective posture scope, configured posture exclusions, suspicious-code warning exemptions and policy file choices. Imported scan JSON has unknown scope/history; history JSON and JSONL exports are rejected rather than mistaken for current scans. The update flow keeps upstream remediation recording and verification before exporting the final recheck. Evidence: CLI contract tests and viewer coverage/print/prompt tests.
 
+- F10: A generated online scan with explicit scope, positive inventory, no findings, no unfixed advisories and no unknown licenses shows a quiet Waffuru-branded “All clear. Nicely done.” state, including in print. Empty imports, zero inventory, offline scans, unknown scope and failed updates do not celebrate. The copy limits the result to the checked scope and never claims every vulnerability was checked. Evidence: paired viewer tests for the positive state and each incomplete/failed case.
+
 ### Performance
 
 - P1: Zero additional scan/network requests and zero runtime converter dependencies when HTML is requested. Evidence: `finish` consumes the existing outcome and compile-time template, using std plus the existing JSON helper.
@@ -92,3 +94,5 @@ Visual browser QA is pending: the available browser tool rejected `file:` naviga
 | 2026-10-29 | Treat the supplied ZIP as a mockup, refining around actual scanner outputs | Explicit user clarification; coverage and grouped actions take precedence over the mockup layout | Tom |
 
 | 2026-10-31 | Integrate current dev finding metadata, policy context and history-aware rechecks | Tom requested compatibility with Eric’s merged changes; keep HTML scoped to current scans | Tom |
+
+| 2026-10-31 | Add a restrained branded completion state for clear, scoped scans | Tom requested a happy finish without excessive celebration; incomplete evidence keeps cautious wording | Tom |

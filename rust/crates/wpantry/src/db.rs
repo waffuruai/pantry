@@ -78,7 +78,12 @@ fn path_from(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
     if let Some(p) = var("WPANTRY_DB") {
         return p;
     }
-    let base = var("XDG_CACHE_HOME").unwrap_or_else(|| var("HOME").unwrap_or_default().join(".cache"));
+    // Windows: %LOCALAPPDATA%\wpantry\wpantry.db, unless HOME or
+    // XDG_CACHE_HOME says otherwise (the contract suite sets HOME).
+    let base = var("XDG_CACHE_HOME")
+        .or_else(|| var("HOME").map(|h| h.join(".cache")))
+        .or_else(|| if cfg!(windows) { var("LOCALAPPDATA") } else { None })
+        .unwrap_or_else(|| PathBuf::from(".cache"));
     base.join("wpantry").join("wpantry.db")
 }
 
@@ -683,6 +688,14 @@ mod tests {
             move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(v))
         };
         assert_eq!(path_from(&env(&[("WPANTRY_DB", "/x/w.db"), ("HOME", "/h")])), PathBuf::from("/x/w.db"));
+        // Windows: LOCALAPPDATA when neither XDG_CACHE_HOME nor HOME is set; HOME still wins.
+        let local = path_from(&env(&[("LOCALAPPDATA", "/l"), ("USERPROFILE", "/u")]));
+        let want = if cfg!(windows) { "/l" } else { ".cache" };
+        assert_eq!(local, PathBuf::from(want).join("wpantry").join("wpantry.db"));
+        assert_eq!(
+            path_from(&env(&[("LOCALAPPDATA", "/l"), ("HOME", "/h")])),
+            PathBuf::from("/h/.cache/wpantry/wpantry.db")
+        );
         assert_eq!(
             path_from(&env(&[("XDG_CACHE_HOME", "/x"), ("HOME", "/h")])),
             PathBuf::from("/x/wpantry/wpantry.db")

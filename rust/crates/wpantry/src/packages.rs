@@ -60,7 +60,7 @@ fn str_of(v: &Value, k: &str) -> String {
 /// couldn't be read, for the scan to report unchecked (incomplete metadata
 /// must never read as fewer packages).
 pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
+    let mut dirs: Vec<String> = system::path_dirs();
     dirs.extend(expand(PYTHON_DIRS));
     let minor = Regex::new(r"python3\.\d+");
     let mut names: Vec<String> = dirs
@@ -346,6 +346,8 @@ pub fn gems(found: &[Component]) -> Vec<Component> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)] // `npm link` symlinks
+    #[cfg(unix)] // `npm link` symlinks
     #[test]
     fn global_packages_reads_npm_root() {
         let d = crate::system::TempDir::new("npmroot").unwrap();

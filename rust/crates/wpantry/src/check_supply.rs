@@ -12,7 +12,7 @@ use crate::json::str_at;
 use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
-use crate::system::{self, Component, run as sh, short, which};
+use crate::system::{self, Component, command_path, run as sh, short, which};
 use crate::{documents, harnesses, hidden, hooks, leaks, malicious, suspect};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -88,7 +88,7 @@ pub fn quote(s: &str) -> String {
 /// How to move one locked dependency to `safe` (a step in the repo, never
 /// run unattended).
 pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
-    let d = quote(&lock.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+    let d = quote(&lock.parent().map(command_path).unwrap_or_default());
     let file = lock.file_name().and_then(|n| n.to_str()).unwrap_or("");
     match (eco, file) {
         ("crates.io", _) => format!("cd {d} && cargo update -p {name} --precise {safe}"),
@@ -96,7 +96,7 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
         ("npm", "yarn.lock") if yarn_berry(lock) => format!("cd {d} && yarn up {}", quote(&format!("{name}@{safe}"))),
         ("npm", "yarn.lock") => format!("cd {d} && yarn upgrade {}", quote(&format!("{name}@{safe}"))),
         ("npm", "bun.lock") => format!("cd {d} && bun update {}", quote(name)),
-        ("npm", "deno.lock") => format!("Update npm:{name} to {safe} in {}", lock.display()),
+        ("npm", "deno.lock") => format!("Update npm:{name} to {safe} in {}", command_path(lock)),
         ("npm", _) => format!("cd {d} && npm install {name}@{safe}"),
         ("PyPI", "uv.lock") => format!("cd {d} && uv lock --upgrade-package {name}=={safe}"),
         ("PyPI", "poetry.lock") => format!("cd {d} && poetry update {}", quote(name)),
@@ -108,7 +108,7 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
         ("Hex", _) => format!("cd {d} && mix deps.update {}", quote(name)),
         ("Maven", "gradle.lockfile") => format!("cd {d} && gradle dependencies --update-locks {}", quote(name)),
         ("NuGet", _) => format!("cd {d} && dotnet add package {} --version {}", quote(name), quote(safe)),
-        _ => format!("Update {name} to {safe} in {}", lock.display()),
+        _ => format!("Update {name} to {safe} in {}", command_path(lock)),
     }
 }
 
@@ -171,7 +171,7 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
             if recs.is_empty() {
                 continue;
             }
-            let mut c = Component::new("project", &p.name, &p.version, &f.to_string_lossy());
+            let mut c = Component::new("project", &p.name, &p.version, &command_path(f));
             c.fix = project_fix(f, &p.ecosystem, &p.name, "{safe}");
             c.osv = Some(item);
             if p.scope != lockfiles::Scope::Unknown {
@@ -1056,6 +1056,12 @@ mod tests {
         assert_eq!(
             project_fix(Path::new("/w/butter/rust/Cargo.lock"), "crates.io", "webpki-roots", "1.0.10"),
             "cd /w/butter/rust && cargo update -p webpki-roots --precise 1.0.10"
+        );
+        // `Path` only splits `\` on Windows. The string form is tested in system::command_path.
+        #[cfg(windows)]
+        assert_eq!(
+            project_fix(Path::new(r"\\?\C:\code\app\Cargo.lock"), "crates.io", "regex", "1.5.5"),
+            "cd C:/code/app && cargo update -p regex --precise 1.5.5"
         );
         assert_eq!(
             project_fix(Path::new("/w/docs/pnpm-lock.yaml"), "npm", "vite", "8.2.3"),

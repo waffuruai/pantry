@@ -26,6 +26,17 @@ fn manual(formula: &str) -> Option<&'static str> {
 /// The machine checks; returns what the inventory found, for the
 /// supply-chain sweep.
 pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
+    // Windows has no machine inventory yet (#11): winget, Scoop and
+    // Chocolatey packages, the registry's installed apps, Windows Update and
+    // the certificate store aren't read. Say so, rather than report a clean
+    // machine; the repo checks still run.
+    if cfg!(windows) {
+        scan.unchecked(
+            "machine inventory on Windows",
+            "winget, Scoop and Chocolatey packages, installed apps, Windows Update and the certificate store aren't read yet",
+        );
+        return Ok(Vec::new());
+    }
     // The probes that need nothing from the scan run beside it: the trust
     // stores and Software Update's last scan, seconds of subprocesses each.
     // brew vulns takes minutes on a first run: it starts now, beside the

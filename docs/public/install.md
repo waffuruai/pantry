@@ -39,6 +39,7 @@ Every release ships:
 | `wpantry-x86_64-unknown-linux-musl` | Linux x86-64, static |
 | `wpantry-aarch64-unknown-linux-musl` | Linux arm64, static |
 | `wpantry-universal-apple-darwin` | macOS, Apple silicon and Intel |
+| `wpantry-x86_64-pc-windows-msvc.exe` | Windows x86-64: repo checks only (see [Windows](#windows)) |
 | `SHA256SUMS` | SHA-256 of each binary |
 | `packslip.sigstore.json` | The signed packslip: every binary's digest, platform and command name |
 | `<binary>.sigstore.json` | A cosign keyless signature bundle for that binary |
@@ -55,6 +56,7 @@ case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)         ASSET=wpantry-x86_64-unknown-linux-musl ;;
   Linux/aarch64)        ASSET=wpantry-aarch64-unknown-linux-musl ;;
   Darwin/*)             ASSET=wpantry-universal-apple-darwin ;;
+  MINGW*/x86_64|MSYS*/x86_64) ASSET=wpantry-x86_64-pc-windows-msvc.exe ;;   # Git Bash on Windows
   *) echo "no release binary for this platform; build from source"; exit 1 ;;
 esac
 BASE="https://github.com/waffuruai/pantry/releases/download/v$VERSION"
@@ -131,6 +133,12 @@ On macOS, a binary downloaded with `curl` runs as is. One downloaded through a b
 ```bash
 echo "<sha256 from SHA256SUMS>  $ASSET" | shasum -a 256 -c - && install -m 0755 "$ASSET" /usr/local/bin/wpantry
 ```
+
+## Windows
+
+From 2026-10-31 each release ships `wpantry-x86_64-pc-windows-msvc.exe`, built, attested and signed like the others and listed in `SHA256SUMS` and the packslip. It runs the repo checks (`wpantry check --no-machine --path C:\code\app`), `search`, `export`, `report` and the rest; a machine scan says "not checked" for the machine itself, because winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet ([#11](https://github.com/waffuruai/pantry/issues/11)). There is no Windows arm64 build.
+
+From Git Bash (MSYS and Cygwin too), `install.sh` selects that asset and installs it as `wpantry.exe` in `~/.local/bin`, or the directory given with `--dir`. It checks `SHA256SUMS` and then packslip, `gh`, or cosign, the same as on Linux and macOS. cmd and PowerShell do not run the script. From those, download `wpantry-x86_64-pc-windows-msvc.exe`, verify it with `gh attestation verify wpantry-x86_64-pc-windows-msvc.exe --repo waffuruai/pantry` (or `cosign verify-blob` with its `.sigstore.json` bundle, as above), and put it on PATH as `wpantry.exe`. mise runs on Windows too: `mise use -g packslip:github.com/waffuruai/pantry` installs and verifies it the same way. The cache lives in `%LOCALAPPDATA%\wpantry\wpantry.db`; `gitleaks.exe` on PATH is needed for the secret scan, as on every platform.
 
 ## From crates.io
 

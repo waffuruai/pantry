@@ -475,9 +475,8 @@ mod tests {
         ] {
             git_repo(&h.join(pruned), false);
         }
-        let outside = git_repo(&tmp.path().join("outside"), false);
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, h.join("link")).unwrap();
+        std::os::unix::fs::symlink(git_repo(&tmp.path().join("outside"), false), h.join("link")).unwrap();
         let lines = RefCell::new(Vec::new());
         let got = scope(None, &h, &|m| lines.borrow_mut().push(m.to_string()), &|_| {}, &|_| {});
         wanted.sort();

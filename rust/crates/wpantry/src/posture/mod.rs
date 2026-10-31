@@ -4,8 +4,8 @@
 //! CIS benchmarks ask of a workstation. Each check is a read-only probe
 //! (a `defaults read`, a `launchctl print-disabled`, a file) and, where
 //! one exists, a fix: user-level ones may run unattended, the rest are
-//! printed as a `sudo` step. Mergen (sametsazak/mergen, MIT) and the CIS
-//! Apple macOS and Linux benchmarks are the references.
+//! printed as a `sudo` step. The CIS Apple macOS and Linux benchmarks are
+//! the references (README, acknowledgements).
 //!
 //! A failing Critical or High check fails the scan; Medium and Low warn;
 //! a check that can't tell is reported as such, never as a pass.

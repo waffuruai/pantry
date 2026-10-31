@@ -6,7 +6,7 @@ Fixes marked *user* are settings of your own account; `wpantry --update` may app
 
 `--no-posture` skips all of them; `--posture-policy FILE` lists ids to skip, one per line (`REMOTE-LOGIN` on a server that means to run ssh). The ids are the finding's `vuln_id` without `POSTURE-`.
 
-The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Independent Linux Benchmark; [Mergen](https://github.com/sametsazak/mergen) (MIT) was the reference for which macOS items an unprivileged process can read and fix.
+The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Independent Linux Benchmark. The projects they were written against are in the README's [acknowledgements](../../README.md#acknowledgements).
 
 ## macOS
 
@@ -61,5 +61,9 @@ An editor with `extensions.autoUpdate: false` is reported as "updates by hand" (
 | SUDO-NOPASSWD | 5.3 | sudo asks for a password | Medium | admin: visudo |
 | PATH-WRITABLE | 6.2 | No world-writable directory on PATH | Medium | admin: `chmod o-w` |
 | TIME-SYNC | 2.1.1 | Clock synchronised | Low | admin: `timedatectl set-ntp true` |
+| KERNEL-TCP-IP-OPTIONS | | Running kernel outside [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432)'s affected range (upstream fixes 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10), or an nftables/iptables rule dropping inbound TCP with IP options (`ip hdrlength > 5`). A distro kernel with a backport under its own numbering passes only through the rule: check the vendor's advisory. The ruleset is read as root or through `sudo -n` (never a prompt); manual when neither works | Critical | admin: the nft stopgap (ops: `mise run mitigate-cve-2026-98432`), then the kernel update |
+| MPTCP | | `net.mptcp.enabled = 0` (or MPTCP not built) | Medium | admin: `sysctl -w net.mptcp.enabled=0` |
+
+The kernel check is the pattern for a vulnerability with no fix to install yet: the check knows the affected versions and the stopgap, passes on either, and tells you which one you are relying on. [usage.md](usage.md#exposed-with-no-fix-yet) covers `wpantry watch`, which asks OSV again about such advisories.
 
 Not covered yet: Windows (#11), Time Machine encryption, sudo timeouts (need root to read), audit logging.

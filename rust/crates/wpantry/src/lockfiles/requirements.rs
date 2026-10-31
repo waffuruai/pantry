@@ -20,6 +20,18 @@ pub fn is_requirements(name: &str) -> bool {
     name.starts_with("requirements") && name.ends_with(".txt")
 }
 
+/// What a requirements file's name says about its pins: `requirements-dev.txt`,
+/// `requirements_test.txt` and `requirements-docs.txt` are tooling, not what
+/// ships; a plain `requirements.txt` says nothing either way (it may be a
+/// `pip freeze` of everything).
+pub fn scope_of_file(name: &str) -> super::Scope {
+    let stem = name.to_ascii_lowercase();
+    let stem = stem.strip_suffix(".txt").unwrap_or(&stem);
+    let tooling = ["dev", "test", "tests", "testing", "docs", "lint", "ci"];
+    let dev = stem.split(['-', '_', '.']).skip(1).any(|part| tooling.contains(&part));
+    if dev { super::Scope::Dev } else { super::Scope::Unknown }
+}
+
 /// PEP 503: lowercase, runs of `-`, `_` and `.` as one `-`.
 pub fn normalize(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
@@ -141,7 +153,8 @@ pub fn parse_file(path: &Path, root: &Path) -> Result<Vec<Package>> {
             return Err(Error::Invalid(format!("more than {MAX_INCLUDES} included requirements files")));
         }
         let (pkgs, includes) = parse(&crate::system::read_capped(&real, MAX_FILE)?)?;
-        out.extend(pkgs);
+        let scope = scope_of_file(real.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+        out.extend(pkgs.into_iter().map(|p| p.scoped(scope)));
         let dir = p.parent().unwrap_or(Path::new("."));
         // Depth first, in the order written.
         queue.extend(includes.iter().rev().map(|inc| dir.join(inc)));
@@ -155,6 +168,17 @@ mod tests {
 
     fn pins(text: &str) -> Vec<(String, String)> {
         parse(text).unwrap().0.into_iter().map(|p| (p.name, p.version)).collect()
+    }
+
+    #[test]
+    fn the_file_name_says_dev_or_nothing() {
+        use super::super::Scope;
+        for dev in ["requirements-dev.txt", "requirements_test.txt", "requirements.docs.txt", "requirements-ci.txt"] {
+            assert_eq!(scope_of_file(dev), Scope::Dev, "{dev}");
+        }
+        for plain in ["requirements.txt", "requirements-prod.txt", "requirements.lock.txt"] {
+            assert_eq!(scope_of_file(plain), Scope::Unknown, "{plain}");
+        }
     }
 
     #[test]
@@ -216,7 +240,7 @@ Pillow (==10.0.0)
         assert_eq!(got, ["a 1.0", "b 2.0"]);
         // Through the default root (the file's own directory) the parent is out of reach.
         let only_dev = crate::lockfiles::extract(&root.join("sub/requirements-dev.txt")).unwrap().unwrap();
-        assert_eq!(only_dev, [Package::new("PyPI", "b", "2.0")]);
+        assert_eq!(only_dev, [Package::new("PyPI", "b", "2.0").scoped(super::super::Scope::Dev)]);
         assert!(parse_file(&root.join("nope.txt"), &root).is_err(), "a missing top file is an error");
     }
 }

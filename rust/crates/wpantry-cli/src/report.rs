@@ -55,6 +55,7 @@ const KIND_ORDER: &[&str] = &[
     "repo-hook",
     "hidden-text",
     "suspect-code",
+    "document",
     "secret",
     "install-script",
     "license",

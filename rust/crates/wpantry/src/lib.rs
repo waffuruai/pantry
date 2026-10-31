@@ -18,6 +18,7 @@ pub mod check_supply;
 pub mod compare;
 pub mod db;
 pub mod distros;
+pub mod documents;
 pub mod editors;
 pub mod error;
 pub mod external;

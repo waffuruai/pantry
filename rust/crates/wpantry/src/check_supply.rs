@@ -145,6 +145,7 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
             Err(e) => return Err(e),
         }
     }
+    typosquats(scan, &read);
     if !unsupported.is_empty() {
         let kinds: Vec<String> = unsupported.iter().map(|(k, n)| format!("{k} ({n})")).collect();
         scan.unchecked(
@@ -176,6 +177,47 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
         licenses(scan, &read)?;
     }
     Ok(())
+}
+
+/// Dependencies one keystroke from a popular package (`lodahs`): a warning,
+/// a failure when the popular one is in the same lockfile too (a typo that
+/// pulled in a stranger's package). The suspect policy downgrades by id or
+/// lockfile path.
+fn typosquats(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) {
+    let policy = scan.opts.policy.suspect_policy();
+    for (f, pkgs) in read {
+        let file = short(&f.to_string_lossy());
+        for s in crate::typosquat::find(pkgs) {
+            let mut probe = vec![suspect::Suspect {
+                file: file.clone(),
+                id: "SUSPECT-TYPOSQUAT",
+                line: 0,
+                note: format!(
+                    "`{}` is one keystroke from the popular `{}`{}",
+                    s.name,
+                    s.near,
+                    if s.both {
+                        ", and both are in the lockfile: a typo that pulled in a stranger's package beside the one meant"
+                    } else {
+                        ""
+                    }
+                ),
+                hard: s.both,
+            }];
+            suspect::apply_policy(&mut probe, &policy);
+            let p = probe.remove(0);
+            scan.add(Finding {
+                kind: "suspect-code".into(),
+                component: format!("{} ({})", s.name, s.ecosystem),
+                location: file.clone(),
+                vuln_id: p.id.into(),
+                status: if p.hard { "fail" } else { "warn" }.into(),
+                note: p.note,
+                fix_cmd: "Check the package page (publisher, age, downloads); if it isn't the one you meant, remove it and rotate anything the install could have read. A package you do mean goes in the suspect policy (--suspect-policy) so it warns instead".into(),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 /// Dependencies whose license isn't in the allowlist warn; ones with no
@@ -377,8 +419,13 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for code that behaves like an attack");
-    let found: Vec<Vec<suspect::Suspect>> =
-        system::par_map(&targets, system::PROBES, |(_, root, kind)| suspect::scan_dir(root, *kind, &policy));
+    let found: Vec<Vec<suspect::Suspect>> = system::par_map(&targets, system::PROBES, |(_, root, kind)| {
+        let mut s = suspect::scan_dir(root, *kind, &policy);
+        if *kind == suspect::Kind::Repo {
+            s.extend(suspect::dependency_blobs(root, &policy));
+        }
+        s
+    });
     for ((name, _, kind), hits) in targets.iter().zip(found) {
         scan.count(
             if *kind == suspect::Kind::Repo {
@@ -400,6 +447,7 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
                     "SUSPECT-THIRD-PARTY-SCRIPT" => "Pin the script with an integrity hash (SRI) and crossorigin, or serve a copy yourself".into(),
                     "SUSPECT-WALLET-SIGNING" => "Read exactly what is signed or approved and by what; never approve an unlimited allowance to code you didn't audit".into(),
                     "SUSPECT-PRIV-ESCALATION" | "SUSPECT-CREDENTIAL-ACCESS" => "Read it before running or installing it; if it is yours and meant to, list it in the suspect policy (--suspect-policy) so it warns instead".into(),
+                    "SUSPECT-BINARY-BLOB" => "Prefer a dependency that builds from source, or check the publisher and pin the package by version; a binary you've verified goes in the suspect policy (path:) so it warns instead".into(),
                     _ => "Read what runs, not what is written: decode it yourself, or drop the dependency; a legitimate table or decoder goes in the suspect policy so it warns instead".into(),
                 },
                 ..Default::default()
@@ -474,6 +522,13 @@ pub fn hidden_text(scan: &mut Scan, repos: &[Repo]) {
                 note: h.note.clone(),
                 fix_cmd: match h.id {
                     "AI-BAIT" => "Read the code for what it does, not what it is called; don't rely on an AI's verdict about this file".into(),
+                    "AGENT-INSTRUCTIONS" => "Text that addresses an AI agent where a person is addressed: don't let an agent act on it; if it's yours, move it to an agent config file (CLAUDE.md, .cursor/rules)".into(),
+                    "HIDDEN-PROMPT" => "Instructions hidden from the reader: treat the repo as hostile to agents until the text is removed; read it in a raw view, not rendered".into(),
+                    "HIDDEN-HTML" => "Read the hidden text in a raw view; remove it unless you know why it is there".into(),
+                    "EXFIL-LINK" => "A link that carries data away when rendered or followed: don't let an agent render or fetch it; drop the query parameters".into(),
+                    "DANGEROUS-URI" => "Replace the javascript:/data: URI with a plain link; never follow it from a rendered page".into(),
+                    "HIDDEN-FILENAME" => "Rename or delete the file: a name that hides its extension or its direction is meant to be clicked by mistake".into(),
+                    "CONFUSABLE-NAME" | "CONFUSABLE-DOMAIN" => "Check the name character by character (the note shows the look-alike); a domain in another script is not the one it resembles".into(),
                     "HIDDEN-HOMOGLYPH" => "Rename so every identifier is one script; compilers can refuse mixed scripts (rustc warns, Go errors)".into(),
                     _ => "Open the file in an editor that shows invisible characters (VS Code highlights them) and remove what you didn't write".into(),
                 },

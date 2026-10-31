@@ -43,6 +43,7 @@ pub mod sha256;
 pub mod suspect;
 pub mod system;
 pub mod tools;
+pub mod typosquat;
 pub mod versions;
 
 pub use error::Error;
@@ -66,4 +67,5 @@ pub mod defaults {
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
     pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
     pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.txt");
+    pub const POPULAR: &str = include_str!("../assets/defaults/popular.txt");
 }

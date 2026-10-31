@@ -12,6 +12,7 @@ pub mod apps;
 pub mod breach;
 pub mod catalog;
 pub mod catrust;
+pub mod cellar;
 pub mod check;
 pub mod check_machine;
 pub mod check_supply;
@@ -21,10 +22,12 @@ pub mod distros;
 pub mod documents;
 pub mod editors;
 pub mod error;
+pub mod export;
 pub mod external;
 pub mod feeds;
 pub mod harnesses;
 pub mod hidden;
+pub mod history;
 pub mod hooks;
 pub mod images;
 pub mod json;
@@ -37,19 +40,23 @@ pub mod osdb;
 pub mod osv;
 pub mod packages;
 pub mod plist;
+pub mod posture;
 pub mod re;
 pub mod repos;
 pub mod scanners;
+pub mod selfinstall;
 pub mod sha256;
 pub mod suspect;
+pub mod sync;
 pub mod system;
 pub mod tools;
 pub mod typosquat;
 pub mod versions;
+pub mod watch;
 
 pub use error::Error;
 
-/// The implementation's version (the Python one is the same).
+/// The implementation's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Which implementation this is, in every JSON envelope.
 pub const IMPL: &str = "rust";
@@ -67,6 +74,8 @@ pub mod defaults {
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
     pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
+    pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
+    pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.txt");
     pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.txt");
     pub const POPULAR: &str = include_str!("../assets/defaults/popular.txt");
 }

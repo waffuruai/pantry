@@ -17,11 +17,13 @@ fn unquote(s: &str) -> &str {
 }
 
 pub fn parse(text: &str) -> Result<Vec<Package>> {
-    let mut requires: Vec<(String, String)> = Vec::new();
+    let mut requires: Vec<(String, String, bool)> = Vec::new(); // path, version, direct
     let mut replaces: Vec<(String, String, String, String)> = Vec::new(); // old, old version, new, new version
     let (mut go, mut toolchain) = (String::new(), String::new());
     let mut block = "";
     for raw in lines(text)? {
+        // `go mod tidy` marks what only another module needs.
+        let indirect = raw.split_once("//").is_some_and(|(_, c)| c.trim().starts_with("indirect"));
         let line = raw.split("//").next().unwrap_or("").trim();
         if line.is_empty() {
             continue;
@@ -53,7 +55,9 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
         };
         let words: Vec<&str> = rest.split_whitespace().map(unquote).collect();
         match verb {
-            "require" if words.len() >= 2 => requires.push((words[0].to_string(), strip_v(words[1]).to_string())),
+            "require" if words.len() >= 2 => {
+                requires.push((words[0].to_string(), strip_v(words[1]).to_string(), !indirect))
+            }
             "replace" => {
                 let Some(arrow) = words.iter().position(|w| *w == "=>") else { continue };
                 let (old, new) = (&words[..arrow], &words[arrow + 1..]);
@@ -69,8 +73,8 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
             _ => {}
         }
     }
-    let mut pkgs: BTreeMap<(String, String), (String, String)> =
-        requires.into_iter().map(|(n, v)| ((n.clone(), v.clone()), (n, v))).collect();
+    let mut pkgs: BTreeMap<(String, String), (String, String, bool)> =
+        requires.into_iter().map(|(n, v, d)| ((n.clone(), v.clone()), (n, v, d))).collect();
     for (old, old_v, new, new_v) in replaces {
         let keys: Vec<(String, String)> = pkgs
             .iter()
@@ -78,10 +82,11 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
             .map(|(k, _)| k.clone())
             .collect();
         for k in keys {
-            pkgs.insert(k, (new.clone(), new_v.clone()));
+            let direct = pkgs[&k].2;
+            pkgs.insert(k, (new.clone(), new_v.clone(), direct));
         }
     }
-    let mut out: Vec<Package> = pkgs.into_values().map(|(n, v)| Package::new("Go", &n, &v)).collect();
+    let mut out: Vec<Package> = pkgs.into_values().map(|(n, v, d)| Package::new("Go", &n, &v).direct(d)).collect();
     let stdlib = if toolchain.is_empty() {
         go
     } else {
@@ -96,6 +101,17 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indirect_marks_transitive_requires() {
+        let text =
+            "module m\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgolang.org/x/net v0.17.0 // indirect\n)\n";
+        let got = parse(text).unwrap();
+        let direct = |n: &str| got.iter().find(|p| p.name == n).unwrap().direct;
+        assert_eq!(direct("github.com/a/b"), Some(true));
+        assert_eq!(direct("golang.org/x/net"), Some(false));
+        assert_eq!(direct("stdlib"), None);
+    }
 
     #[test]
     fn requires_replaces_and_stdlib() {

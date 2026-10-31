@@ -40,6 +40,15 @@ pub struct Finding {
     pub note: String,
     pub fix_cmd: String,
     pub fix_auto: bool,
+    /// How the vulnerable dependency is depended on: `runtime`, `dev`,
+    /// `optional`, or "" (reported `unknown`) where the lockfile doesn't say.
+    pub dep_scope: String,
+    /// The project's own dependency (true) or one another pulled in
+    /// (false); None where unknown.
+    pub dep_direct: Option<bool>,
+    /// The advisory's range the installed version fell in (`>=7.2.0, <9.0.0`),
+    /// so a reader sees why it applies; "" for findings without one.
+    pub affected_range: String,
 }
 
 impl Finding {
@@ -50,8 +59,15 @@ impl Finding {
             component: c.name.clone(),
             version: c.version.clone(),
             location: c.path.clone(),
+            dep_scope: c.scope.clone(),
+            dep_direct: c.direct,
             ..Default::default()
         }
+    }
+
+    /// `dep_scope` as the contract spells it: `unknown` for "".
+    pub fn dep_scope_name(&self) -> &str {
+        if self.dep_scope.is_empty() { "unknown" } else { &self.dep_scope }
     }
 
     pub fn to_json(&self) -> J {
@@ -68,6 +84,9 @@ impl Finding {
             ("note", self.note.as_str().into()),
             ("fix_cmd", self.fix_cmd.as_str().into()),
             ("fix_auto", self.fix_auto.into()),
+            ("dep_scope", self.dep_scope_name().into()),
+            ("dep_direct", self.dep_direct.map(J::Bool).unwrap_or(J::Null)),
+            ("affected_range", self.affected_range.as_str().into()),
         ])
     }
 }
@@ -139,6 +158,16 @@ pub fn fill(cmd: &str, safe: &str) -> String {
     cmd.replace("{safe}", if safe.is_empty() { "latest" } else { safe })
 }
 
+/// The fix command and whether it may run unattended, for a version a feed
+/// named: a version that isn't one plain token never reaches a command.
+pub fn fix_with(c: &Component, safe: &str) -> (String, bool) {
+    if safe.is_empty() || versions::is_safe_token(safe) {
+        (fill(&c.fix, safe), c.auto)
+    } else {
+        ("Review the advisory: the fix version it names isn't a version, so no command is offered".to_string(), false)
+    }
+}
+
 /// What a scan covers and how.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
@@ -152,6 +181,9 @@ pub struct Options {
     pub licenses: bool,
     pub refresh: bool,
     pub offline: bool,
+    /// How many CPU-bound scans (gitleaks) run at once (`--jobs`); None
+    /// picks from the machine's cores.
+    pub jobs: Option<usize>,
     /// Whether the scan may ask the user something (the breach consent);
     /// the question goes to [`Scan::with_ask`]'s answerer.
     pub ask: bool,
@@ -160,6 +192,8 @@ pub struct Options {
 /// What a finished scan found.
 #[derive(Debug, Default)]
 pub struct Outcome {
+    /// This scan's row in the cache's `scans` table.
+    pub scan_id: i64,
     pub findings: Vec<Finding>,
     /// What was checked and how many, in the order first counted.
     pub counts: Vec<(String, i64)>,
@@ -302,6 +336,8 @@ impl<'a> Scan<'a> {
     // the scan --------------------------------------------------------------
 
     pub fn run(mut self) -> Result<Outcome> {
+        let started_at = crate::system::now();
+        repos::forget_walks();
         self.status("Fetching CISA's known-exploited list");
         let kev = feeds::kev(&self.cache, self.net, self.opts.offline);
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
@@ -313,12 +349,14 @@ impl<'a> Scan<'a> {
         check_supply::run(&mut self, &found)?;
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
+        let scan_id = crate::history::record_scan(&self.cache, started_at, &self.findings, &self.counts, &self.opts)?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,
             counts: self.counts,
             unfixed: self.unfixed,
             unknown_licenses: self.unknown_licenses,
+            scan_id,
         })
     }
 
@@ -382,6 +420,14 @@ impl<'a> Scan<'a> {
             };
             failing = failing || status == "fail";
             let kev = group.iter().any(|r| is_kev(r, &self.kev));
+            // The range the installed version fell in, from whichever record
+            // of the group names one.
+            let affected_range = group
+                .iter()
+                .map(|r| osv::affected_range(r, &eco, &pkg, &qver, |a, b| order.cmp(a, b)))
+                .find(|s| !s.is_empty())
+                .unwrap_or_default();
+            let (fix_cmd, fix_auto) = fix_with(c, &safe);
             self.add(Finding {
                 vuln_id: display_id(main),
                 status: status.into(),
@@ -389,8 +435,9 @@ impl<'a> Scan<'a> {
                 kev,
                 severity: severity_of(main),
                 note: str_at(main, "summary").into(),
-                fix_cmd: fill(&c.fix, &safe),
-                fix_auto: c.auto,
+                fix_cmd,
+                fix_auto,
+                affected_range,
                 ..Finding::of(c)
             });
         }
@@ -406,20 +453,22 @@ impl<'a> Scan<'a> {
         if let Some(ended) = &res.ended {
             let first = res.supported.first().cloned().unwrap_or_default();
             let shown: Vec<&str> = res.supported.iter().take(4).map(String::as_str).collect();
+            let (fix_cmd, _) = fix_with(c, &first);
             self.add(Finding {
                 vuln_id: "EOL".into(),
                 status: "fail".into(),
-                fix_cmd: fill(&c.fix, &first),
+                fix_cmd,
                 note: format!("{product} {cycle} reached end of life on {ended}; supported: {}", shown.join(", ")),
                 ..Finding::of(c)
             });
         } else if !res.latest.is_empty() && !failing && !versions::same_or_newer(&c.version, &res.latest) {
+            let (fix_cmd, fix_auto) = fix_with(c, &res.latest);
             self.add(Finding {
                 vuln_id: "OUTDATED".into(),
                 status: "warn".into(),
                 fixed: res.latest.clone(),
-                fix_cmd: fill(&c.fix, &res.latest),
-                fix_auto: c.auto,
+                fix_cmd,
+                fix_auto,
                 note: format!("behind {}, the latest {product} {cycle} release", res.latest),
                 ..Finding::of(c)
             });
@@ -446,6 +495,31 @@ mod tests {
     fn scan<'a>(net: &'a Fake, dir: &crate::system::TempDir) -> Scan<'a> {
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
         Scan::new(Options::default(), cache, net, &|_| {}, &|_| {})
+    }
+
+    /// A fix version from a feed that isn't one version token never becomes
+    /// part of a command, let alone an unattended one.
+    #[test]
+    fn a_hostile_fix_version_never_reaches_a_command() {
+        let mut c = Component::new("package", "npm:lodash", "4.17.20", "/usr/local/bin/npm");
+        c.fix = "/usr/local/bin/npm install -g lodash@{safe}".into();
+        c.auto = true;
+        assert_eq!(fix_with(&c, "4.17.21"), ("/usr/local/bin/npm install -g lodash@4.17.21".to_string(), true));
+        for bad in ["4.17.21 evil-pkg", "--registry=https://evil", "1' evil '", "4.17.21\nrm -rf /"] {
+            let (cmd, auto) = fix_with(&c, bad);
+            assert!(!auto, "{bad:?}");
+            assert!(!cmd.contains("npm install"), "{cmd}");
+        }
+        let net = Fake::offline();
+        let dir = crate::system::TempDir::new("check").unwrap();
+        let mut s = scan(&net, &dir);
+        c.osv = Some(("npm".into(), "lodash".into(), "4.17.20".into()));
+        let rec = json!({"id": "GHSA-h", "affected": [{"package": {"ecosystem": "npm", "name": "lodash"},
+            "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "4.17.21 evil-pkg"}]}]}]});
+        s.advisories(&c, &[rec], None, "fail", None);
+        assert_eq!(s.findings.len(), 1);
+        assert!(!s.findings[0].fix_auto);
+        assert!(!s.findings[0].fix_cmd.contains("evil-pkg"), "{}", s.findings[0].fix_cmd);
     }
 
     #[test]
@@ -482,6 +556,8 @@ mod tests {
             ("CVE-2026-9", "0.23.18", true, "HIGH")
         );
         assert_eq!(f.fix_cmd, "cargo update -p rustls --precise 0.23.18");
+        assert_eq!(f.affected_range, "<0.23.18", "introduced 0 reads as an open lower bound");
+        assert_eq!((f.dep_scope.as_str(), f.dep_direct), ("", None), "a component says nothing about scope");
         let m = &s.findings[1];
         assert_eq!(
             (m.vuln_id.as_str(), m.severity.as_str(), m.note.as_str()),

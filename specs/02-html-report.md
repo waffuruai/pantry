@@ -4,7 +4,7 @@ status: in-review
 owner: Tom
 affected: [pantry]
 tracking: https://github.com/waffuruai/pantry/issues/36
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 # Optional standalone HTML reports
 
@@ -55,6 +55,9 @@ All criteria track [#36](https://github.com/waffuruai/pantry/issues/36).
 - F6: Update plan offers a preview and copyable prompt for an AI agent of the user's choice. The prompt includes all findings in the selected scan regardless of filters, preserves coverage gaps and unknown imported scope, and asks for scoped changes, tests and a fresh scan. CSV omissions remain unknown. Evidence: viewer tests exercise copied prompt contents, filtered/empty/imported reports and escaped preview text.
 - F7: Print produces a dedicated, light, full-report document for the selected scan: official branding, summary, scope and coverage, complete findings with explanations, and grouped suggested actions. Screen tabs, filters and expanded-row state do not remove evidence from print; controls and the agent prompt are omitted. Paths and commands wrap and headings avoid orphaned page breaks. Both the print button and browser print events prepare the document without changing screen state. Evidence: viewer tests verify contents, grouping, escaping, partial/empty states and print events; actual browser pagination and visual verification remain pending.
 
+- F8: Current finding fields (`dep_scope`, `dep_direct`, `affected_range`) survive rendering, printing and copying the agent prompt; missing fields in older schema-1 reports remain unknown. Repo hooks, posture, hidden text, suspicious code and document rules stay visible without invented advisory URLs. Evidence: viewer regression tests and CLI JSON/HTML equality.
+- F9: Generated reports identify their local history scan, effective posture scope, configured posture exclusions, suspicious-code warning exemptions and policy file choices. Imported scan JSON has unknown scope/history; history JSON and JSONL exports are rejected rather than mistaken for current scans. The update flow keeps upstream remediation recording and verification before exporting the final recheck. Evidence: CLI contract tests and viewer coverage/print/prompt tests.
+
 ### Performance
 
 - P1: Zero additional scan/network requests and zero runtime converter dependencies when HTML is requested. Evidence: `finish` consumes the existing outcome and compile-time template, using std plus the existing JSON helper.
@@ -87,3 +90,5 @@ Visual browser QA is pending: the available browser tool rejected `file:` naviga
 | 2026-10-30 | Print a dedicated full selected report instead of the active screen tab | Tom reported poor print presentation; printed evidence should not depend on filters or expanded rows | Tom |
 
 | 2026-10-29 | Treat the supplied ZIP as a mockup, refining around actual scanner outputs | Explicit user clarification; coverage and grouped actions take precedence over the mockup layout | Tom |
+
+| 2026-10-31 | Integrate current dev finding metadata, policy context and history-aware rechecks | Tom requested compatibility with Eric’s merged changes; keep HTML scoped to current scans | Tom |

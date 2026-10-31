@@ -1,0 +1,5 @@
+# Posture checks to skip, one id per line (with or without the POSTURE-
+# prefix, any case), for machines where a setting is meant to be that way:
+# a server keeps Remote Login on, a kiosk logs in automatically. Replace this
+# file with --posture-policy FILE; --no-posture skips every check.
+# Nothing is skipped by default.

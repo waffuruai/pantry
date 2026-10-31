@@ -1,7 +1,7 @@
 name: CI
 
 # wpantry's build, tests and supply-chain gates and the CLI contract suite
-# against the binary, on Linux and macOS (specs/01-rust-port.md); the CA trust
+# against the binary, on Linux and macOS (specs/cli-contract.md); the CA trust
 # scripts and install.sh on both; shell and workflow lint.
 on:
   pull_request:
@@ -45,16 +45,35 @@ jobs:
       - name: CA trust test
         run: PATH="$TASK_PATH" mise run test ca-trust
 
+      - name: mitigation scripts
+        run: PATH="$TASK_PATH" mise run test mitigations
+
       - name: install.sh test
         run: PATH="$TASK_PATH" mise run test install
+
+      - name: Install pinned Node for the offline viewer tests
+        run: mise install node
+
+      - name: HTML viewer behavior
+        run: PATH="$TASK_PATH" mise run test html
 
   # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
   # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
   # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
   # the layer has one source, until ops publishes the image; bump OPS_REF by
-  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it.
+  # PR. ops is private, so PANTRY_OPS_DEPLOY_KEY is a read-only deploy key on
+  # it. A pull request from a fork can't have it, and Dependabot's runs read
+  # a separate secret store this key is kept out of: a workflow file a pull
+  # request can edit reads every secret its event is given, and a bump
+  # touches nothing this job tests. So this job runs only for pushes and for
+  # pull requests a maintainer opened here; the others stay green on the jobs
+  # they can run.
   container:
     name: Test (ops bootstrap container)
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.head.repo.full_name == github.repository
+          && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -63,10 +82,10 @@ jobs:
     steps:
       - name: Check for the ops deploy key
         env:
-          WSCANNER_OP_DEPLOY_KEY: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+          PANTRY_OPS_DEPLOY_KEY: ${{ secrets.PANTRY_OPS_DEPLOY_KEY }}
         run: |
-          [ -n "$WSCANNER_OP_DEPLOY_KEY" ] || {
-            echo "::error::WSCANNER_OP_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's WSCANNER_OP_DEPLOY_KEY secret"
+          [ -n "$PANTRY_OPS_DEPLOY_KEY" ] || {
+            echo "::error::PANTRY_OPS_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's PANTRY_OPS_DEPLOY_KEY secret"
             exit 1
           }
 
@@ -80,7 +99,7 @@ jobs:
           repository: waffuruai/ops
           ref: ${{ env.OPS_REF }}
           path: ops
-          ssh-key: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.PANTRY_OPS_DEPLOY_KEY }}
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -102,7 +121,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD/pantry:/home/waffuru/waffuru/pantry" \
             -w /home/waffuru/waffuru/pantry "$IMAGE" \
-            bash -ec 'mise run test ca-trust && mise run test install'
+            bash -ec 'mise run test ca-trust && mise run test mitigations && mise run test install'
 
   lint:
     name: Lint

@@ -358,7 +358,7 @@ var KIND_LABEL = {project:'Project deps', mcp:'MCP servers', unchecked:'Not chec
   os:'OS', compiler:'Compilers', 'package manager':'Package managers', tools:'Tools', datastores:'Datastores',
   homebrew:'Homebrew', apps:'Apps', browsers:'Browsers', extensions:'Extensions', images:'Images', bundled:'Bundled deps',
   'install-script':'Install scripts', license:'Licenses', tool:'Tools', account:'Accounts',
-  'install scripts':'Install scripts', licenses:'Licenses', config:'Config', accounts:'Accounts'};
+  'install scripts':'Install scripts', licenses:'Licenses', config:'Config', accounts:'Accounts', manager:'Managers', pkgmgr:'Package managers', datastore:'Datastores', harness:'Agent harnesses', package:'Packages', app:'Apps', browser:'Browsers', extension:'Extensions', brew:'Homebrew', image:'Images', 'repo-hook':'Repo hooks', posture:'Security settings', 'hidden-text':'Hidden text', 'suspect-code':'Suspicious code', document:'Documents and images'};
 
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -370,7 +370,7 @@ function kindLabel(k){return Object.prototype.hasOwnProperty.call(KIND_LABEL,k)?
 function base(p){if(!p)return '';var a=String(p).split(/[\\/]/);return a[a.length-1]||p}
 function isMarker(id){return !id||Object.prototype.hasOwnProperty.call(MARKERS,id)}
 
-function isAdvisory(f){return f.kind!=='secret' && !isMarker(f.vuln_id)}
+function isAdvisory(f){return ['secret','repo-hook','posture','hidden-text','suspect-code','document'].indexOf(f.kind)===-1 && !isMarker(f.vuln_id)}
 
 function advLinks(id){
   var out=[], seen=Object.create(null);
@@ -394,7 +394,7 @@ function validReport(raw){
   if(!Object.keys(raw.checked).every(function(k){return Number.isSafeInteger(raw.checked[k]) && raw.checked[k]>=0}))return false;
   if(!['unfixed','unknown_licenses'].every(function(k){return Number.isSafeInteger(raw[k]) && raw[k]>=0}))return false;
   if(!['impl','version'].every(function(k){return typeof raw[k]==='string'}))return false;
-  return raw.findings.every(function(f){return f && typeof f==='object' && !Array.isArray(f) && ['kind','component','version','location','vuln_id','status','fixed','severity','note','fix_cmd'].every(function(k){return typeof f[k]==='string'}) && ['kev','fix_auto'].every(function(k){return typeof f[k]==='boolean'}) && (f.status==='fail'||f.status==='warn')});
+  return raw.findings.every(function(f){return f && typeof f==='object' && !Array.isArray(f) && ['kind','component','version','location','vuln_id','status','fixed','severity','note','fix_cmd'].every(function(k){return typeof f[k]==='string'}) && ['kev','fix_auto'].every(function(k){return typeof f[k]==='boolean'}) && (f.status==='fail'||f.status==='warn') && (f.dep_scope===undefined||typeof f.dep_scope==='string') && (f.affected_range===undefined||typeof f.affected_range==='string') && (f.dep_direct===undefined||f.dep_direct===null||typeof f.dep_direct==='boolean')});
 }
 function normalize(raw, meta){
   var fs=(raw.findings||[]).map(function(f,i){
@@ -403,6 +403,7 @@ function normalize(raw, meta){
     return {n:i+1, kind:kind, component:f.component||'', version:f.version||'', location:f.location||'',
       vuln_id:f.vuln_id||'', status:f.status||'', state:stateName, fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
+      dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
       key:String(i)};
   });
   var r={title:meta.title||'Scan', file:meta.file||'', source:meta.source||'json', loadedAt:meta.loadedAt||null,
@@ -483,7 +484,7 @@ function filtered(r){
     if(state.kind!=='all'&&f.kind!==state.kind)return false;
     if(!state.show[f.state])return false;
     if(state.kevOnly&&!f.kev)return false;
-    if(q){var hay=(f.component+' '+f.version+' '+f.vuln_id+' '+f.note+' '+f.location+' '+f.fix_cmd+' '+f.kind).toLowerCase(); if(hay.indexOf(q)<0)return false;}
+    if(q){var hay=(f.component+' '+f.version+' '+f.vuln_id+' '+f.note+' '+f.location+' '+f.fix_cmd+' '+f.kind+' '+f.dep_scope+' '+f.affected_range).toLowerCase(); if(hay.indexOf(q)<0)return false;}
     return true;
   });
 }
@@ -526,6 +527,12 @@ function rowHTML(f){
   return html+'</div>';
 }
 
+function dependencyHTML(f){
+  if(!f.affected_range && f.dep_scope==='unknown' && f.dep_direct===null && f.kind!=='project')return '';
+  return '<dt>Dependency scope</dt><dd>'+esc(f.dep_scope)+'</dd>'+
+    '<dt>Relationship</dt><dd>'+(f.dep_direct===true?'Direct':f.dep_direct===false?'Transitive':'Unknown')+'</dd>'+
+    '<dt>Affected range</dt><dd>'+esc(f.affected_range||'not supplied')+'</dd>';
+}
 function detailHTML(f){
   var links=isAdvisory(f)?advLinks(f.vuln_id):[];
   var shared = cur().findings.filter(function(x){return x.vuln_id===f.vuln_id&&x!==f&&isAdvisory(f)&&isAdvisory(x)}).map(function(x){return x.component});
@@ -544,6 +551,7 @@ function detailHTML(f){
     (f.location?'<dt>Location</dt><dd>'+esc(f.location)+'</dd>':'')+
     (f.version?'<dt>Found</dt><dd>'+esc(f.version)+'</dd>':'')+
     '<dt>Fixed in</dt><dd>'+(f.fixed?esc(f.fixed):'<span class="q">none supplied</span>')+'</dd>'+
+    dependencyHTML(f)+
     '<dt>Severity</dt><dd>'+(f.severity?esc(f.severity):'<span class="q">not supplied (not the same as low)</span>')+'</dd>'+
     '<dt>KEV</dt><dd>'+(f.kev?'<span class="badge kev">Known exploited</span>':'<span class="q">no mark in the available KEV data</span>')+'</dd>'+
     (shared.length?'<dt>Same advisory</dt><dd>'+shared.map(esc).join(', ')+'</dd>':'')+
@@ -592,12 +600,14 @@ function agentPrompt(r){
   var data={scanner:{name:'wpantry',version:r.version,schema:r.schema},
     generated_at:original?bundle.generated_at||null:null,
     phase:original?bundle.phase||null:null,
+    scan_id:original?bundle.scan_id||null:null,
     scope:original?bundle.scope||null:null,
     partial_csv:r.partial,checked:r.checked,
     unfixed:r.partial?null:r.unfixed,unknown_licenses:r.partial?null:r.unknown_licenses,
     findings:r.findings.map(function(f){return {kind:f.kind,component:f.component,version:f.version,
       location:f.location,vuln_id:f.vuln_id,status:f.status,severity:f.severity,kev:f.kev,
-      fixed:f.fixed,note:f.note,fix_cmd:f.fix_cmd,fix_auto:f.fix_auto}})};
+      fixed:f.fixed,note:f.note,fix_cmd:f.fix_cmd,fix_auto:f.fix_auto,
+      dep_scope:f.dep_scope,dep_direct:f.dep_direct,affected_range:f.affected_range}})};
   return [
     'Help me review and address the findings in this Pantry security scan.',
     '',
@@ -631,7 +641,20 @@ function coverageHTML(r){
     '<dt>Machine</dt><dd>'+mode('machine','Included','Excluded')+'</dd>'+
     '<dt>Sources</dt><dd>'+mode('offline','Offline cache only','Online lookups enabled; cached answers may be reused')+'</dd>'+
     '<dt>Licenses</dt><dd>'+mode('licenses','Enabled','Not requested')+'</dd>'+
+    '<dt>Security settings</dt><dd>'+mode('posture','Enabled, subject to policy exclusions','Excluded from this scan')+'</dd>'+
     '<dt>Repo paths</dt><dd>'+(paths?esc(paths.length?paths.join(', '):'Default bounded discovery under the home directory'):'Not recorded')+'</dd></dl>';
+  if(sc){
+    var exclusions=Array.isArray(sc.posture_exclusions)?sc.posture_exclusions:null;
+    out+='<h2>Policy context</h2><p>Excluded checks and allowed or downgraded findings are not evidence that those checks passed.</p><dl class="kv">'+
+      '<dt>Posture exclusions</dt><dd>'+esc(exclusions?(exclusions.length?exclusions.join(', '):'None configured'):'Not recorded')+'</dd>';
+    var exemptions=sc.suspect_exemptions;
+    if(exemptions && Array.isArray(exemptions.ids) && Array.isArray(exemptions.paths)){
+      out+='<dt>Suspicious-code warnings only</dt><dd>'+esc(exemptions.ids.concat(exemptions.paths.map(function(p){return 'path: '+p})).join(', ')||'None configured')+'</dd>';
+    }else out+='<dt>Suspicious-code exemptions</dt><dd>Not recorded</dd>';
+    var policies=sc.policy_files;
+    if(policies && typeof policies==='object')Object.keys(policies).forEach(function(k){out+='<dt>'+esc(k)+' policy</dt><dd>'+esc(policies[k])+'</dd>'});
+    out+='</dl>';
+  }
   if(!sc)out+='<p>Scope options are not recorded in this imported report. Finding locations do not establish which directories or machine checks were included.</p>';
   out+='<h2>Inventory counts</h2><p>These are the scanner’s reported counts, not a completeness score. Categories can overlap; collecting an item does not prove every source checked it.</p><dl class="kv">';
   var keys=Object.keys(r.checked);
@@ -649,6 +672,7 @@ function printReportHTML(r){
   if(!r.loadedAt && typeof bundle.generated_at==='number' && Number.isFinite(bundle.generated_at)){
     var date=new Date(bundle.generated_at);if(!isNaN(date.getTime()))meta.push('Generated '+date.toISOString());
   }
+  if(!r.loadedAt && Number.isSafeInteger(bundle.scan_id))meta.push('Local history scan #'+bundle.scan_id);
   if(!r.loadedAt && typeof bundle.phase==='string')meta.push('Phase: '+bundle.phase);
   var out='<h1>'+esc(r.title)+'</h1><p class="print-meta">'+esc(meta.join(' · '))+'</p><p class="print-meta">Full selected report · Includes all findings, regardless of screen filters or expanded rows.</p>';
   if(r.schema!=null && r.schema!==1)out+='<p>Report schema '+esc(r.schema)+' differs from supported schema 1; some fields may be missing.</p>';
@@ -659,6 +683,7 @@ function printReportHTML(r){
     if(f.kev)labels.push('KNOWN EXPLOITED');
     return '<section class="print-finding"><div class="print-label">'+esc(labels.join(' · '))+'</div><h3>'+f.n+'. '+esc(f.component)+'</h3>'+
       '<p>Found: <b>'+esc(f.version||'not supplied')+'</b> · Fixed in: <b>'+esc(f.fixed||'none supplied')+'</b></p>'+
+      '<dl class="kv">'+dependencyHTML(f)+'</dl>'+
       '<p>Finding ID: '+esc(f.vuln_id||'not supplied')+'</p>'+
       (f.location?'<p class="print-location">Location: '+esc(f.location)+'</p>':'')+
       (f.note?'<p>'+ticks(f.note)+'</p>':'')+
@@ -702,6 +727,7 @@ function render(){
   var advN=r.counts.advisories;
   var subBits=[]; if(r.version)subBits.push('wpantry '+r.version);
   if(typeof bundle.generated_at==='number'&&!r.loadedAt && Number.isFinite(bundle.generated_at)){var dt=new Date(bundle.generated_at);if(!isNaN(dt.getTime()))subBits.push('generated '+dt.toISOString());}
+  if(!r.loadedAt && Number.isSafeInteger(bundle.scan_id))subBits.push('local history scan #'+bundle.scan_id);
   if(!r.loadedAt && typeof bundle.phase==='string') subBits.push('phase: '+bundle.phase);
   if(!r.loadedAt && bundle.scope && typeof bundle.scope==='object'){var sc=bundle.scope; subBits.push('machine: '+(sc.machine?'included':'excluded')+', offline: '+(sc.offline?'yes':'no')+', license checks: '+(sc.licenses?'enabled':'disabled')+(Array.isArray(sc.paths)&&sc.paths.every(function(p){return typeof p==='string'})?', paths: '+(sc.paths.length?sc.paths.join(', '):'default home discovery'):''));}
   var schemaWarn = (r.schema!=null&&r.schema!==1)?'<div class="notice">This report uses schema '+esc(r.schema)+'. The viewer was built for schema 1, so some fields may be missing.</div>':'';
@@ -796,7 +822,7 @@ function addText(text,name){
     if(/\.csv$/i.test(name)||(!/^[\[{]/.test(trimmed))){
       var rows=parseCSV(trimmed); if(!rows)throw new Error('csv');
       raw=csvToReport(rows); if(!validReport(raw))throw new Error('shape');
-      rows.forEach(function(o){if(o.kind!=='secret' && o.id&&!isMarker(o.id))advInfo[o.id]={aliases:o.aliases.split(/\s+/).filter(Boolean)}}); source='csv';
+      rows.forEach(function(o){if(isAdvisory({kind:o.kind,vuln_id:o.id}))advInfo[o.id]={aliases:o.aliases.split(/\s+/).filter(Boolean)}}); source='csv';
     } else {
       raw=JSON.parse(trimmed);
       if(raw&&Array.isArray(raw.runs)){ if(!raw.runs.length || !raw.runs.every(function(x){return x && typeof x.title==='string' && typeof x.file==='string' && validReport(x.report)}))throw new Error('shape'); raw.runs.forEach(function(x){runs.push(normalize(x.report,{title:x.title,file:x.file,loadedAt:Date.now()}))}); state.run=runs.length-1; state.kind='all'; state.open={}; state.tab='findings'; state.q=''; state.show={fail:true,warn:true,unchecked:true}; state.kevOnly=false; $('q').value=''; setHash(); render(); toast('Added '+plural(raw.runs.length,'scan')); return; }

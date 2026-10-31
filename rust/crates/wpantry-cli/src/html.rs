@@ -66,6 +66,10 @@ pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &
         .as_ref()
         .map(|ps| ps.iter().map(|p| p.to_string_lossy().into_owned().into()).collect())
         .unwrap_or_default();
+    let suspect = opts.policy.suspect_policy();
+    let policy_path =
+        |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "bundled".into());
+    let strings = |xs: Vec<String>| J::Arr(xs.into_iter().map(J::from).collect());
     let bundle = obj([
         (
             "runs",
@@ -77,12 +81,27 @@ pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &
         ),
         ("generated_at", J::Int((wpantry::system::now() * 1000.0) as i64)),
         ("phase", phase.into()),
+        ("scan_id", J::Int(report.scan_id)),
         (
             "scope",
             obj([
                 ("machine", opts.machine.into()),
                 ("offline", opts.offline.into()),
                 ("licenses", opts.licenses.into()),
+                ("posture", (opts.machine && !opts.no_posture).into()),
+                ("posture_exclusions", strings(opts.policy.posture_skip())),
+                ("suspect_exemptions", obj([("ids", strings(suspect.ids)), ("paths", strings(suspect.paths))])),
+                (
+                    "policy_files",
+                    obj([
+                        ("gitleaks", policy_path(&opts.policy.gitleaks_config).into()),
+                        ("licenses", policy_path(&opts.policy.licenses).into()),
+                        ("install_scripts", policy_path(&opts.policy.install_scripts).into()),
+                        ("repo_hooks", policy_path(&opts.policy.repo_hooks).into()),
+                        ("posture", policy_path(&opts.policy.posture).into()),
+                        ("suspect", policy_path(&opts.policy.suspect).into()),
+                    ]),
+                ),
                 ("paths", J::Arr(paths)),
             ]),
         ),

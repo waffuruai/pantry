@@ -4,7 +4,7 @@ const html=fs.readFileSync(path.join(__dirname,'../../rust/crates/wpantry-cli/as
 const scripts=[...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)].map(x=>x[1]);
 const f={kind:'__proto__',component:'<img src=x onerror=alert(1)>',version:'1',location:'test',vuln_id:'CVE-2026-1234',status:'fail',fixed:'2',kev:false,severity:'',note:'unsafe <script>',fix_cmd:'update x',fix_auto:false};
 const report={schema:1,impl:'rust',version:'1',checked:{},unfixed:1,unknown_licenses:2,findings:[f,{...f,kind:'project',component:'second-package',status:'warn',kev:true}]};
-const bundle={runs:[{title:'Security scan',file:'wpantry check',source:'json',report}],advisories:{},generated_at:1793000000000,scope:{machine:true,paths:[],offline:true,licenses:true},phase:'after updates (an update command failed)'};
+const bundle={scan_id:42,runs:[{title:'Security scan',file:'wpantry check',source:'json',report}],advisories:{},generated_at:1793000000000,scope:{machine:true,paths:[],offline:true,licenses:true,posture:false,posture_exclusions:['POSTURE-FIREWALL'],suspect_exemptions:{ids:['PRIV-ESCALATION'],paths:['trusted.js']},policy_files:{posture:'/example/posture.txt',suspect:'bundled'}},phase:'after updates (an update command failed)'};
 const events={},elements={};
 function el(id){return elements[id] ||= {textContent:id==='pantry-bundle'?JSON.stringify(bundle):'',innerHTML:'',value:'',dataset:{},style:{},classList:{add(){},remove(){}},firstChild:{},lastChild:{},addEventListener(type,fn){events[id+':'+type]=fn},focus(){},select(){},querySelector(){return {focus(){}}}}}
 const document={getElementById:el,addEventListener(type,fn){events[type]=fn},documentElement:{setAttribute(){},getAttribute(){return 'dark'}},createElement(){return el('temp')},body:{appendChild(){},removeChild(){}}};
@@ -153,7 +153,7 @@ assert(elements['print-report'].innerHTML.includes('CSV exports do not include s
 assert(elements['print-report'].innerHTML.includes('coverage cannot be established'));
 bundle.runs[0].report={...report,unfixed:0,unknown_licenses:0,findings:[]};
 elements['pantry-bundle'].textContent=JSON.stringify(bundle);
-vm.runInNewContext(scripts[2],ctx);
+vm.runInNewContext(scripts[2].replace('fromHash(); render();', 'fromHash(); render(); globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur};'),ctx);
 assert(elements.main.innerHTML.includes('0 findings in this report'));
 assert(!/clean result|nothing .*safe|no updates needed/i.test(elements.main.innerHTML));
 click({tab:'plan'});
@@ -164,4 +164,54 @@ events['window:beforeprint']();
 assert(elements['print-report'].innerHTML.includes('No finding rows recorded'));
 assert(elements['print-report'].innerHTML.includes('Scan scope'));
 assert(!/clean result|nothing .*safe|no updates needed/i.test(elements['print-report'].innerHTML));
+// Current scanner's structural checks are evidence, not public advisories.
+const markers=[['repo-hook','RUNS-REPO-FILE'],['posture','POSTURE-FIREWALL'],['hidden-text','HIDDEN-PROMPT'],
+  ['suspect-code','SUSPECT-TYPOSQUAT'],['document','MALWARE']];
+for(const [kind,vuln_id] of markers){
+  assert(!ctx.viewerTest.isAdvisory({...f,kind,vuln_id}));
+  // New rule IDs within these marker kinds must not acquire OSV links either.
+  assert(!ctx.viewerTest.isAdvisory({...f,kind,vuln_id:'FUTURE-RULE'}));
+}
+const dependency={...f,kind:'project',dep_scope:'dev',dep_direct:false,affected_range:'>=1, <2'};
+for(const bad of [{dep_direct:'false'},{dep_scope:{}},{affected_range:[]}]){
+  assert(!ctx.viewerTest.validReport({...report,findings:[{...dependency,...bad}]}));
+}
+ctx.viewerTest.addText(JSON.stringify({...report,findings:[dependency,...markers.map(([kind,vuln_id])=>({...f,kind,vuln_id}))]}),'current.json');
+assert.equal(ctx.viewerTest.cur().counts.advisories,1);
+click({open:'0'});
+assert(elements.main.innerHTML.includes('Dependency scope</dt><dd>dev'));
+assert(elements.main.innerHTML.includes('Transitive'));
+assert(elements.main.innerHTML.includes('&gt;=1, &lt;2'));
+for(let i=1;i<=markers.length;i++)click({open:String(i)});
+assert(!elements.main.innerHTML.includes('https://osv.dev/vulnerability/'));
+click({tab:'plan'});click({agentPrompt:'1'});
+promptData=JSON.parse(copied.split('Scan data (JSON):\n')[1]);
+assert.equal(promptData.findings[0].dep_scope,'dev');
+assert.equal(promptData.findings[0].dep_direct,false);
+assert.equal(promptData.findings[0].affected_range,'>=1, <2');
+assert.equal(promptData.scan_id,null); // imported report has no original history identity
+assert.equal(promptData.findings.length,6);
+events['window:beforeprint']();
+assert(elements['print-report'].innerHTML.includes('Transitive'));
+assert(elements['print-report'].innerHTML.includes('&gt;=1, &lt;2'));
+assert(elements['print-report'].innerHTML.includes('Documents and images'));
+click({run:'0'});click({tab:'coverage'});
+assert(elements.main.innerHTML.includes('Excluded from this scan'));
+assert(elements.main.innerHTML.includes('POSTURE-FIREWALL'));
+assert(elements.main.innerHTML.includes('path: trusted.js'));
+assert(elements.main.innerHTML.includes('/example/posture.txt'));
+click({tab:'plan'});click({agentPrompt:'1'});
+promptData=JSON.parse(copied.split('Scan data (JSON):\n')[1]);
+assert.equal(promptData.scan_id,42);
+assert.equal(promptData.scope.posture,false);
+assert.deepEqual(promptData.scope.posture_exclusions,['POSTURE-FIREWALL']);
+events['window:beforeprint']();
+assert(elements['print-report'].innerHTML.includes('Local history scan #42'));
+assert(elements['print-report'].innerHTML.includes('POSTURE-FIREWALL'));
+// Lifecycle exports have a different contract; never silently treat resolved history as an empty scan.
+const beforeHistory=elements.main.innerHTML;
+ctx.viewerTest.addText(JSON.stringify({schema:1,exposures:[],scans:[]}), 'history.json');
+assert.equal(elements.main.innerHTML,beforeHistory);
+ctx.viewerTest.addText(JSON.stringify({...dependency,schema:1,resolved_at:'2026-10-30'}), 'history.jsonl');
+assert.equal(elements.main.innerHTML,beforeHistory);
 console.log('viewer synthetic rendering, filters, details, links, imports, coverage, plan and print document passed');

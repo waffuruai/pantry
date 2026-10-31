@@ -22,8 +22,9 @@ ROOT = Path(__file__).resolve().parents[2]
 BIN = Path(os.environ.get("WPANTRY") or ROOT / "rust" / "target" / "release" / "wpantry")
 if not BIN.is_absolute():
     BIN = (ROOT / BIN).resolve()
-# The name the binary goes by, which its skill and errors carry.
-NAME = BIN.name
+# The name the binary goes by, which its skill and errors carry (without
+# Windows' .exe).
+NAME = BIN.stem if BIN.suffix.lower() == ".exe" else BIN.name
 
 ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
 FINDING = {"kind": str, "component": str, "version": str, "location": str, "vuln_id": str, "status": str,

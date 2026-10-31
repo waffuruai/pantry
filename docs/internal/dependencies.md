@@ -17,7 +17,7 @@ wpantry runs with access to the whole home directory, so what goes into it is re
 |---|---|---|
 | 2026-10-25 | `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`, FTS5), `ureq`, `rustls` (`ring`); nothing else | A minimal, reviewable surface; the parsers, comparators and helpers are written here |
 | 2026-10-31 | ureq's `platform-verifier` feature: TLS is verified by the platform's trust store (`rustls-platform-verifier`), not the bundled Mozilla roots | A CA the machine distrusts (`fix-ca-trust.sh`, or by hand) must be distrusted by wpantry's own requests too. Adds `rustls-platform-verifier` and, per platform, `security-framework` with `core-foundation` on macOS and `rustls-native-certs` with `openssl-probe` on Linux; the Android and Windows halves (`jni`, `syn`, `schannel`, `windows-sys`, …) are in the lockfile but never compiled for a target we ship. Each is exempted in `supply-chain/config.toml` until audited |
-| 2026-10-31 | No `cargo vet import` of other organizations' audits | The import writes auditors' email addresses into `supply-chain/imports.lock`, which CONTRIBUTING.md doesn't allow; we audit or exempt every crate ourselves |
+| 2026-10-31 | Import the published `cargo vet` audits of Mozilla, Google and the Bytecode Alliance (`[imports]` in `supply-chain/config.toml`) | They audit the same crates we depend on, to the same `safe-to-deploy` criteria, and publish the audits with their auditors' names and addresses; `imports.lock` copies only the entries that cover our versions, and those identities are already public. At the import, 15 exemptions went, and 14 crates became fully audited. An audit of theirs is for an exact version or a version delta, so a crate we pin newer than they audited stays exempted until someone audits the delta here |
 
 ## Bumping a dependency
 
@@ -42,7 +42,7 @@ A transitive bump (in `Cargo.lock` only) follows the same steps with `cargo upda
 2. Record it: `cargo vet certify <crate> <old> <new>` (criteria `safe-to-deploy`) when you reviewed it, or `cargo vet add-exemption <crate> <version>` with the reason in the PR when you didn't (a platform crate we never compile, say).
 3. `cargo vet prune` to drop exemptions the new audits cover.
 
-The audits of other organizations (Mozilla, Google, Bytecode Alliance) would cover about a dozen of our crates, but `cargo vet import` writes their auditors' email addresses into `supply-chain/imports.lock`, which CONTRIBUTING.md doesn't allow; decided 2026-10-31: no imports.
+The audits of Mozilla, Google and the Bytecode Alliance are imported (`[imports]` in `config.toml`): `cargo vet` fetches their `audits.toml`, keeps in `imports.lock` the entries that apply to our exact versions, and counts a crate audited when an entry, or a chain of version deltas, reaches the version we pin. `imports.lock` therefore carries those auditors' published names and addresses, the one place in this repository that does. `cargo vet prune` after a bump drops exemptions an import now covers; `cargo vet` without `--locked` refreshes the imports.
 
 ## cargo deny
 

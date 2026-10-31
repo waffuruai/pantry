@@ -1,5 +1,5 @@
-# wpantry in Rust: specs/01-rust-port.md and specs/design/rust-port.md.
-# Every dependency is pinned `=x.y.z` (S1), only from the allowlist in the PRD's decision log.
+# wpantry in Rust: docs/architecture.md. Every dependency is pinned `=x.y.z`, only from the
+# allowlist in docs/internal/dependencies.md.
 [workspace]
 resolver = "3"
 members = ["crates/wpantry", "crates/wpantry-cli"]
@@ -15,7 +15,7 @@ repository = "https://github.com/waffuruai/pantry"
 serde = { version = "=1.0.229", default-features = false, features = ["std"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
-ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "platform-verifier"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 wpantry = { path = "crates/wpantry", version = "=0.2.0" }
 

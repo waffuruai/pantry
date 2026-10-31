@@ -383,9 +383,11 @@ mod tests {
         let d = crate::system::TempDir::new("blobs-tree").unwrap();
         let root = d.path();
         std::fs::write(root.join("engine.wasm"), b"\0asm\x01\x00\x00\x00").unwrap();
+        crate::repos::forget_walks();
         let got = scan_dir(root, Kind::Repo, &Policy::default());
         assert_eq!(ids(&got), [("SUSPECT-BINARY-BLOB", false)], "{got:?}");
         assert!(got[0].note.contains("commits 1 prebuilt binary (engine.wasm)"), "{}", got[0].note);
+        crate::repos::forget_walks();
         assert!(
             scan_dir(root, Kind::Installed, &Policy::default()).is_empty(),
             "installed code is expected to ship binaries"
@@ -394,11 +396,14 @@ mod tests {
         std::fs::create_dir_all(root.join("tests")).unwrap();
         std::fs::write(root.join("dist/out.wasm"), b"\0asm").unwrap();
         std::fs::write(root.join("tests/fixture.exe"), "not a program").unwrap();
+        crate::repos::forget_walks();
         let got = scan_dir(root, Kind::Repo, &Policy::default());
         assert_eq!(got.len(), 1, "output and fixtures are not the tree: {got:?}");
         std::fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
+        crate::repos::forget_walks();
         assert!(scan_dir(root, Kind::Repo, &Policy::default()).is_empty(), "with sources it is nothing");
         std::fs::write(root.join("helper.node"), "#!/bin/sh\n").unwrap();
+        crate::repos::forget_walks();
         assert_eq!(
             ids(&scan_dir(root, Kind::Repo, &Policy::default())),
             [("SUSPECT-BINARY-BLOB", true)],

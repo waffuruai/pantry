@@ -37,6 +37,7 @@ pub mod osdb;
 pub mod osv;
 pub mod packages;
 pub mod plist;
+pub mod posture;
 pub mod re;
 pub mod repos;
 pub mod scanners;
@@ -49,7 +50,7 @@ pub mod versions;
 
 pub use error::Error;
 
-/// The implementation's version (the Python one is the same).
+/// The implementation's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Which implementation this is, in every JSON envelope.
 pub const IMPL: &str = "rust";
@@ -66,4 +67,5 @@ pub mod defaults {
     pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
+    pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
 }

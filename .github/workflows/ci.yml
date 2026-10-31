@@ -1,7 +1,7 @@
 name: CI
 
 # wpantry's build, tests and supply-chain gates and the CLI contract suite
-# against the binary, on Linux and macOS (specs/01-rust-port.md); the CA trust
+# against the binary, on Linux and macOS (specs/cli-contract.md); the CA trust
 # scripts and install.sh on both; shell and workflow lint.
 on:
   pull_request:

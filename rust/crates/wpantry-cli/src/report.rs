@@ -35,6 +35,7 @@ pub fn covering<'a>(fs: &[&'a Finding]) -> &'a Finding {
 /// The order kinds are listed in: what's installed on the machine, then
 /// what the repos lock, then what the harnesses run, then everything else.
 const KIND_ORDER: &[&str] = &[
+    "posture",
     "os",
     "runtime",
     "compiler",

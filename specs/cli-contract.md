@@ -2,7 +2,7 @@
 
 Status: frozen at schema 1, 2026-10-25. Owner: Eric.
 
-The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (the Rust implementation, [01-rust-port.md](01-rust-port.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals. The Python reference implementation, `wscanner`, passed the same tests until phase 3 removed it (2026-10-28); where the name appears in output (`skill`'s front matter, the `<name>:` error prefix), each used its own.
+The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (how it is built: [docs/architecture.md](../docs/architecture.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals.
 
 ## Change rule
 
@@ -15,6 +15,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 ```
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
                  [--json] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
+                 [--no-posture] [--posture-policy FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export [--csv FILE] [--jsonl FILE] [--all]
 wpantry breach [--enable | --disable]
@@ -39,6 +40,7 @@ wpantry skill
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
 | `--gitleaks-config`, `--install-scripts` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` is reported (`REPO-POLICY`, warn), never obeyed |
 | `--jobs N` | gitleaks scans at once (default: half the cores, at most 4); each gets a share of the cores |
+| `--no-posture`, `--posture-policy FILE` | The machine's own security settings (kind `posture`) run with the machine inventory; `--no-posture` skips them, the policy file lists check ids to skip (one per line, `POSTURE-` prefix optional) |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
 | `export --jsonl` | Latest findings as JSON Lines, one object per finding: every [finding](#finding) key, plus `aliases` (the record's other ids), `url`, `record` (the full OSV JSON, or `null`), `first_seen`, `last_seen`, `resolved_at` (`YYYY-MM-DD HH:MM UTC` strings, `null` when unknown or open), `days_exposed` and `fix` (`null`, or `{attempted_at, mode, ok, verified, succeeded}` for the latest `--update` run of its `fix_cmd`). `--all` adds the exposures a later scan of the same scope resolved and the latest scan no longer lists. `--csv` and `--jsonl` may be given together; one is required |
@@ -60,7 +62,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Variable | Effect |
 |---|---|
-| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. The retired Python implementation's cache (`WSCANNER_DB`, default `…/wscanner/wscanner.db`) has the same schema |
+| `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
 | `WPANTRY_NO_UPDATE_CHECK` | Set to anything: `check` never mentions a newer wpantry release |
@@ -95,7 +97,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | Key | Type | Meaning |
 |---|---|---|
 | `schema` | int | Contract version, 1 |
-| `impl` | string | `rust` (`python` from the retired reference implementation) |
+| `impl` | string | `rust` |
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
 | `unfixed` | int | Applicable advisories with no released fix (not in `findings`) |
@@ -106,7 +108,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 | Field | Type | Meaning |
 |---|---|---|
-| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `secret`, `license`, `install-script`, `config`, `account`, `unchecked` (open set) |
+| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `secret`, `license`, `install-script`, `config`, `account`, `posture`, `unchecked` (open set) |
 | `component` | string | What it is about (`openssl`, `vite`, `~/code/app/.env`) |
 | `version` | string | Installed or locked version; `""` when none |
 | `location` | string | Path, lockfile, image or source; `""` when none |
@@ -143,7 +145,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `kev` | `cve` TEXT PK, `added`, `name` |
 | `eol` | `product`, `cycle` TEXT (PK together), `eol`, `latest` |
 | `casks` | `app` TEXT PK, `token`, `version` |
-| `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>` (Python), `image-packages:<id>` (Rust), `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
+| `runs` | `source` TEXT PK (`gitleaks:<repo>`, `brew-vulns`, `tags:<repo>`, `image-packages:<id>`, the feeds' keys such as `arch-tracker` and `firefox`, …; rows an earlier implementation wrote are left alone), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
 | `scans` | `id` INTEGER PK, `started_at` REAL, `finished_at` REAL, `host`, `user`, `version`, `scope` TEXT, `counts` TEXT (JSON), `fails` INTEGER, `warns` INTEGER, `unchecked` INTEGER (sources that couldn't be asked; a scan with any resolves no exposure and verifies no fix): one row per scan |
 | `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL, `dep_scope` TEXT, `dep_direct` INTEGER, `affected_range` TEXT, `fix_cmd` TEXT: a finding across scans; resolved by a scan of the same scope that no longer lists it |

@@ -1,6 +1,6 @@
-//! The local cache: one SQLite file per machine, the same schema the Python
-//! implementation reads and writes (`specs/cli-contract.md#cache-sqlite`), so
-//! switching implementation keeps the cache.
+//! The local cache: one SQLite file per machine, with the schema the CLI
+//! contract fixes (`specs/cli-contract.md#cache-sqlite`), so a cache outlives
+//! releases.
 //!
 //! It holds OSV records for what this machine has (never a mirror of OSV),
 //! the answers to "which advisories affect package P at version V" with when

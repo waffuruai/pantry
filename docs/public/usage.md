@@ -1,8 +1,6 @@
 # Using wpantry
 
-wpantry finds the vulnerabilities that actually apply to your computer and your git repos. It inventories what is installed and what your repos lock, asks [OSV.dev](https://osv.dev), CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) list and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. A source it can't reach is reported "not checked", never clean.
-
-Install it first: [install.md](install.md).
+wpantry finds the vulnerabilities that actually apply to your computer and your git repos: it inventories what is installed and what your repos lock, and asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions. Every check and every source is listed in [checks-and-sources.md](checks-and-sources.md); this page is how to run it and read what it says. Install it first: [install.md](install.md).
 
 ## Quick start
 
@@ -18,20 +16,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 
 ## What it checks
 
-| Area | What |
-|---|---|
-| Your repos' dependencies | The lockfiles in every git repo it finds (Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer and more) |
-| Committed secrets | Each repo's whole git history once, then only the commits its branches gained since, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit. A repo's own `.gitleaks.toml` is reported, not obeyed; its `.gitleaksignore` is |
-| Malicious packages | Every package name against the OpenSSF malicious-packages index |
-| AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
-| Install scripts | Dependencies that run code when installed, outside an allowlist |
-| The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
-| Installed software | Runtimes and compilers (every version a version manager keeps), package managers, CLI tools, datastores, Docker, global packages, Homebrew formulae, apps, browsers, editor extensions |
-| Homebrew without `brew` | Bottles poured into the Cellar by mise's `brew:` engine (no `brew` command, so no `brew vulns`): each formula the tool catalog knows is checked against OSV and endoflife.date; the rest are reported "not checked" |
-| End of life | Runtimes and datastores past their end-of-life date fail |
-| Certificate authorities | System and tool trust stores against known-distrusted CAs |
-
-`--no-machine` limits a run to the first five rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
+Dependencies, committed secrets, malicious packages, AI harnesses, install scripts, the OS, installed software, end of life, certificate authorities and the machine's own settings: the full table, with what each source is asked and what is sent, is [checks-and-sources.md](checks-and-sources.md). `--no-machine` limits a run to the repo checks. What a run could not check shows up as "not checked", never as clean.
 
 ## Scope
 
@@ -69,8 +54,6 @@ not checked
 - `⚠` warns: no fix yet, an outdated app, an unpinned MCP server, an install script, a generic secret rule to review.
 - `KEV` marks a vulnerability CISA has seen exploited in the wild. Fix those first.
 - **not checked** lists sources that couldn't be reached and had nothing cached. Those areas are unknown, not clean; re-run when you're online.
-
-The (Python) implementation prints the same findings as one block per component.
 
 ## Reports: what you were exposed to, and what was done
 
@@ -145,6 +128,8 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of packages whose install scripts are accepted |
+| `--no-posture` | Skip the machine's security settings |
+| `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
 
 Policy files are one entry per line, `#` for comments. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 
@@ -169,11 +154,7 @@ Every script works the same way. `--status` says whether the host is exposed (ex
 
 ## What leaves your machine
 
-- To OSV.dev: the (ecosystem, name, version) of what is installed or locked. No file contents, paths or secrets.
-- Feeds are downloaded: CISA KEV, endoflife.date, the Homebrew cask catalog, browser release feeds, the OpenSSF malicious-packages index (a git clone), and with `--licenses`, deps.dev.
-- The breach check sends your email address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes (`wpantry breach --enable`; `--disable` turns it off).
-
-Every request names wpantry in its User-Agent and times out after 30 seconds.
+Package names and versions go to OSV.dev; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks-and-sources.md](checks-and-sources.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
 
 ## Environment
 

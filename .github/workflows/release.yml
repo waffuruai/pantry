@@ -1,6 +1,6 @@
 name: Release
 
-# Phase 3 of specs/01-rust-port.md (S3, S4); the playbook is
+# Reproducible, signed releases for every target; the playbook is
 # docs/internal/release.md. A tag vX.Y.Z on main builds every target twice,
 # from two checkouts at different paths, and requires byte-identical binaries;
 # then it publishes them with SHA256SUMS, a GitHub artifact attestation and a

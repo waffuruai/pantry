@@ -41,6 +41,9 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         os_updates(scan, joined(updates))?;
         brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;
         ca_trust(scan, joined(trust));
+        if !scan.opts.no_posture {
+            posture(scan);
+        }
         Ok(found)
     })
 }
@@ -161,6 +164,41 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The machine's own security settings (`posture`): a failing Critical or
+/// High check fails, the rest warn, a check that can't tell says so.
+pub fn posture(scan: &mut Scan) {
+    use crate::posture::{self, Severity, Status};
+    scan.status("Checking the machine's security settings");
+    let skip = scan.opts.policy.posture_skip();
+    let results = posture::run(&skip, &posture::real_runner);
+    scan.count("security settings checked", results.len() as i64);
+    for (c, o) in results {
+        let (status, note) = match o.status {
+            Status::Pass => continue,
+            Status::Fail if matches!(c.severity, Severity::Critical | Severity::High) => ("fail", o.evidence),
+            Status::Fail => ("warn", o.evidence),
+            Status::Manual => ("warn", o.evidence),
+            Status::Unknown => ("warn", format!("couldn't tell: {}", o.evidence)),
+        };
+        let (fix_cmd, fix_auto) = match &c.fix {
+            Some(f) => (f.cmd.to_string(), !f.admin && o.status == Status::Fail),
+            None => (c.explain.to_string(), false),
+        };
+        scan.add(Finding {
+            kind: "posture".into(),
+            component: c.title.into(),
+            location: if c.cis.is_empty() { String::new() } else { format!("CIS {}", c.cis) },
+            vuln_id: c.id.into(),
+            status: status.into(),
+            severity: c.severity.as_str().into(),
+            note,
+            fix_cmd,
+            fix_auto,
+            ..Default::default()
+        });
+    }
 }
 
 /// A newer mise release only warns (OSV decides failures): a human bumps it

@@ -1,7 +1,7 @@
 """The CLI contract (specs/cli-contract.md), tested from the outside: run the
 binary named by WPANTRY with a temp HOME and cache, offline, and check only
 its stdout, stderr, exit codes and cache file. Every implementation must pass
-(specs/01-rust-port.md F2). Standard library only, Python 3.9+:
+(specs/cli-contract.md). Standard library only, Python 3.9+:
 
     WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
 """
@@ -170,6 +170,19 @@ class Contract(unittest.TestCase):
         unpinned = [f["component"] for f in self.envelope(out)["findings"] if f["vuln_id"] == "UNPINNED"]
         self.assertEqual(unpinned, ["y-mcp (project: y)"])  # the repo's server, not the harness config's
 
+    def test_posture_flags(self):
+        # Repo-only scans never report the machine's settings.
+        code, out, _ = self.project_run("--json")
+        self.assertFalse([f for f in json.loads(out)["findings"] if f["kind"] == "posture"])
+        code, _, err = self.run_bin("--no-machine", "--no-posture", "--offline", "--no-input", "--path", str(self.home))
+        self.assertEqual(code, 0, err)
+        policy = self.home / "posture.txt"
+        policy.write_text("remote-login\nPOSTURE-FILEVAULT\n")
+        code, _, err = self.run_bin("--no-machine", "--posture-policy", str(policy), "--offline", "--no-input", "--path", str(self.home))
+        self.assertEqual(code, 0, err)
+        code, _, err = self.run_bin("--posture-policy", str(self.home / "missing.txt"))
+        self.assertEqual(code, 2, err)
+
     def test_report_keeps_scan_history(self):
         self.project_run()
         self.project_run()
@@ -193,6 +206,7 @@ class Contract(unittest.TestCase):
         for table in ("scans", "exposures", "fixes", "events"):
             self.assertTrue(conn.execute(f"PRAGMA table_info({table})").fetchall(), table)
         conn.close()
+
     def test_sync_offline_reports_unreachable_sources(self):
         # No network in the contract suite: every source is unreachable, none is "clean".
         code, out, err = self.run_bin("sync", "--json", env=dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9"))

@@ -163,6 +163,11 @@ impl Cache {
         Ok(())
     }
 
+    pub fn unset(&self, key: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM meta WHERE key = ?", [key])?;
+        Ok(())
+    }
+
     pub fn fresh(&self, key: &str, max_age: f64) -> Result<bool> {
         Ok(match self.get(key)? {
             Some(stamp) => stamp.trim().parse::<f64>().is_ok_and(|t| now() - t < max_age),

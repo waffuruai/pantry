@@ -243,24 +243,7 @@ pub fn run_job(job: &Job) -> Result<Value> {
             out.code.map_or("by a signal".into(), |c| c.to_string())
         )));
     }
-    let text = std::fs::read(&report).unwrap_or_default();
-    let found = if text.iter().all(u8::is_ascii_whitespace) {
-        Value::Array(vec![])
-    } else {
-        json::parse(&text, json::MAX_DOCUMENT)?
-    };
-    let mut rows: Vec<Value> = found
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-        .iter()
-        .map(|f| {
-            json!({"rule": str_at(f, "RuleID"), "file": str_at(f, "File"),
-                   "line": f.get("StartLine").and_then(Value::as_i64).unwrap_or(0),
-                   "commit": str_at(f, "Commit").chars().take(12).collect::<String>(),
-                   "fingerprint": str_at(f, "Fingerprint"), "description": str_at(f, "Description")})
-        })
-        .collect();
+    let mut rows = report_rows(&report)?;
     if since.is_some()
         && let Some((_, old)) = &job.cached
     {
@@ -275,6 +258,32 @@ pub fn run_job(job: &Job) -> Result<Value> {
         }
     }
     Ok(json!({"tips": job.tips.iter().collect::<Vec<_>>(), "hits": rows}))
+}
+
+/// The redacted hits in the report gitleaks wrote: a list of findings, `[]`
+/// when it found none (gitleaks 8 always writes the file). No file, an
+/// empty one, or any other shape is a run that didn't finish, never a clean
+/// one, so nothing of it is cached.
+fn report_rows(report: &Path) -> Result<Vec<Value>> {
+    let text = std::fs::read(report).map_err(|e| Error::Failed(format!("gitleaks wrote no report: {e}")))?;
+    let found = json::parse(&text, json::MAX_DOCUMENT).map_err(|e| Error::Failed(format!("gitleaks report: {e}")))?;
+    let Value::Array(found) = found else {
+        return Err(Error::Failed("gitleaks report isn't a list of findings".into()));
+    };
+    found
+        .iter()
+        .map(|f| {
+            let rule = f.get("RuleID").and_then(Value::as_str).filter(|s| !s.is_empty());
+            let fp = f.get("Fingerprint").and_then(Value::as_str).filter(|s| !s.is_empty());
+            let (Some(rule), Some(fp)) = (rule, fp) else {
+                return Err(Error::Failed("gitleaks report has a finding without RuleID and Fingerprint".into()));
+            };
+            Ok(json!({"rule": rule, "file": str_at(f, "File"),
+                      "line": f.get("StartLine").and_then(Value::as_i64).unwrap_or(0),
+                      "commit": str_at(f, "Commit").chars().take(12).collect::<String>(),
+                      "fingerprint": fp, "description": str_at(f, "Description")}))
+        })
+        .collect()
 }
 
 /// Whether every commit is still in the repo (one git call for all of them).
@@ -345,6 +354,34 @@ pub fn finish(cache: &Cache, job: &Job, ran: Option<Result<Value>>, refresh: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a list of findings is a result; no report, an empty one or
+    /// another shape is a run that didn't finish, so nothing is cached as
+    /// "no secrets".
+    #[test]
+    fn a_report_is_a_list_of_findings_or_the_run_failed() {
+        let d = TempDir::new("gitleaks-report").unwrap();
+        let report = d.path().join("report.json");
+        assert!(matches!(report_rows(&report), Err(Error::Failed(_))), "no report");
+        for text in ["", "   \n", "{}", "null", "[{}]", r#"[{"RuleID": "aws", "Fingerprint": ""}]"#, "[1]"] {
+            std::fs::write(&report, text).unwrap();
+            assert!(matches!(report_rows(&report), Err(Error::Failed(_))), "{text:?} is not a clean report");
+        }
+        std::fs::write(&report, "[]").unwrap();
+        assert_eq!(report_rows(&report).unwrap(), Vec::<Value>::new(), "gitleaks writes [] for no findings");
+        std::fs::write(
+            &report,
+            r#"[{"RuleID": "aws-access-token", "File": "x.env", "StartLine": 3, "Commit": "0123456789abcdef0123",
+                "Fingerprint": "0123456789abcdef0123:x.env:aws-access-token:3", "Description": "AWS", "Secret": "REDACTED"}]"#,
+        )
+        .unwrap();
+        let rows = report_rows(&report).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(str_at(&rows[0], "rule"), "aws-access-token");
+        assert_eq!(str_at(&rows[0], "commit"), "0123456789ab");
+        assert_eq!(rows[0]["line"], 3);
+        assert!(rows[0].get("Secret").is_none(), "only the redacted fields are kept");
+    }
 
     #[test]
     fn tips_come_from_head_refs_and_packed_refs() {

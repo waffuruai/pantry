@@ -15,11 +15,14 @@ use std::time::Duration;
 /// processing, so no `.pth` startup hook in its site-packages runs (and no
 /// pip). With `-S` Python doesn't apply a venv itself, so its
 /// `pyvenv.cfg` is read here, as `site.venv` would. `sites` are the
-/// directories `pip list` reads, in sys.path order.
+/// directories `pip list` reads, in sys.path order. The base interpreter's
+/// site-packages are asked for by its base prefixes: from 3.14 a venv is
+/// `sys.prefix` even under `-S`, so the plain call would give the venv's
+/// own directories and leave out the system ones it inherits.
 const PY_INFO: &str = r#"import json, os, platform, site, sys, sysconfig
 exe = os.path.dirname(os.path.abspath(sys.executable))
 cfg = next((c for c in (os.path.join(d, "pyvenv.cfg") for d in (exe, os.path.dirname(exe))) if os.path.isfile(c)), None)
-base = [site.getusersitepackages()] + site.getsitepackages()
+base = [site.getusersitepackages()] + site.getsitepackages([sys.base_prefix, sys.base_exec_prefix])
 sites = base
 if cfg:
     system = False
@@ -53,8 +56,10 @@ fn str_of(v: &Value, k: &str) -> String {
 }
 
 /// Every Python on PATH or installed by a version manager, with pip and its
-/// packages.
-pub fn pythons() -> Vec<Component> {
+/// packages; and, per Python, the installed distributions whose metadata
+/// couldn't be read, for the scan to report unchecked (incomplete metadata
+/// must never read as fewer packages).
+pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
     let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
     dirs.extend(expand(PYTHON_DIRS));
     let minor = Regex::new(r"python3\.\d+");
@@ -71,6 +76,7 @@ pub fn pythons() -> Vec<Component> {
         names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect();
     let probed = system::par_map(&found, system::PROBES, |(shown, _)| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15));
     let mut out = Vec::new();
+    let mut unread = Vec::new();
     let mut seen = Vec::new();
     for ((shown, real), raw) in found.into_iter().zip(probed) {
         let last = raw.trim().lines().last().unwrap_or("");
@@ -89,18 +95,25 @@ pub fn pythons() -> Vec<Component> {
         c.auto = auto;
         out.push(c);
         let sites: Vec<String> = crate::json::strs_at(&info, "sites");
-        out.extend(pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto)));
+        let (pkgs, gaps) = pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto));
+        out.extend(pkgs);
+        if !gaps.is_empty() {
+            unread.push((shown, gaps));
+        }
     }
-    out
+    (out, unread)
 }
 
 /// The distributions installed in `sites` (what `pip list` shows), read
 /// from their metadata: `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` or a
 /// bare `*.egg-info` file. The first of a name on the path wins, as on
-/// import. Nothing is run.
-pub fn installed(sites: &[String]) -> Vec<(String, String)> {
+/// import. Nothing is run. With them, the distributions that couldn't be
+/// read: metadata that is missing, unreadable or names no version is a
+/// gap in the inventory, never a package that isn't there.
+pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
+    let mut gaps = Vec::new();
     let mut dirs: Vec<&String> = Vec::new();
     for d in sites {
         if !dirs.contains(&d) {
@@ -122,7 +135,13 @@ pub fn installed(sites: &[String]) -> Vec<(String, String)> {
             } else {
                 continue;
             };
-            let Ok(text) = system::read_capped(&meta, 1 << 20) else { continue };
+            let text = match system::read_capped(&meta, 1 << 20) {
+                Ok(text) => text,
+                Err(e) => {
+                    gaps.push(format!("{}: {e}", meta.display()));
+                    continue;
+                }
+            };
             let (mut n, mut v) = (String::new(), String::new());
             for line in text.lines() {
                 if line.trim().is_empty() {
@@ -134,18 +153,23 @@ pub fn installed(sites: &[String]) -> Vec<(String, String)> {
                     v = x.trim().to_string();
                 }
             }
-            if !n.is_empty() && !v.is_empty() && seen.insert(crate::malicious::norm("PyPI", &n)) {
+            if n.is_empty() || v.is_empty() {
+                let field = if v.is_empty() { "Version" } else { "Name" };
+                gaps.push(format!("{}: no {field} in its metadata", meta.display()));
+            } else if seen.insert(crate::malicious::norm("PyPI", &n)) {
                 out.push((n, v));
             }
         }
     }
-    out
+    (out, gaps)
 }
 
-fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> Vec<Component> {
+/// pip and the packages installed for one Python, and what couldn't be read.
+fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> (Vec<Component>, Vec<String>) {
     let real = system::realpath(py);
     let mut out = Vec::new();
-    for (name, ver) in installed(sites) {
+    let (found, gaps) = installed(sites);
+    for (name, ver) in found {
         let (fix, auto) = if managed && real.contains("/uv/") {
             runtime_fix.clone() // uv's Python builds bundle pip; a newer build brings a newer one
         } else if managed {
@@ -161,7 +185,7 @@ fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -
         c.auto = auto;
         out.push(c);
     }
-    out
+    (out, gaps)
 }
 
 /// npm itself and the global npm packages of each Node in `found`.
@@ -367,10 +391,11 @@ mod tests {
         put(venv.join("old.egg-info/PKG-INFO"), "Name: old\nVersion: 0.1\n");
         put(venv.join("legacy-1.0-py3.9.egg-info"), "Name: legacy\nVersion: 1.0\n");
         put(venv.join("broken.dist-info/METADATA"), "Name: broken\n");
+        std::fs::create_dir_all(venv.join("half-1.0.dist-info")).unwrap();
         put(venv.join("review_hook.pth"), "import os; os.system('never run')\n");
         put(user.join("jinja2-2.0.dist-info/METADATA"), "Name: jinja2\nVersion: 2.0\n");
         let sites = [venv.display().to_string(), user.display().to_string(), "/nonexistent".into()];
-        let got = installed(&sites);
+        let (got, gaps) = installed(&sites);
         assert_eq!(
             got,
             [
@@ -381,6 +406,49 @@ mod tests {
             ],
             "the first of a name on the path wins; nothing without a version"
         );
+        assert_eq!(gaps.len(), 2, "metadata without a version, and a dist-info without metadata: {gaps:?}");
+        assert!(gaps[0].contains("broken.dist-info/METADATA: no Version"), "{gaps:?}");
+        assert!(gaps[1].contains("half-1.0.dist-info/METADATA"), "{gaps:?}");
+    }
+
+    /// The probe lists the base interpreter's site-packages for a venv made
+    /// with `--system-site-packages`, and not otherwise, on every Python
+    /// here (from 3.14 a venv is `sys.prefix` even under `-S`).
+    #[test]
+    fn the_probe_lists_the_sites_a_venv_inherits() {
+        let d = system::TempDir::new("venvs").unwrap();
+        let mut pythons: Vec<String> = which("python3").into_iter().map(|p| p.display().to_string()).collect();
+        pythons.extend(
+            ["python3.12", "python3.13", "python3.14", "python3.15"]
+                .iter()
+                .filter_map(|n| which(n))
+                .map(|p| p.display().to_string()),
+        );
+        let sites_of = |py: &str| -> Vec<String> {
+            let raw = sh(&[py, "-I", "-S", "-c", PY_INFO], 30);
+            let info = json_in(raw.trim().lines().last().unwrap_or(""), '{', '}').unwrap_or(Value::Null);
+            crate::json::strs_at(&info, "sites")
+        };
+        for (i, py) in pythons.iter().enumerate() {
+            // The user site first, then the interpreter's own.
+            let base: Vec<String> = sites_of(py).into_iter().skip(1).collect();
+            if base.is_empty() {
+                continue;
+            }
+            for (flag, inherits) in [("--system-site-packages", true), ("--without-pip", false)] {
+                let venv = d.path().join(format!("{i}{flag}"));
+                let made = sh(&[py, "-m", "venv", "--without-pip", flag, &venv.display().to_string()], 60);
+                let vpy = venv.join("bin/python3");
+                if !vpy.exists() {
+                    panic!("{py} -m venv {flag}: {made}");
+                }
+                let sites = sites_of(&vpy.display().to_string());
+                let own = format!("{i}{flag}/lib/python"); // the probe may resolve the temp dir's symlink
+                assert!(sites.iter().any(|s| s.contains(&own)), "{py} {flag}: no venv site in {sites:?}");
+                let has_base = base.iter().any(|b| sites.contains(b));
+                assert_eq!(has_base, inherits, "{py} {flag}: base {base:?}, venv sites {sites:?}");
+            }
+        }
     }
 
     #[test]

@@ -1,8 +1,6 @@
 # Using wpantry
 
-wpantry finds the vulnerabilities that actually apply to your computer and your git repos. It inventories what is installed and what your repos lock, asks [OSV.dev](https://osv.dev), CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) list and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. A source it can't reach is reported "not checked", never clean.
-
-Install it first: [install.md](install.md).
+wpantry finds the vulnerabilities that actually apply to your computer and your git repos: it inventories what is installed and what your repos lock, and asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions. Every check and every source is listed in [checks.md](checks.md); this page is how to run it and read what it says. Install it first: [install.md](install.md).
 
 ## Quick start
 
@@ -18,20 +16,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 
 ## What it checks
 
-| Area | What |
-|---|---|
-| Your repos' dependencies | The lockfiles in every git repo it finds (Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer and more) |
-| Committed secrets | Each repo's whole git history, with [gitleaks](https://github.com/gitleaks/gitleaks); secrets are never printed or stored, only the rule, file, line and commit |
-| Malicious packages | Every package name against the OpenSSF malicious-packages index |
-| AI harnesses | The MCP servers your repos and coding agents start (an unpinned `npx some-server` warns: it runs whatever is latest), their plugins and skills |
-| Install scripts | Dependencies that run code when installed, outside an allowlist |
-| The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
-| Installed software | Runtimes and compilers (every version a version manager keeps), package managers, CLI tools, datastores, Docker, global packages, Homebrew formulae, apps, browsers, editor extensions |
-| End of life | Runtimes and datastores past their end-of-life date fail |
-| Certificate authorities | System and tool trust stores against known-distrusted CAs |
-| The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |
-
-`--no-machine` limits a run to the first five rows, for the repos in scope. The Rust binary does not cover every row yet; what it doesn't check shows up as "not checked" ([rust/README.md](../../rust/README.md)).
+Dependencies, committed secrets, malicious packages, AI harnesses, install scripts, the OS, installed software, end of life, certificate authorities and the machine's own settings: the full table, with what each source is asked and what is sent, is [checks.md](checks.md). `--no-machine` limits a run to the repo checks. What a run could not check shows up as "not checked", never as clean.
 
 ## Scope
 
@@ -129,11 +114,7 @@ wpantry export --csv findings.csv             # id, aliases, url, component, kin
 
 ## What leaves your machine
 
-- To OSV.dev: the (ecosystem, name, version) of what is installed or locked. No file contents, paths or secrets.
-- Feeds are downloaded: CISA KEV, endoflife.date, the Homebrew cask catalog, browser release feeds, the OpenSSF malicious-packages index (a git clone), and with `--licenses`, deps.dev.
-- The breach check sends your email address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes (`wpantry breach --enable`; `--disable` turns it off).
-
-Every request names wpantry in its User-Agent and times out after 30 seconds.
+Package names and versions go to OSV.dev; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks.md](checks.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
 
 ## Environment
 

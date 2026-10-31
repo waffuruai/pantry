@@ -84,7 +84,7 @@ body:
       placeholder: |
         wpantry 0.1.0 (rust, schema 1)
         macOS 26.1 (M2) / Debian 13 / Alpine 3.22
-        osv-scanner 2.7.0, gitleaks 8.30.1, Python 3.9.6
+        gitleaks 8.30.1, git 2.51.0, openssl 3.6.0
     validations:
       required: false
 

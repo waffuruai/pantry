@@ -6,7 +6,7 @@ Fixes marked *user* are settings of your own account; `wpantry --update` may app
 
 `--no-posture` skips all of them; `--posture-policy FILE` lists ids to skip, one per line (`REMOTE-LOGIN` on a server that means to run ssh). The ids are the finding's `vuln_id` without `POSTURE-`.
 
-The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Independent Linux Benchmark; [Mergen](https://github.com/sametsazak/mergen) (MIT) was the reference for which macOS items an unprivileged process can read and fix.
+The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Independent Linux Benchmark. The projects they were written against are in the README's [acknowledgements](../../README.md#acknowledgements).
 
 ## macOS
 

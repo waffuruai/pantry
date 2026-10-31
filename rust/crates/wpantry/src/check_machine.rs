@@ -11,7 +11,7 @@ use crate::feeds;
 use crate::osdb;
 use crate::osv::{self, Item};
 use crate::system::{self, Component, MACOS, now};
-use crate::{apps as apps_mod, catrust, packages, scanners, tools, versions};
+use crate::{apps as apps_mod, catrust, cellar, packages, scanners, tools, versions};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -65,6 +65,29 @@ pub fn inventory(scan: &mut Scan) -> Vec<Component> {
 fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     scan.status("Finding installed tools, runtimes and package managers");
     let mut found = tools::tools();
+    // Bottles poured without the `brew` command (mise's brew: engine): read
+    // from the Cellar, since `brew vulns` can't run and `tools` leaves
+    // Cellar-owned binaries to it. With brew present, brew vulns covers them.
+    if system::which("brew").is_none() {
+        scan.status("Reading the Homebrew Cellar (no brew)");
+        if let Some((cellar, inv)) = cellar::inventory() {
+            scan.count("Homebrew formulae (Cellar, no brew)", inv.components.len() as i64);
+            if !inv.unmapped.is_empty() {
+                let shown: Vec<&str> = inv.unmapped.iter().take(6).map(String::as_str).collect();
+                let more = if inv.unmapped.len() > 6 { ", …" } else { "" };
+                scan.unchecked(
+                    "Homebrew formulae wpantry can't map to OSV",
+                    &format!(
+                        "{} formulae in {} ({}{more}) have no catalog entry",
+                        inv.unmapped.len(),
+                        cellar.display(),
+                        shown.join(", ")
+                    ),
+                );
+            }
+            found.extend(inv.components);
+        }
+    }
     scan.status("Listing Python installs and their pip packages");
     found.extend(packages::pythons());
     scan.status("Listing global npm packages");

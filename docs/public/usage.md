@@ -27,6 +27,7 @@ The first run downloads advisories for what it finds and takes a while; answers 
 | Install scripts | Dependencies that run code when installed, outside an allowlist |
 | The OS | Debian, Ubuntu, Alpine, SUSE packages (from the package database), dnf distros, Arch; macOS Software Update |
 | Installed software | Runtimes and compilers (every version a version manager keeps), package managers, CLI tools, datastores, Docker, global packages, Homebrew formulae, apps, browsers, editor extensions |
+| Homebrew without `brew` | Bottles poured into the Cellar by mise's `brew:` engine (no `brew` command, so no `brew vulns`): each formula the tool catalog knows is checked against OSV and endoflife.date; the rest are reported "not checked" |
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System and tool trust stores against known-distrusted CAs |
 

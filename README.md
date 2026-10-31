@@ -6,7 +6,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 
 | What you get | What it checks |
 |---|---|
-| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`); mise itself against OSV and its latest release (behind warns; `--update` never updates it) |
+| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--update` never updates it) |
 | Catch vulnerable dependencies before they ship | Lockfiles in every git repo: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer, Maven, Gradle, NuGet and more |
 | Catch malware, not just CVEs | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | Find leaked credentials in history | Secrets committed anywhere in each repo's git history (`gitleaks`) |

@@ -12,6 +12,7 @@ pub mod apps;
 pub mod breach;
 pub mod catalog;
 pub mod catrust;
+pub mod cellar;
 pub mod check;
 pub mod check_machine;
 pub mod check_supply;

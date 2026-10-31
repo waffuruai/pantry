@@ -52,34 +52,54 @@ pub fn wanted(name: &str) -> bool {
 
 /// Every finding under `root`, `depth` levels down (6 for a repo, 1 for
 /// `~/Downloads`), one per (file, id). Build output and dependency
-/// directories are skipped as everywhere else.
+/// directories are skipped as everywhere else. Files are read smallest
+/// first, so a directory over the 512 MiB budget loses its largest files,
+/// which one finding names, not its many small ones.
 pub fn scan_dir(root: &Path, depth: usize) -> Vec<Doc> {
     let mut out = Vec::new();
-    let mut budget = MAX_ROOT;
-    for (dir, files) in repos::walk(root, depth) {
-        for name in files {
+    let mut files: Vec<(PathBuf, u64)> = Vec::new();
+    for (dir, names) in repos::walk(root, depth) {
+        for name in names {
             if !wanted(&name) {
                 continue;
             }
             let path = dir.join(&name);
             let Ok(meta) = std::fs::metadata(&path) else { continue };
-            if !meta.is_file() {
-                continue;
+            if meta.is_file() {
+                files.push((path, meta.len()));
             }
-            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-            if meta.len() > MAX_FILE || meta.len() > budget {
-                out.push(Doc {
-                    file: rel,
-                    id: "DOC-UNREADABLE",
-                    note: format!("{} MiB: too large to read here", meta.len() >> 20),
-                    hard: false,
-                });
-                continue;
-            }
-            budget -= meta.len();
-            let Ok(bytes) = std::fs::read(&path) else { continue };
-            out.extend(scan_bytes(&rel, &bytes));
         }
+    }
+    files.sort_by_key(|(_, size)| *size);
+    let mut budget = MAX_ROOT;
+    let mut skipped: Vec<(String, u64)> = Vec::new();
+    for (path, size) in files {
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        if size > MAX_FILE || size > budget {
+            skipped.push((rel, size));
+            continue;
+        }
+        budget -= size;
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        out.extend(scan_bytes(&rel, &bytes));
+    }
+    if !skipped.is_empty() {
+        let total: u64 = skipped.iter().map(|(_, s)| s).sum();
+        let shown: Vec<&str> = skipped.iter().take(3).map(|(r, _)| r.as_str()).collect();
+        out.push(Doc {
+            file: skipped[0].0.clone(),
+            id: "DOC-UNREADABLE",
+            note: format!(
+                "{} file(s), {} MiB, not read: over {} MiB each or past this directory's {} MiB budget ({}{})",
+                skipped.len(),
+                total >> 20,
+                MAX_FILE >> 20,
+                MAX_ROOT >> 20,
+                shown.join(", "),
+                if skipped.len() > 3 { ", …" } else { "" }
+            ),
+            hard: false,
+        });
     }
     out.sort_by(|a, b| (a.file.as_str(), a.id).cmp(&(b.file.as_str(), b.id)));
     out.dedup_by(|a, b| a.file == b.file && a.id == b.id);
@@ -201,7 +221,7 @@ fn pdf(file: &str, bytes: &[u8], out: &mut Vec<Doc>) {
         push(out, "DOC-POLYGLOT", format!("no %PDF header in the first KiB: the file starts as {what}"), true);
         return;
     }
-    let (decoded, escaped) = decode_pdf_names(bytes);
+    let (decoded, escaped) = decode_pdf_names(&pdf_text(bytes));
     let count = |name: &[u8]| count_names(&decoded, name);
     let js = count(b"/JS") + count(b"/JavaScript");
     let open = count(b"/OpenAction") + count(b"/AA");
@@ -211,8 +231,7 @@ fn pdf(file: &str, bytes: &[u8], out: &mut Vec<Doc>) {
     let rich = count(b"/RichMedia");
     let submit = count(b"/SubmitForm") + count(b"/GoToR") + count(b"/ImportData");
     let objstm = count(b"/ObjStm");
-    let hidden =
-        if objstm > 0 { format!("; {objstm} compressed object stream(s) could hold more") } else { String::new() };
+    let hidden = if objstm > 0 { format!("; {objstm} object stream(s) inflated and read") } else { String::new() };
     if launch > 0 {
         push(out, "DOC-LAUNCH", format!("a /Launch action: the PDF asks the viewer to start a program{hidden}"), true);
     }
@@ -266,6 +285,49 @@ fn pdf(file: &str, bytes: &[u8], out: &mut Vec<Doc>) {
             );
         }
     }
+}
+
+/// The PDF outside its stream data, with object streams (`/ObjStm`,
+/// FlateDecode) inflated and appended: dictionaries live there, and the
+/// bytes of a compressed image don't get to spell `/JS` by chance.
+fn pdf_text(bytes: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(k) = find(&bytes[i..], b"stream") else {
+            out.extend_from_slice(&bytes[i..]);
+            break;
+        };
+        let at = i + k;
+        if at >= 3 && &bytes[at - 3..at] == b"end" {
+            // a stray "endstream": text, not a stream start
+            out.extend_from_slice(&bytes[i..at + 6]);
+            i = at + 6;
+            continue;
+        }
+        out.extend_from_slice(&bytes[i..at]);
+        let mut d = at + 6;
+        if bytes.get(d) == Some(&b'\r') {
+            d += 1;
+        }
+        if bytes.get(d) == Some(&b'\n') {
+            d += 1;
+        }
+        let end = find(&bytes[d..], b"endstream").map(|e| d + e).unwrap_or(bytes.len());
+        let dict_start = rfind(&out, b" obj").unwrap_or(out.len().saturating_sub(2048));
+        let object_stream = {
+            let dict = &out[dict_start..];
+            find(dict, b"/ObjStm").is_some() && find(dict, b"/FlateDecode").is_some()
+        };
+        if object_stream && let Some(inflated) = inflate(&bytes[d..end], MAX_MEMBER) {
+            out.push(b'\n');
+            out.extend_from_slice(&inflated);
+            out.push(b'\n');
+        }
+        out.extend_from_slice(b"endstream");
+        i = (end + 9).min(bytes.len());
+    }
+    out
 }
 
 /// The bytes with `/Na#6de` written as `/Name`, and the names that needed it.
@@ -456,8 +518,12 @@ fn ooxml(file: &str, ext: &str, bytes: &[u8], out: &mut Vec<Doc>) {
             let remote = target.starts_with("http://")
                 || target.starts_with("https://")
                 || target.starts_with("\\\\")
-                || target.starts_with("file://")
-                || target.starts_with("ftp://");
+                || target.starts_with("ftp://")
+                || (target.starts_with("file://") && !target.starts_with("file:///"));
+            // A template or object on the author's own disk (file:///C:/…) is how Word works.
+            if !remote {
+                continue;
+            }
             if ty.ends_with("/attachedTemplate") || ty.ends_with("/glossaryDocument") {
                 remote_template.get_or_insert(target.to_string());
             } else if ty.ends_with("/oleObject")
@@ -466,7 +532,7 @@ fn ooxml(file: &str, ext: &str, bytes: &[u8], out: &mut Vec<Doc>) {
                 || ty.ends_with("/subDocument")
             {
                 remote_object.get_or_insert(target.to_string());
-            } else if remote && !ty.ends_with("/hyperlink") {
+            } else if !ty.ends_with("/hyperlink") {
                 remote_other.get_or_insert(target.to_string());
             }
         }
@@ -1259,6 +1325,23 @@ mod tests {
         let exe = b"MZ\x90\x00this is a program";
         assert_eq!(ids(&scan_bytes("invoice.pdf", exe)), [("DISGUISED-PROGRAM", true)]);
         assert_eq!(count_names(b"/JS /JScript /JS", b"/JS"), 2);
+        // Random bytes inside a compressed stream don't count (an arXiv paper
+        // spelled `/JS` by chance); the same names in an inflated object stream do.
+        let binary = b"%PDF-1.4\n1 0 obj << /Length 40 /Filter /FlateDecode >> stream\n\x00\xffIP/JS\x16\x10xx/AA\x01 /OpenAction /Launch\nendstream\nendobj\n%%EOF";
+        assert!(scan_bytes("paper.pdf", binary).is_empty());
+        let mut objstm =
+            b"%PDF-1.5\n5 0 obj << /Type /ObjStm /N 2 /First 8 /Filter /FlateDecode /Length 82 >> stream\n".to_vec();
+        objstm.extend_from_slice(&[
+            0x33, 0x54, 0x30, 0x50, 0x30, 0x52, 0x30, 0x33, 0x50, 0xb0, 0xb1, 0x51, 0xd0, 0x0f, 0xa9, 0x2c, 0x48, 0x55,
+            0xd0, 0x77, 0x4e, 0x2c, 0x49, 0xcc, 0xc9, 0x4f, 0x57, 0xd0, 0xf7, 0x2f, 0x48, 0xcd, 0x73, 0x4c, 0x2e, 0xc9,
+            0xcc, 0xcf, 0x03, 0x2a, 0x31, 0x50, 0x08, 0x52, 0xb0, 0xb3, 0x03, 0x2b, 0x0b, 0x56, 0xd0, 0xf7, 0x4a, 0x2c,
+            0x4b, 0x0c, 0x4e, 0x2e, 0xca, 0x2c, 0x28, 0x01, 0xb2, 0x83, 0x15, 0x34, 0x12, 0x0b, 0x0a, 0xf4, 0x12, 0x73,
+            0x52, 0x8b, 0x4a, 0x34, 0x0c, 0x35, 0x35, 0x81, 0xea, 0x00,
+        ]);
+        objstm.extend_from_slice(b"\nendstream\nendobj\n%%EOF");
+        let got = scan_bytes("hidden.pdf", &objstm);
+        assert_eq!(ids(&got), [("DOC-JS-ON-OPEN", true)], "{got:?}");
+        assert!(got[0].note.contains("object stream(s) inflated"), "{}", got[0].note);
     }
 
     #[test]
@@ -1280,6 +1363,11 @@ mod tests {
         let got = scan_bytes("letter.docx", &remote);
         assert_eq!(ids(&got), [("DOC-REMOTE-TEMPLATE", true)]);
         assert!(got[0].note.contains("evil.example"), "{}", got[0].note);
+        let local = br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="file:///C:\Users\me\Templates\Normal.dotm" TargetMode="External"/></Relationships>"#;
+        assert!(
+            scan_bytes("letter.docx", &zip_stored(&[("word/_rels/settings.xml.rels", local)])).is_empty(),
+            "a template on the author's own disk is how Word works"
+        );
         let dde = zip_stored(&[("word/document.xml", br#"<w:document><w:instrText>DDEAUTO c:\\windows\\system32\\cmd.exe "/k calc.exe"</w:instrText></w:document>"#)]);
         assert_eq!(ids(&scan_bytes("letter.docx", &dde)), [("DOC-DDE", true)]);
         let ole_obj = zip_stored(&[

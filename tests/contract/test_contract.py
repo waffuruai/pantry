@@ -188,6 +188,49 @@ class Contract(unittest.TestCase):
         for table in ("scans", "exposures", "fixes", "events"):
             self.assertTrue(conn.execute(f"PRAGMA table_info({table})").fetchall(), table)
         conn.close()
+    def test_sync_offline_reports_unreachable_sources(self):
+        # No network in the contract suite: every source is unreachable, none is "clean".
+        code, out, err = self.run_bin("sync", "--json", env=dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9"))
+        self.assertEqual(code, 1, err)
+        data = json.loads(out)
+        self.assertEqual(set(data), {"refreshed", "failed", "packages"})
+        self.assertTrue(data["failed"], data)
+        self.assertEqual(data["packages"], 0)
+
+    def test_schedule_dry_run_and_cache_prune(self):
+        code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
+        self.assertEqual(code, 0, err)
+        self.assertIn("schedule", out)
+        # launchd (integers), systemd (HH:MM) or cron (M H) spell the time differently.
+        self.assertTrue("07:05" in out or ("<integer>7</integer>" in out and "<integer>5</integer>" in out)
+                        or out.startswith("5 7 "), out)
+        code, _, err = self.run_bin("schedule", "install", "--at", "25:00")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("schedule", "dance")
+        self.assertEqual(code, 2, err)
+        code, out, err = self.run_bin("schedule", "status", env=dict(self.env, XDG_STATE_HOME=str(self.home / "state")))
+        self.assertEqual(code, 0, err)
+        self.assertIn("last run: never", out)
+        self.project_run()
+        code, out, err = self.run_bin("cache", "prune", "--older-than", "1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("pruned", out)
+        self.assertTrue(self.db.exists())
+
+    def test_update_check_offline_reports_and_exits_0_or_10(self):
+        code, out, err = self.run_bin("update", "--check", "--offline")
+        # Offline with an empty cache: nothing known, so no update is claimed.
+        self.assertEqual(code, 0, err)
+        self.assertIn("couldn't check", out)
+        code, out, err = self.run_bin("update", "--check", "--version", "99.0.0", "--offline")
+        self.assertEqual(code, 10, out + err)
+        self.assertIn("99.0.0", out)
+        # The binary under test is a build in a checkout: reported, never replaced.
+        code, out, err = self.run_bin("update", "--no-input", "--version", "99.0.0", "--offline")
+        self.assertEqual(code, 10, out + err)
+        self.assertIn("built from a checkout", out)
+        code, out, err = self.run_bin("update", "--version", "nope", "--offline")
+        self.assertEqual(code, 3, out + err)
 
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"

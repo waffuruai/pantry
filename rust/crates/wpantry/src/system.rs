@@ -97,14 +97,34 @@ pub fn home() -> PathBuf {
     set("HOME").or_else(|| if cfg!(windows) { set("USERPROFILE") } else { None }).unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Drop the `\\?\` prefix `canonicalize` adds on Windows. `\\?\UNC\server\share`
+/// becomes `\\server\share`. Other strings are unchanged.
+pub fn strip_verbatim(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        p.to_string()
+    }
+}
+
+/// A path for a printed command. Forward slashes, no `\\?\` prefix: cmd,
+/// PowerShell, and Git Bash reject `cd '\\?\C:\...'`.
+pub fn command_path(path: &Path) -> String {
+    strip_verbatim(&path.to_string_lossy()).replace('\\', "/")
+}
+
 /// `~/x` for paths under $HOME, as the report shows them. Matches Python's
-/// plain string-prefix test.
+/// plain string-prefix test. The `\\?\` prefix is removed first so a
+/// canonical Windows path still matches `USERPROFILE`.
 pub fn short(p: &str) -> String {
+    let p = strip_verbatim(p);
     let home = home();
     let home = home.to_string_lossy();
     match p.strip_prefix(home.as_ref()) {
         Some(rest) if !home.is_empty() => format!("~{rest}"),
-        _ => p.to_string(),
+        _ => p,
     }
 }
 
@@ -734,6 +754,14 @@ mod tests {
         assert_eq!(owner("/home/u/.npm-global/lib/node_modules/x/bin/x"), "npm");
         assert_eq!(owner("/Applications/Slack.app/Contents/MacOS/Slack"), "app");
         assert_eq!(owner("/home/u/.local/bin/mise"), "");
+    }
+
+    #[test]
+    fn command_paths_drop_the_verbatim_prefix() {
+        assert_eq!(command_path(Path::new(r"\\?\C:\code\app")), "C:/code/app");
+        assert_eq!(strip_verbatim(r"\\?\UNC\server\share\app"), r"\\server\share\app");
+        assert_eq!(command_path(Path::new("/w/butter/rust")), "/w/butter/rust");
+        assert_eq!(short(r"\\?\C:\keep"), r"C:\keep");
     }
 
     #[test]

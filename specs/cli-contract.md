@@ -63,7 +63,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 
 ## Platforms
 
-macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 2026-10-31): the repo checks (`check --no-machine`: lockfiles, secrets, install scripts, images, MCP servers), `search`, `export`, `report`, `version`, `tools`, `skill` and `breach`, with the same output as on Linux for the same repo. A machine scan on Windows reports one `unchecked` finding (`machine inventory on Windows`) and nothing else about the machine: winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet. `~` is `HOME`, else `USERPROFILE`; the cache default is `%LOCALAPPDATA%\wpantry\wpantry.db` when neither `XDG_CACHE_HOME` nor `HOME` is set. PATH is split as the platform does, and a tool name also matches its `.exe`, `.cmd` or `.bat`.
+macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 2026-10-31): the repo checks (`check --no-machine`: lockfiles, secrets, install scripts, images, MCP servers), `search`, `export`, `report`, `version`, `tools`, `skill` and `breach`, with the same output as on Linux for the same repo. A machine scan on Windows reports one `unchecked` finding (`machine inventory on Windows`) and nothing else about the machine: winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet. Locations and `fix_cmd` paths are printed without the `\\?\` prefix that Windows `canonicalize` adds. `~` is `HOME`, else `USERPROFILE`; the cache default is `%LOCALAPPDATA%\wpantry\wpantry.db` when neither `XDG_CACHE_HOME` nor `HOME` is set. PATH is split as the platform does, and a tool name also matches its `.exe`, `.cmd` or `.bat`.
 
 ## Environment
 

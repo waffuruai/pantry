@@ -33,7 +33,7 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
     if cfg!(windows) {
         scan.unchecked(
             "machine inventory on Windows",
-            "winget, Scoop and Chocolatey packages, installed apps, Windows Update and the certificate store aren't read yet; repo checks ran (--no-machine)",
+            "winget, Scoop and Chocolatey packages, installed apps, Windows Update and the certificate store aren't read yet",
         );
         return Ok(Vec::new());
     }

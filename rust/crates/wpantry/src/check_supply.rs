@@ -253,6 +253,17 @@ fn secrets(
     let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
     for (((name, root), (job, _)), ran) in repos.iter().zip(jobs).zip(ran) {
         scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
+        if job.as_ref().is_ok_and(|j| j.own_policy) {
+            scan.add(Finding {
+                kind: "secret".into(),
+                component: format!("{name}/.gitleaks.toml"),
+                vuln_id: "REPO-POLICY".into(),
+                status: "warn".into(),
+                note: "the repo's own gitleaks config was ignored; the scan used your policy".into(),
+                fix_cmd: "Review the repo's .gitleaks.toml; pass it with --gitleaks-config to scan with it".into(),
+                ..Default::default()
+            });
+        }
         let found = match job.and_then(|job| leaks::finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
             Err(Error::Missing(_)) => {

@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS queries (
 CREATE TABLE IF NOT EXISTS findings (
   kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
   status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
-  fix_auto INTEGER);
+  fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT);
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, added TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS eol (
   product TEXT, cycle TEXT, eol TEXT, latest TEXT, PRIMARY KEY (product, cycle));
@@ -41,6 +41,31 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS malicious (ecosystem TEXT, name TEXT, id TEXT);
 CREATE INDEX IF NOT EXISTS malicious_name ON malicious (ecosystem, name);
 ";
+
+/// Columns added since a table was first created, as (table, column,
+/// type): a cache from an earlier release gains them here. Only additions,
+/// never a rename or a type change (the contract's schema rule).
+const ADDED: &[(&str, &str, &str)] = &[
+    ("findings", "dep_scope", "TEXT"),
+    ("findings", "dep_direct", "INTEGER"),
+    ("findings", "affected_range", "TEXT"),
+    ("exposures", "dep_scope", "TEXT"),
+    ("exposures", "dep_direct", "INTEGER"),
+    ("exposures", "affected_range", "TEXT"),
+    ("exposures", "fix_cmd", "TEXT"),
+];
+
+fn migrate(conn: &Connection) -> Result<()> {
+    for (table, column, kind) in ADDED {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let have: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        if !have.iter().any(|c| c == column) {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+        }
+    }
+    Ok(())
+}
 
 /// WPANTRY_DB, else $XDG_CACHE_HOME/wpantry/wpantry.db, else
 /// ~/.cache/wpantry/wpantry.db. The malicious-packages clone sits beside it.
@@ -98,6 +123,7 @@ impl Cache {
             "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
              CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
         )?;
+        migrate(&conn)?;
         let fts = conn
             .execute_batch(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS vulns_fts USING fts5(\
@@ -353,7 +379,10 @@ impl Cache {
 
     pub fn replace_findings(&self, findings: &[Finding]) -> Result<()> {
         self.conn.execute("DELETE FROM findings", [])?;
-        let mut stmt = self.conn.prepare("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
+             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )?;
         for f in findings {
             stmt.execute(params![
                 f.kind,
@@ -367,7 +396,10 @@ impl Cache {
                 f.severity,
                 f.note,
                 f.fix_cmd,
-                f.fix_auto as i64
+                f.fix_auto as i64,
+                f.dep_scope,
+                f.dep_direct.map(i64::from),
+                f.affected_range
             ])?;
         }
         Ok(())
@@ -431,6 +463,39 @@ mod tests {
         }
     }
 
+    /// A cache from before the dependency columns existed gains them on
+    /// open, and keeps its rows.
+    #[test]
+    fn older_caches_gain_the_added_columns() {
+        let d = crate::system::TempDir::new("migrate").unwrap();
+        let file = d.path().join("old.db");
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE findings (kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT, status TEXT, \
+             fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT, fix_auto INTEGER); \
+             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1);",
+        )
+        .unwrap();
+        conn.close().unwrap();
+        let c = Cache::open(Some(&file)).unwrap();
+        let cols: Vec<String> = c
+            .conn
+            .prepare("PRAGMA table_info(findings)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(&cols[12..], ["dep_scope", "dep_direct", "affected_range"]);
+        let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1);
+        let f = crate::export::findings(&c).unwrap();
+        assert_eq!((f[0].dep_scope.as_str(), f[0].dep_direct, f[0].affected_range.as_str()), ("", None, ""));
+        c.close().unwrap();
+        // Opening again is a no-op.
+        Cache::open(Some(&file)).unwrap().close().unwrap();
+    }
+
     pub fn temp_cache() -> (crate::system::TempDir, Cache) {
         let dir = crate::system::TempDir::new("db").unwrap();
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
@@ -460,7 +525,10 @@ mod tests {
                 "severity",
                 "note",
                 "fix_cmd",
-                "fix_auto"
+                "fix_auto",
+                "dep_scope",
+                "dep_direct",
+                "affected_range"
             ]
         );
     }

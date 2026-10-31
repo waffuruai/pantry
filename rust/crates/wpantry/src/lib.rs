@@ -20,6 +20,7 @@ pub mod db;
 pub mod distros;
 pub mod editors;
 pub mod error;
+pub mod export;
 pub mod external;
 pub mod feeds;
 pub mod harnesses;

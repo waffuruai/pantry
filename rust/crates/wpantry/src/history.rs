@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS exposures (
   key TEXT PRIMARY KEY, scope TEXT, kind TEXT, component TEXT, version TEXT, location TEXT,
   vuln_id TEXT, status TEXT, severity TEXT, kev INTEGER, fixed TEXT, note TEXT,
   first_scan INTEGER, first_at REAL, last_scan INTEGER, last_at REAL,
-  resolved_scan INTEGER, resolved_at REAL);
+  resolved_scan INTEGER, resolved_at REAL,
+  dep_scope TEXT, dep_direct INTEGER, affected_range TEXT, fix_cmd TEXT);
 CREATE INDEX IF NOT EXISTS exposures_open ON exposures (resolved_at, scope);
 CREATE TABLE IF NOT EXISTS fixes (
   id INTEGER PRIMARY KEY, scan_id INTEGER, at REAL, command TEXT, mode TEXT, ok INTEGER,
@@ -100,14 +101,33 @@ pub fn record_scan(
         seen.push(key.clone());
         cache.conn.execute(
             "INSERT INTO exposures (key, scope, kind, component, version, location, vuln_id, status, severity, kev, fixed, note, \
-             first_scan, first_at, last_scan, last_at, resolved_scan, resolved_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL) \
+             first_scan, first_at, last_scan, last_at, resolved_scan, resolved_at, dep_scope, dep_direct, affected_range, fix_cmd) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?) \
              ON CONFLICT(key) DO UPDATE SET scope = excluded.scope, status = excluded.status, severity = excluded.severity, \
              kev = excluded.kev, fixed = excluded.fixed, note = excluded.note, last_scan = excluded.last_scan, \
-             last_at = excluded.last_at, resolved_scan = NULL, resolved_at = NULL",
+             last_at = excluded.last_at, resolved_scan = NULL, resolved_at = NULL, dep_scope = excluded.dep_scope, \
+             dep_direct = excluded.dep_direct, affected_range = excluded.affected_range, fix_cmd = excluded.fix_cmd",
             params![
-                key, scope, f.kind, f.component, f.version, f.location, f.vuln_id, f.status, f.severity, f.kev as i64,
-                f.fixed, f.note, id, at, id, at
+                key,
+                scope,
+                f.kind,
+                f.component,
+                f.version,
+                f.location,
+                f.vuln_id,
+                f.status,
+                f.severity,
+                f.kev as i64,
+                f.fixed,
+                f.note,
+                id,
+                at,
+                id,
+                at,
+                f.dep_scope,
+                f.dep_direct.map(i64::from),
+                f.affected_range,
+                f.fix_cmd
             ],
         )?;
     }
@@ -234,6 +254,12 @@ pub struct Exposure {
     pub resolved_at: Option<f64>,
     /// Days from first seen to resolved (or to now, while open).
     pub days_exposed: f64,
+    /// As on the finding: how the dependency is depended on, whether it is
+    /// the project's own, the range matched, and the fix offered.
+    pub dep_scope: String,
+    pub dep_direct: Option<bool>,
+    pub affected_range: String,
+    pub fix_cmd: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -275,7 +301,8 @@ pub struct ScanRow {
 /// since the epoch), open ones first, then by first seen.
 pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
     let mut stmt = cache.conn.prepare(
-        "SELECT kind, component, version, location, vuln_id, status, severity, kev, fixed, note, first_at, last_at, resolved_at \
+        "SELECT kind, component, version, location, vuln_id, status, severity, kev, fixed, note, first_at, last_at, resolved_at, \
+         dep_scope, dep_direct, affected_range, fix_cmd \
          FROM exposures WHERE last_at >= ? OR resolved_at >= ? OR resolved_at IS NULL \
          ORDER BY resolved_at IS NOT NULL, first_at",
     )?;
@@ -298,6 +325,10 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
             last_at: r.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
             resolved_at,
             days_exposed: ((resolved_at.unwrap_or(t) - first_at) / 86400.0 * 10.0).round() / 10.0,
+            dep_scope: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+            dep_direct: r.get::<_, Option<i64>>(14)?.map(|d| d != 0),
+            affected_range: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
+            fix_cmd: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -363,7 +394,9 @@ impl Exposure {
                "vuln_id": self.vuln_id, "status": self.status, "severity": self.severity, "kev": self.kev,
                "fixed": self.fixed, "note": self.note, "first_at": self.first_at, "last_at": self.last_at,
                "resolved_at": self.resolved_at, "days_exposed": self.days_exposed,
-               "first": stamp(self.first_at), "resolved": self.resolved_at.map(stamp)})
+               "first": stamp(self.first_at), "resolved": self.resolved_at.map(stamp),
+               "dep_scope": if self.dep_scope.is_empty() { "unknown" } else { self.dep_scope.as_str() },
+               "dep_direct": self.dep_direct, "affected_range": self.affected_range, "fix_cmd": self.fix_cmd})
     }
 }
 

@@ -16,7 +16,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
                  [--json] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
-wpantry export --csv FILE
+wpantry export [--csv FILE] [--jsonl FILE] [--all]
 wpantry breach [--enable | --disable]
 wpantry version [--json]
 wpantry tools [--json]
@@ -41,6 +41,7 @@ wpantry skill
 | `--jobs N` | gitleaks scans at once (default: half the cores, at most 4); each gets a share of the cores |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
+| `export --jsonl` | Latest findings as JSON Lines, one object per finding: every [finding](#finding) key, plus `aliases` (the record's other ids), `url`, `record` (the full OSV JSON, or `null`), `first_seen`, `last_seen`, `resolved_at` (`YYYY-MM-DD HH:MM UTC` strings, `null` when unknown or open), `days_exposed` and `fix` (`null`, or `{attempted_at, mode, ok, verified, succeeded}` for the latest `--update` run of its `fix_cmd`). `--all` adds the exposures a later scan of the same scope resolved and the latest scan no longer lists. `--csv` and `--jsonl` may be given together; one is required |
 | `breach` | Show or set consent for the opt-in email breach check |
 | `version` | `{"version": "0.1.0", "impl": "rust", "schema": 1}` with `--json` |
 | `tools` | The external tools this implementation runs, found or missing |
@@ -117,6 +118,11 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `note` | string | One line for a human |
 | `fix_cmd` | string | Command or step that fixes it; `""` when none |
 | `fix_auto` | bool | `--update` may run `fix_cmd` unattended |
+| `dep_scope` | string | How a locked dependency is depended on: `runtime`, `dev`, `optional`, or `unknown` (the lockfile doesn't say, or the finding isn't about a locked dependency). Added 2026-10-31 |
+| `dep_direct` | bool or null | The project's own dependency (`true`) or one another pulled in (`false`); `null` when the lockfile doesn't say. Added 2026-10-31 |
+| `affected_range` | string | The advisory's range the installed or locked version fell in, as `>=A, <B` (`<=B` for a last-affected bound, `=V` for a listed version); `""` when the finding has none (markers, GIT ranges). Added 2026-10-31 |
+
+The three dependency keys were added under the additive rule: older callers ignore them, and `schema` stays 1.
 
 A source that couldn't be reached is a finding with `kind == "unchecked"`, `status == "warn"`: never silence, never "clean".
 
@@ -133,14 +139,14 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `meta` | `key` TEXT PK, `value` TEXT (`breach_consent`, `malicious_at`, `<feed>_at`, `<feed>_etag`, `eol_at:<product>`, `vuln_etag:<id>`) |
 | `vulns` | `id` TEXT PK, `aliases` TEXT (space-separated), `summary`, `details`, `severity`, `published`, `modified`, `url`, `record` TEXT (full OSV JSON) |
 | `queries` | `ecosystem`, `package`, `version` TEXT (PK together), `checked_at` REAL (Unix time), `vuln_ids` TEXT (space-separated) |
-| `findings` | `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `fixed` TEXT, `kev` INTEGER, `severity`, `note`, `fix_cmd` TEXT, `fix_auto` INTEGER |
+| `findings` | `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `fixed` TEXT, `kev` INTEGER, `severity`, `note`, `fix_cmd` TEXT, `fix_auto` INTEGER, `dep_scope` TEXT, `dep_direct` INTEGER (NULL when unknown), `affected_range` TEXT. The last three were added 2026-10-31; a cache from before gains them on open |
 | `kev` | `cve` TEXT PK, `added`, `name` |
 | `eol` | `product`, `cycle` TEXT (PK together), `eol`, `latest` |
 | `casks` | `app` TEXT PK, `token`, `version` |
 | `runs` | `source` TEXT PK (`osv-scanner:repos`, `gitleaks:<repo>`, `image:<id>` (Python), `image-packages:<id>` (Rust), `brew-vulns`, `tags:<repo>`, …), `fingerprint` TEXT, `ran_at` REAL, `result` TEXT (JSON) |
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
 | `scans` | `id` INTEGER PK, `started_at` REAL, `finished_at` REAL, `host`, `user`, `version`, `scope` TEXT, `counts` TEXT (JSON), `fails` INTEGER, `warns` INTEGER, `unchecked` INTEGER (sources that couldn't be asked; a scan with any resolves no exposure and verifies no fix): one row per scan |
-| `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL: a finding across scans; resolved by a scan of the same scope that no longer lists it |
+| `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL, `dep_scope` TEXT, `dep_direct` INTEGER, `affected_range` TEXT, `fix_cmd` TEXT: a finding across scans; resolved by a scan of the same scope that no longer lists it |
 | `fixes` | `id` INTEGER PK, `scan_id` INTEGER, `at` REAL, `command` TEXT, `mode` TEXT, `ok` INTEGER, `verified_scan` INTEGER (the complete scan after a fix that exited 0 in which none of its `targets` were listed; NULL otherwise), `targets` TEXT (JSON array of `exposures.key`): the unattended fixes `--update` ran |
 | `events` | `id` INTEGER PK, `at` REAL, `kind` TEXT (`scan`, `fix`, …), `detail` TEXT (JSON) |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |

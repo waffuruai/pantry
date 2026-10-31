@@ -458,6 +458,7 @@ fn distro(scan: &mut Scan, rel: &BTreeMap<String, String>, res: Advisories) {
             note: p.issues.iter().take(4).cloned().collect::<Vec<_>>().join(", "),
             fix_cmd: system::os_fix(rel, &p.name),
             fix_auto: false,
+            ..Default::default()
         });
     }
 }

@@ -39,6 +39,13 @@ pub struct Component {
     /// `wpantry --update` may run `fix` unattended.
     pub auto: bool,
     pub extra: BTreeMap<String, String>,
+    /// How a locked dependency is depended on: `runtime`, `dev`, `optional`,
+    /// or "" when the lockfile doesn't say (and for everything that isn't a
+    /// locked dependency).
+    pub scope: String,
+    /// A project's own dependency (true) or one pulled in by another
+    /// (false); None when unknown.
+    pub direct: Option<bool>,
 }
 
 impl Component {

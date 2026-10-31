@@ -40,6 +40,15 @@ pub struct Finding {
     pub note: String,
     pub fix_cmd: String,
     pub fix_auto: bool,
+    /// How the vulnerable dependency is depended on: `runtime`, `dev`,
+    /// `optional`, or "" (reported `unknown`) where the lockfile doesn't say.
+    pub dep_scope: String,
+    /// The project's own dependency (true) or one another pulled in
+    /// (false); None where unknown.
+    pub dep_direct: Option<bool>,
+    /// The advisory's range the installed version fell in (`>=7.2.0, <9.0.0`),
+    /// so a reader sees why it applies; "" for findings without one.
+    pub affected_range: String,
 }
 
 impl Finding {
@@ -50,8 +59,15 @@ impl Finding {
             component: c.name.clone(),
             version: c.version.clone(),
             location: c.path.clone(),
+            dep_scope: c.scope.clone(),
+            dep_direct: c.direct,
             ..Default::default()
         }
+    }
+
+    /// `dep_scope` as the contract spells it: `unknown` for "".
+    pub fn dep_scope_name(&self) -> &str {
+        if self.dep_scope.is_empty() { "unknown" } else { &self.dep_scope }
     }
 
     pub fn to_json(&self) -> J {
@@ -68,6 +84,9 @@ impl Finding {
             ("note", self.note.as_str().into()),
             ("fix_cmd", self.fix_cmd.as_str().into()),
             ("fix_auto", self.fix_auto.into()),
+            ("dep_scope", self.dep_scope_name().into()),
+            ("dep_direct", self.dep_direct.map(J::Bool).unwrap_or(J::Null)),
+            ("affected_range", self.affected_range.as_str().into()),
         ])
     }
 }
@@ -387,6 +406,13 @@ impl<'a> Scan<'a> {
             };
             failing = failing || status == "fail";
             let kev = group.iter().any(|r| is_kev(r, &self.kev));
+            // The range the installed version fell in, from whichever record
+            // of the group names one.
+            let affected_range = group
+                .iter()
+                .map(|r| osv::affected_range(r, &eco, &pkg, &qver, |a, b| order.cmp(a, b)))
+                .find(|s| !s.is_empty())
+                .unwrap_or_default();
             self.add(Finding {
                 vuln_id: display_id(main),
                 status: status.into(),
@@ -396,6 +422,7 @@ impl<'a> Scan<'a> {
                 note: str_at(main, "summary").into(),
                 fix_cmd: fill(&c.fix, &safe),
                 fix_auto: c.auto,
+                affected_range,
                 ..Finding::of(c)
             });
         }
@@ -487,6 +514,8 @@ mod tests {
             ("CVE-2026-9", "0.23.18", true, "HIGH")
         );
         assert_eq!(f.fix_cmd, "cargo update -p rustls --precise 0.23.18");
+        assert_eq!(f.affected_range, "<0.23.18", "introduced 0 reads as an open lower bound");
+        assert_eq!((f.dep_scope.as_str(), f.dep_direct), ("", None), "a component says nothing about scope");
         let m = &s.findings[1];
         assert_eq!(
             (m.vuln_id.as_str(), m.severity.as_str(), m.note.as_str()),

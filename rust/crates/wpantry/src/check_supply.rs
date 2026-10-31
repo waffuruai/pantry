@@ -166,6 +166,10 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
             let mut c = Component::new("project", &p.name, &p.version, &f.to_string_lossy());
             c.fix = project_fix(f, &p.ecosystem, &p.name, "{safe}");
             c.osv = Some(item);
+            if p.scope != lockfiles::Scope::Unknown {
+                c.scope = p.scope.as_str().to_string();
+            }
+            c.direct = p.direct;
             scan.advisories(&c, &[], None, "fail", Some(osv::group_by_alias(recs)));
         }
     }

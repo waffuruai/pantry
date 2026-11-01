@@ -68,11 +68,11 @@ notes = "Baseline when this record was introduced: already pinned by commit in c
 
 [[audit]]
 action = "jdx/packslip"
-sha = "7b32cd29a9240927882ee18b3db1dcfd8e0328b4"
-version = "v1.7.0"
+sha = "b934a22ba187f1d3928441170b9413c5119360bf"
+version = "v1.11.2"
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 date = 2026-10-31
-notes = "Baseline when this record was introduced: already pinned by commit in release.yml, tag verified against the commit by the check; the diff from the version before it was not read."
+notes = "Bump from v1.7.0 (7b32cd29). Compare 7b32cd29...b934a22b, 74 commits. What runs in our job: action.yml changes input descriptions and passes -- before the artifact list so a file named like an option stays an artifact; scripts/install-packslip.sh is byte-identical; its actions/attest-build-provenance stays at 4d101475 (v4.2.2, recorded here). action/release.json pins the v1.11.2 archives by SHA-256 and names source commit 3d4bf0e8, the release-plz branch head the release workflow built (run 40623607471); that commit's tree differs from the tag's only by release.json itself. packslip-v1.11.2-darwin-arm64.tar.xz downloaded: its SHA-256 matches release.json and gh attestation verify passes with the install script's policy (SLSA v1 from jdx/packslip/.github/workflows/release.yml at refs/heads/release-plz, source digest 3d4bf0e8, GitHub-hosted runner). The CLI's Rust changes (verifier hardening #256-#260, #304, #305; webpki CA revocation #246; dependency bumps; Go and npm libraries; docs) were not read line by line; the binary is accepted through its pinned digest and attestation. Release published 2026-10-28, tag is the pinned commit."
 
 [[audit]]
 action = "rust-lang/crates-io-auth-action"

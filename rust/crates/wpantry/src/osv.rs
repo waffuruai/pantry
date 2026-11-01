@@ -68,37 +68,39 @@ pub fn lookup(
             Err(e) => return Err(e),
         }
     }
-    // Records OSV named that aren't here: a download that failed before, or
-    // a record OSV couldn't serve. Ask again while online.
-    let missing = |cache: &Cache| -> Result<BTreeSet<String>> {
-        let mut ids = BTreeSet::new();
+    // Records OSV named that aren't here (a download that failed before, or
+    // a record OSV couldn't serve), and records OSV changed whose new
+    // revision couldn't be downloaded (the old one is kept and still
+    // counts). Ask again while online.
+    let missing = |cache: &Cache| -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+        let (mut absent, mut stale) = (BTreeSet::new(), BTreeSet::new());
         for it in &items {
             if let Some((_, listed)) = cache.query(&it.0, &it.1, &it.2)? {
                 for id in listed.split_whitespace() {
                     if cache.vuln(id)?.is_none() {
-                        ids.insert(id.to_string());
+                        absent.insert(id.to_string());
+                    } else if cache.get(&want_key(id))?.is_some() {
+                        stale.insert(id.to_string());
                     }
                 }
             }
         }
-        Ok(ids)
+        Ok((absent, stale))
     };
-    let mut absent = missing(cache)?;
-    if !absent.is_empty() && failure.is_none() {
-        let ids: Vec<(String, Option<String>)> = absent.iter().map(|id| (id.clone(), None)).collect();
+    let (mut absent, mut stale) = missing(cache)?;
+    if !(absent.is_empty() && stale.is_empty()) && failure.is_none() {
+        let ids: Vec<(String, Option<String>)> = absent.iter().chain(&stale).map(|id| (id.clone(), None)).collect();
         match fetch_records(net, &ids, status) {
             Ok(got) => {
-                for (_, f) in got {
-                    if let Fetched::Record(rec, etag) = f {
-                        store_record(cache, &rec, etag.as_deref())?;
-                    }
+                for (id, f) in got {
+                    keep(cache, &id, f, None)?;
                 }
                 cache.commit()?;
             }
             Err(e) if e.is_source() => failure = Some(format!("OSV unreachable: {e}")),
             Err(e) => return Err(e),
         }
-        absent = missing(cache)?;
+        (absent, stale) = missing(cache)?;
     }
     let mut out = Answers::default();
     let mut old = 0;
@@ -121,6 +123,10 @@ pub fn lookup(
         let ids: Vec<&str> = absent.iter().map(String::as_str).collect();
         out.gaps.push(format!("OSV lists advisories it couldn't serve here: {}", ids.join(", ")));
     }
+    if !stale.is_empty() {
+        let ids: Vec<&str> = stale.iter().map(String::as_str).collect();
+        out.gaps.push(format!("OSV changed advisories whose new revision couldn't be downloaded: {}", ids.join(", ")));
+    }
     if old > 0 {
         let why = failure.unwrap_or_else(|| "OSV wasn't asked again".into());
         out.gaps.push(format!("{old} answers are older than a day and couldn't be refreshed ({why})"));
@@ -136,16 +142,51 @@ fn store_record(cache: &Cache, rec: &Value, etag: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The meta key that marks a stored record as older than the revision OSV
+/// reports (`wanted`, its `modified`), until that revision is downloaded.
+fn want_key(id: &str) -> String {
+    format!("vuln_want:{id}")
+}
+
+/// What a download of `id` leaves in the cache: the record (and no mark),
+/// or, when OSV couldn't serve the revision it reported (`wanted`) and an
+/// older one is stored, the old record marked stale so the scan reports
+/// the gap and the next run asks again. A record OSV never served at all
+/// is left absent, which [`lookup`] reports on its own.
+fn keep(cache: &Cache, id: &str, fetched: Fetched, wanted: Option<&str>) -> Result<()> {
+    match fetched {
+        Fetched::Record(rec, etag) => {
+            store_record(cache, &rec, etag.as_deref())?;
+            cache.unset(&want_key(id))
+        }
+        Fetched::NotModified => cache.unset(&want_key(id)),
+        Fetched::Missing => match wanted {
+            Some(w) if cache.vuln(id)?.is_some() => cache.set(&want_key(id), w),
+            _ => Ok(()),
+        },
+    }
+}
+
 fn query(it: &Item) -> Value {
     json!({"package": {"ecosystem": it.0, "name": it.1}, "version": it.2})
 }
 
-/// (id, modified) pairs from a querybatch or query answer.
-fn hits(v: &Value) -> Vec<(String, String)> {
-    arr_at(v, "vulns")
+/// (id, modified) pairs from a querybatch or query answer for `what`. OSV
+/// leaves `vulns` out when no advisory applies; present, it must be a list
+/// of advisories each with an id, or the answer is no answer: anything
+/// else cached as "none" would be a clean check of nothing.
+fn hits(v: &Value, what: &str) -> Result<Vec<(String, String)>> {
+    let vulns = match v.get("vulns") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(a)) => a,
+        Some(other) => return Err(Error::Invalid(format!("OSV answered {what} with vulns {other}"))),
+    };
+    vulns
         .iter()
-        .filter(|h| !str_at(h, "id").is_empty())
-        .map(|h| (str_at(h, "id").to_string(), str_at(h, "modified").to_string()))
+        .map(|h| match h.get("id").and_then(Value::as_str) {
+            Some(id) if !id.is_empty() => Ok((id.to_string(), str_at(h, "modified").to_string())),
+            _ => Err(Error::Invalid(format!("OSV answered {what} with an advisory without an id: {h}"))),
+        })
         .collect()
 }
 
@@ -163,10 +204,11 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
             )));
         }
         for (it, r) in chunk.iter().zip(results) {
+            let what = format!("{}@{}", it.1, it.2);
             if !r.is_object() {
-                return Err(Error::Invalid(format!("OSV querybatch answered {r} for {}@{}", it.1, it.2)));
+                return Err(Error::Invalid(format!("OSV querybatch answered {r} for {what}")));
             }
-            let mut vulns = hits(r);
+            let mut vulns = hits(r, &what)?;
             let mut token = str_at(r, "next_page_token").to_string();
             while !token.is_empty() {
                 // Rare: more than one page of advisories for one version.
@@ -174,28 +216,28 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
                 q["page_token"] = Value::String(token);
                 let page = net::post_json(net, &format!("{API}/query"), &q)?;
                 if !page.is_object() {
-                    return Err(Error::Invalid(format!("OSV answered {page} for a page of {}@{}", it.1, it.2)));
+                    return Err(Error::Invalid(format!("OSV answered {page} for a page of {what}")));
                 }
-                vulns.extend(hits(&page));
+                vulns.extend(hits(&page, &what)?);
                 token = str_at(&page, "next_page_token").to_string();
             }
             answers.push((it.clone(), vulns));
         }
     }
-    let mut need = BTreeSet::new();
+    // The revision OSV reports for each advisory named; a record stored at
+    // another revision is downloaded again.
+    let mut wanted: BTreeMap<String, String> = BTreeMap::new();
     for (_, vulns) in &answers {
         for (id, modified) in vulns {
             if cache.modified(id)?.as_deref() != Some(modified.as_str()) {
-                need.insert(id.clone());
+                wanted.insert(id.clone(), modified.clone());
             }
         }
     }
     let etags: Vec<(String, Option<String>)> =
-        need.into_iter().map(|id| Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?))).collect::<Result<_>>()?;
-    for (_, fetched) in fetch_records(net, &etags, status)? {
-        if let Fetched::Record(rec, etag) = fetched {
-            store_record(cache, &rec, etag.as_deref())?;
-        }
+        wanted.keys().map(|id| Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?))).collect::<Result<_>>()?;
+    for (id, fetched) in fetch_records(net, &etags, status)? {
+        keep(cache, &id, fetched, wanted.get(&id).map(String::as_str))?;
     }
     for (it, vulns) in &answers {
         let ids: Vec<String> = vulns.iter().map(|(id, _)| id.clone()).collect();
@@ -286,6 +328,72 @@ fn matches(affected: &Value, eco: &str, pkg: &str) -> bool {
         return have == eco || have.starts_with(&format!("{eco}:"));
     }
     have.split(':').next() == Some(eco)
+}
+
+/// The affected range of `rec` for this package that `installed` falls in,
+/// written as a reader expects (`>=7.2.0, <9.0.0`; `>=1.0.0, <=1.0.3` for a
+/// `last_affected` bound; `>=2.0.0` open-ended; `=1.2.3` when the record
+/// lists versions one by one), compared with `order`. "" when the record
+/// has no such range (a GIT range of commits, or a record that doesn't
+/// name this package).
+pub fn affected_range(
+    rec: &Value,
+    eco: &str,
+    pkg: &str,
+    installed: &str,
+    order: impl Fn(&str, &str) -> std::cmp::Ordering,
+) -> String {
+    use std::cmp::Ordering::{Greater, Less};
+    let ge = |a: &str, b: &str| order(a, b) != Less; // a >= b
+    for a in arr_at(rec, "affected").iter().filter(|a| matches(a, eco, pkg)) {
+        for r in arr_at(a, "ranges").iter().filter(|r| matches!(str_at(r, "type"), "SEMVER" | "ECOSYSTEM")) {
+            // Events in order open and close intervals: introduced, then
+            // fixed or last_affected.
+            let mut start: Option<String> = None;
+            let mut intervals: Vec<(String, Option<(bool, String)>)> = Vec::new();
+            for e in arr_at(r, "events") {
+                if let Some(v) = e.get("introduced").and_then(Value::as_str) {
+                    if let Some(s) = start.take() {
+                        intervals.push((s, None));
+                    }
+                    start = Some(v.to_string());
+                } else if let Some(v) = e.get("fixed").and_then(Value::as_str) {
+                    intervals.push((start.take().unwrap_or_else(|| "0".into()), Some((false, v.to_string()))));
+                } else if let Some(v) = e.get("last_affected").and_then(Value::as_str) {
+                    intervals.push((start.take().unwrap_or_else(|| "0".into()), Some((true, v.to_string()))));
+                }
+            }
+            if let Some(s) = start.take() {
+                intervals.push((s, None));
+            }
+            for (from, to) in intervals {
+                let after_start = from == "0" || ge(installed, &from);
+                let before_end = match &to {
+                    None => true,
+                    Some((true, last)) => order(installed, last) != Greater,
+                    Some((false, fixed)) => order(installed, fixed) == Less,
+                };
+                if after_start && before_end {
+                    let lower = if from == "0" { String::new() } else { format!(">={from}") };
+                    let upper = match &to {
+                        None => String::new(),
+                        Some((true, last)) => format!("<={last}"),
+                        Some((false, fixed)) => format!("<{fixed}"),
+                    };
+                    return match (lower.is_empty(), upper.is_empty()) {
+                        (false, false) => format!("{lower}, {upper}"),
+                        (true, false) => upper,
+                        (false, true) => lower,
+                        (true, true) => ">=0".into(),
+                    };
+                }
+            }
+        }
+        if json::strs_at(a, "versions").iter().any(|v| v == installed) {
+            return format!("={installed}");
+        }
+    }
+    String::new()
 }
 
 /// A version string, not a commit hash standing in for an unreleased fix.
@@ -711,10 +819,20 @@ mod tests {
         }
     }
 
-    /// A batch answer that isn't an object (`null`) is not "no advisories".
+    /// A batch answer that isn't an object (`null`), or whose `vulns` isn't a
+    /// list of advisories with ids, is not "no advisories".
     #[test]
     fn a_malformed_batch_answer_is_not_clean() {
-        for answer in [json!([null]), json!([[]]), json!([])] {
+        for answer in [
+            json!([null]),
+            json!([[]]),
+            json!([]),
+            json!([{"vulns": {}}]),
+            json!([{"vulns": [{}]}]),
+            json!([{"vulns": [{"id": ""}]}]),
+            json!([{"vulns": [{"id": 7}]}]),
+            json!([{"vulns": "none"}]),
+        ] {
             let (_d, c) = cache();
             let body = json!({"results": answer}).to_string();
             let net = Fake::new(move |_| Ok(Response::ok(body.clone())));
@@ -723,5 +841,72 @@ mod tests {
             assert!(!got.found.contains_key(&it), "{answer}: unanswered, so reported unchecked");
             assert_eq!(c.query("npm", "a", "1.0.0").unwrap(), None, "{answer}: nothing cached");
         }
+    }
+
+    /// Invalid evidence never replaces an earlier answer: the stale answer
+    /// (its findings included) stands and the failed refresh is a gap, in a
+    /// batch and in a page of one.
+    #[test]
+    fn invalid_evidence_does_not_replace_a_previous_answer() {
+        for (page, body) in [(false, json!({"vulns": {}})), (true, json!({"vulns": [{"modified": "m"}]}))] {
+            let (_d, c) = cache();
+            c.put_vuln(&rec("CVE-2026-9", json!([]), &[], Some(("npm", "a")))).unwrap();
+            c.put_query("npm", "a", "1.0.0", &["CVE-2026-9".into()]).unwrap();
+            c.conn.execute("UPDATE queries SET checked_at = ?", [now() - 2.0 * QUERY_TTL]).unwrap();
+            let net = Fake::new(move |r| {
+                if r.url.ends_with("/querybatch") && page {
+                    let first = json!({"results": [{"vulns": [{"id": "CVE-2026-9", "modified": "m"}], "next_page_token": "p2"}]});
+                    return Ok(Response::ok(first.to_string()));
+                }
+                Ok(Response::ok(if page { body.to_string() } else { json!({"results": [body]}).to_string() }))
+            });
+            let it = item("npm", "a", "1.0.0");
+            let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+            assert_eq!(got.found[&it][0]["id"], "CVE-2026-9", "page {page}: the earlier answer stands");
+            assert_eq!(got.gaps.len(), 1, "page {page}: {:?}", got.gaps);
+            assert!(got.gaps[0].contains("older than a day") && got.gaps[0].contains("OSV answered"), "{:?}", got.gaps);
+            let (at, ids) = c.query("npm", "a", "1.0.0").unwrap().unwrap();
+            assert!(at < now() - QUERY_TTL && ids == "CVE-2026-9", "page {page}: the stale answer wasn't restamped");
+        }
+    }
+
+    /// OSV reports a changed revision of a cached advisory but can't serve
+    /// it: the old record stays (its finding still stands), the gap is
+    /// reported until the revision arrives, and the next run asks again.
+    #[test]
+    fn a_changed_advisory_osv_cannot_serve_is_a_gap_and_the_old_record_stands() {
+        let (_d, c) = cache();
+        let mut old = rec("GHSA-chg", json!([]), &[], Some(("npm", "a")));
+        old["modified"] = json!("2026-01-01T00:00:00Z");
+        c.put_vuln(&old).unwrap();
+        let serve = Arc::new(Mutex::new(false));
+        let s = serve.clone();
+        let net = Fake::new(move |r| {
+            if r.url.ends_with("/querybatch") {
+                let res = json!({"results": [{"vulns": [{"id": "GHSA-chg", "modified": "2026-06-01T00:00:00Z"}]}]});
+                return Ok(Response::ok(res.to_string()));
+            }
+            Ok(if *s.lock().unwrap() {
+                Response::ok(json!({"id": "GHSA-chg", "modified": "2026-06-01T00:00:00Z", "affected": []}).to_string())
+            } else {
+                Response { status: 404, body: vec![], etag: None }
+            })
+        });
+        let it = item("npm", "a", "1.0.0");
+        let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+        assert_eq!(got.found[&it][0]["id"], "GHSA-chg", "the old revision still counts");
+        assert_eq!(got.gaps, ["OSV changed advisories whose new revision couldn't be downloaded: GHSA-chg"]);
+        assert_eq!(c.modified("GHSA-chg").unwrap().as_deref(), Some("2026-01-01T00:00:00Z"));
+        // Offline the gap stays visible; the same day, online, it is asked
+        // again without a new querybatch, and clears when the revision arrives.
+        let off = lookup(&c, &Fake::offline(), std::slice::from_ref(&it), false, true, &|_| {}, &|_| {}).unwrap();
+        assert_eq!(off.gaps.len(), 1, "{:?}", off.gaps);
+        let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+        assert_eq!(got.gaps.len(), 1, "still unavailable: {:?}", got.gaps);
+        *serve.lock().unwrap() = true;
+        let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+        assert!(got.gaps.is_empty(), "{:?}", got.gaps);
+        assert_eq!(c.modified("GHSA-chg").unwrap().as_deref(), Some("2026-06-01T00:00:00Z"));
+        assert_eq!(c.get(&want_key("GHSA-chg")).unwrap(), None);
     }
 }

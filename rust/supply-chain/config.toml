@@ -4,16 +4,21 @@
 [cargo-vet]
 version = "0.10"
 
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
 [[exemptions.base64]]
 version = "0.23.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitflags]]
 version = "2.13.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.bumpalo]]
-version = "3.20.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.bytes]]
@@ -28,20 +33,16 @@ criteria = "safe-to-deploy"
 version = "1.0.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.fallible-iterator]]
-version = "0.3.0"
+[[exemptions.combine]]
+version = "4.6.9"
 criteria = "safe-to-deploy"
 
-[[exemptions.fallible-streaming-iterator]]
-version = "0.1.9"
+[[exemptions.core-foundation]]
+version = "0.10.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.15"
-criteria = "safe-to-deploy"
-
-[[exemptions.foldhash]]
-version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.getrandom]]
@@ -50,10 +51,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.hashbrown]]
 version = "0.16.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.hashbrown]]
-version = "0.17.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.hashlink]]
@@ -70,6 +67,22 @@ criteria = "safe-to-deploy"
 
 [[exemptions.itoa]]
 version = "1.0.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.jni]]
+version = "0.22.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.jni-macros]]
+version = "0.22.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.jni-sys]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.jni-sys-macros]]
+version = "0.4.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.js-sys]]
@@ -96,20 +109,12 @@ criteria = "safe-to-deploy"
 version = "1.21.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.percent-encoding]]
-version = "2.3.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.pkg-config]]
-version = "0.3.34"
+[[exemptions.openssl-probe]]
+version = "0.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro2]]
 version = "1.0.107"
-criteria = "safe-to-deploy"
-
-[[exemptions.quote]]
-version = "1.0.47"
 criteria = "safe-to-deploy"
 
 [[exemptions.ring]]
@@ -128,8 +133,20 @@ criteria = "safe-to-deploy"
 version = "0.23.46"
 criteria = "safe-to-deploy"
 
+[[exemptions.rustls-native-certs]]
+version = "0.8.5"
+criteria = "safe-to-deploy"
+
 [[exemptions.rustls-pki-types]]
 version = "1.15.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustls-platform-verifier]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustls-platform-verifier-android]]
+version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-webpki]]
@@ -138,6 +155,22 @@ criteria = "safe-to-deploy"
 
 [[exemptions.rustversion]]
 version = "1.0.23"
+criteria = "safe-to-deploy"
+
+[[exemptions.same-file]]
+version = "1.0.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.schannel]]
+version = "0.1.30"
+criteria = "safe-to-deploy"
+
+[[exemptions.security-framework]]
+version = "3.7.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.security-framework-sys]]
+version = "2.17.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde]]
@@ -156,8 +189,8 @@ criteria = "safe-to-deploy"
 version = "1.0.151"
 criteria = "safe-to-deploy"
 
-[[exemptions.shlex]]
-version = "2.0.1"
+[[exemptions.simd_cesu8]]
+version = "1.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.smallvec]]
@@ -170,6 +203,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.subtle]]
 version = "2.6.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.syn]]
+version = "2.0.119"
 criteria = "safe-to-deploy"
 
 [[exemptions.syn]]
@@ -204,8 +241,8 @@ criteria = "safe-to-deploy"
 version = "0.8.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.vcpkg]]
-version = "0.2.15"
+[[exemptions.walkdir]]
+version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasi]]
@@ -228,12 +265,28 @@ criteria = "safe-to-deploy"
 version = "0.2.129"
 criteria = "safe-to-deploy"
 
+[[exemptions.webpki-root-certs]]
+version = "1.0.7"
+criteria = "safe-to-deploy"
+
 [[exemptions.webpki-roots]]
 version = "1.0.11"
 criteria = "safe-to-deploy"
 
+[[exemptions.winapi-util]]
+version = "0.1.11"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-link]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.windows-sys]]
 version = "0.52.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-targets]]
@@ -270,10 +323,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.windows_x86_64_msvc]]
 version = "0.52.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.zeroize]]
-version = "1.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.zmij]]

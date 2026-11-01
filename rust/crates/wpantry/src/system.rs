@@ -39,6 +39,13 @@ pub struct Component {
     /// `wpantry --update` may run `fix` unattended.
     pub auto: bool,
     pub extra: BTreeMap<String, String>,
+    /// How a locked dependency is depended on: `runtime`, `dev`, `optional`,
+    /// or "" when the lockfile doesn't say (and for everything that isn't a
+    /// locked dependency).
+    pub scope: String,
+    /// A project's own dependency (true) or one pulled in by another
+    /// (false); None when unknown.
+    pub direct: Option<bool>,
 }
 
 impl Component {
@@ -161,6 +168,11 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], width: usize, f: impl Fn(&T) -> R 
     let mut done = done.into_inner().expect("lock");
     done.sort_by_key(|(i, _)| *i);
     done.into_iter().map(|(_, r)| r).collect()
+}
+
+/// The machine's logical cores (1 when unknown).
+pub fn cores() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
 /// Run `argv` with stdin closed and `NO_COLOR=1`, killing it after

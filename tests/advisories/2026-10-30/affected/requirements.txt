@@ -1,0 +1,5 @@
+# Synthetic pins for wpantry's advisory regression suite (tests/advisories).
+mlflow==3.16.0
+Authlib==1.8.0
+Twisted==26.4.0
+langgraph_sdk==0.4.5

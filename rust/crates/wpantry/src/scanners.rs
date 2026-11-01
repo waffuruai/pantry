@@ -38,20 +38,52 @@ fn cellar_listing(dir: &Path) -> Option<String> {
 
 /// `brew vulns --json` findings ({findings, checked}), or None without
 /// Homebrew. `Missing` when this Homebrew predates `brew vulns`.
-pub fn brew_vulns(cache: &Cache, refresh: bool, offline: bool) -> Result<Option<Value>> {
+/// A `brew vulns` run that is due: its binary and the Cellar fingerprint
+/// its result is cached under. [`brew_job`] makes it on the main thread,
+/// [`brew_scan`] may run anywhere (minutes, no cache), [`brew_vulns`]
+/// finishes with the cache.
+pub struct BrewJob {
+    exe: PathBuf,
+    fingerprint: String,
+    /// Whether the cache has nothing fresh for this fingerprint.
+    pub stale: bool,
+}
+
+pub fn brew_job(cache: &Cache, refresh: bool, offline: bool) -> Result<Option<BrewJob>> {
     let Some(exe) = which("brew") else { return Ok(None) };
     let listing = cellar(&exe).unwrap_or_else(|| {
         run(&[exe.as_os_str(), OsStr::new("list"), OsStr::new("--versions")], Duration::from_secs(60))
     });
+    let fingerprint = sha256::hex(listing.as_bytes());
+    let cached = cache.run("brew-vulns")?.filter(|(fp, _, _)| *fp == fingerprint);
+    let stale = !offline && (refresh || !cached.is_some_and(|(_, at, _)| at > crate::system::now() - DAY));
+    Ok(Some(BrewJob { exe, fingerprint, stale }))
+}
+
+/// `brew vulns --json`, parsed: the slow part, with no cache in hand.
+pub fn brew_scan(job: &BrewJob) -> Result<Value> {
+    let p = exec(&[job.exe.as_os_str(), OsStr::new("vulns"), OsStr::new("--json")], &[], Duration::from_secs(900))?;
+    if p.stderr.contains("Unknown command") || p.stderr.contains("Invalid usage") {
+        return Err(Error::Missing("brew vulns (run: brew update)".into()));
+    }
+    json::parse(p.stdout.as_bytes(), json::MAX_DOCUMENT).map_err(|_| {
+        let tail = p.stderr.trim().lines().last().unwrap_or("").to_string();
+        Error::Failed(format!("brew vulns failed: {tail}"))
+    })
+}
+
+/// The `brew vulns` result: cached while the Cellar is unchanged and a day
+/// old at most, else `ran` (a [`brew_scan`] made ahead), else a scan now.
+pub fn brew_vulns(
+    cache: &Cache,
+    job: Option<&BrewJob>,
+    ran: Option<Result<Value>>,
+    refresh: bool,
+    offline: bool,
+) -> Result<Option<Value>> {
+    let Some(job) = job else { return Ok(None) };
     let scan = || -> Result<Value> {
-        let p = exec(&[exe.as_os_str(), OsStr::new("vulns"), OsStr::new("--json")], &[], Duration::from_secs(900))?;
-        if p.stderr.contains("Unknown command") || p.stderr.contains("Invalid usage") {
-            return Err(Error::Missing("brew vulns (run: brew update)".into()));
-        }
-        let data = json::parse(p.stdout.as_bytes(), json::MAX_DOCUMENT).map_err(|_| {
-            let tail = p.stderr.trim().lines().last().unwrap_or("").to_string();
-            Error::Failed(format!("brew vulns failed: {tail}"))
-        })?;
+        let data = ran.unwrap_or_else(|| brew_scan(job))?;
         for f in arr_at(&data, "findings") {
             for v in arr_at(f, "vulnerabilities") {
                 let id = str_at(v, "id");
@@ -67,7 +99,7 @@ pub fn brew_vulns(cache: &Cache, refresh: bool, offline: bool) -> Result<Option<
             json!({"findings": data.get("findings").cloned().unwrap_or(json!([])), "checked": data.get("checked").cloned().unwrap_or(json!(0))}),
         )
     };
-    cache.memo("brew-vulns", scan, DAY, &sha256::hex(listing.as_bytes()), refresh, offline).map(Some)
+    cache.memo("brew-vulns", scan, DAY, &job.fingerprint, refresh, offline).map(Some)
 }
 
 #[cfg(test)]

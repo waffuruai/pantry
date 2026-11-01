@@ -60,11 +60,11 @@ notes = "Baseline when this record was introduced: already pinned by commit in c
 
 [[audit]]
 action = "jdx/mise-action"
-sha = "82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e"
-version = "v5.2.3"
+sha = "6be3c7ed4c21d4f76b208d351d95aac273ebb76d"
+version = "v5.2.4"
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 date = 2026-10-31
-notes = "Baseline when this record was introduced: already pinned by commit in ci.yml, tag verified against the commit by the check; the diff from the version before it was not read."
+notes = "Bump from v5.2.3 (82a612c5). Compare 82a612c5...6be3c7ed, 3 commits: #708 saves the minisign-verified SHASUMS256 beside the cached mise binary and re-verifies the signature on every read from the cache (src/shasums-cache.ts, src/index.ts, tests read in full); #707 lock file maintenance bumps supports-color 7.2.0 to 8.1.1 (has-flag dropped) and ip-address 10.7.4 to 10.7.5. The dist/index.js diff (436 lines) was read in full and is exactly that new module, those two packages and module renumbering; the bundle was not rebuilt. Release published 2026-10-27, tag is the pinned commit."
 
 [[audit]]
 action = "jdx/packslip"

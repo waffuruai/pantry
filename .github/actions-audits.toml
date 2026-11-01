@@ -76,11 +76,11 @@ notes = "Baseline when this record was introduced: already pinned by commit in r
 
 [[audit]]
 action = "rust-lang/crates-io-auth-action"
-sha = "c6f97d42243bad5fab37ca0427f495c86d5b1a18"
-version = "v1.0.5"
+sha = "3268eb413133e2960fa4ae0e963ca76380c54cd9"
+version = "v1.0.6"
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 date = 2026-10-31
-notes = "Baseline when this record was introduced: already pinned by commit in release.yml, tag verified against the commit by the check; the diff from the version before it was not read."
+notes = "Bump from v1.0.5 (c6f97d42). Compare c6f97d42...3268eb41, 19 commits, all dependency and CI maintenance. The action's source (src/main.ts, post.ts, utils.ts, registry_url.ts) is unchanged; src/test_utils.ts renames an msw v3 option, tests only. dist/ was rebuilt from the tag with pnpm install --frozen-lockfile (pnpm 12.15.0) and tsdown 0.23.1: chunk1.js, main.js and post.js are byte-identical to the committed files. The bundled runtime set is @actions/core 3.0.1, @actions/http-client 4.0.1, tunnel 0.0.6 and undici 6.26.0 to 6.29.1 (@actions/io no longer bundled); the undici changes read are header-value validation, upgrade diagnostics and EventSource/WebSocket limits. Workflow and mock/Cargo.lock changes are the repository's own CI. Runs in release.yml only when CRATES_IO_TRUSTED_PUBLISHING is true. Release published 2026-10-21, tag is the pinned commit."
 
 [[audit]]
 action = "sigstore/cosign-installer"

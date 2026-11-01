@@ -125,10 +125,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The same pins laptops use: shellcheck and actionlint from mise.toml,
-      # fetched through mise's checksummed registry. Python is not needed here.
+      # fetched through mise's checksummed registry, and Python for the
+      # actions audit check and the scripts/ tests.
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
-          install_args: shellcheck actionlint
+          install_args: shellcheck actionlint python
           cache: true
 
       - name: Cut PATH to mise and the base system
@@ -141,6 +142,18 @@ jobs:
       # and actionlint.
       - name: lint
         run: PATH="$TASK_PATH" mise run lint
+
+      # Every action the workflows use is pinned by commit and audited in
+      # .github/actions-audits.toml, its tag is that commit, and its release is
+      # 72 hours old (docs/internal/dependencies.md). The token only raises the
+      # API rate limit.
+      - name: vet actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: PATH="$TASK_PATH" mise run vet actions
+
+      - name: scripts tests
+        run: PATH="$TASK_PATH" mise run test scripts
 
   # The Rust port (rust/): rustfmt, clippy, unit and golden-file tests, the
   # release build, then the contract suite against the binary it built. The

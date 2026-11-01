@@ -9,7 +9,7 @@ wpantry runs with access to the whole home directory, so what goes into it is re
 - **Age**: pin a release at least 72 hours old: long enough for a hijacked or broken release to be noticed and yanked, short enough that fixes arrive. The exception is a security fix, which goes in as soon as it's out (rustls 0.23.46 was one). Age is a wait, not a review: every bump is still audited (below).
 - **Toolchain**: `rust/rust-toolchain.toml` names an exact version.
 - **Features**: a feature of an allowed crate that pulls new crates in is a decision too, recorded below with the crates it adds.
-- **CI tools and actions**: cargo-deny and cargo-vet versions are pinned in `.github/workflows/ci.yml`; every action is pinned by commit SHA with its version in a comment, under the same 72-hour rule.
+- **CI tools and actions**: cargo-deny and cargo-vet versions are pinned in `.github/workflows/ci.yml`; every action is pinned by commit SHA with its version in a comment, under the same 72-hour rule, and audited in `.github/actions-audits.toml`, which `mise run vet actions` checks in CI (below).
 
 ## Decisions
 
@@ -33,6 +33,24 @@ cargo test --locked && cargo clippy --locked --all-targets -- -D warnings
 ```
 
 A transitive bump (in `Cargo.lock` only) follows the same steps with `cargo update -p <crate> --precise`.
+
+## Bumping an action
+
+Actions are vetted like crates: `.github/actions-audits.toml` records every `owner/repo` at the exact commit the workflows pin, and `mise run vet actions` (`scripts/vet_actions.py`, standard library only) fails the Lint job when a `uses:` isn't a full commit SHA with a `# vX.Y.Z` comment, when the action at that commit has no entry or the entry's version differs from the comment, or when an entry is no longer used. With network (CI, or `GH_TOKEN` set locally for the rate limit) it also asks the GitHub API whether the tag in the comment is that commit, dereferencing annotated tags, and whether the release is at least 72 hours old; `--offline` skips those two.
+
+Dependabot opens the bump with the new SHA and comment. Before it can merge:
+
+```bash
+# 1. read the compare between the two tags, for workflow files, shell steps, new dependencies
+#    in package.json or the action's dist/ bundle, and anything that doesn't fit what the action does
+gh api repos/<owner>/<repo>/compare/<old-tag>...<new-tag> --jq '.files[] | .filename'
+gh api repos/<owner>/<repo>/compare/<old-tag>...<new-tag> --jq '.files[] | .patch' | less
+# 2. record it: a new [[audit]] entry with the new sha and version, what you read in notes, the old entry removed
+# 3. check
+mise run vet actions
+```
+
+Push the record change to the Dependabot branch and CI goes green. A release younger than 72 hours is adopted only for a security fix, with `age_exempt = "<reason>"` on its entry. The auditor is the team identity, as for crates; the commit says who did the work.
 
 ## cargo vet
 

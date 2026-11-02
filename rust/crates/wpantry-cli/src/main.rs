@@ -611,7 +611,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 }
 
 /// `harden ca-trust`: distrust the leaked roots in the system trust store
-/// (what `ca-trust/fix-ca-trust.sh` did), asking for sudo only to install
+/// (the shell script it replaced did the same), asking for sudo only to install
 /// the result.
 fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
     wpantry::catrust::fix(bundle, &|line| show(line))?;

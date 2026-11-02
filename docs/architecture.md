@@ -27,4 +27,4 @@ flowchart TB
 - [How it is put together, in detail](internal/architecture.md): the readers and their golden files, the comparators and their vectors, the cache, the binary and its dependencies, the tests, and what the Rust port left open and where it closed.
 - [The source map](../rust/README.md).
 
-The diagrams are drawn in the [Waffuru design language](https://waffuru.ai/brand): the source is the SVG in [`docs/images/`](images/), 1200 px wide, and the PNG beside it is the 2× render from `ops/scripts/render-diagram.sh`.
+The diagrams are drawn in the [Waffuru design language](https://waffuru.ai/brand): the source is the SVG in [`docs/images/`](images/), 1200 px wide, and the PNG beside it is the 2× render.

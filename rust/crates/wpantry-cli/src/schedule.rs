@@ -1,6 +1,6 @@
 //! `wpantry schedule`: a daily (hourly, weekly) `sync` and `check` run by
 //! the user's own scheduler, launchd on macOS, a systemd user timer on
-//! Linux, cron where there is no systemd. Never `--update`: a scheduled run
+//! Linux, cron where there is no systemd. Never `--fix`: a scheduled run
 //! only refreshes the cache and records what it found
 //! (`$XDG_STATE_HOME/wpantry/last.json`, `schedule.log`), so `check
 //! --offline` and the next interactive run have fresh answers.
@@ -185,7 +185,7 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
         p.last.display(),
         p.log.display()
     ));
-    say("  It never updates anything: run `wpantry --update` yourself.");
+    say("  It never updates anything: run `wpantry --fix` yourself.");
     Ok(EXIT_OK)
 }
 

@@ -7,8 +7,9 @@ wpantry finds the vulnerabilities that actually apply to your computer and your 
 ```bash
 wpantry                                       # this computer: machine + every git repo under ~
 wpantry --path ~/code/myproject --no-machine  # one project, no machine inventory
-wpantry --update --dryrun                     # what it would fix, changing nothing
-wpantry --update                              # apply the fixes that can run unattended, then re-check
+wpantry --fix --dryrun                        # what it would fix, changing nothing
+wpantry --fix                                 # apply the fixes that can run unattended and the stopgaps wpantry has, then re-check
+wpantry mitigate list                         # the stopgaps wpantry can install and whether each applies here
 wpantry check --json --no-input               # findings as JSON, for tools and agents
 ```
 
@@ -63,7 +64,7 @@ mcp
 not checked
   ⚠ CISA KEV (exploited-in-the-wild marks) - CISA KEV list unreachable and not cached
 
-✗ 2 thing(s) to update (2 advisories), 1 warning(s). See the plan: wpantry --update --dryrun
+✗ 2 thing(s) to update (2 advisories), 1 warning(s). See the plan: wpantry --fix --dryrun
 ```
 
 - `✗` fails: a released fix exists, it's end of life, it's malicious, or it's a committed secret from a provider-specific rule.
@@ -73,7 +74,7 @@ not checked
 
 ## Reports: what you were exposed to, and what was done
 
-Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `--update` records the fixes it ran and the scan that verified them.
+Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `--fix` records the fixes it ran and the scan that verified them.
 
 ```bash
 wpantry report                              # exposure, remediation and audit logs, last 90 days, Markdown
@@ -86,14 +87,14 @@ wpantry report --remediation --format json
 
 ```bash
 wpantry sync                          # refresh the feeds and every answer the cache holds
-wpantry schedule install              # daily at 09:30: sync, then check (never --update)
+wpantry schedule install              # daily at 09:30: sync, then check (never --fix)
 wpantry schedule install --every weekly --at 07:00
 wpantry schedule status               # scheduled? when did it last run, what did it find
 wpantry schedule uninstall
 wpantry cache prune                   # drop what no scan has used in 90 days, compact the file
 ```
 
-`sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `check --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the check's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry --update` yourself when the morning report says so.
+`sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `check --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the check's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry --fix` yourself when the morning report says so.
 ## Keeping wpantry current
 
 ```bash
@@ -108,14 +109,14 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 | Code | Meaning |
 |---|---|
 | 0 | Nothing fails. Warnings and "not checked" sources still exit 0 (the report says "Incomplete") |
-| 1 | Something fails, or an unattended fix failed under `--update` |
+| 1 | Something fails, or an unattended fix failed under `--fix` |
 | 2 | Usage error (unknown flag, missing argument, missing policy file) |
 | 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
 | 10 | `wpantry watch` only: a fix has landed for something that had none |
 
 ## Fixing
 
-`wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
+`wpantry --fix --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --fix` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
 ## Exposed with no fix yet
 
@@ -133,7 +134,7 @@ wpantry watch                 # each watched advisory: "no fix yet" + the mitiga
 wpantry watch --json          # {"schema": 1, …, "watched": [{"id", "severity", "summary", "ecosystem", "package", "version", "fixed", "mitigation"}]}
 ```
 
-Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry --update --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on or a program still holds an MPTCP listening socket (the sysctl only stops new ones; the evidence names the services to restart) (see [posture.md](posture.md)). The repo side is covered too: a Go module on `go 1.24` or newer that listens for TCP without `GODEBUG=multipathtcp=0` or `SetMultipathTCP(false)` (Go turns Multipath TCP on by default there, which is the path the bug is reached through), or any source that asks for MPTCP by name, is a `project` warning naming the file and the opt-out ([checks-and-sources.md](checks-and-sources.md#what-it-checks)); it is never auto-fixed.
+Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry --fix --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on or a program still holds an MPTCP listening socket (the sysctl only stops new ones; the evidence names the services to restart) (see [posture.md](posture.md)). The repo side is covered too: a Go module on `go 1.24` or newer that listens for TCP without `GODEBUG=multipathtcp=0` or `SetMultipathTCP(false)` (Go turns Multipath TCP on by default there, which is the path the bug is reached through), or any source that asks for MPTCP by name, is a `project` warning naming the file and the opt-out ([checks-and-sources.md](checks-and-sources.md#what-it-checks)); it is never auto-fixed.
 
 ## JSON
 
@@ -159,7 +160,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
 | `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
-| `--no-input` | Never prompt: the breach-check question is skipped, and `--update` runs without asking |
+| `--no-input` | Never prompt: the breach-check question is skipped, and `--fix` runs without asking |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist. Off by default; `--license` works too |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled one (a repo's own `.gitleaks.toml` still wins) |
 | `--install-scripts FILE` | Your allowlist of npm packages whose install scripts are accepted, each at a version range (`esbuild@^0.28`); a locked version outside its entry still warns |
@@ -182,7 +183,7 @@ wpantry export --jsonl findings.jsonl --all   # one JSON object per finding, joi
 wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 ```
 
-Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `--update` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
+Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `--fix` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
 
 ## Advisories with no fix yet
 
@@ -192,11 +193,15 @@ Some advisories have no fix you can install: the vendor has not shipped the kern
 wpantry mitigate CVE-2026-98432 --dry-run   # the state of the host and what would be written; nothing changes
 wpantry mitigate CVE-2026-98432             # the plan, a question, then the stopgap (as root: sudo asks on the terminal)
 wpantry mitigate CVE-2026-98432 --yes       # the same without the question (provisioning)
-wpantry mitigate CVE-2026-98432 --remove    # take the stopgap away once the kernel update is in
+wpantry mitigate CVE-2026-98432 --undo      # take the stopgap away once the kernel update is in (--remove is the same)
 wpantry mitigate GHSA-xxxx-yyyy-zzzz        # an advisory with a released fix: runs its unattended fix, prints the rest
+wpantry mitigate list                       # the stopgaps wpantry can install, whether each applies here, and the advisories with an unattended fix
+wpantry mitigate all --dry-run              # everything at once: the same as wpantry --fix --dryrun
 ```
 
-It runs the fixes the last scan found for the id that may run unattended (a version bump, the way `--update` does), runs wpantry's own stopgap for it where one exists, and prints the steps that need you; exit 1 when a step is left, a fix failed, or nothing is known for the id here (not in the last scan, no stopgap). The first stopgap is for the Linux kernel's IPv4 TCP use-after-free, [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432) (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, a systemd unit that reloads it at boot, MPTCP off through `sysctl.d`, and the services still holding an MPTCP listening socket named for a restart (`sudo systemctl restart …`, printed, never run: `net.mptcp.enabled=0` only stops new sockets, a program that already listens keeps its until restarted). The listeners are read from `ss -tlnpi` as root (every TCP listener whose upper-layer protocol is MPTCP is marked `tcp-ulp-mptcp`, which needs no `mptcp_diag` module), else from `ss -M` where the kernel has that module, else reported as unseen. A scan never runs any of it; it prints the command as the step. A stopgap is a reduction of exposure, not the patch: update when the fix ships, then `--remove`.
+It runs the fixes the last scan found for the id that may run unattended (a version bump, the way `--fix` does), runs wpantry's own stopgap for it where one exists, and prints the steps that need you; exit 1 when a step is left, a fix failed, or nothing is known for the id here (not in the last scan, no stopgap). The first stopgap is for the Linux kernel's IPv4 TCP use-after-free, [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432) (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, a systemd unit that reloads it at boot, MPTCP off through `sysctl.d`, and the services still holding an MPTCP listening socket named for a restart (`sudo systemctl restart …`, printed, never run: `net.mptcp.enabled=0` only stops new sockets, a program that already listens keeps its until restarted). The listeners are read from `ss -tlnpi` as root (every TCP listener whose upper-layer protocol is MPTCP is marked `tcp-ulp-mptcp`, which needs no `mptcp_diag` module), else from `ss -M` where the kernel has that module, else reported as unseen. A scan never runs any of it; it prints the command as the step. `wpantry --fix` (and `mitigate all`, the same thing) runs the stopgaps too, after the unattended fixes, asking on a terminal and skipping them without one unless `--yes`.
+
+A stopgap survives a reboot: the systemd unit reloads the rule before the network comes up (`Before=network-pre.target`), and `/etc/sysctl.d/90-no-mptcp.conf` is applied by `systemd-sysctl` at boot. It is a reduction of exposure, not the patch, and it is meant to come off again. When the kernel update lands, three things tell you: `wpantry watch` exits 10 with `FIX AVAILABLE`, `POSTURE-KERNEL-TCP-IP-OPTIONS` passes with "the stopgap is still in place", and `wpantry mitigate list` says the fix is in. Then `wpantry mitigate CVE-2026-98432 --undo` puts the host back as it was: the unit disabled and removed, the nft table deleted, the rule file and the sysctl file removed, `net.mptcp.enabled` back to 1. Nothing else was changed, so nothing else needs undoing.
 
 ## What leaves your machine
 

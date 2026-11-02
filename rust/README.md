@@ -51,7 +51,7 @@ The default policy files, the distrusted CA certificates and the agent skill liv
 
 | Module | Does |
 |---|---|
-| `main` | The subcommands (`check`, `search`, `export`, `breach`, `tools`, `skill`, `version`), the exit codes, the `--update` flow |
+| `main` | The subcommands (`check`, `search`, `export`, `breach`, `tools`, `skill`, `version`), the exit codes, the `--fix` flow |
 | `args` | Argument parsing, by hand |
 | `report` | The grouped report, the fix plan and its shell quoting, the JSON envelope |
 | `progress` | The live progress line, drawn only on a terminal |

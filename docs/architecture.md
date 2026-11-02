@@ -12,7 +12,7 @@ flowchart LR
     readers["Readers<br/>lockfiles, OS package databases,<br/>plists, tar exports"]
     judge["Judgement<br/>alias groups, per-ecosystem<br/>comparators, KEV, EOL"]
     cache[("SQLite cache<br/>one file, a day")]
-    out["Report, --json,<br/>exit code, --update plan"]
+    out["Report, --json,<br/>exit code, --fix plan"]
   end
   subgraph tools["Local tools"]
     gl["gitleaks"]
@@ -47,7 +47,7 @@ flowchart TB
   read["2 READ, in parallel<br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages; apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings; container images. gitleaks runs on repos whose HEAD moved."]
   ask["3 ASK<br/>(ecosystem, name, version) to OSV in batches of 1000; only new or changed records fetched; KEV, end-of-life, the malicious index, licenses and release feeds. Every answer memoized for a day."]
   judge["4 JUDGE<br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own comparator; fail, warn, or unchecked."]
-  report["5 REPORT<br/>Grouped by kind, one line per component with the reason and the fix; --json envelope; exit 0 clean, 1 fails, 2 usage, 3 internal. --update runs the unattended fixes, then re-checks."]
+  report["5 REPORT<br/>Grouped by kind, one line per component with the reason and the fix; --json envelope; exit 0 clean, 1 fails, 2 usage, 3 internal. --fix runs the unattended fixes, then re-checks."]
   scope --> read --> ask --> judge --> report
 ```
 

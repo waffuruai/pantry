@@ -268,14 +268,14 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
         }
         Mode::DryRun | Mode::Apply => {
             if fixed && rule == Some(true) {
-                return Ok(Done::Nothing("the kernel has the fix and the stopgap is still in place: wpantry mitigate CVE-2026-98432 --remove takes it away".into()));
+                return Ok(Done::Nothing("the kernel has the fix and the stopgap is still in place: wpantry mitigate CVE-2026-98432 --undo takes it away".into()));
             }
             if fixed {
                 return Ok(Done::Nothing("the kernel has the fix; the stopgap isn't needed".into()));
             }
             if rule == Some(true) && unit_there && (!mptcp_built || mptcp.trim() == "0") {
                 return Ok(Done::Nothing(format!(
-                    "the stopgap is already in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --remove"
+                    "the stopgap is already in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --undo"
                 )));
             }
             let verb = if mode == Mode::DryRun { "would write" } else { "will write" };
@@ -309,7 +309,7 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
             } else {
                 host.write_root(UNIT_FILE, &unit())?;
                 host.root(&["systemctl", "daemon-reload"])?;
-                // --now runs the same nft -f (idempotent), so the unit shows active and --remove has something to stop.
+                // --now runs the same nft -f (idempotent), so the unit shows active and --undo has something to stop.
                 host.root(&["systemctl", "enable", "--quiet", "--now", UNIT])?;
                 say(&format!("  ✓ {UNIT} enabled and active: the rule comes back at boot"));
             }
@@ -319,7 +319,7 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
                 say(&format!("  ✓ MPTCP off ({SYSCTL_FILE})"));
             }
             say(&format!(
-                "  stopgap in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --remove"
+                "  stopgap in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --undo"
             ));
             Ok(Done::Applied)
         }
@@ -438,7 +438,7 @@ mod tests {
         let text = lines.join("\n");
         assert!(text.contains("✓ MPTCP off"), "{text}");
         assert!(text.contains("Not run for you:\n    sudo systemctl restart k3s.service alloy.service"), "{text}");
-        assert!(text.contains("--remove"), "{text}");
+        assert!(text.contains("--undo"), "{text}");
         // a failed step is an error, and nothing after it runs
         let mut failing = Fake::new(EXPOSED);
         failing.fail = Some("nft -f");
@@ -473,7 +473,7 @@ mod tests {
             ),
         ]);
         let (done, _) = run(&stale, Mode::Apply, true);
-        assert!(matches!(done, Done::Nothing(ref why) if why.contains("--remove")), "{done:?}");
+        assert!(matches!(done, Done::Nothing(ref why) if why.contains("--undo")), "{done:?}");
         assert!(stale.did().is_empty());
         let mac = Fake::new(&[("uname -s", "Darwin\n")]);
         let (done, _) = run(&mac, Mode::Apply, true);

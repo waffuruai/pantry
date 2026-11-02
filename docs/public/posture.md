@@ -2,7 +2,7 @@
 
 With the machine inventory, wpantry reads the settings that decide whether an exploit matters at all: is the disk encrypted, is the firewall on, is anything listening for remote logins, does the Mac log someone in without a password, do updates install on their own. Each is a read (`defaults read`, `launchctl print-disabled`, `fdesetup status`, a config file); nothing is changed. A failing Critical or High check fails the scan (exit 1), Medium and Low warn, and a check that can't tell says "couldn't tell" rather than pass.
 
-Fixes marked *user* are settings of your own account; `wpantry --update` may apply them. Fixes marked *admin* need `sudo` or a System Settings pane and are printed for you.
+Fixes marked *user* are settings of your own account; `wpantry --fix` may apply them. Fixes marked *admin* need `sudo` or a System Settings pane and are printed for you.
 
 `--no-posture` skips all of them; `--posture-policy FILE` lists ids to skip, one per line (`REMOTE-LOGIN` on a server that means to run ssh). The ids are the finding's `vuln_id` without `POSTURE-`.
 
@@ -43,7 +43,7 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 
 | Id | Check | Severity | Fix |
 |---|---|---|---|
-| EXTENSION-COOLDOWN | Every VS Code-family editor (Code, Insiders, Cursor, Windsurf, VSCodium, Positron) has `extensions.installCooldownHours` of 24 or more, so a freshly published (possibly compromised) extension version is never installed here before the marketplace has had time to pull it | High | user: `wpantry harden extension-cooldown --hours 72` (edits each editor's settings.json in place; `--update` runs it) |
+| EXTENSION-COOLDOWN | Every VS Code-family editor (Code, Insiders, Cursor, Windsurf, VSCodium, Positron) has `extensions.installCooldownHours` of 24 or more, so a freshly published (possibly compromised) extension version is never installed here before the marketplace has had time to pull it | High | user: `wpantry harden extension-cooldown --hours 72` (edits each editor's settings.json in place; `--fix` runs it) |
 | GIT-HOOKS | A global `core.hooksPath` with a `pre-commit` hook, so a secret is stopped at the commit | Low | ops: `mise run hooks`; elsewhere point `git config --global core.hooksPath` at a directory with a gitleaks pre-commit |
 
 An editor with `extensions.autoUpdate: false` is reported as "updates by hand" (a warning): manual updates keep a bad version from arriving on its own, and the cooldown still stops it being installed by hand on the day it appears.

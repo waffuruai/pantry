@@ -13,7 +13,7 @@ mod schedule;
 mod style;
 mod update;
 
-use args::{Check, Command, Parsed};
+use args::{Check, Command, Parsed, Target};
 use rusqlite::types::ValueRef;
 use std::io::{IsTerminal, Write};
 use style::Style;
@@ -125,13 +125,13 @@ fn cmd_check(a: Check) -> Result<i32> {
     if let Some(n) = update::notice(&net, a.offline) {
         eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
     }
-    if !(a.update || a.dryrun) {
+    if !(a.fix || a.dryrun) {
         return Ok(status);
     }
     // Before changing anything, ask, when someone is there to answer.
     let interactive = !a.no_input && std::io::stdin().is_terminal();
     let confirm = |cmds: &[String]| {
-        if !interactive {
+        if a.yes || !interactive {
             return true;
         }
         for c in cmds {
@@ -141,10 +141,12 @@ fn cmd_check(a: Check) -> Result<i32> {
         progress::Progress::new(false).ask(&format!("Run {what} now?"), true).unwrap_or(false)
     };
     let applied = report::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
+    // then the stopgaps wpantry has, for the hosts they are for
+    let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dryrun, a.yes, interactive)?;
     if a.dryrun {
         return Ok(status);
     }
-    if !applied.ran.is_empty() {
+    if !applied.ran.is_empty() || !stopgaps_ran.is_empty() {
         let cache = Cache::open(None)?;
         for (cmd, ok) in &applied.ran {
             // The exposures this command was the fix for; the re-check verifies against them.
@@ -155,6 +157,9 @@ fn cmd_check(a: Check) -> Result<i32> {
                 .map(wpantry::history::key_of)
                 .collect();
             wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets)?;
+        }
+        for (cmd, ok, targets) in &stopgaps_ran {
+            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "stopgap", *ok, targets)?;
         }
         cache.close()?;
     }
@@ -167,7 +172,65 @@ fn cmd_check(a: Check) -> Result<i32> {
     }
     // A fix that failed fails the run even when the re-check comes back clean.
     let rechecked = report::report(&again, &db, &mut |l| show(l));
-    Ok(if rechecked != 0 { rechecked } else { applied.status })
+    Ok(if rechecked != 0 { rechecked } else { applied.status.max(stopgap_status) })
+}
+
+/// Every stopgap wpantry has, run (or, on a dry run, planned) on this
+/// host: one that isn't for this host is skipped silently, one that needs
+/// a yes gets it from the terminal or `--yes`, else is skipped with a
+/// line. Returns the exit status (1 when one failed) and, for the
+/// remediation log, each one applied as (command, ok, the findings it was
+/// for).
+/// One stopgap applied: the command for the log, whether it succeeded, the findings it was for.
+type StopgapRun = (String, bool, Vec<String>);
+
+fn stopgaps(
+    findings: &[wpantry::check::Finding],
+    dryrun: bool,
+    yes: bool,
+    interactive: bool,
+) -> Result<(i32, Vec<StopgapRun>)> {
+    use wpantry::mitigate::{self, Done, Mode};
+    let mut status = EXIT_OK;
+    let mut ran = Vec::new();
+    for s in mitigate::STOPGAPS {
+        let mut lines: Vec<String> = Vec::new();
+        let confirm = |what: &str| {
+            if yes {
+                return true;
+            }
+            if !interactive {
+                show(&format!("  · skipped: pass --yes to {what} without asking (wpantry mitigate {} --yes)", s.id));
+                return false;
+            }
+            progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
+        };
+        let mode = if dryrun { Mode::DryRun } else { Mode::Apply };
+        let command = format!("wpantry mitigate {} --yes", s.id);
+        let targets: Vec<String> =
+            findings.iter().filter(|f| f.vuln_id.eq_ignore_ascii_case(s.id)).map(wpantry::history::key_of).collect();
+        // the lines are shown only once the stopgap turns out to be for this host
+        let done = (s.run)(&mitigate::Real, mode, &confirm, &mut |l| lines.push(l.to_string()));
+        if matches!(done, Ok(Done::NotHere(_))) {
+            continue;
+        }
+        show(&format!("\n==> Stopgap for {}: {}{}", s.id, s.what, if dryrun { " (dry run)" } else { "" }));
+        for l in &lines {
+            show(l);
+        }
+        match done {
+            Ok(Done::Applied) if !dryrun => ran.push((command, true, targets)),
+            Ok(Done::Applied) | Ok(Done::Declined) => {}
+            Ok(Done::Nothing(why)) => show(&format!("  ✓ {why}")),
+            Ok(Done::NotHere(_)) => unreachable!("skipped above"),
+            Err(e) => {
+                show(&format!("  ✗ {e}"));
+                status = EXIT_FAIL;
+                ran.push((command, false, targets));
+            }
+        }
+    }
+    Ok((status, ran))
 }
 
 fn round3(x: f64) -> f64 {
@@ -594,7 +657,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
                 state
             ));
             match (&w.fixed, &w.mitigation) {
-                (Some(_), _) => say("    Fix: run wpantry --update --dryrun for the step"),
+                (Some(_), _) => say("    Fix: run wpantry --fix --dryrun for the step"),
                 (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
                 (None, None) => {
                     say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
@@ -632,7 +695,7 @@ fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
 /// alias), their unattended fixes run, wpantry's stopgap for it run where
 /// one exists, and the steps that need a person printed. Exit 1 when a
 /// step is left, a fix failed, or nothing is known for the id here.
-fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, remove: bool) -> Result<i32> {
+fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) -> Result<i32> {
     use wpantry::mitigate::{self, Done, Mode};
     let cache = Cache::open(None)?;
     // the id, its aliases, and the records that list it as one
@@ -681,9 +744,9 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, remove: bool
     }
     let mut status = EXIT_OK;
     let mut did_something = false;
-    // the unattended fixes (a version bump), the way --update runs them
+    // the unattended fixes (a version bump), the way --fix runs them
     if findings.iter().any(|f| f.fix_auto && !f.fix_cmd.is_empty()) {
-        // as `check --update`: without a terminal they run; a terminal is asked
+        // as `check --fix`: without a terminal they run; a terminal is asked
         let confirm = |cmds: &[String]| {
             if yes || !interactive {
                 return true;
@@ -707,8 +770,8 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, remove: bool
     }
     // wpantry's own stopgap
     if let Some(s) = stopgap {
-        show(&format!("\n==> stopgap: {}{}", s.what, if remove { " (removing)" } else { "" }));
-        let mode = if remove {
+        show(&format!("\n==> stopgap: {}{}", s.what, if undo { " (undoing)" } else { "" }));
+        let mode = if undo {
             Mode::Remove
         } else if dry_run {
             Mode::DryRun
@@ -776,6 +839,45 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, remove: bool
     Ok(status)
 }
 
+/// `mitigate list`: the stopgaps wpantry has, each with whether it applies
+/// here (a dry run with the output dropped), and the advisories in the last
+/// scan with an unattended fix.
+fn cmd_mitigate_list() -> Result<i32> {
+    use wpantry::mitigate::{self, Done, Mode};
+    show("==> Stopgaps wpantry can install (wpantry mitigate ID, or all):");
+    for s in mitigate::STOPGAPS {
+        let state = match (s.run)(&mitigate::Real, Mode::DryRun, &|_| false, &mut |_| {}) {
+            Ok(Done::Applied) => format!("needed here: wpantry mitigate {} --dry-run shows the plan", s.id),
+            Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
+            Ok(Done::Declined) => "unreachable on a dry run".into(),
+            Err(e) => format!("can't tell: {e}"),
+        };
+        show(&format!("  {}  {}\n      {state}", s.id, s.what));
+    }
+    let cache = Cache::open(None)?;
+    let findings = wpantry::export::findings(&cache)?;
+    cache.close()?;
+    let mut auto: Vec<&wpantry::check::Finding> =
+        findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();
+    auto.sort_by(|a, b| a.vuln_id.cmp(&b.vuln_id).then(a.component.cmp(&b.component)));
+    auto.dedup_by(|a, b| a.vuln_id == b.vuln_id && a.component == b.component);
+    show("\n==> Advisories in the last scan with an unattended fix (wpantry --fix runs them):");
+    if auto.is_empty() {
+        show("  none");
+    }
+    for f in auto {
+        show(&format!(
+            "  {}  {} {} → {}: {}",
+            f.vuln_id,
+            f.component,
+            f.version,
+            if f.fixed.is_empty() { "?".to_string() } else { f.fixed.clone() },
+            f.fix_cmd
+        ));
+    }
+    Ok(EXIT_OK)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -803,7 +905,20 @@ fn dispatch(cmd: Command) -> Result<i32> {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
         Command::Harden { what: _, hours } => cmd_harden_cooldown(hours),
-        Command::Mitigate { id, dry_run, yes, no_input, remove } => cmd_mitigate(&id, dry_run, yes, no_input, remove),
+        Command::Mitigate { target, dry_run, yes, no_input, undo, offline, no_machine, path } => match target {
+            Target::List => cmd_mitigate_list(),
+            Target::All => cmd_check(Check {
+                fix: true,
+                dryrun: dry_run,
+                yes,
+                no_input,
+                offline,
+                no_machine,
+                path,
+                ..Default::default()
+            }),
+            Target::Id(id) => cmd_mitigate(&id, dry_run, yes, no_input, undo),
+        },
     }
 }
 

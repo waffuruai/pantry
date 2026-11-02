@@ -271,11 +271,15 @@ class Contract(unittest.TestCase):
         self.assertRegex(err, r"\[ *\d+\.\d\ds\] ")
         self.assertNotIn("s] ", out)
 
-    def test_update_with_nothing_to_apply_rechecks(self):
-        code, out, err = self.project_run("--update")
+    def test_fix_with_nothing_to_apply_rechecks(self):
+        code, out, err = self.project_run("--fix")
         self.assertEqual(code, 0, err)
         self.assertIn("Re-checking after the updates", out)
         self.assertEqual(out.count("Incomplete"), 2, "the report, then the re-check's")
+        # --update is the old spelling and still works
+        code, out, err = self.project_run("--update")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Re-checking after the updates", out)
 
     def test_schedule_dry_run_and_cache_prune(self):
         code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
@@ -327,14 +331,36 @@ class Contract(unittest.TestCase):
     def test_mitigate_usage(self):
         code, _, err = self.run_bin("mitigate")
         self.assertEqual(code, 2, err)
-        self.assertIn("required: id", err)
+        self.assertIn("required: target", err)
         code, _, err = self.run_bin("mitigate", "kernel")
         self.assertEqual(code, 2, err)
-        code, _, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run", "--remove")
+        code, _, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run", "--undo")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("mitigate", "all", "--remove")
         self.assertEqual(code, 2, err)
         code, out, _ = self.run_bin("mitigate", "--help")
         self.assertEqual(code, 0)
         self.assertIn("--dry-run", out)
+
+    def test_mitigate_list_names_the_stopgaps_and_the_unattended_fixes(self):
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
+                      "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "manual", "1.0.0", "/opt/manual", "GHSA-manual", "fail", "1.0.1", 0, "HIGH",
+                      "needs a person", "sudo something", 0, "", None, ""))
+        conn.commit()
+        conn.close()
+        code, out, err = self.run_bin("mitigate", "list")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("CVE-2026-98432", out)
+        if platform.system() != "Linux":
+            self.assertIn("a Linux kernel bug; nothing to do on", out)
+        self.assertIn("GHSA-demo  demo 1.0.0 → 1.0.1: true", out)
+        self.assertNotIn("GHSA-manual", out, "only the unattended ones")
 
     def test_mitigate_errors_for_an_advisory_nothing_is_known_about(self):
         self.project_run()
@@ -952,9 +978,14 @@ class Contract(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("git"), "no git")
     def test_dryrun_changes_nothing(self):
-        code, out, _ = self.project_run("--update", "--dryrun")
+        code, out, _ = self.project_run("--fix", "--dryrun")
         self.assertIn(code, (0, 1))
         self.assertNotIn("Re-checking", out)
+        # mitigate all is check --fix with the same flags
+        code, out2, _ = self.run_bin("mitigate", "all", "--dry-run", "--no-machine", "--path", str(self.home), "--offline", "--no-input")
+        self.assertIn(code, (0, 1))
+        self.assertNotIn("Re-checking", out2)
+        self.assertEqual("Update plan" in out, "Update plan" in out2)
 
 
 if __name__ == "__main__":

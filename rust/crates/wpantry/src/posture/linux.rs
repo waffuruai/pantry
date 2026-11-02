@@ -301,7 +301,13 @@ fn tcp_ip_options(r: Runner) -> Outcome {
         return Outcome::unknown("uname gave no kernel version");
     };
     if fixed {
-        return Outcome::pass(format!("kernel {raw} has the fix for CVE-2026-98432"));
+        return Outcome::pass(if drops_ip_options(r) == Some(true) {
+            format!(
+                "kernel {raw} has the fix for CVE-2026-98432; the stopgap is still in place (wpantry mitigate CVE-2026-98432 --undo takes it away)"
+            )
+        } else {
+            format!("kernel {raw} has the fix for CVE-2026-98432")
+        });
     }
     match drops_ip_options(r) {
         Some(true) => {

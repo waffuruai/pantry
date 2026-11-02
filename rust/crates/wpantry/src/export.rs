@@ -1,6 +1,6 @@
 //! `wpantry export --jsonl`: one JSON object per finding, joining what the
 //! cache knows about it (the finding, the full OSV record, the exposure's
-//! lifecycle across scans and the outcome of the fix `--update` ran), so a
+//! lifecycle across scans and the outcome of the fix `--fix` ran), so a
 //! consumer (wsentinel's triage-verdict corpus) reads one record and never
 //! the cache tables. Additive to `check --json`'s finding: the same keys,
 //! plus `aliases`, `url`, `record`, `first_seen`, `last_seen`, `resolved_at`,
@@ -112,7 +112,7 @@ fn exposure(cache: &Cache, key: &str) -> Result<Option<(f64, f64, Option<f64>)>>
         .optional()?)
 }
 
-/// The latest fix `--update` ran for this command, and whether a later scan
+/// The latest fix `--fix` ran for this command, and whether a later scan
 /// verified it (the exposure resolved in that scan).
 fn fix(cache: &Cache, command: &str, resolved_scan: Option<i64>) -> Result<Option<Value>> {
     if command.is_empty() {

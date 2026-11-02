@@ -1,4 +1,4 @@
-//! Print the findings, and plan or apply the fixes (`wpantry --update`).
+//! Print the findings, and plan or apply the fixes (`wpantry --fix`).
 
 use std::collections::HashSet;
 use wpantry::check::{Finding, Outcome};
@@ -274,7 +274,7 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
     if fails > 0 {
         let advisories = scan.findings.iter().filter(|f| f.status == "fail").count();
         out(&format!(
-            "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry --update --dryrun{incomplete}"
+            "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry --fix --dryrun{incomplete}"
         ));
     } else if !gaps.is_empty() {
         out(&format!("⚠ nothing with a released fix found in what could be checked.{incomplete}"));
@@ -721,7 +721,7 @@ mod tests {
                 "  ⚠ CISA KEV - down",
                 "",
                 "  · 1 applicable advisories have no released fix yet (wpantry search --applicable)",
-                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wpantry --update --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
+                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wpantry --fix --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
             ]
         );
     }

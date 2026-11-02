@@ -24,7 +24,7 @@ We name you in the fix's release notes and security advisory if you want that, i
 
 wpantry reads a lot of your computer to tell you what is exposed, so it is built to take as little as it can.
 
-- **It reads, and changes nothing unless asked.** A scan only reads. `--update` runs the fixes it marks unattended and user-level (Homebrew, pip, npm, cargo, rustup, uv, editor extensions); anything needing sudo, a vendor or a code change is printed for you to run.
+- **It reads, and changes nothing unless asked.** A scan only reads. `--fix` runs the fixes it marks unattended and user-level (Homebrew, pip, npm, cargo, rustup, uv, editor extensions); anything needing sudo, a vendor or a code change is printed for you to run.
 - **Little leaves the machine.** Package names and versions go to OSV.dev, and public feeds are fetched (CISA KEV, endoflife.date, release feeds, the OpenSSF malicious-packages repo). File contents, paths and secrets are never sent. The hosts are a compiled-in list the binary refuses to go outside, over TLS verified against your machine's trust store. The email breach check is the one exception, and it runs only after you say yes (`wpantry breach`).
 - **Secrets stay redacted.** gitleaks runs with `--redact`; the cache and the report hold the rule, file, line, commit and fingerprint, never the secret.
 - **Unreachable is not clean.** A source that can't be reached, or a tool that is missing, is reported; it never makes the result look better.

@@ -6,7 +6,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 
 | What you get | What it checks |
 |---|---|
-| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--update` never updates it) |
+| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--fix` never updates it) |
 | Catch vulnerable dependencies before they ship | Lockfiles in every git repo: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer, Maven, Gradle, NuGet and more |
 | Catch malware, not just CVEs | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | Find leaked credentials in history | Secrets committed anywhere in each repo's git history (`gitleaks`) |
@@ -19,7 +19,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | Catch code that behaves like an attack | Decoded-then-executed strings, payload arrays, decoders, `sudo` and persistence in install scripts, credential theft, crypto-wallet signing and drainers, unpinned third-party scripts, in the repos and in every editor, agent and browser extension installed; harsher where the pattern is out of place for its language, warn elsewhere, with a policy file that downgrades but never silences |
 | See text the way a parser sees it | Bidi overrides (Trojan Source), invisible tag and zero-width characters that hide instructions from you but not from an AI assistant, mixed-script identifiers, and weapon-vocabulary identifiers meant to make an AI reviewer refuse the file |
 | Don't get owned by opening a clone | Hooks a repo runs on open or install (Claude Code, Gemini, MCP servers in the repo, VS Code folder-open tasks, devcontainers, direnv, `postinstall`, gyp, native addons) and the indicators of known hijacked-repo campaigns |
-| Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |
+| Fix it, safely | `--fix` runs only unattended, user-level fixes and, after a yes, the stopgaps wpantry has for advisories with no fix yet (`wpantry mitigate`); everything else needing sudo or a code change is printed as a step |
 
 Every check, every source it asks and exactly what is sent to each: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md).
 
@@ -43,8 +43,8 @@ wpantry check --json --no-input               # findings for tools and agents
 wpantry search "tarfile" --applicable         # ranked search of cached advisories
 wpantry export --csv findings.csv             # id, url, component, affected and safe version
 wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
-wpantry --update --dryrun                     # the update plan, change nothing
-wpantry --update                              # apply the unattended fixes, then re-check
+wpantry --fix --dryrun                     # the update plan, change nothing
+wpantry --fix                              # apply the unattended fixes, then re-check
 ```
 
 Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).

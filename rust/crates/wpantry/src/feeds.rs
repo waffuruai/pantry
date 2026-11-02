@@ -692,4 +692,239 @@ mod tests {
         eol_prefetch(&c, &net, &products, false).unwrap();
         assert_eq!(net.requests().len(), 4, "only the product that failed is asked again");
     }
+
+    #[test]
+    fn a_not_modified_answer_keeps_the_list_and_a_bug_is_not_offline() {
+        let (_d, c) = cache();
+        let body = json!({"vulnerabilities": [{"cveID": "CVE-2026-1"}, {"cveID": "", "vulnerabilityName": "unnamed"}]});
+        let net = Fake::new(move |r| {
+            Ok(match r.header("If-None-Match") {
+                Some("\"k1\"") => Response { status: 304, body: Vec::new(), etag: None },
+                _ => Response { status: 200, body: body.to_string().into_bytes(), etag: Some("\"k1\"".into()) },
+            })
+        });
+        assert_eq!(kev(&c, &net, false).unwrap().len(), 1, "a row without an id is skipped");
+        c.set("kev_at", "0").unwrap();
+        assert_eq!(kev(&c, &net, false).unwrap().len(), 1);
+        assert_eq!(net.requests().len(), 2);
+        assert!(c.fresh("kev_at", DAY).unwrap(), "a 304 counts as a refresh");
+        c.set("kev_at", "0").unwrap();
+        let bug = Fake::new(|_| Err(Error::Missing("not a source failure".into())));
+        assert!(matches!(kev(&c, &bug, false), Err(Error::Missing(_))));
+        assert!(matches!(eol_prefetch(&c, &bug, &["p".to_string()], false), Err(Error::Missing(_))));
+    }
+
+    #[test]
+    fn odd_cycles_and_stale_pages() {
+        let (_d, c) = cache();
+        let net = Fake::new(|_| {
+            Ok(Response::ok(
+                json!([{"cycle": null}, {"cycle": "1", "latest": null}, {"cycle": "2", "latest": 7, "eol": false}, {"cycle": "3"}])
+                    .to_string(),
+            ))
+        });
+        assert_eq!(eol(&c, &net, "p", "2", false).unwrap().unwrap().latest, "7");
+        assert_eq!(eol(&c, &net, "p", "1", true).unwrap().unwrap().latest, "");
+        assert_eq!(eol(&c, &net, "p", "3", true).unwrap().unwrap().latest, "");
+        assert_eq!(eol(&c, &net, "p", "null", true).unwrap(), None);
+        // Stale and unreachable, the stored page is served; a bug is not.
+        c.set("eol_at:p", "0").unwrap();
+        assert_eq!(eol(&c, &Fake::offline(), "p", "2", false).unwrap().unwrap().latest, "7");
+        let bug = Fake::new(|_| Err(Error::Missing("not a source failure".into())));
+        assert!(matches!(eol(&c, &bug, "p", "2", false), Err(Error::Missing(_))));
+        assert!(!past(&json!(null)));
+        assert_eq!(parse_date("2026-1-1"), None);
+        assert_eq!(parse_date("2026-01"), None);
+    }
+
+    #[test]
+    fn arch_tracker_must_answer_with_groups() {
+        let (_d, c) = cache();
+        assert!(matches!(arch(&c, &Fake::new(|_| Ok(Response::ok("[]"))), false), Err(Error::Offline(_))));
+        assert!(matches!(arch(&c, &Fake::new(|_| Ok(Response::ok("{}"))), false), Err(Error::Offline(_))));
+        let net = Fake::new(|_| Ok(Response::ok(json!([{"name": "ASA-1"}]).to_string())));
+        assert_eq!(arch(&c, &net, false).unwrap()[0]["name"], "ASA-1");
+        assert_eq!(arch(&c, &Fake::offline(), true).unwrap()[0]["name"], "ASA-1");
+    }
+
+    #[test]
+    fn cask_catalog_maps_app_bundles_to_tokens() {
+        let (_d, c) = cache();
+        assert!(matches!(casks(&c, &Fake::offline(), true), Err(Error::Offline(_))));
+        assert!(matches!(casks(&c, &Fake::new(|_| Ok(Response::ok("{}"))), false), Err(Error::Offline(_))));
+        let body = json!([
+            {"token": "firefox", "version": "145.0", "artifacts": [{"app": ["Firefox.app"]}, {"zap": []}]},
+            {"token": "dup", "version": "1", "artifacts": [{"app": ["Firefox.app"]}]},
+            {"token": "nover", "artifacts": [{"app": ["X.app"]}]},
+            {"token": "rolling", "version": "latest", "artifacts": [{"app": ["Y.app"]}]},
+            {"token": "num", "version": 7, "artifacts": [{"app": ["Num.app"]}]},
+            {"token": "nul", "version": null},
+            {"token": "comma", "version": "1.2,345", "artifacts": [{"app": ["Comma.app", "not-an-app"]}]}
+        ]);
+        c.set("casks_at", "0").unwrap();
+        let net = Fake::new(move |_| Ok(Response::ok(body.to_string())));
+        let got = casks(&c, &net, false).unwrap();
+        let rows: Vec<(&str, &str, &str)> =
+            got.iter().map(|(a, (t, v))| (a.as_str(), t.as_str(), v.as_str())).collect();
+        assert_eq!(rows, [("Comma.app", "comma", "1.2"), ("Firefox.app", "firefox", "145.0"), ("Num.app", "num", "7")]);
+        assert_eq!(casks(&c, &Fake::new(|_| panic!("fresh")), false).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn chrome_releases_carry_their_serving_date() {
+        let (_d, c) = cache();
+        let net = Fake::new(|r| {
+            assert!(r.url.contains("/platforms/mac/"), "{}", r.url);
+            Ok(Response::ok(
+                json!({"releases": [{"version": "142.0.1", "serving": {"startTime": "2026-10-01T00:00:00Z"}}, {"version": "141.0.0"}]})
+                    .to_string(),
+            ))
+        });
+        let got = chrome(&c, &net, "mac", false).unwrap();
+        assert_eq!(got, [("142.0.1".to_string(), epoch("2026-10-01")), ("141.0.0".to_string(), 0.0)]);
+        assert!(epoch("2026-10-01") > 0.0 && epoch("soon") == 0.0);
+        let gone = Fake::new(|_| Ok(Response { status: 404, body: Vec::new(), etag: None }));
+        assert!(chrome(&c, &gone, "linux", false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn firefox_feed_joins_versions_and_release_dates() {
+        let (_d, c) = cache();
+        let net = Fake::new(|r| {
+            Ok(Response::ok(
+                match r.url.rsplit('/').next().unwrap_or("") {
+                    "firefox_versions.json" => json!({"LATEST_FIREFOX_VERSION": "145.0", "FIREFOX_ESR": "140.4.0esr",
+                    "FIREFOX_ESR_NEXT": "", "FIREFOX_ESR115": "115.30.0esr", "FIREFOX_NIGHTLY": "147.0a1"}),
+                    "firefox_history_major_releases.json" => json!({"145.0": "2026-10-14"}),
+                    _ => json!({"145.0.1": "2026-10-21", "odd": 3}),
+                }
+                .to_string(),
+            ))
+        });
+        let f = firefox(&c, &net, false).unwrap();
+        let mut esr = f.esr.clone();
+        esr.sort();
+        assert_eq!((f.latest.as_str(), esr), ("145.0", vec!["115.30.0".to_string(), "140.4.0".into()]));
+        assert_eq!(f.dates.get("145.0.1"), Some(&epoch("2026-10-21")));
+        assert_eq!(f.dates.get("odd"), Some(&0.0));
+        assert_eq!(net.requests().len(), 3);
+        let gone = Fake::new(|_| Ok(Response { status: 404, body: Vec::new(), etag: None }));
+        let (_d2, c2) = cache();
+        let f = firefox(&c2, &gone, false).unwrap();
+        assert!(f.latest.is_empty() && f.esr.is_empty() && f.dates.is_empty());
+    }
+
+    #[test]
+    fn latest_release_drops_the_v_and_needs_a_tag() {
+        let (_d, c) = cache();
+        let net = Fake::new(|r| {
+            assert_eq!(r.header("Accept"), Some("application/vnd.github+json"));
+            Ok(Response::ok(
+                match r.url.as_str() {
+                    "https://api.github.com/repos/a/v/releases/latest" => json!({"tag_name": "v1.2.3"}),
+                    "https://api.github.com/repos/a/plain/releases/latest" => json!({"tag_name": "release-1"}),
+                    "https://api.github.com/repos/a/bare/releases/latest" => json!({"tag_name": "v"}),
+                    _ => json!({}),
+                }
+                .to_string(),
+            ))
+        });
+        assert_eq!(github_latest(&c, &net, "a/v", false).unwrap(), "1.2.3");
+        assert_eq!(github_latest(&c, &net, "a/plain", false).unwrap(), "release-1");
+        assert_eq!(github_latest(&c, &net, "a/bare", false).unwrap(), "v");
+        assert!(matches!(github_latest(&c, &net, "a/none", false), Err(Error::Offline(_))));
+    }
+
+    #[test]
+    fn postgres_table_is_fetched_as_html() {
+        let (_d, c) = cache();
+        let net = Fake::new(|r| {
+            assert_eq!(r.header("Accept"), Some("text/html"));
+            Ok(Response::ok("<tr><td>CVE-2026-1</td><td>18</td><td>18.1</td><td>core 7.5 AV:N</td><td>Oops</td></tr>"))
+        });
+        let got = postgres(&c, &net, false).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].cve.as_str(), got[0].score, got[0].vector.as_str()), ("CVE-2026-1", 7.5, "AV:N"));
+        assert_eq!(severity_from_score(9.5), "CRITICAL");
+        assert_eq!(severity_from_score(5.0), "MODERATE");
+        assert_eq!(severity_from_score(0.5), "LOW");
+        assert_eq!(severity_from_score(0.0), "");
+    }
+
+    #[test]
+    fn vscode_lists_are_lowercased_with_replacements() {
+        let (_d, c) = cache();
+        let net = Fake::new(|_| {
+            Ok(Response::ok(
+                json!({"malicious": ["Bad.Ext", 5], "deprecated": {
+                    "Old.One": {"extension": {"id": "New.One"}}, "Old.Two": {"additionalInfo": "gone"},
+                    "Old.Three": {}, "Old.Four": true}})
+                .to_string(),
+            ))
+        });
+        let l = vscode_lists(&c, &net, false).unwrap();
+        assert_eq!(l.malicious, HashSet::from(["bad.ext".to_string()]));
+        let mut dep: Vec<(String, String)> = l.deprecated.into_iter().collect();
+        dep.sort();
+        assert_eq!(
+            dep,
+            [("old.four", ""), ("old.one", "New.One"), ("old.three", ""), ("old.two", "gone")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        );
+        let (_d2, c2) = cache();
+        let gone = Fake::new(|_| Ok(Response { status: 404, body: Vec::new(), etag: None }));
+        let l = vscode_lists(&c2, &gone, false).unwrap();
+        assert!(l.malicious.is_empty() && l.deprecated.is_empty());
+    }
+
+    #[test]
+    fn marketplace_picks_the_latest_stable_version_in_chunks_of_100() {
+        let (_d, c) = cache();
+        let net = Fake::new(|r| {
+            assert_eq!((r.method, r.header("Accept")), ("POST", Some("application/json;api-version=7.2-preview.1")));
+            let q: Value = serde_json::from_slice(r.body.as_deref().unwrap()).unwrap();
+            let n = json::arr_at(&q["filters"][0], "criteria").len();
+            assert!(n <= 100 && q["filters"][0]["criteria"][0]["filterType"] == 7);
+            if n < 100 {
+                return Ok(Response::ok(json!({"results": []}).to_string()));
+            }
+            Ok(Response::ok(json!({"results": [{"extensions": [
+                {"publisher": {"publisherName": "MS-Python"}, "extensionName": "Python", "versions": [
+                    {"version": "2026.2.0", "properties": [{"key": "Microsoft.VisualStudio.Code.PreRelease", "value": "true"}]},
+                    {"version": "2026.1.0"}]},
+                {"publisher": {"publisherName": "X"}, "extensionName": "Y", "versions": [
+                    {"version": "0.1.0", "properties": [{"key": "Microsoft.VisualStudio.Code.PreRelease"}]}]},
+                {"extensionName": "NoVersions", "versions": []}
+            ]}]}).to_string()))
+        });
+        let mut ids: Vec<String> = (0..99).map(|i| format!("pub.ext{i}")).collect();
+        ids.push("ms-python.python".into());
+        ids.push("ms-python.python".into());
+        ids.push("x.y".into());
+        let got = latest_extensions(&c, &net, &ids, false, false).unwrap();
+        let mut rows: Vec<(String, String)> = got.into_iter().collect();
+        rows.sort();
+        assert_eq!(rows, [("ms-python.python".to_string(), "2026.1.0".to_string()), ("x.y".into(), "0.1.0".into())]);
+        assert_eq!(net.requests().len(), 2, "101 distinct ids, two queries");
+        assert!(latest_extensions(&c, &Fake::offline(), &["a.b".into()], false, true).is_err());
+    }
+
+    #[test]
+    fn open_vsx_is_asked_per_extension() {
+        let (_d, c) = cache();
+        let net = Fake::new(|r| {
+            Ok(match r.url.as_str() {
+                "https://open-vsx.org/api/ms-python/python/latest" => {
+                    Response::ok(json!({"version": "2026.1.0"}).to_string())
+                }
+                "https://open-vsx.org/api/nodot//latest" => Response { status: 404, body: Vec::new(), etag: None },
+                "https://open-vsx.org/api/a/b/latest" => Response::ok("{}"),
+                u => panic!("{u}"),
+            })
+        });
+        let ids: Vec<String> = ["ms-python.python", "nodot", "a.b"].map(String::from).to_vec();
+        let got = latest_extensions(&c, &net, &ids, true, false).unwrap();
+        assert_eq!(got, std::collections::HashMap::from([("ms-python.python".to_string(), "2026.1.0".to_string())]));
+        assert_eq!(net.requests().len(), 3);
+    }
 }

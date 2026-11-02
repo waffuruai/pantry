@@ -116,6 +116,7 @@ pub enum Command {
     Harden {
         what: String,
         hours: u32,
+        bundle: Option<PathBuf>,
     },
     Skill,
 }
@@ -197,10 +198,10 @@ fn help(cmd: &str) -> String {
             "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --update ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
         }
         "harden" => {
-            "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
+            "apply one of the fixes wpantry can make itself\n\npositional arguments:\n  {extension-cooldown,ca-trust}\n    extension-cooldown  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n    ca-trust            distrust the leaked eMudhra roots in the system trust store (sudo asks to install the result)\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      extension-cooldown: the cooldown (default 72)\n  --bundle FILE  ca-trust: rewrite this PEM bundle instead of the system store"
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -266,7 +267,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--offline", false),
             ("--version", true),
         ],
-        "harden" => &[("--help", false), ("--hours", true)],
+        "harden" => &[("--help", false), ("--hours", true), ("--bundle", true)],
         _ => &[("--help", false)],
     }
 }
@@ -556,8 +557,12 @@ pub fn parse(argv: &[String]) -> Parsed {
         }
         "harden" => {
             let what = match positional.as_slice() {
-                [w] if w == "extension-cooldown" => w.clone(),
-                [w] => return fail(format!("argument what: invalid choice: '{w}' (choose from extension-cooldown)")),
+                [w] if w == "extension-cooldown" || w == "ca-trust" => w.clone(),
+                [w] => {
+                    return fail(format!(
+                        "argument what: invalid choice: '{w}' (choose from extension-cooldown, ca-trust)"
+                    ));
+                }
                 [] => return fail("the following arguments are required: what".into()),
                 [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
             };
@@ -568,7 +573,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                     _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
                 },
             };
-            Command::Harden { what, hours }
+            Command::Harden { what, hours, bundle: value("--bundle").map(|v| expand(&v)) }
         }
         "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {
@@ -819,11 +824,11 @@ mod tests {
         );
         assert_eq!(
             p(&["harden", "extension-cooldown"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72 })
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72, bundle: None })
         );
         assert_eq!(
             p(&["harden", "extension-cooldown", "--hours", "48"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48 })
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48, bundle: None })
         );
         for (bad, msg) in [
             (&["schedule"][..], "the following arguments are required: action"),
@@ -844,7 +849,10 @@ mod tests {
             (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
             (&["update", "now"], "unrecognized arguments: now"),
             (&["harden"], "the following arguments are required: what"),
-            (&["harden", "firewall"], "argument what: invalid choice: 'firewall' (choose from extension-cooldown)"),
+            (
+                &["harden", "firewall"],
+                "argument what: invalid choice: 'firewall' (choose from extension-cooldown, ca-trust)",
+            ),
             (&["harden", "extension-cooldown", "now"], "unrecognized arguments: now"),
             (
                 &["harden", "extension-cooldown", "--hours", "lots"],

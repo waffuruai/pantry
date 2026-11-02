@@ -4,7 +4,8 @@
 # the crate's assets/distrusted-ca/ (today: the eMudhra intermediates whose
 # private keys leaked, https://emudhra.we-have-a-problem.com/). `wpantry check`
 # makes the same check on every machine scan (catrust.rs); this is the check
-# on its own, beside fix-ca-trust.sh, which repairs what it finds.
+# on its own, for a host without wpantry. `wpantry harden ca-trust` repairs
+# what it finds.
 #
 # A store fails when openssl can build a path from one of those intermediates
 # to a root it holds, which is the trust decision every OpenSSL-, LibreSSL-,
@@ -101,10 +102,10 @@ check_bundle() {
 print_header "CA trust (distrusted CAs in $CA_DIR)"
 
 if is_macos; then
-  check_bundle "system" /etc/ssl/cert.pem /etc/ssl/cert.pem "Run: $SCRIPT_DIR/fix-ca-trust.sh"
+  check_bundle "system" /etc/ssl/cert.pem /etc/ssl/cert.pem "Run: wpantry harden ca-trust"
 else
   for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem /etc/ssl/certs; do
-    check_bundle "system" "$f" "$f" "Update the ca-certificates package, or run: $SCRIPT_DIR/fix-ca-trust.sh"
+    check_bundle "system" "$f" "$f" "Update the ca-certificates package, or run: wpantry harden ca-trust"
   done
 fi
 

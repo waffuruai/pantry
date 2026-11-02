@@ -94,6 +94,21 @@ wpantry cache prune                   # drop what no scan has used in 90 days, c
 ```
 
 `sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `check --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the check's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry --update` yourself when the morning report says so.
+
+## Guarding the clipboard
+
+A clipper swaps the wallet address you copied for its own, and a browser extension can do it as you paste, so a scan that copies a canary catches only a clipper that is running and takes the bait. The guard watches instead, while you work:
+
+```bash
+wpantry clipboard                     # the self-test now: copy a canary of each shape, read it back
+wpantry clipboard --watch             # guard the clipboard until Ctrl-C; alerts on stdout and the desktop
+wpantry clipboard --watch --window 5  # a swap is two addresses of one chain within 5 s (default 2)
+wpantry clipboard --watch --once --json   # exit after the first alert, as one JSON object
+wpantry schedule install --clipboard-guard    # start it at login (launchd, or a systemd user service)
+wpantry schedule uninstall --clipboard-guard
+```
+
+The guard reads the clipboard about four times a second (on macOS a `pbpaste` per read: about five percent of one core on an M-series Mac, nearly all of it `pbpaste`; the rest of the time it sleeps) and keeps the last wallet address it saw and when. When text holding one address of some chain becomes a different valid address of the same chain within the window, with nothing but addresses on the clipboard in between, that is a swap: one line naming both addresses and the chain, a desktop notification, and a `clipper` event in the cache that `wpantry report --audit` lists. Don't paste it; find what rewrote it (the `CLIPPER-PERSISTENCE` findings, login items, browser extensions). The guard never writes the clipboard: a guard that put your address back would hide the clipper from you and fight it for the clipboard. The one false positive is copying two addresses of the same chain yourself within the window; the alert says so, and `--window` sets it. Installed with `schedule install --clipboard-guard`, it is a launch agent (`~/Library/LaunchAgents/ai.waffuru.wpantry.clipboard.plist`) or a systemd user service of your graphical session (`~/.config/systemd/user/wpantry-clipboard.service`), off unless you install it, with its output in `~/.local/state/wpantry/clipboard.log`; `wpantry schedule status` says whether it is installed and shows the last alert. Without launchd or a systemd user session, add `wpantry clipboard --watch` to your desktop's autostart.
 ## Keeping wpantry current
 
 ```bash
@@ -116,6 +131,16 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 ## Fixing
 
 `wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
+
+For a browser report, run `wpantry check --html report.html`. The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `--update` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
+
+The plan is wpantry's own (`--update --dryrun` prints the same one): one fix per component, `mise` never upgraded for you, many secret hits in one file one decision. **Hand this to an AI agent** under By hand copies a prompt with every finding, the plan and the coverage context of the scan for the agent of your choice; preview it and remove local paths you do not want to share. Copying sends nothing and runs nothing.
+
+A scan with no findings or recorded coverage gaps gets a quiet **All clear. Nicely done.** finish with the Waffuru mark. It applies only to the checked scope: empty imports, zero inventory, offline scans, unknown licenses, unfixed advisories and failed updates do not trigger it.
+
+The viewer imports `check --json` reports and `export --csv` findings (Load report, or drop the file on the page). An imported scan has no recorded scope, plan or history; its steps are grouped from the findings' suggested actions and say so. History reports and lifecycle JSONL exports use different formats and are not scan imports. Older JSON reports remain readable, with missing dependency and scope information shown as unknown.
+
+**Print** (or your browser's Print command) produces a light paper layout of the same page with every row open, whatever the screen filters, and without controls or the agent prompt. Choose Save as PDF in the print dialog to keep a copy. The file makes no request when opened: the fonts, the mark, the styles and the script are embedded.
 
 ## Exposed with no fix yet
 
@@ -167,6 +192,7 @@ Check `schema` before reading it. The fields, the finding kinds and markers (`UN
 | `--no-posture` | Skip the machine's security settings |
 | `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
 | `--suspect-policy FILE` | Suspicious-code ids and `path:` entries that should warn instead of fail (a legitimate hex table, an installer that uses sudo); nothing is silenced |
+| `--no-clipboard` | Skip the clipboard self-test. On a machine scan wpantry copies a valid address of each shape a clipper goes after (EVM, Bitcoin, Tron, Solana, XRP, Stellar) to the clipboard, reads it back twice over the next half second, and puts the clipboard back; an address that comes back changed is a clipper at work (`CLIPPER-ACTIVE`, fail). An image or files on the clipboard are left alone (the test reports itself skipped). The passive checks always run: launch agents and autostart entries that touch the clipboard with wallet addresses in hand (`CLIPPER-PERSISTENCE`), and browser extensions whose manifest can read and write the clipboard (`CLIPPER-EXTENSION`: warn, fail when the code has the clipper shape) |
 
 Policy files are one entry per line, `#` for comments. An install-scripts entry is `name@1.2.3` (that version), `name@^1.2` or `name@~1.2` (npm's caret and tilde ranges, so `^0.28` is `>=0.28.0 <0.29.0`), or a bare `name` for every version, which is allowed and discouraged: the allowlist is the only thing that decides whether an install script runs unremarked, so each entry should name the versions someone has read. The bundled list ([`install-scripts.txt`](../../rust/crates/wpantry/assets/defaults/install-scripts.txt)) explains itself. Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 
@@ -202,6 +228,7 @@ Package names and versions go to OSV.dev; the feeds are downloaded; the breach c
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
 | `WPANTRY_TIMINGS` | Any value: each scan step on stderr with the seconds since the scan began, to see where a slow run spends its time |
+| `WPANTRY_CLIPBOARD_FAKE` | A test hook: `clipboard --watch` reads this file instead of the clipboard, one line per read, and sends no notification. The contract suite uses it; you shouldn't need to |
 | `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
 | `HTTPS_PROXY` | Requests go through the proxy |
 

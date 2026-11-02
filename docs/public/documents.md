@@ -1,6 +1,6 @@
 # Documents and images
 
-The files people are sent are the files scanners skip: a spreadsheet with macros, a PDF that runs JavaScript when it opens, a Word file whose template lives on someone else's server, a picture that is really a program. wpantry reads PDFs, Office documents (old and new), RTF and images in the repos it scans and, on a machine scan, the top of `~/Downloads`, `~/Desktop` and `~/Documents`, for the shapes document malware takes. Nothing is opened, rendered, executed or fetched: every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess. When ClamAV is installed, it runs over the same files.
+The files people are sent are the files scanners skip: a spreadsheet with macros, a PDF that runs JavaScript when it opens, a Word file whose template lives on someone else's server, a picture that is really a program. wpantry reads PDFs, Office documents (old and new), RTF and images in the repos it scans and, on a machine scan, the top of `~/Downloads`, `~/Desktop` and `~/Documents`, for the shapes document malware takes. Nothing is opened, rendered, executed or fetched: every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess. When [ClamAV](https://www.clamav.net/) is installed, it runs over the same files.
 
 **A clean result is not a clean file.** These checks find the shapes; ClamAV finds what it has signatures for. A document from someone you don't know still goes in a sandbox or a viewer with scripting off.
 
@@ -39,7 +39,7 @@ The files people are sent are the files scanners skip: a spreadsheet with macros
 - **Legacy Office** (`.doc`, `.xls`, `.ppt`, compound files starting `D0 CF 11 E0`): the directory's names are UTF-16 in the file, so macro and object storages are found without walking the FAT; nothing deeper is attempted.
 - **RTF**: control words in the first 16 MiB, lowercased.
 - **Images**: the magic bytes decide the real format; the trailer after `IEND`, `FF D9` or GIF's `;` is read for payloads; metadata is searched for code. SVG is XML that a browser runs, so it is read as text.
-- **ClamAV**: `clamdscan --fdpass` when the daemon's client is installed, else `clamscan`, over the document and image files found, with a 10-minute cap, once per scan. wpantry never installs, updates or configures it; `wpantry tools` says whether it is there.
+- **[ClamAV](https://www.clamav.net/)** ([source](https://github.com/Cisco-Talos/clamav)): `clamdscan --fdpass` when the daemon's client is installed, else `clamscan`, over the document and image files found, with a 10-minute cap, once per scan. wpantry never installs, updates or configures it; `wpantry tools` says whether it is there.
 
 ## What it is not
 

@@ -8,7 +8,7 @@ updated: 2026-10-31
 ---
 # wpantry ships as one verifiable Rust binary
 
-> Archived 2026-10-31. The port shipped: v0.1.0 on 2026-10-28 and v0.2.0 on 2026-10-30, signed and attested for every target, and the Python implementation is gone. This PRD stays as the record of its criteria, evidence and decisions. How wpantry works today is [docs/architecture.md](../../docs/architecture.md), which also lists what this PRD left open.
+> Archived 2026-10-31. The port shipped: v0.1.0 on 2026-10-28 and v0.2.0 on 2026-10-30, signed and attested for every target, and the Python implementation is gone. This PRD stays as the record of its criteria, evidence and decisions. How wpantry works today is [docs/architecture.md](../../docs/architecture.md); [docs/internal/architecture.md](../../docs/internal/architecture.md) lists what this PRD left open and where it closed.
 
 ## TL;DR
 

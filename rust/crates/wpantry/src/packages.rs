@@ -409,14 +409,18 @@ mod tests {
             "the first of a name on the path wins; nothing without a version"
         );
         assert_eq!(gaps.len(), 2, "metadata without a version, and a dist-info without metadata: {gaps:?}");
+        let gaps: Vec<String> = gaps.iter().map(|g| g.replace('\\', "/")).collect();
         assert!(gaps[0].contains("broken.dist-info/METADATA: no Version"), "{gaps:?}");
         assert!(gaps[1].contains("half-1.0.dist-info/METADATA"), "{gaps:?}");
     }
 
     /// The probe lists the base interpreter's site-packages for a venv made
     /// with `--system-site-packages`, and not otherwise, on every Python
-    /// here (from 3.14 a venv is `sys.prefix` even under `-S`).
+    /// here (from 3.14 a venv is `sys.prefix` even under `-S`). A Windows
+    /// venv keeps its interpreter under `Scripts\` and its site under
+    /// `Lib\`; the machine inventory doesn't run there yet (#11).
     #[test]
+    #[cfg(unix)]
     fn the_probe_lists_the_sites_a_venv_inherits() {
         let d = system::TempDir::new("venvs").unwrap();
         let mut pythons: Vec<String> = which("python3").into_iter().map(|p| p.display().to_string()).collect();

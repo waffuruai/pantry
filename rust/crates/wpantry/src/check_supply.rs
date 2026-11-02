@@ -1115,7 +1115,7 @@ mod tests {
         std::fs::write(tmp.path().join("yarn.lock"), "# comment\n\n__metadata:\n  version: 8\n").unwrap();
         assert_eq!(
             project_fix(&tmp.path().join("yarn.lock"), "npm", "@scope/x", "1.0.1"),
-            format!("cd {} && yarn up @scope/x@1.0.1", quote(&tmp.path().to_string_lossy()))
+            format!("cd {} && yarn up @scope/x@1.0.1", quote(&command_path(tmp.path())))
         );
     }
 }

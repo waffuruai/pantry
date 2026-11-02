@@ -96,16 +96,25 @@ fn base64(bytes: &[u8]) -> String {
 /// history sections: the exposures, the fixes `--update` ran and the scans
 /// of the last [`HISTORY_DAYS`], plus the host and user of this scan. Null
 /// when the cache can't be read: the report still describes the scan.
-fn history_json(scan_id: i64) -> (J, String, String) {
+fn history_json(report: &Outcome) -> (J, String, String) {
     let Ok(cache) = Cache::open(None) else { return (J::Null, String::new(), String::new()) };
+    let scan_id = report.scan_id;
+    // The open exposures this scan lists are its findings, shown under At
+    // risk; the log carries the rest: resolved ones, and open ones of
+    // another scope. A machine scan can list tens of thousands.
+    let listed: std::collections::HashSet<String> = report.findings.iter().map(history::key_of).collect();
+    let key = |e: &history::Exposure| format!("{}|{}|{}|{}", e.kind, e.component, e.location, e.vuln_id);
     let since = wpantry::system::now() - HISTORY_DAYS * wpantry::db::DAY;
     let out = match (history::exposures(&cache, since), history::fixes(&cache, since), history::scans(&cache, since)) {
         (Ok(exposures), Ok(fixes), Ok(scans)) => {
             let this = scans.iter().find(|s| s.id == scan_id);
             let (host, user) = this.map(|s| (s.host.clone(), s.user.clone())).unwrap_or_default();
+            let open = exposures.iter().filter(|e| e.resolved_at.is_none()).count();
+            let kept = exposures.iter().filter(|e| e.resolved_at.is_some() || !listed.contains(&key(e)));
             let h = obj([
                 ("since_days", J::Int(HISTORY_DAYS as i64)),
-                ("exposures", J::Arr(exposures.iter().map(|e| J::from(&e.to_json())).collect())),
+                ("open", J::Int(open as i64)),
+                ("exposures", J::Arr(kept.map(|e| J::from(&e.to_json())).collect())),
                 ("fixes", J::Arr(fixes.iter().map(|f| J::from(&f.to_json())).collect())),
                 ("scans", J::Arr(scans.iter().map(|s| J::from(&s.to_json())).collect())),
             ]);
@@ -119,7 +128,7 @@ fn history_json(scan_id: i64) -> (J, String, String) {
 
 pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &str) -> Result<()> {
     let Some(output) = output else { return Ok(()) };
-    let (history, host, user) = history_json(report.scan_id);
+    let (history, host, user) = history_json(report);
     output.write(&render(&bundle(report, opts, phase, history, &host, &user)))?;
     Ok(())
 }

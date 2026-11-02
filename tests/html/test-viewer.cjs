@@ -83,7 +83,7 @@ function planOf(findings){ // the shape src/html.rs writes: one step per command
 }
 const report={schema:1,impl:'rust',version:'0.2.0',checked:{'git repos':4,'project dependencies':812,'apps':61},unfixed:1,unknown_licenses:0,findings:every};
 const scope={machine:true,paths:[],offline:false,licenses:true,posture:true,posture_exclusions:['POSTURE-FIREWALL'],suspect_exemptions:{ids:['PRIV-ESCALATION'],paths:['trusted.js']},policy_files:{posture:'/example/posture.txt',suspect:'bundled'}};
-const history={since_days:90,
+const history={since_days:90,open:3,
   exposures:[{kind:'brew',component:'curl',version:'8.1',location:'',vuln_id:'CVE-2025-9',status:'fail',severity:'HIGH',kev:false,fixed:'8.2',note:'',first_at:1,last_at:2,resolved_at:3,days_exposed:2.5,first:'2026-10-20 08:00 UTC',resolved:'2026-10-22 20:00 UTC',dep_scope:'unknown',dep_direct:null,affected_range:'',fix_cmd:'brew upgrade curl'},
     {kind:'project',component:'smallvec',version:'1.6.0',location:'/Users/me/w/app/Cargo.lock',vuln_id:'CVE-2021-25900',status:'fail',severity:'CRITICAL',kev:true,fixed:'1.6.1',note:'',first_at:1,last_at:2,resolved_at:null,days_exposed:12,first:'2026-10-20 08:00 UTC',resolved:null,dep_scope:'runtime',dep_direct:true,affected_range:'',fix_cmd:''}],
   fixes:[{at:2,when:'2026-10-22 19:00 UTC',command:'brew upgrade curl',mode:'auto',ok:true,scan_id:3,verified_scan:4,targets:['brew|curl||CVE-2025-9']},
@@ -161,6 +161,9 @@ assert(patching.includes('<span class="badge ok">Verified</span><code>brew upgra
 assert(patching.includes('1 other fix ran: 1 failed, 0 not yet verified'));
 assert(patching.includes('<b>1 exposure resolved</b>') && patching.includes('2.5 days exposed'));
 assert(patching.includes('postgresql 1.0') && patching.includes('Mitigate: restrict pg_hba.conf'),'no fix yet, with its mitigation');
+const noFix=patching.split('No fix yet')[1];
+assert(!noFix.includes('evil.helper'),'a malicious package is removed, not waited on');
+assert(noFix.includes('<div class="big">2<small>advisories</small></div>'),'one listed plus the counted one');
 assert(patching.includes('1 more applicable advisory has no released fix'));
 assert(patching.includes('wpantry watch'));
 
@@ -174,13 +177,19 @@ const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth d
 assert(needs.includes('sudo fdesetup enable') && needs.includes('rotate it, then purge it') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
 assert(manual.includes('Clears <span class="mono">FileVault 1.0 · POSTURE-FILEVAULT</span>'));
 assert(manual.includes('<ol class="steps" style="counter-reset:step '+every.filter(f=>f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd).filter((c,i,a)=>a.indexOf(c)===i).length+'">'));
-assert(manual.includes('Copy agent prompt') && manual.includes('Preview prompt'));
+assert(manual.includes('Copy agent prompt') && manual.includes('Preview prompt') && !manual.includes('<pre>'),'the preview renders on request');
+click({preview:'1'});
+assert(section('manual').includes('<pre>Help me review') && section('manual').includes('&lt;b&gt;x&lt;/b&gt;'),'the preview is escaped text');
+click({preview:'1'});
 
 // 5 HISTORY: the exposure and remediation logs.
 const hist=section('history');
-assert(hist.includes('Exposure log') && hist.includes('1 open, 1 resolved') && hist.includes('<td class="mono">2026-10-22 20:00 UTC</td>'));
+assert(hist.includes('Exposure log') && hist.includes('2 scans, 3 exposures open, 1 resolved, 2 fixes run') && hist.includes('2 of the open exposures are this scan’s findings') && hist.includes('<td class="mono">2026-10-22 20:00 UTC</td>'));
 assert(hist.includes('Remediation log') && hist.includes('<td class="mono">npm install -g x@2</td><td>auto</td><td><span class="badge fail">failed</span></td><td class="mono"><span class="muted">not yet</span></td>'));
-assert(hist.includes('(2 scans)'));
+// every open exposure being a current finding still leaves a summary, never an empty section
+load({...bundle,history:{since_days:90,open:5,exposures:[],fixes:[],scans:history.scans}});
+assert(section('history').includes('5 exposures open, 0 resolved, 0 fixes run') && !section('history').includes('Exposure log'));
+load(bundle);
 
 // hero and navigation
 assert(page.includes('<b>erics-mac</b> · eric') && page.includes('scan #42') && page.includes('wpantry 0.2.0') && page.includes('What this machine is <em>exposed</em> to'));
@@ -302,6 +311,23 @@ ctx.viewerTest.addText(JSON.stringify(cleanBundle.runs[0].report),'empty-import.
 assert(!main().includes('All clear.'));
 ctx.viewerTest.addText(header,'empty-export.csv');
 assert(!main().includes('All clear.'));
+
+// long lists are cut behind one Show all button on screen, never in print
+const many=[]; for(let i=0;i<60;i++)many.push(finding('brew','formula-'+i,'CVE-2026-'+(100+i),'fail',{severity:'HIGH',fixed:'2',fix_cmd:'sudo fix formula-'+i}));
+load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,findings:many}}],plan:planOf(many),history:null});
+let brew=areas()[0][1];
+assert.equal((brew.match(/<span class="comp">/g)||[]).length,25);
+assert(brew.includes('data-more="area:brew"') && brew.includes('Show all 60 components'));
+assert.equal((section('manual').match(/<li>/g)||[]).length,40);
+assert(section('manual').includes('Show all 60 steps') && section('manual').includes('Needs you · 60 steps'));
+click({more:'area:brew'});
+brew=areas()[0][1];
+assert.equal((brew.match(/<span class="comp">/g)||[]).length,60);
+assert(!brew.includes('Show all'));
+events['window:beforeprint']();
+assert.equal((section('manual',elements['print-report'].innerHTML).match(/<li>/g)||[]).length,60,'print lists every step');
+assert(!elements['print-report'].innerHTML.includes('Show all'));
+assert.equal(wellFormed(main()),null);
 
 // a bundle whose plan does not fit its findings is ignored, not trusted
 load({...bundle,plan:[{command:'rm -rf /',mode:'auto',findings:[999]}]});

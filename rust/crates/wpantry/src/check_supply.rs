@@ -1766,9 +1766,15 @@ mod tests {
         let net = Fake::offline();
         let mut s = scan(&net, &d, Options::default());
         let (name, root) = repo(&d, "app");
+        // A script on open that opens a URL fails; one that only alerts warns, quoted.
         write(
             &root,
             "docs/a.pdf",
+            "%PDF-1.7\n1 0 obj << /Type /Catalog /OpenAction << /S /JavaScript /JS (app.launchURL(\"https://evil.example/x\", true)) >> >> endobj\n%%EOF",
+        );
+        write(
+            &root,
+            "docs/b.pdf",
             "%PDF-1.7\n1 0 obj << /Type /Catalog /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >> endobj\n%%EOF",
         );
         documents_pass(&mut s, &[]);
@@ -1781,7 +1787,12 @@ mod tests {
             (js[0].kind.as_str(), js[0].component.as_str(), js[0].status.as_str()),
             ("document", "app/docs/a.pdf", "fail")
         );
+        assert!(js[0].note.contains("opens a URL"), "{}", js[0].note);
         assert_eq!(js[0].fix_cmd, doc_fix("DOC-JS-ON-OPEN"));
+        let alert = by_id(&s, "DOC-JAVASCRIPT");
+        assert_eq!(alert.len(), 1, "{:?}", s.findings);
+        assert_eq!((alert[0].component.as_str(), alert[0].status.as_str()), ("app/docs/b.pdf", "warn"));
+        assert!(alert[0].note.contains("`app.alert(1)`"), "{}", alert[0].note);
         // What a ClamAV run found: hits fail, a run that couldn't happen is unchecked, none installed is nothing.
         let files = vec![root.join("docs/a.pdf")];
         let before = s.findings.len();

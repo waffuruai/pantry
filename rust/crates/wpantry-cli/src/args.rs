@@ -687,7 +687,7 @@ mod tests {
             (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
             (&["update", "now"], "unrecognized arguments: now"),
             (&["harden"], "the following arguments are required: what"),
-            (&["harden", "firewall"], "argument what: invalid choice: 'firewall' (choose from extension-cooldown)"),
+            (&["harden", "firewall"], "argument what: invalid choice: 'firewall' (choose from extension-cooldown, ca-trust)"),
             (&["harden", "extension-cooldown", "now"], "unrecognized arguments: now"),
             (
                 &["harden", "extension-cooldown", "--hours", "lots"],

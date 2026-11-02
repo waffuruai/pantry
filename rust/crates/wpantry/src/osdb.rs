@@ -13,7 +13,7 @@
 use crate::error::{Error, Result};
 use crate::lockfiles::Package;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DPKG_STATUS: &str = "/var/lib/dpkg/status";
@@ -119,17 +119,28 @@ pub fn rpm_listing(out: &str) -> Vec<Package> {
 /// The installed packages of this Linux machine with where they came from,
 /// or None when it has no package database we read.
 pub fn installed(rel: &BTreeMap<String, String>) -> Result<Option<(String, Vec<Package>)>> {
+    installed_from(rel, Path::new(DPKG_STATUS), Path::new(APK_INSTALLED), &|| crate::system::which("rpm"))
+}
+
+/// [`installed`] from the dpkg status file and apk database at these paths,
+/// and the `rpm` that `which_rpm` finds.
+fn installed_from(
+    rel: &BTreeMap<String, String>,
+    dpkg_status: &Path,
+    apk_installed: &Path,
+    which_rpm: &dyn Fn() -> Option<PathBuf>,
+) -> Result<Option<(String, Vec<Package>)>> {
     let id = rel.get("ID").map(String::as_str).unwrap_or("");
-    if Path::new(DPKG_STATUS).is_file() {
-        let text = crate::system::read_capped(Path::new(DPKG_STATUS), MAX_DB)?;
-        return Ok(Some((DPKG_STATUS.into(), dpkg(&text))));
+    if dpkg_status.is_file() {
+        let text = crate::system::read_capped(dpkg_status, MAX_DB)?;
+        return Ok(Some((dpkg_status.to_string_lossy().into_owned(), dpkg(&text))));
     }
-    if Path::new(APK_INSTALLED).is_file() {
-        let text = crate::system::read_capped(Path::new(APK_INSTALLED), MAX_DB)?;
-        return Ok(Some((APK_INSTALLED.into(), apk(&text))));
+    if apk_installed.is_file() {
+        let text = crate::system::read_capped(apk_installed, MAX_DB)?;
+        return Ok(Some((apk_installed.to_string_lossy().into_owned(), apk(&text))));
     }
     if id.contains("suse") || id == "sles" {
-        let rpm = crate::system::which("rpm").ok_or_else(|| Error::Missing("rpm".into()))?;
+        let rpm = which_rpm().ok_or_else(|| Error::Missing("rpm".into()))?;
         let out = crate::system::exec(
             &[
                 rpm.as_os_str(),
@@ -205,5 +216,57 @@ mod tests {
         let got = rpm_listing("curl 0:8.6.0-150600.4.6.1\ngpg-pubkey 0:39db7c82-5f68629b\nfoo 1:2.0-1\n");
         let got: Vec<(String, String)> = got.into_iter().map(|p| (p.name, p.version)).collect();
         assert_eq!(got, [("curl".into(), "8.6.0-150600.4.6.1".into()), ("foo".into(), "1:2.0-1".into())]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_reads_whichever_database_the_machine_has() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::system::TempDir::new("osdb").unwrap();
+        let (dpkg_status, apk_db, nowhere) = (d.path().join("status"), d.path().join("installed"), d.path().join("no"));
+        std::fs::write(&dpkg_status, "Package: openssl\nStatus: install ok installed\nVersion: 3.0.13\n").unwrap();
+        std::fs::write(&apk_db, "P:busybox\nV:1.36.1-r29\n").unwrap();
+        let rpm = d.path().join("rpm");
+        std::fs::write(&rpm, "#!/bin/sh\necho 'curl 0:8.6.0-1'\n").unwrap();
+        std::fs::set_permissions(&rpm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let names = |r: Result<Option<(String, Vec<Package>)>>| {
+            r.unwrap().map(|(from, pkgs)| (from, pkgs.into_iter().map(|p| p.name).collect::<Vec<_>>()))
+        };
+        let ubuntu = parse_os_release("ID=ubuntu\n");
+        let suse = parse_os_release("ID=opensuse-leap\n");
+        let no_rpm = || None;
+        let fake_rpm = || Some(rpm.clone());
+        let dpkg_from = dpkg_status.to_string_lossy().into_owned();
+        assert_eq!(
+            names(installed_from(&ubuntu, &dpkg_status, &apk_db, &no_rpm)),
+            Some((dpkg_from, vec!["openssl".into()]))
+        );
+        let apk_from = apk_db.to_string_lossy().into_owned();
+        assert_eq!(
+            names(installed_from(&ubuntu, &nowhere, &apk_db, &no_rpm)),
+            Some((apk_from, vec!["busybox".into()]))
+        );
+        assert_eq!(names(installed_from(&ubuntu, &nowhere, &nowhere, &fake_rpm)), None, "no database we read");
+        assert!(matches!(installed_from(&suse, &nowhere, &nowhere, &no_rpm), Err(Error::Missing(_))));
+        assert_eq!(
+            names(installed_from(&suse, &nowhere, &nowhere, &fake_rpm)),
+            Some(("rpm".into(), vec!["curl".into()]))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_rpm_is_a_source_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::system::TempDir::new("osdb").unwrap();
+        let rpm = d.path().join("rpm");
+        std::fs::write(&rpm, "#!/bin/sh\necho broken >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&rpm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let nowhere = d.path().join("no");
+        let got = installed_from(&parse_os_release("ID=sles\n"), &nowhere, &nowhere, &|| Some(rpm.clone()));
+        match got {
+            Err(Error::Failed(m)) => assert_eq!(m, "rpm -qa exited Some(1): broken"),
+            other => panic!("{other:?}"),
+        }
     }
 }

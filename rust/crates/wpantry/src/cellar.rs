@@ -15,6 +15,7 @@ use crate::catalog::{TOOLS, Tool};
 use crate::system::{Component, home};
 use crate::tools::tag;
 use crate::versions;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Formula names that aren't their catalog tool's name; `name@X` is looked
@@ -57,21 +58,30 @@ pub fn version_of(dir: &str) -> &str {
 /// The Cellar to read: HOMEBREW_CELLAR, else HOMEBREW_PREFIX's, else the
 /// first of the standard prefixes that has one.
 pub fn find_cellar() -> Option<PathBuf> {
-    if let Some(c) = std::env::var_os("HOMEBREW_CELLAR").filter(|c| !c.is_empty()) {
+    find_cellar_from(std::env::var_os("HOMEBREW_CELLAR"), std::env::var_os("HOMEBREW_PREFIX"), STANDARD_CELLARS)
+}
+
+const STANDARD_CELLARS: &[&str] = &["/opt/homebrew/Cellar", "/usr/local/Cellar", "/home/linuxbrew/.linuxbrew/Cellar"];
+
+/// [`find_cellar`] from the two variables' values and the standard prefixes.
+fn find_cellar_from(cellar: Option<OsString>, prefix: Option<OsString>, standard: &[&str]) -> Option<PathBuf> {
+    if let Some(c) = cellar.filter(|c| !c.is_empty()) {
         return Some(PathBuf::from(c));
     }
-    if let Some(p) = std::env::var_os("HOMEBREW_PREFIX").filter(|p| !p.is_empty()) {
+    if let Some(p) = prefix.filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p).join("Cellar"));
     }
-    ["/opt/homebrew/Cellar", "/usr/local/Cellar", "/home/linuxbrew/.linuxbrew/Cellar"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_dir())
+    standard.iter().map(PathBuf::from).find(|p| p.is_dir())
 }
 
 /// Where mise keeps its installs (`brew-<formula>` for the brew engine).
 pub fn mise_installs() -> PathBuf {
-    std::env::var_os("MISE_DATA_DIR")
+    mise_installs_from(std::env::var_os("MISE_DATA_DIR"))
+}
+
+/// [`mise_installs`] from MISE_DATA_DIR's value.
+fn mise_installs_from(data_dir: Option<OsString>) -> PathBuf {
+    data_dir
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local/share/mise"))
@@ -138,8 +148,12 @@ pub fn read(cellar: &Path, mise_installs: &Path) -> Inventory {
 
 /// The Cellar inventory for this machine, when it has a Cellar.
 pub fn inventory() -> Option<(PathBuf, Inventory)> {
-    let cellar = find_cellar()?;
-    let inv = read(&cellar, &mise_installs());
+    inventory_in(find_cellar()?, &mise_installs())
+}
+
+/// [`inventory`] for the Cellar at `cellar`.
+fn inventory_in(cellar: PathBuf, mise_installs: &Path) -> Option<(PathBuf, Inventory)> {
+    let inv = read(&cellar, mise_installs);
     (!inv.components.is_empty() || !inv.unmapped.is_empty()).then_some((cellar, inv))
 }
 
@@ -187,5 +201,37 @@ mod tests {
         assert!(!ssl.auto);
         assert_eq!(ssl.path, cellar.join("openssl@3").to_string_lossy());
         assert_eq!(read(&d.path().join("nowhere"), &mise), Inventory::default());
+        let (found, inv2) = inventory_in(cellar.clone(), &mise).unwrap();
+        assert_eq!((found, inv2), (cellar, inv));
+        assert_eq!(inventory_in(d.path().join("nowhere"), &mise), None, "an empty Cellar is no inventory");
+    }
+
+    #[test]
+    fn the_cellar_is_the_variables_then_the_standard_prefixes() {
+        let d = crate::system::TempDir::new("cellar").unwrap();
+        let here = d.path().join("Cellar");
+        std::fs::create_dir_all(&here).unwrap();
+        let os = |p: &Path| Some(OsString::from(p));
+        let standard = [here.to_string_lossy().into_owned()];
+        let standard: Vec<&str> = standard.iter().map(String::as_str).collect();
+        assert_eq!(find_cellar_from(os(Path::new("/c")), os(Path::new("/p")), &standard), Some(PathBuf::from("/c")));
+        assert_eq!(
+            find_cellar_from(Some(OsString::new()), os(Path::new("/p")), &standard),
+            Some(PathBuf::from("/p/Cellar"))
+        );
+        assert_eq!(find_cellar_from(None, Some(OsString::new()), &standard), Some(here.clone()));
+        assert_eq!(find_cellar_from(None, None, &["/nonexistent/Cellar"]), None);
+        let _home = crate::system::test_home();
+        assert_eq!(mise_installs_from(os(Path::new("/m"))), PathBuf::from("/m/installs"));
+        assert_eq!(mise_installs_from(Some(OsString::new())), home().join(".local/share/mise/installs"));
+        assert_eq!(mise_installs(), mise_installs_from(std::env::var_os("MISE_DATA_DIR")));
+        assert_eq!(
+            find_cellar(),
+            find_cellar_from(
+                std::env::var_os("HOMEBREW_CELLAR"),
+                std::env::var_os("HOMEBREW_PREFIX"),
+                STANDARD_CELLARS
+            )
+        );
     }
 }

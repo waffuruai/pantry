@@ -22,12 +22,13 @@ cargo build --locked --release         # target/release/wpantry
 cargo test --locked                    # unit, golden-file and comparator-vector tests, offline
 cargo clippy --locked --all-targets -- -D warnings && cargo fmt --check
 cargo deny --locked check && cargo vet --locked   # the supply-chain gates
+(cd .. && mise run coverage --html)               # the 90% line-coverage gate: both suites, one instrumented build
 
 # The contract suite against this binary (from the repo root; `mise run contract` builds first):
 WPANTRY=rust/target/release/wpantry python3 -m unittest discover -s tests/contract
 ```
 
-CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `rust-supply-chain`; `test` runs the `ca-trust/` scripts and `install.sh`).
+CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `rust-supply-chain`; `coverage` on Linux, with the HTML report as its artifact; `test` runs the `ca-trust/` scripts and `install.sh`).
 
 ## The library, `crates/wpantry/src`
 

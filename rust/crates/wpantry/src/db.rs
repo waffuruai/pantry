@@ -54,6 +54,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "affected_range", "TEXT"),
     ("exposures", "fix_cmd", "TEXT"),
     ("fixes", "targets", "TEXT"),
+    ("scans", "unchecked", "INTEGER"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -566,7 +567,9 @@ mod tests {
              INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1); \
              CREATE TABLE fixes (id INTEGER PRIMARY KEY, scan_id INTEGER, at REAL, command TEXT, mode TEXT, ok INTEGER, \
              verified_scan INTEGER); \
-             INSERT INTO fixes VALUES (1, 1, 1.0, 'brew upgrade x', 'auto', 1, NULL);",
+             INSERT INTO fixes VALUES (1, 1, 1.0, 'brew upgrade x', 'auto', 1, NULL); \
+             CREATE TABLE scans (id INTEGER PRIMARY KEY, started_at REAL, finished_at REAL, host TEXT, user TEXT, \
+             version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER);",
         )
         .unwrap();
         conn.close().unwrap();
@@ -574,6 +577,18 @@ mod tests {
         // A cache from before fixes kept their targets (v0.2.0) still reads its remediation log.
         let fixes = crate::history::fixes(&c, 0.0).expect("the fixes table gained its targets column");
         assert_eq!((fixes.len(), fixes[0].targets.len()), (1, 0));
+        // A cache from before scans counted their unchecked sources (v0.2.0) still records a scan.
+        let scan_cols: Vec<String> = c
+            .conn
+            .prepare("PRAGMA table_info(scans)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(scan_cols.iter().any(|c| c == "unchecked"), "{scan_cols:?}");
+        crate::history::record_scan(&c, 1.0, &[], &[], &crate::check::Options::default())
+            .expect("a scan records on the migrated table");
         let cols: Vec<String> = c
             .conn
             .prepare("PRAGMA table_info(findings)")

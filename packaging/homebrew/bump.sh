@@ -3,7 +3,9 @@
 # Point the Homebrew formula at a release: rewrite the tag in every `url` and
 # each `sha256` from the release's SHA256SUMS (the asset a digest belongs to
 # is the comment after it). Idempotent. With --check, change nothing and exit
-# 1 if the formula doesn't already match.
+# 1 if the formula doesn't already match. A SHA256SUMS with a malformed
+# record, or an asset listed twice, is rejected whole before anything is
+# written.
 #
 #   bump.sh [--check] [-o OUT] FORMULA TAG SHA256SUMS
 #
@@ -41,33 +43,46 @@ esac
 [ -f "$formula" ] || { echo "bump: no formula at $formula" >&2; exit 2; }
 [ -f "$sums" ] || { echo "bump: no SHA256SUMS at $sums" >&2; exit 2; }
 
-# Every asset the formula names must be in SHA256SUMS, with a 64-hex digest.
+tmp="$(mktemp)" map="$(mktemp)"
+trap 'rm -f "$tmp" "$map"' EXIT
+
+# Parse SHA256SUMS once, strictly, into the map rendering reads: one
+# `<64 hex>  <asset>` record per asset (sha256sum's text form; its binary
+# form, `*<asset>`, is accepted too). Anything else is a malformed manifest:
+# a record that isn't two fields, a digest that isn't 64 hex characters, or
+# an asset listed twice, whether or not the digests agree. Validating a
+# different lookup than the one that renders is how a bad record slips in.
+if ! awk -v sums="$sums" '
+  function bad(why) { printf "bump: %s line %d %s: %s\n", sums, NR, why, $0 > "/dev/stderr"; failed = 1 }
+  {
+    if (NF != 2) { bad("is not \"<sha256>  <asset>\""); next }
+    if (length($1) != 64 || $1 !~ /^[0-9a-f]+$/) { bad("has a malformed digest"); next }
+    asset = $2
+    sub(/^\*/, "", asset)
+    if (asset == "") { bad("names no asset"); next }
+    if (asset in digest) { bad(digest[asset] == $1 ? "repeats " asset : "lists " asset " again with another digest"); next }
+    digest[asset] = $1
+    print asset, $1
+  }
+  END { exit failed }
+' "$sums" > "$map"; then
+  exit 1
+fi
+
+# Every asset the formula names must have a record.
 assets="$(sed -n 's/^ *sha256 "[^"]*" *# *\(wpantry-[A-Za-z0-9_.-]*\) *$/\1/p' "$formula" | sort -u)"
 [ -n "$assets" ] || { echo "bump: $formula has no 'sha256 \"…\" # wpantry-<target>' lines" >&2; exit 2; }
 for a in $assets; do
-  d="$(awk -v a="$a" '$2 == a { print $1 }' "$sums" | head -n 1)"
-  if [ -z "$d" ]; then
+  if ! awk -v a="$a" '$1 == a { found = 1 } END { exit !found }' "$map"; then
     echo "bump: $sums has no line for $a" >&2
-    exit 1
-  fi
-  if ! printf '%s\n' "$d" | grep -Eq '^[0-9a-f]{64}$'; then
-    echo "bump: $sums has a malformed digest for $a: $d" >&2
     exit 1
   fi
 done
 
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
 # The tag in each url: /releases/download/vX.Y.Z/<asset>. The digest on each
-# sha256 line: looked up by the asset its comment names.
-awk -v tag="$tag" -v sums="$sums" '
-  BEGIN {
-    while ((getline line < sums) > 0) {
-      split(line, f, /[ \t]+/)
-      if (f[2] != "") digest[f[2]] = f[1]
-    }
-    close(sums)
-  }
+# sha256 line: looked up in the map by the asset its comment names.
+awk -v tag="$tag" '
+  NR == FNR { digest[$1] = $2; next }
   /^ *url "/ {
     sub(/\/releases\/download\/v[0-9][0-9A-Za-z.+-]*\//, "/releases/download/" tag "/")
   }
@@ -78,7 +93,7 @@ awk -v tag="$tag" -v sums="$sums" '
     if (asset in digest) sub(/sha256 "[^"]*"/, "sha256 \"" digest[asset] "\"")
   }
   { print }
-' "$formula" > "$tmp"
+' "$map" "$formula" > "$tmp"
 
 if [ "$check" -eq 1 ]; then
   if cmp -s "$tmp" "$formula"; then

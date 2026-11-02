@@ -348,7 +348,19 @@ fn alive(pid: u32) -> bool {
     .is_ok_and(|o| o.code == Some(0) && !o.stdout.trim().is_empty())
 }
 
-#[cfg(not(unix))]
+/// tasklist's filtered listing names the pid in its own column when the
+/// process exists, and says "No tasks" otherwise.
+#[cfg(windows)]
+fn alive(pid: u32) -> bool {
+    exec(
+        &[OsStr::new("tasklist"), OsStr::new("/FI"), OsStr::new(&format!("PID eq {pid}")), OsStr::new("/NH")],
+        &[],
+        Duration::from_secs(5),
+    )
+    .is_ok_and(|o| o.code == Some(0) && o.stdout.contains(&format!(" {pid} ")))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn alive(_pid: u32) -> bool {
     false
 }

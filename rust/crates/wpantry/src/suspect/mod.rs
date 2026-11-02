@@ -20,8 +20,11 @@
 //! payloads, string decoders, escaped source), [`escalation`] (privilege
 //! and persistence), [`credentials`] (credential stores and the network),
 //! [`wallet`] (signing and approvals), [`network`] (raw IP addresses),
-//! [`scripts`] (unpinned third-party scripts on a page) and [`blobs`]
-//! (binaries without sources). This file is the index: the finding, the
+//! [`scripts`] (unpinned third-party scripts on a page), [`blobs`]
+//! (binaries without sources), [`profiling`] (an info-stealer prompt aimed
+//! at an AI), [`cardholder`] (card numbers and fields in the clear),
+//! [`secrets_weak`] (hardcoded and weak passwords) and [`keylogger`]
+//! (keystroke capture). This file is the index: the finding, the
 //! contexts a path falls into, the policy, the size limits, the walk and
 //! the dispatch over one file's text, and the helpers the rules share.
 
@@ -29,11 +32,15 @@ use crate::repos;
 use std::path::{Path, PathBuf};
 
 mod blobs;
+mod cardholder;
 mod credentials;
 mod escalation;
+mod keylogger;
 mod network;
 mod obfuscation;
+mod profiling;
 mod scripts;
+mod secrets_weak;
 mod wallet;
 
 pub use blobs::dependency_blobs;
@@ -65,6 +72,12 @@ pub enum Context {
     Style,
     /// package.json, binding.gyp, Makefiles: install-time commands.
     Manifest,
+    /// Prose and agent-instruction files: Markdown, reStructuredText, and
+    /// the dotfiles that carry prompts for a coding agent.
+    Prompt,
+    /// Structured data and config: JSON, CSV, YAML, `.env`, logs, where a
+    /// leaked card number or a hardcoded password sits at rest.
+    Data,
     Other,
 }
 
@@ -89,6 +102,13 @@ pub fn context(file: &str) -> Context {
     {
         return Context::Shell;
     }
+    // Agent-instruction dotfiles and `.env` files have no useful extension.
+    if [".cursorrules", ".windsurfrules", ".clinerules"].contains(&name) {
+        return Context::Prompt;
+    }
+    if name == ".env" || name.starts_with(".env.") {
+        return Context::Data;
+    }
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     match ext {
         "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "vue" | "svelte" | "astro" => Context::Web,
@@ -98,6 +118,10 @@ pub fn context(file: &str) -> Context {
         "c" | "h" | "cc" | "cpp" | "hpp" | "m" | "mm" | "rs" | "swift" | "go" | "java" | "kt" | "cs" | "zig" | "s"
         | "asm" | "cu" | "cuh" | "cl" | "metal" | "glsl" | "wgsl" | "hlsl" | "frag" | "vert" => Context::Native,
         "css" | "scss" | "sass" | "less" => Context::Style,
+        "md" | "markdown" | "mdc" | "rst" => Context::Prompt,
+        "json" | "jsonc" | "csv" | "tsv" | "yaml" | "yml" | "ini" | "conf" | "env" | "log" | "properties" => {
+            Context::Data
+        }
         _ => Context::Other,
     }
 }
@@ -234,6 +258,10 @@ pub fn scan_text(file: &str, text: &str, kind: Kind) -> Vec<Suspect> {
     credentials::scan(file, text, ctx, kind, &mut out);
     wallet::scan(file, text, ctx, kind, &mut out);
     network::scan(file, text, ctx, &mut out);
+    profiling::scan(file, text, ctx, kind, &mut out);
+    cardholder::scan(file, text, ctx, &mut out);
+    secrets_weak::scan(file, text, ctx, &mut out);
+    keylogger::scan(file, text, ctx, kind, &mut out);
     out
 }
 
@@ -274,7 +302,12 @@ mod tests {
         assert_eq!(context("x.tsx"), Context::Web);
         assert_eq!(context("k.metal"), Context::Native);
         assert_eq!(context("s.scss"), Context::Style);
-        assert_eq!(context("README.md"), Context::Other);
+        assert_eq!(context("README.md"), Context::Prompt);
+        assert_eq!(context("rules/.cursorrules"), Context::Prompt);
+        assert_eq!(context("config/.env"), Context::Data);
+        assert_eq!(context("data/events.log"), Context::Data);
+        assert_eq!(context("conf/app.yaml"), Context::Data);
+        assert_eq!(context("x.bin"), Context::Other);
         assert_eq!(context(".github/workflows/ci.yml"), Context::Shell);
         assert_eq!(context("Dockerfile"), Context::Shell);
         assert_eq!(context("docker/Dockerfile.ci"), Context::Shell);

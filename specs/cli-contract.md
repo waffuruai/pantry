@@ -16,6 +16,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
                  [--json] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
                  [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]
+                 [--hooks-policy FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export [--csv FILE] [--jsonl FILE] [--all]
 wpantry breach [--enable | --disable]
@@ -39,7 +40,8 @@ wpantry skill
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
-| `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` is reported (`REPO-POLICY`, warn), never obeyed |
+| `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy`, `--hooks-policy` | Policy files; default to the bundled ones. A missing file is a usage error. A repo's own `.gitleaks.toml` is reported (`REPO-POLICY`, warn), never obeyed |
+| `--hooks-policy FILE` | Repo hooks someone has read and accepts: `hook <file> "<when>" <command>` (one hook, matched on its exact command, so a hook that changes what it runs is reported again) or `repo <path>` (every hook that warns in the repos at or under that path). Only `OPEN-HOOK` and `INSTALL-HOOK` findings can be accepted; `RUNS-REPO-FILE`, `LOADER`, `IOC` and `MARKER` never are, and a line naming one is refused in the finding's `fix_cmd`. Accepted hooks are not findings and are counted (`checked["repo hooks accepted by policy"]`); every `OPEN-HOOK` and `INSTALL-HOOK` `fix_cmd` ends with the line that accepts it. The file is part of the scan's scope |
 | `--jobs N` | gitleaks scans at once (default: half the cores, at most 4); each gets a share of the cores |
 | `--no-posture`, `--posture-policy FILE` | The machine's own security settings (kind `posture`) run with the machine inventory; `--no-posture` skips them, the policy file lists check ids to skip (one per line, `POSTURE-` prefix optional) |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |

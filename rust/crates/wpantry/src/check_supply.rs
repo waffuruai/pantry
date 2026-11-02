@@ -373,13 +373,15 @@ fn secrets(
 /// Code each repo runs when it is opened, installed or built (agent hooks,
 /// MCP servers in the repo, editor tasks on open, install scripts, native
 /// addons), and the markers of known hijacked-repo campaigns. Running a file
-/// kept in the repo fails; running a command at all warns.
+/// kept in the repo fails; running a command at all warns, unless the hooks
+/// policy accepts that exact hook, in which case it is only counted.
 pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     if repos.is_empty() {
         return;
     }
     scan.status("Looking for code the repos run on open or install");
     let iocs = hooks::Indicators::parse(&scan.opts.policy.repo_hooks());
+    let accepted = scan.opts.policy.hooks_policy();
     let found: Vec<Vec<hooks::Hook>> = system::par_map(repos, system::PROBES, |(_, root)| {
         let mut h = hooks::scan_repo(root, &iocs);
         h.extend(hooks::campaign_markers(root));
@@ -388,8 +390,13 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     for ((name, root), hooks) in repos.iter().zip(found) {
         scan.count("repos checked for hooks", 1);
         for h in hooks {
+            let listed = accepted.lists(root, &h);
+            if listed && h.acceptable() {
+                scan.count("repo hooks accepted by policy", 1);
+                continue;
+            }
             let fails = h.fails();
-            let (status, fix_cmd) = if fails {
+            let (status, mut fix_cmd) = if fails {
                 (
                     "fail",
                     format!(
@@ -407,11 +414,18 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
                 (
                     "warn",
                     format!(
-                        "Read {} before opening or installing this repo; remove the hook if you don't need it",
-                        h.file
+                        "Read {} before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {}",
+                        h.file,
+                        h.policy_line()
                     ),
                 )
             };
+            if listed {
+                fix_cmd.push_str(&format!(
+                    ". Your hooks policy names it, but a {} hook is never accepted: the policy only covers hooks that warn",
+                    h.id
+                ));
+            }
             scan.add(Finding {
                 kind: "repo-hook".into(),
                 component: format!("{name}/{}", h.file),

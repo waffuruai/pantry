@@ -372,7 +372,7 @@ fn resolved_conf_dot(r: Runner) -> Option<String> {
         extra.sort();
         for p in extra {
             all.push('\n');
-            all.push_str(&text(&p.to_string_lossy()));
+            all.push_str(&text(&p));
         }
     }
     all.lines()

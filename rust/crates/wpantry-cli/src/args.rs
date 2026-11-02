@@ -51,6 +51,7 @@ pub struct Check {
     pub no_clipboard: bool,
     pub posture_policy: Option<PathBuf>,
     pub suspect_policy: Option<PathBuf>,
+    pub hooks_policy: Option<PathBuf>,
 }
 
 /// What `mitigate` acts on.
@@ -130,6 +131,7 @@ pub enum Command {
     Harden {
         what: String,
         hours: u32,
+        bundle: Option<PathBuf>,
     },
     Mitigate {
         target: Target,
@@ -148,6 +150,9 @@ pub enum Command {
 /// What parsing decided: run a command, or exit now (help printed, or a
 /// usage error).
 #[derive(Debug, PartialEq)]
+// `Run` carries the whole parsed command; the other two are one string each.
+// One value is built per process, so the size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Parsed {
     Run(Command),
     Help(String),
@@ -159,7 +164,7 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,v
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--fix] [--yes] [--dryrun] [--refresh] [--offline] [--json] [--html FILE]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]\n                      [--no-clipboard]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--fix] [--yes] [--dryrun] [--refresh] [--offline] [--json] [--html FILE]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]\n                      [--hooks-policy FILE]\n                      [--no-clipboard]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
@@ -182,7 +187,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --fix                 apply the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check (--update still works)\n  --yes                 with --fix: run and write without asking\n  --dryrun              print the fix plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --fix                 apply the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check (--update still works)\n  --yes                 with --fix: run and write without asking\n  --dryrun              print the fix plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -222,13 +227,13 @@ fn help(cmd: &str) -> String {
             "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes --fix ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
         }
         "harden" => {
-            "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
+            "apply one of the fixes wpantry can make itself\n\npositional arguments:\n  {extension-cooldown,ca-trust}\n    extension-cooldown  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n    ca-trust            distrust the leaked eMudhra roots in the system trust store (sudo asks to install the result)\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      extension-cooldown: the cooldown (default 72)\n  --bundle FILE  ca-trust: rewrite this PEM bundle instead of the system store"
         }
         "mitigate" => {
             "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry --fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for check\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -262,6 +267,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-posture", false),
             ("--posture-policy", true),
             ("--suspect-policy", true),
+            ("--hooks-policy", true),
             ("--no-clipboard", false),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
@@ -295,7 +301,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--offline", false),
             ("--version", true),
         ],
-        "harden" => &[("--help", false), ("--hours", true)],
+        "harden" => &[("--help", false), ("--hours", true), ("--bundle", true)],
         "mitigate" => &[
             ("--help", false),
             ("--dry-run", false),
@@ -437,6 +443,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 ("--repo-hooks", &mut c.repo_hooks),
                 ("--posture-policy", &mut c.posture_policy),
                 ("--suspect-policy", &mut c.suspect_policy),
+                ("--hooks-policy", &mut c.hooks_policy),
             ] {
                 if let Some(v) = value(opt) {
                     let p = expand(&v);
@@ -595,8 +602,12 @@ pub fn parse(argv: &[String]) -> Parsed {
         }
         "harden" => {
             let what = match positional.as_slice() {
-                [w] if w == "extension-cooldown" => w.clone(),
-                [w] => return fail(format!("argument what: invalid choice: '{w}' (choose from extension-cooldown)")),
+                [w] if w == "extension-cooldown" || w == "ca-trust" => w.clone(),
+                [w] => {
+                    return fail(format!(
+                        "argument what: invalid choice: '{w}' (choose from extension-cooldown, ca-trust)"
+                    ));
+                }
                 [] => return fail("the following arguments are required: what".into()),
                 [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
             };
@@ -607,7 +618,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                     _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
                 },
             };
-            Command::Harden { what, hours }
+            Command::Harden { what, hours, bundle: value("--bundle").map(|v| expand(&v)) }
         }
         "mitigate" => {
             let target = match positional.as_slice() {
@@ -892,11 +903,11 @@ mod tests {
         );
         assert_eq!(
             p(&["harden", "extension-cooldown"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72 })
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72, bundle: None })
         );
         assert_eq!(
             p(&["harden", "extension-cooldown", "--hours", "48"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48 })
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48, bundle: None })
         );
         let mitigate = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| Command::Mitigate {
             target,
@@ -969,7 +980,10 @@ mod tests {
             (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
             (&["update", "now"], "unrecognized arguments: now"),
             (&["harden"], "the following arguments are required: what"),
-            (&["harden", "firewall"], "argument what: invalid choice: 'firewall' (choose from extension-cooldown)"),
+            (
+                &["harden", "firewall"],
+                "argument what: invalid choice: 'firewall' (choose from extension-cooldown, ca-trust)",
+            ),
             (&["harden", "extension-cooldown", "now"], "unrecognized arguments: now"),
             (
                 &["harden", "extension-cooldown", "--hours", "lots"],

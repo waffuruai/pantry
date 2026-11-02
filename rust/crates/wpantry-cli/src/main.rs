@@ -111,6 +111,7 @@ fn cmd_check(a: Check) -> Result<i32> {
             repo_hooks: a.repo_hooks.clone(),
             posture: a.posture_policy.clone(),
             suspect: a.suspect_policy.clone(),
+            hooks: a.hooks_policy.clone(),
         },
         refresh: a.refresh,
         offline: a.offline,
@@ -794,6 +795,17 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
     Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
 }
 
+/// `harden ca-trust`: distrust the leaked roots in the system trust store
+/// (the shell script it replaced did the same), asking for sudo only to install
+/// the result.
+fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
+    wpantry::catrust::fix(bundle, &|line| show(line))?;
+    if bundle.is_none() {
+        show("  Re-run wpantry check to confirm. A macOS update may restore the file: re-run this after one.");
+    }
+    Ok(EXIT_OK)
+}
+
 /// `harden extension-cooldown`: the one posture fix that edits files.
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
     let changed = wpantry::posture::tools::set_extension_cooldown(hours)?;
@@ -1028,7 +1040,13 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
-        Command::Harden { what: _, hours } => cmd_harden_cooldown(hours),
+        Command::Harden { what, hours, bundle } => {
+            if what == "ca-trust" {
+                cmd_harden_ca_trust(bundle.as_deref())
+            } else {
+                cmd_harden_cooldown(hours)
+            }
+        }
         Command::Mitigate { target, dry_run, yes, no_input, undo, offline, no_machine, path } => match target {
             Target::List => cmd_mitigate_list(),
             Target::All => cmd_check(Check {

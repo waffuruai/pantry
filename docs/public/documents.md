@@ -1,6 +1,6 @@
 # Documents and images
 
-The files people are sent are the files scanners skip: a spreadsheet with macros, a PDF that runs JavaScript when it opens, a Word file whose template lives on someone else's server, a picture that is really a program. wpantry reads PDFs, Office documents (old and new), RTF and images in the repos it scans and, on a machine scan, the top of `~/Downloads` and `~/Desktop`, for the shapes document malware takes. Nothing is opened, rendered, executed or fetched: every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess. When [ClamAV](https://www.clamav.net/) is installed, it runs over the same files.
+The files people are sent are the files scanners skip: a spreadsheet with macros, a PDF that runs JavaScript when it opens, a Word file whose template lives on someone else's server, a picture that is really a program. wpantry reads PDFs, Office documents (old and new), RTF and images in the repos it scans and, on a machine scan, the top of `~/Downloads`, `~/Desktop` and `~/Documents`, for the shapes document malware takes. Nothing is opened, rendered, executed or fetched: every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess. When [ClamAV](https://www.clamav.net/) is installed, it runs over the same files.
 
 **A clean result is not a clean file.** These checks find the shapes; ClamAV finds what it has signatures for. A document from someone you don't know still goes in a sandbox or a viewer with scripting off.
 
@@ -9,10 +9,10 @@ The files people are sent are the files scanners skip: a spreadsheet with macros
 | `DISGUISED-PROGRAM` | A file named like a document or image whose first bytes are a Windows, ELF or Mach-O executable, or a shebang script | always | — |
 | `DOC-POLYGLOT` | A `.pdf` with no `%PDF-` header in its first KiB (HTML, a zip or something else wearing the name) | always | — |
 | `DOC-LAUNCH` | A PDF `/Launch` action: the viewer is asked to start a program | always | — |
-| `DOC-JS-ON-OPEN` | PDF JavaScript (`/JS`, `/JavaScript`) with an `/OpenAction` or `/AA`: it runs when the file opens | always | — |
-| `DOC-JAVASCRIPT` | PDF JavaScript with no open action | — | always (forms use it; so do exploits) |
+| `DOC-JS-ON-OPEN` | PDF JavaScript that runs when the file opens (an `/OpenAction` JavaScript action, or the document-level `/Names` tree) and reaches outside the document: `app.launchURL`, `submitForm`, `exportDataObject`, `app.openDoc`, `getURL`, `Net.HTTP`, `app.mailMsg`, `Collab.`, `util.printf`, or `eval`/`unescape`/`String.fromCharCode` over a long escaped or hex payload; or a script that can't be read (a missing object, a filter other than FlateDecode). The note quotes the script's first line | always | — |
+| `DOC-JAVASCRIPT` | PDF JavaScript that stays inside the document: on open but only printing, alerting, popping up a menu or formatting fields; on open but only defining functions for links and fields to call later (KiCad's `ShM` pop-up launches a URL when the reader picks one, and the note says so); or off the open path (field scripts, page-close actions). An empty on-open script (TCPDF writes one) is nothing. The note quotes the first script | — | always (forms use it; so do exploits) |
 | `DOC-OBFUSCATED` | PDF action names written with `#xx` hex escapes (`/J#61vaScript`); an RTF with a malformed header (`{\rt` but not `{\rtf1`) or binary spliced into its object stream (`\bin`) | always | — |
-| `DOC-EMBEDDED` | PDF embedded files | — | always |
+| `DOC-EMBEDDED` | PDF embedded files, named from the file specification's `/UF` or `/F` (Acrobat Distiller's `EI.joboptions` rides along in its PDFs; a `.exe` is another matter) | — | always |
 | `DOC-FORM` | PDF XFA forms, rich media, submit, remote-goto or import actions | — | always |
 | `DOC-TRAILER` | More than 1 KiB after the PDF's last `%%EOF` | — | always |
 | `DOC-MACRO` | VBA macros (`vbaProject.bin`, or `VBA`/`Macros`/`_VBA_PROJECT` storages in a legacy file) | in a format meant to carry none (`.docx`, `.xlsx`, `.pptx`, or a legacy file named as one), or a content type that says macro-enabled under a plain extension | in a macro-enabled format (`.docm`, `.xlsm`, `.pptm`, `.doc`, `.xls`, `.ppt`) |
@@ -34,7 +34,7 @@ The files people are sent are the files scanners skip: a spreadsheet with macros
 
 ## How the formats are read
 
-- **PDF**: the whole file, as pdfid does it: names are counted after `#xx` escapes are decoded, so a hidden `/JavaScript` still counts and the hiding is itself a finding. `/ObjStm` is noted in the message: compressed object streams can hold more than the raw bytes show.
+- **PDF**: the whole file, as pdfid does it: names are counted after `#xx` escapes are decoded, so a hidden `/JavaScript` still counts and the hiding is itself a finding. Compressed object streams (`/ObjStm`, FlateDecode) are inflated and read, and the message says so. A script that runs on open is followed from the `/OpenAction`, the `/Names` tree (one level of `/Kids`) or a page's `/AA` open action to its `/JS` value, a literal string with its escapes undone, a hex string, UTF-16 with a byte-order mark, or a stream (inflated when FlateDecode, "could not be read" for any other filter), up to 256 KiB, and graded by what it calls; the finding quotes its first line so you can recognize it.
 - **OOXML** (`.docx`, `.xlsx`, `.pptx` and the macro-enabled and template variants, OpenDocument): the zip's central directory gives the part names (macros, macro sheets, OLE objects, ActiveX); `[Content_Types].xml`, every `.rels` and the main part (`word/document.xml`, `xl/workbook.xml`, `ppt/presentation.xml`) are inflated with a bounded DEFLATE reader of our own (no new dependency) to find external relationships and DDE fields. Encrypted members and zip64 files are `DOC-UNREADABLE`.
 - **Legacy Office** (`.doc`, `.xls`, `.ppt`, compound files starting `D0 CF 11 E0`): the directory's names are UTF-16 in the file, so macro and object storages are found without walking the FAT; nothing deeper is attempted.
 - **RTF**: control words in the first 16 MiB, lowercased.

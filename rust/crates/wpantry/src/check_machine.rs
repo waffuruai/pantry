@@ -1421,7 +1421,7 @@ mod tests {
         downloads(&mut s);
         drop(home);
         assert!(
-            s.counts.iter().any(|(k, n)| k == "documents and images in Downloads, Desktop and Documents" && *n == 1),
+            s.counts.iter().any(|(k, n)| k == "documents and images in Downloads and Desktop" && *n == 1),
             "{:?}",
             s.counts
         );

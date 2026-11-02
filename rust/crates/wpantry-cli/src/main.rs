@@ -7,13 +7,14 @@
 //! error.
 
 mod args;
+mod html;
 mod progress;
 mod report;
 mod schedule;
 mod style;
 mod update;
 
-use args::{Check, Command, Parsed};
+use args::{Check, Command, Parsed, Target};
 use rusqlite::types::ValueRef;
 use std::io::{IsTerminal, Write};
 use style::Style;
@@ -96,11 +97,13 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
 }
 
 fn cmd_check(a: Check) -> Result<i32> {
+    let html = a.html.as_deref().map(html::Output::new).transpose()?;
     let net = wpantry::net::Http::new();
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
         no_posture: a.no_posture,
+        no_clipboard: a.no_clipboard,
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
@@ -108,6 +111,7 @@ fn cmd_check(a: Check) -> Result<i32> {
             repo_hooks: a.repo_hooks.clone(),
             posture: a.posture_policy.clone(),
             suspect: a.suspect_policy.clone(),
+            hooks: a.hooks_policy.clone(),
         },
         refresh: a.refresh,
         offline: a.offline,
@@ -117,6 +121,7 @@ fn cmd_check(a: Check) -> Result<i32> {
     };
     let first = scan(opts.clone(), a.json, &net)?;
     if a.json {
+        html::finish(html, &first, &opts, "scan")?;
         emit(&envelope(&first).dumps_indent(1));
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
     }
@@ -125,13 +130,14 @@ fn cmd_check(a: Check) -> Result<i32> {
     if let Some(n) = update::notice(&net, a.offline) {
         eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
     }
-    if !(a.update || a.dryrun) {
+    if !(a.fix || a.dryrun) {
+        html::finish(html, &first, &opts, "scan")?;
         return Ok(status);
     }
     // Before changing anything, ask, when someone is there to answer.
     let interactive = !a.no_input && std::io::stdin().is_terminal();
     let confirm = |cmds: &[String]| {
-        if !interactive {
+        if a.yes || !interactive {
             return true;
         }
         for c in cmds {
@@ -141,10 +147,13 @@ fn cmd_check(a: Check) -> Result<i32> {
         progress::Progress::new(false).ask(&format!("Run {what} now?"), true).unwrap_or(false)
     };
     let applied = report::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
+    // then the stopgaps wpantry has, for the hosts they are for
+    let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dryrun, a.yes, interactive)?;
     if a.dryrun {
+        html::finish(html, &first, &opts, "before updates (dry run)")?;
         return Ok(status);
     }
-    if !applied.ran.is_empty() {
+    if !applied.ran.is_empty() || !stopgaps_ran.is_empty() {
         let cache = Cache::open(None)?;
         for (cmd, ok) in &applied.ran {
             // The exposures this command was the fix for; the re-check verifies against them.
@@ -156,10 +165,13 @@ fn cmd_check(a: Check) -> Result<i32> {
                 .collect();
             wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets)?;
         }
+        for (cmd, ok, targets) in &stopgaps_ran {
+            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "stopgap", *ok, targets)?;
+        }
         cache.close()?;
     }
     say("\nRe-checking after the updates…");
-    let again = scan(Options { refresh: false, ask: false, ..opts }, false, &net)?;
+    let again = scan(Options { refresh: false, ask: false, ..opts.clone() }, false, &net)?;
     if !applied.ran.is_empty() {
         let cache = Cache::open(None)?;
         wpantry::history::verify_fixes(&cache, first.scan_id, again.scan_id)?;
@@ -167,7 +179,67 @@ fn cmd_check(a: Check) -> Result<i32> {
     }
     // A fix that failed fails the run even when the re-check comes back clean.
     let rechecked = report::report(&again, &db, &mut |l| show(l));
-    Ok(if rechecked != 0 { rechecked } else { applied.status })
+    let phase = if applied.status == 0 { "after updates" } else { "after updates (an update command failed)" };
+    html::finish(html, &again, &opts, phase)?;
+    Ok(if rechecked != 0 { rechecked } else { applied.status.max(stopgap_status) })
+}
+
+/// Every stopgap wpantry has, run (or, on a dry run, planned) on this
+/// host: one that isn't for this host is skipped silently, one that needs
+/// a yes gets it from the terminal or `--yes`, else is skipped with a
+/// line. Returns the exit status (1 when one failed) and, for the
+/// remediation log, each one applied as (command, ok, the findings it was
+/// for).
+/// One stopgap applied: the command for the log, whether it succeeded, the findings it was for.
+type StopgapRun = (String, bool, Vec<String>);
+
+fn stopgaps(
+    findings: &[wpantry::check::Finding],
+    dryrun: bool,
+    yes: bool,
+    interactive: bool,
+) -> Result<(i32, Vec<StopgapRun>)> {
+    use wpantry::mitigate::{self, Done, Mode};
+    let mut status = EXIT_OK;
+    let mut ran = Vec::new();
+    for s in mitigate::STOPGAPS {
+        let mut lines: Vec<String> = Vec::new();
+        let confirm = |what: &str| {
+            if yes {
+                return true;
+            }
+            if !interactive {
+                show(&format!("  · skipped: pass --yes to {what} without asking (wpantry mitigate {} --yes)", s.id));
+                return false;
+            }
+            progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
+        };
+        let mode = if dryrun { Mode::DryRun } else { Mode::Apply };
+        let command = format!("wpantry mitigate {} --yes", s.id);
+        let targets: Vec<String> =
+            findings.iter().filter(|f| f.vuln_id.eq_ignore_ascii_case(s.id)).map(wpantry::history::key_of).collect();
+        // the lines are shown only once the stopgap turns out to be for this host
+        let done = (s.run)(&mitigate::Real, mode, &confirm, &mut |l| lines.push(l.to_string()));
+        if matches!(done, Ok(Done::NotHere(_))) {
+            continue;
+        }
+        show(&format!("\n==> Stopgap for {}: {}{}", s.id, s.what, if dryrun { " (dry run)" } else { "" }));
+        for l in &lines {
+            show(l);
+        }
+        match done {
+            Ok(Done::Applied) if !dryrun => ran.push((command, true, targets)),
+            Ok(Done::Applied) | Ok(Done::Declined) => {}
+            Ok(Done::Nothing(why)) => show(&format!("  ✓ {why}")),
+            Ok(Done::NotHere(_)) => unreachable!("skipped above"),
+            Err(e) => {
+                show(&format!("  ✗ {e}"));
+                status = EXIT_FAIL;
+                ran.push((command, false, targets));
+            }
+        }
+    }
+    Ok((status, ran))
 }
 
 fn round3(x: f64) -> f64 {
@@ -526,8 +598,10 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
 }
 
-fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, clipboard_guard: bool) -> Result<i32> {
     match action {
+        "install" if clipboard_guard => schedule::install_guard(dry_run),
+        "uninstall" if clipboard_guard => schedule::uninstall_guard(),
         "install" => {
             let every = schedule::Every::parse(every).expect("validated");
             let (h, m) = at.split_once(':').expect("validated");
@@ -537,6 +611,117 @@ fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i3
         "uninstall" => schedule::uninstall(),
         _ => schedule::run(),
     }
+}
+
+/// `clipboard`: the self-test now (exit 1 when a canary came back
+/// changed; a test that couldn't run says so and exits 0, as an unchecked
+/// source does), or with `--watch` the resident guard, which runs until
+/// stopped, or after the first alert with `--once`. Each alert is one
+/// line (or one JSON object), a desktop notification and a `clipper`
+/// event in the cache. `WPANTRY_CLIPBOARD_FAKE=<file>` reads the
+/// clipboard from a script instead (one line per read; the contract
+/// tests' hook) and sends no notification.
+fn cmd_clipboard(watch: bool, once: bool, window: f64, json: bool) -> Result<i32> {
+    use wpantry::clipper::{self, Clipboard, SelfTest};
+    use wpantry::guard;
+    if !watch {
+        let result = clipper::run_self_test();
+        let (code, state, detail) = match &result {
+            SelfTest::Skipped(why) => (EXIT_OK, "skipped", vec![("why", J::from(why.as_str()))]),
+            SelfTest::Clean(n) => (EXIT_OK, "clean", vec![("canaries", J::Int(*n as i64))]),
+            SelfTest::Swapped(swaps) => (
+                EXIT_FAIL,
+                "swapped",
+                vec![(
+                    "swaps",
+                    J::Arr(
+                        swaps
+                            .iter()
+                            .map(|s| {
+                                obj([
+                                    ("chain", s.chain.name().into()),
+                                    ("canary", s.canary.as_str().into()),
+                                    ("got", s.got.as_str().into()),
+                                    ("read", J::Int(s.read as i64)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                )],
+            ),
+        };
+        if json {
+            let mut pairs: Vec<(&str, J)> = vec![
+                ("schema", J::Int(SCHEMA)),
+                ("impl", IMPL.into()),
+                ("version", VERSION.into()),
+                ("self_test", state.into()),
+            ];
+            pairs.extend(detail);
+            emit(&J::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()).dumps_indent(1));
+            return Ok(code);
+        }
+        match result {
+            SelfTest::Skipped(why) => show(&format!("  ⚠ clipboard self-test not run: {why}")),
+            SelfTest::Clean(n) => {
+                show(&format!("  ✓ {n} canary addresses copied to the clipboard came back unchanged"))
+            }
+            SelfTest::Swapped(swaps) => {
+                for s in &swaps {
+                    show(&format!(
+                        "  ✗ the {} canary {} came back as {} on read {}: something rewrites the clipboard. Don't send funds from this machine",
+                        s.chain.name(),
+                        s.canary,
+                        s.got,
+                        s.read
+                    ));
+                }
+            }
+        }
+        return Ok(code);
+    }
+    let settings =
+        guard::Settings { window: std::time::Duration::from_secs_f64(window), interval: guard::INTERVAL, once };
+    let fake = std::env::var_os("WPANTRY_CLIPBOARD_FAKE").filter(|v| !v.is_empty());
+    let scripted = fake.is_some();
+    let mut on_alert = |a: &guard::Alert| {
+        if json {
+            emit(&a.to_json(wpantry::system::now()).to_string());
+        } else {
+            show(&format!("  ✗ {}", a.note()));
+        }
+        if !scripted {
+            guard::notify(a);
+        }
+        if let Err(e) = Cache::open(None).and_then(|c| guard::record(&c, a).and_then(|()| c.close())) {
+            eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: the alert wasn't recorded in the cache: {e}")));
+        }
+    };
+    match fake {
+        Some(file) => {
+            let script = std::fs::read_to_string(&file)?;
+            guard::run_script(&script, &settings, &mut on_alert);
+        }
+        None => {
+            let cb =
+                clipper::real().map_err(|why| wpantry::Error::Failed(format!("can't guard the clipboard: {why}")))?;
+            eprintln!(
+                "{}",
+                Style::stderr().dim(&format!(
+                    "guarding the clipboard: a read every {} ms, a swap is two addresses of one chain within {window} s (Ctrl-C stops)",
+                    settings.interval.as_millis()
+                ))
+            );
+            guard::run(
+                &mut || Some(cb.read()),
+                &mut std::time::Instant::now,
+                &std::thread::sleep,
+                &settings,
+                &mut on_alert,
+            );
+        }
+    }
+    Ok(EXIT_OK)
 }
 
 /// `cache prune`: what no scan has used in `days`, then VACUUM.
@@ -594,7 +779,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
                 state
             ));
             match (&w.fixed, &w.mitigation) {
-                (Some(_), _) => say("    Fix: run wpantry --update --dryrun for the step"),
+                (Some(_), _) => say("    Fix: run wpantry --fix --dryrun for the step"),
                 (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
                 (None, None) => {
                     say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
@@ -608,6 +793,17 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
         ));
     }
     Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
+}
+
+/// `harden ca-trust`: distrust the leaked roots in the system trust store
+/// (the shell script it replaced did the same), asking for sudo only to install
+/// the result.
+fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
+    wpantry::catrust::fix(bundle, &|line| show(line))?;
+    if bundle.is_none() {
+        show("  Re-run wpantry check to confirm. A macOS update may restore the file: re-run this after one.");
+    }
+    Ok(EXIT_OK)
 }
 
 /// `harden extension-cooldown`: the one posture fix that edits files.
@@ -625,6 +821,193 @@ fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
         show(&format!("  ✓ {c}"));
     }
     show("  Extensions wait that long after a version is published before it installs here (restart the editor).");
+    Ok(EXIT_OK)
+}
+
+/// `mitigate ID`: the last scan's findings for the advisory (by id or
+/// alias), their unattended fixes run, wpantry's stopgap for it run where
+/// one exists, and the steps that need a person printed. Exit 1 when a
+/// step is left, a fix failed, or nothing is known for the id here.
+fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) -> Result<i32> {
+    use wpantry::mitigate::{self, Done, Mode};
+    let cache = Cache::open(None)?;
+    // the id, its aliases, and the records that list it as one
+    let mut ids: Vec<String> = vec![id.to_string()];
+    {
+        let mut stmt = cache.conn.prepare("SELECT id, aliases FROM vulns WHERE id = ?1 OR aliases LIKE ?2")?;
+        let rows = stmt.query_map(rusqlite::params![id, format!("%{id}%")], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+        })?;
+        for (vid, aliases) in rows.flatten() {
+            let names = std::iter::once(vid.as_str()).chain(aliases.split_whitespace());
+            if names.clone().any(|n| n.eq_ignore_ascii_case(id)) {
+                for n in names {
+                    if !ids.iter().any(|i| i.eq_ignore_ascii_case(n)) {
+                        ids.push(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let findings: Vec<wpantry::check::Finding> = wpantry::export::findings(&cache)?
+        .into_iter()
+        .filter(|f| ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id)))
+        .collect();
+    let stopgap = mitigate::stopgap(id);
+    let interactive = !no_input && std::io::stdin().is_terminal();
+    let bundled = wpantry::check::mitigation(id);
+    show(&format!(
+        "==> {id}: {}{}",
+        match findings.len() {
+            0 => "not in the last scan's findings".to_string(),
+            1 => format!("1 finding in the last scan ({} {})", findings[0].component, findings[0].version),
+            n => format!("{n} findings in the last scan"),
+        },
+        if stopgap.is_some() { "; wpantry has a stopgap for it" } else { "" }
+    ));
+    for f in &findings {
+        show(&format!(
+            "  {} {} {} ({}) {}",
+            if f.status == "fail" { "✗" } else { "⚠" },
+            f.component,
+            f.version,
+            f.kind,
+            f.location
+        ));
+    }
+    let mut status = EXIT_OK;
+    let mut did_something = false;
+    // the unattended fixes (a version bump), the way --fix runs them
+    if findings.iter().any(|f| f.fix_auto && !f.fix_cmd.is_empty()) {
+        // as `check --fix`: without a terminal they run; a terminal is asked
+        let confirm = |cmds: &[String]| {
+            if yes || !interactive {
+                return true;
+            }
+            for c in cmds {
+                show(&format!("  • {c}"));
+            }
+            progress::Progress::new(false).ask("Run these now?", true).unwrap_or(false)
+        };
+        let auto: Vec<wpantry::check::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
+        let applied = report::apply(&auto, dry_run, &confirm, &mut |l| show(l));
+        for (cmd, ok) in &applied.ran {
+            let targets: Vec<String> =
+                auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
+            wpantry::history::record_fix(&cache, None, cmd, "mitigate", *ok, &targets)?;
+        }
+        did_something = dry_run || !applied.ran.is_empty();
+        if applied.status != 0 {
+            status = EXIT_FAIL;
+        }
+    }
+    // wpantry's own stopgap
+    if let Some(s) = stopgap {
+        show(&format!("\n==> stopgap: {}{}", s.what, if undo { " (undoing)" } else { "" }));
+        let mode = if undo {
+            Mode::Remove
+        } else if dry_run {
+            Mode::DryRun
+        } else {
+            Mode::Apply
+        };
+        let confirm = |what: &str| {
+            if yes {
+                return true;
+            }
+            if !interactive {
+                show(&format!("  ✗ not a terminal: pass --yes to {what} without asking (or --dry-run to look)"));
+                return false;
+            }
+            progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
+        };
+        match (s.run)(&mitigate::Real, mode, &confirm, &mut |l| show(l))? {
+            Done::Applied => did_something = true,
+            Done::Nothing(why) => {
+                show(&format!("  ✓ {why}"));
+                did_something = true;
+            }
+            Done::NotHere(why) => show(&format!("  · {why}")),
+            Done::Declined => {
+                show("  nothing changed");
+                status = EXIT_FAIL;
+            }
+        }
+    }
+    // what needs a person: the fix texts that aren't the stopgap's own description
+    let manual: Vec<&str> = {
+        let mut seen = Vec::new();
+        for f in &findings {
+            let c = f.fix_cmd.as_str();
+            if c.is_empty() || f.fix_auto || seen.contains(&c) || (stopgap.is_some() && bundled.as_deref() == Some(c)) {
+                continue;
+            }
+            seen.push(c);
+        }
+        seen
+    };
+    if !manual.is_empty() {
+        show("\n==> Needs you:");
+        for m in &manual {
+            show(&format!("  • {m}"));
+        }
+        status = EXIT_FAIL;
+    }
+    if !did_something && manual.is_empty() {
+        if let Some(m) = bundled.filter(|_| stopgap.is_none()) {
+            show(&format!("\n==> Needs you: {m}"));
+        } else if findings.is_empty() && stopgap.is_none() {
+            show(&format!(
+                "\n✗ nothing known for {id} here: it isn't in the last scan's findings (run wpantry check) and wpantry has no stopgap for it"
+            ));
+        } else if findings.is_empty() {
+            show("  nothing to do here");
+            cache.close()?;
+            return Ok(EXIT_OK);
+        }
+        cache.close()?;
+        return Ok(EXIT_FAIL);
+    }
+    cache.close()?;
+    Ok(status)
+}
+
+/// `mitigate list`: the stopgaps wpantry has, each with whether it applies
+/// here (a dry run with the output dropped), and the advisories in the last
+/// scan with an unattended fix.
+fn cmd_mitigate_list() -> Result<i32> {
+    use wpantry::mitigate::{self, Done, Mode};
+    show("==> Stopgaps wpantry can install (wpantry mitigate ID, or all):");
+    for s in mitigate::STOPGAPS {
+        let state = match (s.run)(&mitigate::Real, Mode::DryRun, &|_| false, &mut |_| {}) {
+            Ok(Done::Applied) => format!("needed here: wpantry mitigate {} --dry-run shows the plan", s.id),
+            Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
+            Ok(Done::Declined) => "unreachable on a dry run".into(),
+            Err(e) => format!("can't tell: {e}"),
+        };
+        show(&format!("  {}  {}\n      {state}", s.id, s.what));
+    }
+    let cache = Cache::open(None)?;
+    let findings = wpantry::export::findings(&cache)?;
+    cache.close()?;
+    let mut auto: Vec<&wpantry::check::Finding> =
+        findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();
+    auto.sort_by(|a, b| a.vuln_id.cmp(&b.vuln_id).then(a.component.cmp(&b.component)));
+    auto.dedup_by(|a, b| a.vuln_id == b.vuln_id && a.component == b.component);
+    show("\n==> Advisories in the last scan with an unattended fix (wpantry --fix runs them):");
+    if auto.is_empty() {
+        show("  none");
+    }
+    for f in auto {
+        show(&format!(
+            "  {}  {} {} → {}: {}",
+            f.vuln_id,
+            f.component,
+            f.version,
+            if f.fixed.is_empty() { "?".to_string() } else { f.fixed.clone() },
+            f.fix_cmd
+        ));
+    }
     Ok(EXIT_OK)
 }
 
@@ -649,12 +1032,35 @@ fn dispatch(cmd: Command) -> Result<i32> {
             cmd_report(&sections, since_days, &format, out.as_deref())
         }
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
-        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
+        Command::Schedule { action, every, at, dry_run, clipboard_guard } => {
+            cmd_schedule(&action, &every, &at, dry_run, clipboard_guard)
+        }
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
+        Command::Clipboard { watch, once, window, json } => cmd_clipboard(watch, once, window, json),
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
-        Command::Harden { what: _, hours } => cmd_harden_cooldown(hours),
+        Command::Harden { what, hours, bundle } => {
+            if what == "ca-trust" {
+                cmd_harden_ca_trust(bundle.as_deref())
+            } else {
+                cmd_harden_cooldown(hours)
+            }
+        }
+        Command::Mitigate { target, dry_run, yes, no_input, undo, offline, no_machine, path } => match target {
+            Target::List => cmd_mitigate_list(),
+            Target::All => cmd_check(Check {
+                fix: true,
+                dryrun: dry_run,
+                yes,
+                no_input,
+                offline,
+                no_machine,
+                path,
+                ..Default::default()
+            }),
+            Target::Id(id) => cmd_mitigate(&id, dry_run, yes, no_input, undo),
+        },
     }
 }
 

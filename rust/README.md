@@ -34,8 +34,8 @@ CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `rust-
 
 | Role | Modules |
 |---|---|
-| The scan | `check` (findings, counts, status, "not checked"; the policy files), `check_supply` (every repo: lockfiles, secrets, malicious packages, install scripts, MCP servers, licenses, images), `check_machine` (the machine: inventory, updates, trust stores, posture, the breach check) |
-| Scope and inventory | `repos` (the bounded walk, repo discovery), `tools` (PATH and version managers), `catalog` (the tool catalog: names, version commands, EOL products), `packages` (Pythons with their site-packages, npm, cargo, pipx, gem globals), `apps` (apps, browsers, Electron, pending OS updates, Docker), `editors` (extensions), `harnesses` (coding agents' MCP servers, plugins, skills), `images` (container create/export and a bounded tar reader), `posture/` (security settings, one file per OS) |
+| The scan | `check` (findings, counts, status, "not checked"; the policy files), `check_supply` (every repo: lockfiles, secrets, malicious packages, install scripts, MCP servers, licenses, images, programs listening with MPTCP on), `mptcp` (Go modules and sources exposed to CVE-2026-98432 through the listener), `mitigate` (`wpantry mitigate <ID>`: the stopgaps a host can install while a fix is pending; CVE-2026-98432's nftables rule, MPTCP off and the services to restart), `check_machine` (the machine: inventory, updates, trust stores, posture, the breach check) |
+| Scope and inventory | `repos` (the bounded walk, repo discovery), `tools` (PATH and version managers), `catalog` (the tool catalog: names, version commands, EOL products), `packages` (Pythons with their site-packages, npm, cargo, pipx, gem globals), `apps` (apps, browsers, Electron, pending OS updates, Docker), `editors` (extensions), `harnesses` (coding agents' MCP servers, plugins, skills), `images` (container create/export and a bounded tar reader), `posture/` (security settings, one file per OS, `dns` shared by both) |
 | Readers | `lockfiles/` (one file per format, `mod.rs` dispatches by name), `osdb` (dpkg, apk, rpm; `os-release` → OSV ecosystem), `distros` (dnf advisories, the Arch tracker), `plist`, `json` (bounded parse, `json.dumps`-exact output), `re` (the regex subset the feeds need), `sha256` |
 | Sources | `net` (the `Net` trait, the `ureq` client, the recording fake), `osv` (querybatch, record fetches, alias groups, upstream release tags), `feeds` (KEV, end-of-life, the cask catalog, browser and PostgreSQL feeds, extension lists, GitHub latest releases), `malicious` (the OpenSSF index), `licenses` (deps.dev), `breach` (Have I Been Pwned, XposedOrNot) |
 | Judgement | `versions` (fixed versions, the safe one, the generic order), `compare/` (semver, PEP 440, Go, dpkg, apk, rpm, RubyGems, Maven, Packagist) |
@@ -47,11 +47,13 @@ Tests sit beside the code they cover; golden lockfiles are in `crates/wpantry/te
 
 The default policy files, the distrusted CA certificates and the agent skill live in `crates/wpantry/assets/` so the crate packages on its own; `ca-trust/` reads the certificates from there. Each crate carries a copy of the repository's `LICENSE`, checked by `tests/assets.rs`.
 
+**HTML reports.** `wpantry check --html report.html` writes an optional standalone browser report, alongside normal terminal output or `--json`. See [the HTML spec](../specs/02-html-report.md).
+
 ## The binary, `crates/wpantry-cli/src`
 
 | Module | Does |
 |---|---|
-| `main` | The subcommands (`check`, `search`, `export`, `breach`, `tools`, `skill`, `version`), the exit codes, the `--update` flow |
+| `main` | The subcommands (`check`, `search`, `export`, `breach`, `tools`, `skill`, `version`), the exit codes, the `--fix` flow |
 | `args` | Argument parsing, by hand |
 | `report` | The grouped report, the fix plan and its shell quoting, the JSON envelope |
 | `progress` | The live progress line, drawn only on a terminal |

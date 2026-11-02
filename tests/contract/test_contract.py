@@ -9,12 +9,14 @@ its stdout, stderr, exit codes and cache file. Every implementation must pass
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -233,12 +235,46 @@ class Contract(unittest.TestCase):
 
     def test_sync_offline_reports_unreachable_sources(self):
         # No network in the contract suite: every source is unreachable, none is "clean".
-        code, out, err = self.run_bin("sync", "--json", env=dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9"))
+        unreachable = dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9")
+        code, out, err = self.run_bin("sync", "--json", env=unreachable)
         self.assertEqual(code, 1, err)
         data = json.loads(out)
         self.assertEqual(set(data), {"refreshed", "failed", "packages"})
         self.assertTrue(data["failed"], data)
         self.assertEqual(data["packages"], 0)
+        code, out, err = self.run_bin("sync", env=unreachable)
+        self.assertEqual(code, 1, err)
+        self.assertIn("unreachable", out)
+        self.assertIn(f"{len(data['failed'])} unreachable", out)
+
+    def test_a_cached_newer_release_is_mentioned_after_a_check(self):
+        """The release memo is a day old at most; a check that may use the
+        network says when it names a newer wpantry (never under --offline or --json)."""
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO runs VALUES (?, ?, ?, ?)", ("github-latest:waffuruai/pantry", "", time.time(), '"99.0.0"'))
+        conn.commit()
+        conn.close()
+        unreachable = dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9")
+        code, out, err = self.run_bin("--no-machine", "--path", str(self.home), "--no-input", env=unreachable)
+        self.assertIn(code, (0, 1), err)
+        self.assertIn("wpantry 99.0.0 is available", err)
+        self.assertNotIn("99.0.0", out)
+        _, _, err = self.project_run()
+        self.assertNotIn("99.0.0", err)
+
+    def test_timings_go_to_stderr_on_request(self):
+        code, out, err = self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--no-input",
+                                      env=dict(self.env, WPANTRY_TIMINGS="1"))
+        self.assertEqual(code, 0, err)
+        self.assertRegex(err, r"\[ *\d+\.\d\ds\] ")
+        self.assertNotIn("s] ", out)
+
+    def test_update_with_nothing_to_apply_rechecks(self):
+        code, out, err = self.project_run("--update")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Re-checking after the updates", out)
+        self.assertEqual(out.count("Incomplete"), 2, "the report, then the re-check's")
 
     def test_schedule_dry_run_and_cache_prune(self):
         code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
@@ -630,6 +666,111 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.run_bin("breach", "--disable")[0], 0)
         self.assertIn("no", self.run_bin("breach")[1])
 
+    def test_search_lists_hits_with_their_flags(self):
+        """Text search: one line per hit, what applies here and what is exploited
+        first; --applicable keeps only what applies; a negative --limit drops
+        the tail."""
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        for vid, aliases, summary, sev in (("GHSA-a", "CVE-2026-1", "zlib inflate overflow", "HIGH"),
+                                           ("GHSA-b", "", "zlib deflate crash", "LOW")):
+            conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (vid, aliases, summary, "", sev, "", "", "", json.dumps({"id": vid, "summary": summary})))
+            try:
+                conn.execute("INSERT INTO vulns_fts VALUES (?, ?, ?, ?, ?)", (vid, aliases, summary, "", "zlib"))
+            except sqlite3.OperationalError:
+                pass  # this SQLite has no FTS5; the binary's may
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("project", "zlib", "1.2.0", "/w/Cargo.lock", "CVE-2026-1", "fail", "1.2.1", 1, "HIGH",
+                      "overflow", "cargo update zlib", 0, "runtime", 1, "<1.2.1"))
+        conn.execute("INSERT INTO kev VALUES (?, ?, ?)", ("CVE-2026-1", "2026-01-01", "zlib"))
+        conn.commit()
+        conn.close()
+        code, out, _ = self.run_bin("search", "zlib")
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 2, out)
+        self.assertTrue(lines[0].startswith("GHSA-a"), out)
+        for flag in ("APPLIES", "KEV", "HIGH", "zlib inflate overflow"):
+            self.assertIn(flag, lines[0])
+        self.assertTrue(lines[1].startswith("GHSA-b"), out)
+        self.assertNotIn("APPLIES", lines[1])
+        self.assertIn("LOW", lines[1])
+        code, out, _ = self.run_bin("search", "zlib", "--applicable", "--json")
+        self.assertEqual(code, 0)
+        hits = json.loads(out)
+        self.assertEqual([h["id"] for h in hits], ["GHSA-a"])
+        self.assertEqual((hits[0]["applicable"], hits[0]["kev"], hits[0]["aliases"]), (True, True, ["CVE-2026-1"]))
+        self.assertEqual([h["id"] for h in json.loads(self.run_bin("search", "zlib", "--limit", "1", "--json")[1])], ["GHSA-a"])
+        self.assertEqual([h["id"] for h in json.loads(self.run_bin("search", "zlib", "--limit=-1", "--json")[1])], ["GHSA-a"])
+        self.assertEqual(json.loads(self.run_bin("search", "nothingmatchesthis", "--json")[1]), [])
+
+    def test_export_csv_quotes_fields_and_links_bare_cves(self):
+        """A finding whose advisory the cache never saw still gets a URL (cve.org),
+        and a field with a comma or quote is quoted as CSV wants."""
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("project", "zlib", "1.2.0", '/w/a,b/"q"/Cargo.lock', "CVE-2026-2", "warn", "", 0, "",
+                      "", "", 0, "unknown", None, ""))
+        conn.commit()
+        conn.close()
+        f = Path(self.tmp.name, "bare.csv")
+        code, out, err = self.run_bin("export", "--csv", str(f))
+        self.assertEqual(code, 0, err)
+        self.assertIn("wrote 1 findings", out)
+        text = f.read_text()
+        self.assertIn('"/w/a,b/""q""/Cargo.lock"', text)
+        rows = list(csv.reader(io.StringIO(text)))
+        self.assertEqual(rows[1], ["CVE-2026-2", "", "https://www.cve.org/CVERecord?id=CVE-2026-2", "zlib", "project",
+                                   "1.2.0", "", "", "0", "warn", '/w/a,b/"q"/Cargo.lock'])
+
+    def test_report_lists_exposures_fixes_and_scans(self):
+        """The Markdown report's three logs with rows in them, the CSV exposure
+        log, and -o writing the file instead of stdout."""
+        self.project_run()
+        now = time.time()
+
+        def exposure(key, vuln, resolved):
+            done = (1, now - 86400) if resolved else (None, None)
+            return (key, "repos:~", "project", "vite", "8.0.0", "/w/pnpm-lock.yaml", vuln, "fail", "HIGH", 1, "8.0.1",
+                    "note", 1, now - 5 * 86400, 1, now - 86400, *done, "dev", 1, "<8.0.1", "pnpm update vite@8.0.1")
+
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO exposures VALUES (" + ", ".join("?" * 22) + ")", exposure("k1", "CVE-2026-1", False))
+        conn.execute("INSERT INTO exposures VALUES (" + ", ".join("?" * 22) + ")", exposure("k2", "CVE-2026-2", True))
+        conn.execute("INSERT INTO fixes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (1, 1, now - 3600, "pnpm update `vite`", "auto", 1, 2, "k2"))
+        conn.execute("INSERT INTO fixes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (2, 1, now - 1800, "brew upgrade x", "auto", 0, None, "k1"))
+        conn.commit()
+        conn.close()
+        code, out, err = self.run_bin("report")
+        self.assertEqual(code, 0, err)
+        self.assertIn("## Exposure log", out)
+        self.assertIn("1 open, 1 resolved; median time to resolve 4 days", out)
+        self.assertIn("| vite | 8.0.0 | CVE-2026-1 (KEV) | HIGH | fail |", out)
+        self.assertIn("| vite | 8.0.0 | CVE-2026-2 (KEV) | HIGH | resolved |", out)
+        self.assertIn("## Remediation log", out)
+        self.assertIn("| `pnpm update 'vite'` | auto | ok | #2 |", out)
+        self.assertIn("| `brew upgrade x` | auto | failed | - |", out)
+        self.assertIn("## Audit log", out)
+        self.assertIn("### Scans", out)
+        self.assertIn("### Events", out)
+        self.assertIn("| scan |", out)
+        code, out, err = self.run_bin("report", "--exposure", "--format", "csv")
+        self.assertEqual(code, 0, err)
+        rows = list(csv.reader(io.StringIO(out)))
+        self.assertEqual(len(rows), 3, out)
+        self.assertEqual(rows[1][:9], ["project", "vite", "8.0.0", "/w/pnpm-lock.yaml", "CVE-2026-1", "fail", "HIGH", "true", "8.0.1"])
+        self.assertEqual(rows[1][11], "", "open: not resolved")
+        self.assertNotEqual(rows[2][11], "")
+        f = Path(self.tmp.name, "r.json")
+        code, out, err = self.run_bin("report", "--format", "json", "-o", str(f))
+        self.assertEqual(code, 0, err)
+        self.assertIn("wrote the report", out)
+        self.assertEqual(len(json.loads(f.read_text())["exposures"]), 2)
+
     def test_findings_carry_the_dependency_relationship(self):
         """A dev dependency the root asks for: dep_scope dev, dep_direct true, and
         the advisory range the locked version fell in, from a seeded cache."""
@@ -718,6 +859,44 @@ class Contract(unittest.TestCase):
         code, out, _ = self.run_bin("watch", "--offline")
         self.assertEqual(code, 10)
         self.assertIn("FIX AVAILABLE: kern 1.0.1", out)
+
+    def test_watch_without_a_known_mitigation_says_to_keep_checking(self):
+        self.project_run()
+        rec = {"id": "GHSA-z", "aliases": ["CVE-2026-55555"], "summary": "widget overflow",
+               "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+               "affected": [{"package": {"ecosystem": "npm", "name": "widget"},
+                             "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]}]}
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("GHSA-z", "CVE-2026-55555", "widget overflow", "", "CRITICAL", "", "", "", json.dumps(rec)))
+        conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "widget", "1.0.0", 4_000_000_000, "GHSA-z"))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("project", "widget", "1.0.0", "/w/package-lock.json", "CVE-2026-55555", "warn", "", 0, "CRITICAL",
+                      "widget overflow (no fix released for npm yet)", "", 0, "", None, ""))
+        conn.commit()
+        conn.close()
+        code, out, _ = self.run_bin("watch", "--offline")
+        self.assertEqual(code, 0, out)
+        self.assertIn("no fix yet", out)
+        self.assertIn("keep checking", out)
+        self.assertIn("1 advisories watched, 0 with a fix now", out)
+
+    def test_harden_sets_the_cooldown_in_each_editor(self):
+        env = dict(self.env)
+        env.pop("XDG_CONFIG_HOME", None)
+        for root in ("Library/Application Support", ".config"):  # a macOS and a Linux home
+            (self.home / root / "Code" / "User").mkdir(parents=True)
+        code, out, err = self.run_bin("harden", "extension-cooldown", "--hours", "48", env=env)
+        self.assertEqual(code, 0, err)
+        self.assertIn("VS Code: 48", out)
+        self.assertIn("restart the editor", out)
+        settings = list(self.home.glob("*/Code/User/settings.json")) + list(self.home.glob("*/*/Code/User/settings.json"))
+        self.assertEqual(len(settings), 1, settings)
+        self.assertEqual(json.loads(settings[0].read_text())["extensions.installCooldownHours"], 48)
+        code, out, err = self.run_bin("harden", "extension-cooldown", "--hours", "48", env=env)
+        self.assertEqual(code, 0, err)
+        self.assertIn("already waits 48 hours", out)
 
     def test_unfixed_critical_advisories_warn_in_check(self):
         """A Critical/High advisory with no released fix is a `warn` finding with

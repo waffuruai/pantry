@@ -647,5 +647,57 @@ mod tests {
     fn pathological_patterns_give_up_instead_of_hanging() {
         let text = "a".repeat(40) + "b";
         assert!(Regex::new(r"(a*)*c").search(&text).is_none());
+        // The step budget is also spent by one long run of a simple node, and
+        // by the repeat that follows it.
+        let long = "a".repeat(MAX_STEPS);
+        assert!(Regex::new("a*").match_start(&long).is_none());
+        assert!(Regex::new("a*b*").match_start(&long[..MAX_STEPS - 3]).is_none());
+    }
+
+    #[test]
+    fn escapes_classes_and_lookahead() {
+        assert!(Regex::new(r"\D\S\W").fullmatch("1_ ").is_none());
+        assert!(Regex::new(r"\D\S\W").fullmatch("x-!").is_some());
+        assert!(Regex::new(r"\w+").fullmatch("héllo_1").is_some());
+        assert!(Regex::new(r"\n\t\r").fullmatch("\n\t\r").is_some());
+        assert!(Regex::new(r"[\d\D]").is_match("x") && Regex::new(r"[\s\S]").is_match("x"));
+        assert!(Regex::new(r"[\w]+").fullmatch("ab_1").is_some() && Regex::new(r"[\W]").fullmatch("-").is_some());
+        assert!(Regex::new(r"[\t\n]").fullmatch("\t").is_some());
+        assert!(Regex::new(r"[\x-\z]").fullmatch("y").is_some(), "an escaped range end");
+        assert!(Regex::new(r"[a-]").fullmatch("-").is_some(), "a trailing dash is literal");
+        assert!(Regex::with_flags("[a-c]", "i").fullmatch("B").is_some(), "ranges ignore case too");
+        assert!(Regex::with_flags("[A-C]", "i").fullmatch("b").is_some());
+        assert_eq!(Regex::new(r"a(?=b)").search("ab").map(|c| c.end), Some(1));
+        assert!(Regex::new(r"a(?=b)").search("ac").is_none());
+        assert!(Regex::new(r"a(?!b)").search("ab").is_none());
+        assert_eq!(Regex::new(r"(?=(a))a").search("a").unwrap().get(1), "a", "a lookahead's groups are kept");
+        assert!(Regex::new("abc").is_match("xabcx") && !Regex::new("abd").is_match("xabcx"));
+    }
+
+    #[test]
+    fn braces_and_group_repeats() {
+        assert!(Regex::new("a{2}").fullmatch("aa").is_some() && Regex::new("a{2}").fullmatch("aaa").is_none());
+        assert!(Regex::new("a{2,}").fullmatch("aaaa").is_some());
+        assert!(Regex::new("a{,2}").fullmatch("aa").is_none(), "no lower bound: a literal brace");
+        assert!(Regex::new("a{").fullmatch("a{").is_some(), "a lone brace is literal");
+        assert!(Regex::new("a{2").fullmatch("a{2").is_some(), "an unclosed brace is literal");
+        assert!(Regex::new("a{2,3}?").match_start("aaa").map(|c| c.end) == Some(2), "lazy");
+        assert_eq!(Regex::new("(ab){2}").fullmatch("abab").unwrap().get(1), "ab");
+        assert!(Regex::new("(ab){2}").fullmatch("ab").is_none());
+        assert_eq!(Regex::new("(ab)*?c").search("ababc").unwrap().get(1), "ab", "a lazy group repeat");
+        assert_eq!(Regex::new("(ab)*?").match_start("abab").unwrap().end, 0);
+        assert_eq!(Regex::new("(a|b)+?b").search("aab").unwrap().get(0), "aab");
+        assert_eq!(Regex::new("(x?)*y").search("xxy").unwrap().get(0), "xxy", "an empty iteration stops");
+        assert_eq!(Regex::new("").find_all("ab").len(), 3, "empty matches advance");
+    }
+
+    #[test]
+    fn malformed_patterns_are_bugs() {
+        for bad in
+            [r"a\", r"\q", "[a", "[a-", r"[a-\", "(a", "(?Pa)", "a)", "*a", "^*", "$+", r"\b?", "(?=a)*", "+", "a**"]
+        {
+            let got = std::panic::catch_unwind(|| Regex::new(bad));
+            assert!(got.is_err(), "{bad:?} should not compile");
+        }
     }
 }

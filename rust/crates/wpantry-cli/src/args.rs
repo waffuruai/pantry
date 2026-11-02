@@ -527,4 +527,177 @@ mod tests {
         assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
         assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
     }
+
+    #[test]
+    fn every_subcommand_has_help_and_a_usage_line() {
+        for cmd in SUBCOMMANDS {
+            let Parsed::Help(text) = p(&[cmd, "-h"]) else { panic!("{cmd}") };
+            assert!(text.starts_with(&format!("usage: wpantry {cmd}")) || text.starts_with(TOP_USAGE), "{cmd}: {text}");
+            assert!(text.contains("-h, --help"), "{cmd}");
+            let Parsed::Help(long) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
+            assert_eq!(long, text);
+        }
+        let Parsed::Help(top) = p(&["-h"]) else { panic!() };
+        assert!(top.starts_with(TOP_USAGE) && top.contains("Exit codes:"));
+    }
+
+    #[test]
+    fn check_options_and_their_errors() {
+        let _home = wpantry::system::test_home();
+        let file = wpantry::system::home().join("g.toml");
+        std::fs::write(&file, "").unwrap();
+        let Parsed::Run(Command::Check(c)) = p(&["--gitleaks-config", "~/g.toml", "--jobs=3", "--no-posture"]) else {
+            panic!()
+        };
+        assert_eq!((c.gitleaks_config, c.jobs, c.no_posture), (Some(file.clone()), Some(3), true));
+        let Parsed::Usage(text) = p(&["--install-scripts", "~", "--update"]) else { panic!() };
+        assert!(text.contains("argument --install-scripts: no such file: ~"), "a directory is no policy file: {text}");
+        assert_eq!(expand("~"), wpantry::system::home());
+        assert_eq!(expand("/x"), PathBuf::from("/x"));
+        for (bad, msg) in [
+            (&["check", "extra"][..], "unrecognized arguments: extra"),
+            (&["--jobs", "0"], "argument --jobs: expected a number of 1 or more, got 0"),
+            (&["--jobs", "many"], "argument --jobs: expected a number of 1 or more, got many"),
+            (&["--repo-hooks", "~/missing.txt"], "argument --repo-hooks: no such file: ~/missing.txt"),
+            (&["-x"], "unrecognized arguments: -x"),
+            (&["--off", "--", "--json"], "unrecognized arguments: --json"),
+        ] {
+            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
+            assert!(text.contains(msg), "{bad:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn search_export_breach_and_sync_errors() {
+        for (bad, msg) in [
+            (&["search", "a", "b"][..], "unrecognized arguments: b"),
+            (&["export", "x", "--csv", "f"], "unrecognized arguments: x"),
+            (&["breach", "x"], "unrecognized arguments: x"),
+            (&["sync", "x"], "unrecognized arguments: x"),
+            (&["skill", "--json"], "unrecognized arguments: --json"),
+            (&["tools", "--js=1"], "argument --json: ignored explicit argument '1'"),
+        ] {
+            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
+            assert!(text.contains(msg), "{bad:?}: {text}");
+        }
+        assert_eq!(
+            p(&["search", "--applicable", "--limit=-2", "--json", "--", "-q"]),
+            Parsed::Run(Command::Search { query: "-q".into(), applicable: true, limit: -2, json: true })
+        );
+        assert_eq!(
+            p(&["export", "--jsonl", "f.jsonl", "--all"]),
+            Parsed::Run(Command::Export { csv: None, jsonl: Some("f.jsonl".into()), all: true })
+        );
+        assert_eq!(p(&["breach", "--enable"]), Parsed::Run(Command::Breach { enable: true, disable: false }));
+        assert_eq!(p(&["sync", "--refresh", "--json"]), Parsed::Run(Command::Sync { refresh: true, json: true }));
+        assert_eq!(p(&["tools"]), Parsed::Run(Command::Tools { json: false }));
+    }
+
+    #[test]
+    fn report_options() {
+        assert_eq!(
+            p(&["report"]),
+            Parsed::Run(Command::Report {
+                sections: vec!["all".into()],
+                since_days: 90,
+                format: "md".into(),
+                out: None
+            })
+        );
+        assert_eq!(
+            p(&["report", "--exposure", "--audit", "--since", "30d", "--format=csv", "-o", "r.csv"]),
+            Parsed::Run(Command::Report {
+                sections: vec!["exposure".into(), "audit".into()],
+                since_days: 30,
+                format: "csv".into(),
+                out: Some("r.csv".into())
+            })
+        );
+        let Parsed::Run(Command::Report { sections, .. }) = p(&["report", "--remediation", "--all"]) else { panic!() };
+        assert_eq!(sections, ["all"]);
+        for (bad, msg) in [
+            (&["report", "x"][..], "unrecognized arguments: x"),
+            (&["report", "--since", "0"], "argument --since: expected a number of days, got '0'"),
+            (&["report", "--format", "pdf"], "invalid choice: 'pdf' (choose from md, json, csv)"),
+        ] {
+            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
+            assert!(text.contains(msg), "{bad:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn schedule_cache_update_and_harden_options() {
+        assert_eq!(
+            p(&["schedule", "install"]),
+            Parsed::Run(Command::Schedule {
+                action: "install".into(),
+                every: "daily".into(),
+                at: "09:30".into(),
+                dry_run: false
+            })
+        );
+        assert_eq!(
+            p(&["schedule", "install", "--every", "weekly", "--at", "7:05", "--dry-run"]),
+            Parsed::Run(Command::Schedule {
+                action: "install".into(),
+                every: "weekly".into(),
+                at: "7:05".into(),
+                dry_run: true
+            })
+        );
+        assert_eq!(p(&["cache", "prune"]), Parsed::Run(Command::Cache { action: "prune".into(), older_than: 90 }));
+        assert_eq!(
+            p(&["cache", "prune", "--older-than", "7"]),
+            Parsed::Run(Command::Cache { action: "prune".into(), older_than: 7 })
+        );
+        assert_eq!(
+            p(&["update", "--check", "--yes", "--no-input", "--offline", "--version", "v1.2.3"]),
+            Parsed::Run(Command::Update {
+                check: true,
+                yes: true,
+                no_input: true,
+                offline: true,
+                version: Some("v1.2.3".into())
+            })
+        );
+        assert_eq!(
+            p(&["harden", "extension-cooldown"]),
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72 })
+        );
+        assert_eq!(
+            p(&["harden", "extension-cooldown", "--hours", "48"]),
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48 })
+        );
+        for (bad, msg) in [
+            (&["schedule"][..], "the following arguments are required: action"),
+            (
+                &["schedule", "dance"],
+                "argument action: invalid choice: 'dance' (choose from install, status, uninstall, run)",
+            ),
+            (&["schedule", "install", "run"], "unrecognized arguments: run"),
+            (
+                &["schedule", "install", "--every", "sometimes"],
+                "argument --every: invalid choice: 'sometimes' (choose from hourly, daily, weekly)",
+            ),
+            (&["schedule", "install", "--at", "25:00"], "argument --at: expected HH:MM, got '25:00'"),
+            (&["schedule", "install", "--at", "9:5"], "argument --at: expected HH:MM, got '9:5'"),
+            (&["cache"], "the following arguments are required: action"),
+            (&["cache", "vacuum"], "argument action: invalid choice: 'vacuum' (choose from prune)"),
+            (&["cache", "prune", "all"], "unrecognized arguments: all"),
+            (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
+            (&["update", "now"], "unrecognized arguments: now"),
+            (&["harden"], "the following arguments are required: what"),
+            (&["harden", "firewall"], "argument what: invalid choice: 'firewall' (choose from extension-cooldown)"),
+            (&["harden", "extension-cooldown", "now"], "unrecognized arguments: now"),
+            (
+                &["harden", "extension-cooldown", "--hours", "lots"],
+                "argument --hours: expected a number of hours, got 'lots'",
+            ),
+            (&["schedule", "--every"], "argument --every: expected one argument"),
+            (&["report", "--a"], "ambiguous option: --a could match --audit, --all"),
+        ] {
+            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
+            assert!(text.contains(msg), "{bad:?}: {text}");
+        }
+    }
 }

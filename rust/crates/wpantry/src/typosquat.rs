@@ -161,6 +161,7 @@ pub fn edit(typed: &str, meant: &str) -> Option<Edit> {
 /// `edit` on names already split into chars. A letter replaced by a
 /// separator (`xml-js`, `xml2js`) is a different word, not a slip: the
 /// registries own the separator space, so no edit involving one counts.
+/// A digit replaced by a digit (`uuidv4`, `uuidv7`) is a version.
 fn edit_chars(a: &[char], b: &[char]) -> Option<Edit> {
     if a == b {
         return None;
@@ -169,6 +170,7 @@ fn edit_chars(a: &[char], b: &[char]) -> Option<Edit> {
         let diffs: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
         return match diffs.as_slice() {
             [i] if a[*i] == '-' || b[*i] == '-' => None,
+            [i] if a[*i].is_ascii_digit() && b[*i].is_ascii_digit() => None,
             [i] => Some(if confusable_pair(a[*i], b[*i]) { Edit::Confusable } else { Edit::Substitution }),
             [i, j] if *j == i + 1 && a[*i] == b[*j] && a[*j] == b[*i] => Some(Edit::Transposition),
             _ => None,
@@ -293,6 +295,8 @@ mod tests {
         assert_eq!(edit("lodash", "underscore"), None);
         assert_eq!(edit("preact", "react"), Some(Edit::Omission));
         assert_eq!(edit("xml-js", "xml2js"), None, "a separator for a letter is a different word");
+        assert_eq!(edit("uuidv4", "uuidv7"), None, "a digit for a digit is a version");
+        assert_eq!(edit("0penai", "openai"), Some(Edit::Confusable), "a digit for a letter can be a look-alike");
         assert_eq!(edit("nodefetch", "node-fetch"), None, "a dropped separator is the registry's business");
         assert_eq!(distance("lodash", "lodahs"), 1);
         assert!(!is_typo(Edit::Substitution, 4), "mime is not a typo of time");
@@ -383,6 +387,7 @@ mod tests {
             ("buffers", "buffer"),
             ("mquery", "jquery"),
             ("tokenize-rt", "tokenizers"),
+            ("uuidv4", "uuidv7"),
         ];
         let packages: Vec<Package> = pairs.iter().flat_map(|(a, b)| [pkg("npm", a), pkg("npm", b)]).collect();
         let flagged: Vec<(String, String)> = find(&packages).into_iter().map(|s| (s.name, s.near)).collect();

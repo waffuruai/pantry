@@ -258,6 +258,9 @@ mod tests {
     #[test]
     fn printing_while_the_line_is_up_clears_it_first() {
         let p = Progress::new(true);
+        // Stop the ticker first: a redraw between a print and its assertion
+        // would put the line back.
+        p.finish();
         {
             let mut st = p.state.as_ref().unwrap().lock().unwrap();
             st.drawn = 12;

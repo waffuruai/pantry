@@ -286,7 +286,7 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
 }
 
 /// One step of the update plan: a command (or an instruction), whether
-/// `--update` runs it unattended, whether it clears a failing finding, and
+/// `--fix` runs it unattended, whether it clears a failing finding, and
 /// the findings (indices into the slice `steps` was given) it covers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {

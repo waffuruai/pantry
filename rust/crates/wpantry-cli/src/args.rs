@@ -53,8 +53,11 @@ pub enum Command {
 }
 
 /// What parsing decided: run a command, or exit now (help printed, or a
-/// usage error).
+/// usage error). `Check` carries every option, so `Run` is far larger than
+/// the two strings; one value exists for one call, so boxing it would buy
+/// nothing.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Parsed {
     Run(Command),
     Help(String),

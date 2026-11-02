@@ -14,7 +14,7 @@ The command line, its exit codes, its JSON and its cache file are wpantry's only
 
 ```
 wpantry [check] [--path DIR]... [--no-machine] [--update] [--dryrun] [--refresh] [--offline]
-                 [--json] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
+                 [--json] [--html FILE] [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]
                  [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry export [--csv FILE] [--jsonl FILE] [--all]
@@ -36,6 +36,7 @@ wpantry skill
 | `--dryrun` | Print the update plan; change nothing |
 | `--refresh` | Ignore cached answers |
 | `--offline` | Cache only; anything never cached is `unchecked` |
+| `--html FILE` | Also write an offline, self-contained HTML report; optional, no browser auto-launch, success notice on stderr |
 | `--json` | Print the envelope below instead of the report; never prompts |
 | `--no-input` | Never prompt: the breach-consent question is skipped, and `--update` runs without asking. Prompts are only asked when stdin is a terminal: `? Question [y/N]` on stderr, Enter takes the default, anything but y/yes/n/no asks again |
 | `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled allowlist; `--license` is the same option. Off by default (it's noisy): without it there are no `license` findings and `unknown_licenses` is 0. A missing FILE is a usage error |
@@ -83,6 +84,12 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | 10 | `update`: a newer release exists and was not installed (`--check`, `--no-input`, no terminal, a "no", or a source build); `watch`: a fix has landed for an advisory that had none |
 | 130 | Interrupted (Ctrl-C) |
 
+## `check --html FILE`
+
+HTML is an optional sidecar to the scan. Terminal output and scan exit codes stay the same; `--json --html FILE` prints the unchanged schema-1 envelope on stdout and embeds that same envelope in the HTML. As before, `--json` selects reporting only even with `--update`. Without JSON, `--update` exports the final recheck, including an indication of failed update commands; `--dryrun` exports the initial scan. A report retains unchecked sources, unfixed-advisory and unknown-license counts, and scope (paths, machine inventory, offline mode and license checking).
+
+`FILE` is required; empty values and `-` are usage errors (2). The parent must exist. Output is staged beside the destination before scanning, written with mode 0600 on Unix and renamed over the destination only after successful generation. A destination symlink is replaced rather than followed. File errors return 3; a scan error leaves a previous report intact. Export never opens a browser, fetches extra advisories, or applies updates. The viewer uses embedded assets, escapes report text, and only copies proposed commands on request. The HTML layout and bundle metadata are presentation details, not a new version of the JSON contract.
+
 ## `check --json`
 
 ```json
@@ -106,6 +113,8 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `unfixed` | int | Applicable advisories with no released fix. Those rated Critical or High (by the advisory's label, else its CVSS 3.x vector) or listed in CISA KEV also appear in `findings` as `warn` with `fixed` empty and the mitigation (bundled `mitigations.txt`, else a line saying to keep checking) as `fix_cmd`; the rest are only counted |
 | `unknown_licenses` | int | Repo dependencies with no identifiable license; 0 unless `--licenses` |
 | `findings` | array of Finding | Everything that applies, failing or warning |
+
+The optional HTML presentation bundle preserves the scan envelope unchanged. It additionally records `scan_id` (the local history entry), generation phase and scope: machine, offline, licenses, posture, paths, posture exclusions, suspicious-code warning exemptions, and policy file choices. These presentation fields do not alter schema 1 on stdout. The HTML viewer accepts current and older schema-1 scan JSON plus findings CSV; history reports and lifecycle JSONL are separate formats.
 
 ### Finding
 

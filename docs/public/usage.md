@@ -117,6 +117,16 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 
 `wpantry --update --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry --update` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
+For a browser report, run `wpantry check --html report.html`. Its **Update plan** includes **Copy agent prompt**, a prompt you can paste into an AI agent of your choice, with all findings, suggested actions and coverage context from the selected scan. Preview it and remove any local paths or details you do not want to share. The agent is asked to verify the findings, make scoped changes, run tests and rescan; copying the prompt does not send data or run updates.
+
+Finding details include dependency scope, direct or transitive relationships, and affected-version ranges when the scanner supplies them. Repo hooks, hidden text, suspicious code, document checks and security-setting findings are rules rather than public advisories. **Coverage** records whether posture checks were requested, their configured exclusions, suspicious-code warning exemptions and policy file choices. The local history scan number identifies the corresponding entry in `wpantry report`.
+
+A scan with no findings or recorded coverage gaps gets a quiet **All clear. Nicely done.** finish with the Waffuru mark. It applies only to the checked scope: empty imports, zero inventory, offline scans, unknown licenses, unfixed advisories and failed updates do not trigger it.
+
+The viewer imports `check --json` reports and `export --csv` findings. History reports and lifecycle JSONL exports use different formats and are not scan imports; use `wpantry report` or a JSONL consumer for those. Older JSON reports remain readable, with missing dependency and scope information shown as unknown.
+
+**Print full report** (or your browser's Print command) produces a paper layout with summary, scope and coverage, all findings and explanations, and grouped actions for the selected scan. Screen filters and collapsed rows do not hide printed findings. Navigation, copy controls and the AI prompt are excluded. Choose Save as PDF in the print dialog to keep a copy; disable the browser's own headers and footers there if you do not want its file URL printed.
+
 ## Exposed with no fix yet
 
 Most advisories are `✗` because a fixed version exists. When none does, the scan still tells you about the ones that matter (Critical, High, or exploited in the wild): a `⚠` line with `(no fix released for … yet)` and, as its step, what to do meanwhile. The steps come from a bundled list ([`mitigations.txt`](../../rust/crates/wpantry/assets/defaults/mitigations.txt), one line per advisory); an advisory with no entry says to keep checking and reduce exposure. The Moderate and Low ones are only counted (`unfixed` in the JSON). Nothing here fails the run.

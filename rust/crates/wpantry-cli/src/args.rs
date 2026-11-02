@@ -20,6 +20,7 @@ pub struct Check {
     pub refresh: bool,
     pub offline: bool,
     pub json: bool,
+    pub html: Option<PathBuf>,
     pub no_input: bool,
     /// `--jobs N`: CPU-bound scans at once.
     pub jobs: Option<usize>,
@@ -66,7 +67,7 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,v
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json] [--html FILE]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
@@ -82,7 +83,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -144,6 +145,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--refresh", false),
             ("--offline", false),
             ("--json", false),
+            ("--html", true),
             ("--no-input", false),
             ("--jobs", true),
             ("--gitleaks-config", true),
@@ -285,6 +287,12 @@ pub fn parse(argv: &[String]) -> Parsed {
                 no_posture: flag("--no-posture"),
                 ..Default::default()
             };
+            if let Some(v) = value("--html") {
+                if v.is_empty() || v == "-" {
+                    return fail("argument --html: expected a file path, not stdout".into());
+                }
+                c.html = Some(expand(&v));
+            }
             let paths: Vec<PathBuf> = given
                 .iter()
                 .filter(|(o, _)| *o == "--path")
@@ -488,6 +496,16 @@ mod tests {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
         let Parsed::Run(Command::Check(c)) = p(&[&format!("--license={file}")]) else { panic!() };
         assert!(c.check_licenses && c.licenses == Some(PathBuf::from(file)));
+    }
+
+    #[test]
+    fn html_is_optional_and_composes_with_json() {
+        let Parsed::Run(Command::Check(c)) = p(&["--ht=report with spaces.html", "--json"]) else { panic!() };
+        assert!(c.json);
+        assert_eq!(c.html, Some(PathBuf::from("report with spaces.html")));
+        for bad in [&["--html"][..], &["--html="], &["--html=-"]] {
+            assert!(matches!(p(bad), Parsed::Usage(_)));
+        }
     }
 
     #[test]

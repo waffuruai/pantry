@@ -16,7 +16,7 @@ const ctx={document,window:{addEventListener(type,fn){events['window:'+type]=fn}
 function load(bundle){
   elements['pantry-bundle']=undefined; el('pantry-bundle').textContent=JSON.stringify(bundle);
   el('waffuru-mark').src='data:image/png;base64,AAAA';
-  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor};";
+  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,state};";
   vm.runInNewContext(viewer.replace(/\nrender\(\);\n\}\)\(\);\s*$/, '\nrender();'+hook+'\n})();'),ctx);
   assert(ctx.viewerTest,'the test hook replaced the final render() call');
 }
@@ -28,7 +28,7 @@ function section(id,src){ // the markup of one section of the page
   const m=(src||main()).split('<section class="sec" id="'+id+'">'); assert.equal(m.length,2,'one section '+id); return m[1].split('<section class="sec" id=')[0];
 }
 function areas(src){ // [kind, markup] in page order
-  return (src||main()).split('<section class="area" id="area-').slice(1).map(x=>[x.split('"')[0],x.split('</section>')[0]]);
+  return (src||main()).split(/<section class="area(?: collapsed)?" id="area-/).slice(1).map(x=>[x.split('"')[0],x.split('</section>')[0]]);
 }
 const VOID={area:1,base:1,br:1,col:1,embed:1,hr:1,img:1,input:1,link:1,meta:1,source:1,track:1,wbr:1};
 function wellFormed(src){ // null, or the first element that does not close in order
@@ -168,22 +168,26 @@ assert(patching.includes('1 more applicable advisory has no released fix'));
 assert(patching.includes('wpantry watch'));
 
 // 4 BY HAND: every non-auto fix_cmd as a numbered step, failures before warnings, none of the unattended ones.
-const manual=section('manual');
 const manualCmds=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto).map(f=>f.fix_cmd))];
+const failSteps=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd))].length;
+assert(section('manual').includes('1\u201310 of '+(manualCmds.length-failSteps)+' steps') && !section('manual').includes('of '+failSteps+' steps'),'ten steps a page by default; a list that fits is not paged');
+click({size:'manual',n:'100'}); // one page, for the checks below
+const manual=section('manual');
 for(const c of manualCmds)assert(manual.includes('<code>'+esc(c)+'</code>'),'by hand: '+c);
 for(const c of autoCmds)assert(!manual.includes('<code>'+esc(c)+'</code>'),'not by hand: '+c);
 assert.equal((manual.match(/<li class="opt">|<li>/g)||[]).length,manualCmds.length);
 const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth doing')[1].split('<details class="agent">')[0];
 assert(needs.includes('sudo fdesetup enable') && needs.includes('rotate it, then purge it') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
 assert(manual.includes('Clears <span class="mono">FileVault 1.0 · POSTURE-FILEVAULT</span>'));
-assert(manual.includes('<ol class="steps" style="counter-reset:step '+every.filter(f=>f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd).filter((c,i,a)=>a.indexOf(c)===i).length+'">'));
+assert(manual.includes('<ol class="steps" data-paged="optional" style="counter-reset:step '+failSteps+'">'),'warnings continue the numbering');
 assert(manual.includes('Copy agent prompt') && manual.includes('Preview prompt') && !manual.includes('<pre>'),'the preview renders on request');
 click({preview:'1'});
 assert(section('manual').includes('<pre>Help me review') && section('manual').includes('&lt;b&gt;x&lt;/b&gt;'),'the preview is escaped text');
 click({preview:'1'});
+ctx.viewerTest.state.size={}; ctx.viewerTest.state.sizeDefault=10;
 
 // 5 HISTORY: the exposure and remediation logs.
-const hist=section('history');
+let hist=section('history');
 assert(hist.includes('Exposure log') && hist.includes('2 scans, 3 exposures open, 1 resolved, 2 fixes run') && hist.includes('2 of the open exposures are this scan’s findings') && hist.includes('<td class="mono">2026-10-22 20:00 UTC</td>'));
 assert(hist.includes('Remediation log') && hist.includes('<td class="mono">npm install -g x@2</td><td>auto</td><td><span class="badge fail">failed</span></td><td class="mono"><span class="muted">not yet</span></td>'));
 // every open exposure being a current finding still leaves a summary, never an empty section
@@ -312,22 +316,56 @@ assert(!main().includes('All clear.'));
 ctx.viewerTest.addText(header,'empty-export.csv');
 assert(!main().includes('All clear.'));
 
-// long lists are cut behind one Show all button on screen, never in print
+// long lists are paged on screen (10 a page, 25/50/100 on request), complete in print
 const many=[]; for(let i=0;i<60;i++)many.push(finding('brew','formula-'+i,'CVE-2026-'+(100+i),'fail',{severity:'HIGH',fixed:'2',fix_cmd:'sudo fix formula-'+i}));
 load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,findings:many}}],plan:planOf(many),history:null});
+const comps=src=>(src.match(/<span class="comp">([^<]*)<\/span>/g)||[]).map(x=>x.replace(/<[^>]+>/g,''));
 let brew=areas()[0][1];
-assert.equal((brew.match(/<span class="comp">/g)||[]).length,25);
-assert(brew.includes('data-more="area:brew"') && brew.includes('Show all 60 components'));
-assert.equal((section('manual').match(/<li>/g)||[]).length,40);
-assert(section('manual').includes('Show all 60 steps') && section('manual').includes('Needs you · 60 steps'));
-click({more:'area:brew'});
+assert.deepEqual(comps(brew),many.slice(0,10).map(f=>f.component));
+assert(brew.includes('1–10 of 60 components') && brew.includes('data-page="area:brew" data-to="1"') && brew.includes('data-size="area:brew" data-n="100"'));
+assert(brew.includes('<button type="button" data-page="area:brew" data-to="0" aria-current="true"') && brew.includes('aria-label="Previous page">‹</button>'.replace('>‹<','>\u2039<')));
+assert.equal((section('manual').match(/<li>/g)||[]).length,10);
+assert(section('manual').includes('Needs you · 60 steps') && section('manual').includes('<ol class="steps" data-paged="manual" style="counter-reset:step 0">') && section('manual').includes('1–10 of 60 steps'));
+click({page:'area:brew',to:'1'});
 brew=areas()[0][1];
-assert.equal((brew.match(/<span class="comp">/g)||[]).length,60);
-assert(!brew.includes('Show all'));
+assert.deepEqual(comps(brew),many.slice(10,20).map(f=>f.component),'the second page');
+assert(brew.includes('11–20 of 60 components'));
+click({page:'manual',to:'2'});
+assert(section('manual').includes('<ol class="steps" data-paged="manual" style="counter-reset:step 20">') && section('manual').includes('21–30 of 60 steps'),'step numbers continue across pages');
+click({size:'area:brew',n:'100'});
+brew=areas()[0][1];
+assert.equal(comps(brew).length,60,'a page of 100 shows every component');
+assert(brew.includes('1–60 of 60 components') && !brew.includes('data-page="area:brew"'),'one page: no page buttons');
+assert.equal((section('manual').match(/<li>/g)||[]).length,60,'the chosen size becomes the default for the other lists');
+click({size:'manual',n:'25'});
+assert.equal((section('manual').match(/<li>/g)||[]).length,25);
+assert.equal(comps(areas()[0][1]).length,60,'a size chosen for one list keeps the others as they were set');
+search('formula-5');
+assert(areas()[0][1].includes('1–11 of 11 components'),'a search starts again from the first page');
+search('');
+// an area folds to its header and back; print never folds
+click({fold:'area:brew'});
+brew=areas()[0][1];
+assert(brew.includes('data-fold="area:brew" aria-expanded="false"') && comps(brew).length===0 && brew.includes('60 components'),'the header stays');
 events['window:beforeprint']();
-assert.equal((section('manual',elements['print-report'].innerHTML).match(/<li>/g)||[]).length,60,'print lists every step');
-assert(!elements['print-report'].innerHTML.includes('Show all'));
+const printedMany=elements['print-report'].innerHTML;
+assert.equal(comps(areas(printedMany)[0][1]).length,60,'print lists every component');
+assert.equal((section('manual',printedMany).match(/<li>/g)||[]).length,60,'print lists every step');
+assert(!printedMany.includes('class="pager"') && !printedMany.includes('data-fold'));
+click({fold:'area:brew'});
+assert.equal(comps(areas()[0][1]).length,60);
 assert.equal(wellFormed(main()),null);
+// the history logs fold too, and page
+load({...bundle,history:{...history,exposures:Array.from({length:30},(_,i)=>({...history.exposures[0],component:'exp-'+i,resolved_at:1,resolved:'2026-10-30'}))}});
+hist=section('history');
+assert(hist.includes('1–10 of 30 exposures') && (hist.match(/<td>exp-/g)||[]).length===10);
+click({fold:'exposures'});
+hist=section('history');
+assert(hist.includes('data-fold="exposures" aria-expanded="false"') && !hist.includes('<td>exp-') && hist.includes('Remediation log'));
+events['window:beforeprint']();
+assert.equal((section('history',elements['print-report'].innerHTML).match(/<td>exp-/g)||[]).length,30,'print has the whole log');
+assert.equal(wellFormed(main()),null);
+load(bundle);
 
 // a bundle whose plan does not fit its findings is ignored, not trusted
 load({...bundle,plan:[{command:'rm -rf /',mode:'auto',findings:[999]}]});

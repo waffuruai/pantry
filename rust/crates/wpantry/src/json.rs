@@ -69,6 +69,21 @@ impl From<i64> for J {
 }
 
 /// An object from (key, value) pairs, in order.
+/// A parsed value (`serde_json`) as an output value, so what one part of
+/// the program reads or builds can be written by another.
+impl From<&Value> for J {
+    fn from(v: &Value) -> J {
+        match v {
+            Value::Null => J::Null,
+            Value::Bool(b) => J::Bool(*b),
+            Value::Number(n) => n.as_i64().map(J::Int).or_else(|| n.as_f64().map(J::Float)).unwrap_or(J::Null),
+            Value::String(s) => J::Str(s.clone()),
+            Value::Array(a) => J::Arr(a.iter().map(J::from).collect()),
+            Value::Object(o) => J::Obj(o.iter().map(|(k, v)| (k.clone(), J::from(v))).collect()),
+        }
+    }
+}
+
 pub fn obj<const N: usize>(pairs: [(&str, J); N]) -> J {
     J::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }

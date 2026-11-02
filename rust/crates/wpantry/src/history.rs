@@ -56,6 +56,7 @@ pub fn scope_of(opts: &Options) -> String {
         ("gitleaks", &opts.policy.gitleaks_config),
         ("licenses", &opts.policy.licenses),
         ("install-scripts", &opts.policy.install_scripts),
+        ("hooks", &opts.policy.hooks),
     ]
     .iter()
     .filter_map(|(name, p)| p.as_ref().map(|p| format!("{name}={}", p.to_string_lossy())))
@@ -576,6 +577,11 @@ mod tests {
             ..repos.clone()
         };
         assert_eq!(scope_of(&policy), "repos:/r;policy:install-scripts=/p/allow.txt");
+        let hooks = Options {
+            policy: crate::check::Policy { hooks: Some("/p/hooks.txt".into()), ..Default::default() },
+            ..repos.clone()
+        };
+        assert_eq!(scope_of(&hooks), "repos:/r;policy:hooks=/p/hooks.txt");
         // A scan without --licenses never resolves what a licenses scan found.
         let d = crate::system::TempDir::new("history-scope").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();

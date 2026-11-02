@@ -25,7 +25,7 @@ const STORES: &[(&str, &str)] = &[
     ("Keychains/login.keychain", "the login keychain"),
 ];
 /// The ways a file sends something somewhere.
-const SENDS: &[&str] = &[
+pub(super) const SENDS: &[&str] = &[
     "fetch(",
     "XMLHttpRequest",
     "sendBeacon(",

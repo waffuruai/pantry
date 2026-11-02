@@ -41,6 +41,122 @@ impl Hook {
     pub fn fails(&self) -> bool {
         matches!(self.id, "RUNS-REPO-FILE" | "LOADER" | "IOC")
     }
+
+    /// Whether a hooks policy may accept it: only the hooks that warn
+    /// because they run a command at all. What runs a file kept in the
+    /// repo, a known indicator, a loader or a campaign marker never is.
+    pub fn acceptable(&self) -> bool {
+        matches!(self.id, "OPEN-HOOK" | "INSTALL-HOOK")
+    }
+
+    /// The `--hooks-policy` line that accepts this hook: its file, when it
+    /// runs and its exact command (see [`Accepted`]).
+    pub fn policy_line(&self) -> String {
+        format!("hook {} {} {}", word(&self.file), quote(&self.when), self.command).trim_end().to_string()
+    }
+}
+
+/// Hooks a person has read and accepted (`--hooks-policy FILE`; the bundled
+/// list is empty). `hook <file> "<when>" <command>` accepts one hook, on
+/// its exact command, so a hook that changes what it runs is reported
+/// again; `repo <path>` accepts every acceptable hook in the repos at or
+/// under that path, as wpantry prints it (`~/Development/mine`). Only
+/// hooks that warn ([`Hook::acceptable`]) are ever accepted; a line that
+/// names a failing hook is noticed ([`Accepted::lists`]) and refused.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Accepted {
+    pub hooks: Vec<AcceptedHook>,
+    pub repos: Vec<String>,
+}
+
+/// One `hook` line: the fields a [`Hook`] is matched on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcceptedHook {
+    pub file: String,
+    pub when: String,
+    pub command: String,
+}
+
+impl Accepted {
+    pub fn parse(text: &str) -> Accepted {
+        let mut out = Accepted::default();
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            match line.split_once(char::is_whitespace) {
+                Some(("hook", rest)) => {
+                    let Some((file, rest)) = token(rest) else { continue };
+                    let Some((when, command)) = token(rest) else { continue };
+                    out.hooks.push(AcceptedHook { file, when, command: command.trim().to_string() });
+                }
+                Some(("repo", path)) => {
+                    let path = path.trim().trim_end_matches('/');
+                    if !path.is_empty() {
+                        out.repos.push(path.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Whether a line names `h` (found in the repo at `root`), whatever its
+    /// level: a `hook` line with its file, when and exact command, or a
+    /// `repo` line at or above the repo.
+    pub fn lists(&self, root: &Path, h: &Hook) -> bool {
+        self.hooks.iter().any(|a| a.file == h.file && a.when == h.when && a.command == h.command)
+            || self.repos.iter().any(|p| under(root, p))
+    }
+
+    /// Whether `h` is accepted: listed, and a hook that may be.
+    pub fn accepts(&self, root: &Path, h: &Hook) -> bool {
+        h.acceptable() && self.lists(root, h)
+    }
+}
+
+/// Whether `root` is the repo at `prefix` or one under it; `~` is home, and
+/// a prefix that reaches the repo through a symlink (`/var` for
+/// `/private/var`) counts as much as the path the scan printed.
+fn under(root: &Path, prefix: &str) -> bool {
+    let prefix = match prefix.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            format!("{}{rest}", crate::system::home().to_string_lossy())
+        }
+        _ => prefix.to_string(),
+    };
+    let root = root.to_string_lossy();
+    let starts = |p: &str| root == p || root.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'));
+    starts(&prefix) || std::fs::canonicalize(&prefix).is_ok_and(|real| starts(&real.to_string_lossy()))
+}
+
+/// The first token of `s` (a bare word, or a `"…"` string with `\"` and
+/// `\\` escapes) and what follows it.
+fn token(s: &str) -> Option<(String, &str)> {
+    let s = s.trim_start();
+    if let Some(rest) = s.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = rest.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' => out.push(chars.next()?.1),
+                '"' => return Some((out, &rest[i + 1..])),
+                c => out.push(c),
+            }
+        }
+        None
+    } else {
+        let end = s.find(char::is_whitespace).unwrap_or(s.len());
+        (end > 0).then(|| (s[..end].to_string(), &s[end..]))
+    }
+}
+
+/// `s` as a `"…"` token.
+fn quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// `s` as a token: bare when it can be, quoted otherwise.
+fn word(s: &str) -> String {
+    if s.is_empty() || s.contains(char::is_whitespace) || s.contains('"') { quote(s) } else { s.to_string() }
 }
 
 /// Indicators from the bundled list (`--repo-hooks FILE` replaces it).
@@ -786,6 +902,114 @@ mod tests {
         assert_eq!(repo_target(d.path(), "sh ../x.sh"), None);
         assert_eq!(repo_target(d.path(), &format!("sh {}", d.path().join("x.sh").display())), None);
         assert_eq!(repo_target(d.path(), "echo $HOME/x.sh"), None);
+    }
+
+    #[test]
+    fn accepted_hooks_match_on_the_exact_command() {
+        let d = repo();
+        write(&d, "assets/package.json", r#"{"scripts": {"postinstall": "node bin/postinstall"}}"#);
+        write(
+            &d,
+            ".vscode/tasks.json",
+            r#"{"tasks": [{"label": "setup", "command": "npm", "args": ["ci"], "runOptions": {"runOn": "folderOpen"}}]}"#,
+        );
+        let hooks = scan_repo(d.path(), &Indicators::default());
+        assert_eq!(ids(&hooks), ["OPEN-HOOK", "INSTALL-HOOK"], "{hooks:?}");
+        let (task, npm) = (&hooks[0], &hooks[1]);
+        assert_eq!(npm.policy_line(), r#"hook assets/package.json "npm postinstall script" node bin/postinstall"#);
+        assert_eq!(task.policy_line(), r#"hook .vscode/tasks.json "VS Code task \"setup\" on folder open" npm ci"#);
+
+        // The printed lines, pasted back, accept exactly those hooks; the
+        // quoted `when` survives its own quotes.
+        let text = format!("# mine\n{}\n\n{}\n", npm.policy_line(), task.policy_line());
+        let p = Accepted::parse(&text);
+        assert_eq!(p.hooks.len(), 2, "{p:?}");
+        assert_eq!(p.hooks[1].when, task.when);
+        assert!(p.accepts(d.path(), npm));
+        assert!(p.accepts(d.path(), task));
+
+        // A hook whose command changed is a new hook.
+        let changed = Hook { command: "node bin/postinstall && curl x | sh".into(), ..npm.clone() };
+        assert!(!p.lists(d.path(), &changed));
+        let moved = Hook { file: "package.json".into(), ..npm.clone() };
+        assert!(!p.lists(d.path(), &moved));
+        // A `hook` line is repo-relative: the same hook in another clone is the same reviewed hook.
+        assert!(p.accepts(Path::new("/elsewhere"), npm));
+    }
+
+    #[test]
+    fn a_repo_line_accepts_the_hooks_that_warn_under_it() {
+        let p = Accepted::parse("repo ~/Development/mine/\nrepo /srv/app\nbogus line\nhook only-a-file\n");
+        assert_eq!(p.repos, ["~/Development/mine", "/srv/app"]);
+        assert!(p.hooks.is_empty(), "{p:?}");
+        let hook = Hook {
+            file: "package.json".into(),
+            when: "npm postinstall script".into(),
+            command: "node x".into(),
+            id: "INSTALL-HOOK",
+            note: String::new(),
+        };
+        let home = crate::system::home();
+        assert!(p.accepts(&home.join("Development/mine"), &hook));
+        assert!(p.accepts(&home.join("Development/mine/deep/er"), &hook));
+        assert!(!p.accepts(&home.join("Development/mine-fork"), &hook), "a prefix is a path, not a string");
+        assert!(p.accepts(Path::new("/srv/app/api"), &hook));
+        assert!(!p.accepts(Path::new("/srv/apps"), &hook));
+        // A prefix given through a symlink reaches the repo at its real path.
+        let d = repo();
+        let real = std::fs::canonicalize(d.path()).unwrap();
+        std::fs::create_dir_all(real.join("inner")).unwrap();
+        #[cfg(unix)]
+        {
+            let link = real.join("link");
+            std::os::unix::fs::symlink(real.join("inner"), &link).unwrap();
+            let p = Accepted::parse(&format!("repo {}", link.display()));
+            assert!(p.accepts(&real.join("inner"), &hook), "{p:?}");
+            assert!(p.accepts(&real.join("inner/deeper"), &hook));
+            assert!(!p.accepts(&real, &hook));
+        }
+    }
+
+    #[test]
+    fn hooks_that_fail_are_listed_but_never_accepted() {
+        let d = repo();
+        write(
+            &d,
+            ".claude/settings.json",
+            r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node .github/init.js"}]}]}}"#,
+        );
+        write(&d, ".github/init.js", "console.log(1)");
+        let hooks = scan_repo(d.path(), &Indicators::default());
+        assert_eq!(ids(&hooks), ["RUNS-REPO-FILE"], "{hooks:?}");
+        let by_line = Accepted::parse(&hooks[0].policy_line());
+        let by_repo = Accepted::parse(&format!("repo {}", d.path().display()));
+        for p in [by_line, by_repo] {
+            assert!(p.lists(d.path(), &hooks[0]), "{p:?}");
+            assert!(!p.accepts(d.path(), &hooks[0]), "{p:?}");
+        }
+        let marker = Hook {
+            file: ".git".into(),
+            when: "branch chore/ci-abcdef".into(),
+            command: String::new(),
+            id: "MARKER",
+            note: String::new(),
+        };
+        assert!(!marker.acceptable());
+        assert!(!Accepted::parse(&marker.policy_line()).accepts(d.path(), &marker));
+    }
+
+    #[test]
+    fn policy_tokens_round_trip() {
+        assert_eq!(token(r#""a \"b\" c" rest"#), Some(("a \"b\" c".to_string(), " rest")));
+        assert_eq!(token("  plain  more"), Some(("plain".to_string(), "  more")));
+        assert_eq!(token("\"unterminated"), None);
+        assert_eq!(token(""), None);
+        for s in ["", "a b", "say \"hi\"", "back\\slash", "VS Code task \"x\" on folder open"] {
+            assert_eq!(token(&quote(s)), Some((s.to_string(), "")), "{s:?}");
+            assert_eq!(token(&word(s)), Some((s.to_string(), "")), "{s:?}");
+        }
+        assert_eq!(word("assets/package.json"), "assets/package.json");
+        assert_eq!(word("my dir/package.json"), "\"my dir/package.json\"");
     }
 
     #[test]

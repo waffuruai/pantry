@@ -13,7 +13,7 @@ use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
 use crate::system::{self, Component, run as sh, short, which};
-use crate::{documents, harnesses, hidden, hooks, leaks, malicious, suspect};
+use crate::{documents, harnesses, hidden, hooks, leaks, malicious, mptcp, suspect};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -57,6 +57,7 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
     repo_hooks(scan, &git);
     hidden_text(scan, &git);
     suspect_code(scan, &git);
+    mptcp_listeners(scan, &repos);
     documents_pass(scan, &repos);
     install_scripts(scan, &repos, found);
     images(scan, &repos)?;
@@ -474,6 +475,39 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
                     "SUSPECT-BINARY-BLOB" => "Prefer a dependency that builds from source, or check the publisher and pin the package by version; a binary you've verified goes in the suspect policy (path:) so it warns instead".into(),
                     _ => "Read what runs, not what is written: decode it yourself, or drop the dependency; a legitimate table or decoder goes in the suspect policy so it warns instead".into(),
                 },
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Programs that listen with Multipath TCP on (Go 1.24 and later by
+/// default, or an explicit opt-in): CVE-2026-98432 is reachable through
+/// the listener until the kernel under it is fixed, so each warns with the
+/// opt-out as its step, as an unfixed Critical advisory does, and counts
+/// as unfixed. Never a failure: the program is right, the kernel isn't.
+pub fn mptcp_listeners(scan: &mut Scan, repos: &[Repo]) {
+    if repos.is_empty() {
+        return;
+    }
+    scan.status("Looking for programs that listen with Multipath TCP on");
+    let found: Vec<Vec<mptcp::Exposure>> = system::par_map(repos, system::PROBES, |(_, root)| mptcp::scan_repo(root));
+    let kev = scan.kev.contains(mptcp::ID);
+    for ((name, _), hits) in repos.iter().zip(found) {
+        scan.count("repos checked for programs listening with MPTCP on", 1);
+        for h in hits {
+            scan.unfixed += 1;
+            scan.add(Finding {
+                kind: "project".into(),
+                component: format!("{name}/{}", h.file),
+                version: h.go,
+                location: format!("line {}", h.line),
+                vuln_id: mptcp::ID.into(),
+                status: "warn".into(),
+                kev,
+                severity: "CRITICAL".into(),
+                note: h.note,
+                fix_cmd: h.fix.into(),
                 ..Default::default()
             });
         }

@@ -309,6 +309,32 @@ class Contract(unittest.TestCase):
         found = sorted((f["vuln_id"], f["status"]) for f in findings if f["kind"] == "suspect-code")
         self.assertEqual([s for _, s in found], ["warn", "warn", "warn"], found)
 
+    def test_go_servers_warn_about_mptcp_until_they_opt_out(self):
+        """A Go 1.24+ module that listens for TCP is exposed to CVE-2026-98432
+        through the program (Go turns MPTCP on by default): a `project` warning
+        with `fixed` empty and the opt-out as the step, counted as unfixed; an
+        opt-out in the service's environment ends it."""
+        repo = git_repo(self.home / "api")
+        (repo / "go.mod").write_text("module example.com/api\n\ngo 1.24.0\n")
+        (repo / "main.go").write_text('package main\n\nimport "net/http"\n\nfunc main() {\n\thttp.ListenAndServe(":8080", nil)\n}\n')
+        code, out, err = self.project_run("--json")
+        env = self.envelope(out)
+        self.assertEqual(code, 1 if any(f["status"] == "fail" for f in env["findings"]) else 0, err)
+        self.assertTrue(all(f["kind"] == "tool" for f in env["findings"] if f["status"] == "fail"), env["findings"])
+        [f] = [f for f in env["findings"] if f["vuln_id"] == "CVE-2026-98432"]
+        self.assertEqual((f["kind"], f["status"], f["fixed"], f["severity"], f["fix_auto"], f["location"]),
+                         ("project", "warn", "", "CRITICAL", False, "line 6"))
+        self.assertTrue(f["component"].endswith("api/main.go"), f["component"])
+        self.assertIn("Multipath TCP", f["note"])
+        self.assertIn("multipathtcp=0", f["fix_cmd"])
+        self.assertIn("SetMultipathTCP(false)", f["fix_cmd"])
+        self.assertEqual(env["unfixed"], 1)
+        (repo / "Dockerfile").write_text("FROM golang:1.24\nENV GODEBUG=multipathtcp=0\n")
+        _, out, _ = self.project_run("--json")
+        env = self.envelope(out)
+        self.assertEqual([f for f in env["findings"] if f["vuln_id"] == "CVE-2026-98432"], [])
+        self.assertEqual(env["unfixed"], 0)
+
     def test_text_aimed_at_agents_and_prose_that_runs_nothing(self):
         repo = git_repo(self.home / "agentbait")
         (repo / "README.md").write_text(

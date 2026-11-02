@@ -36,6 +36,7 @@ pub mod leaks;
 pub mod licenses;
 pub mod lockfiles;
 pub mod malicious;
+pub mod mptcp;
 pub mod net;
 pub mod osdb;
 pub mod osv;

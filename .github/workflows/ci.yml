@@ -51,7 +51,7 @@ jobs:
       - name: install.sh test
         run: PATH="$TASK_PATH" mise run test install
 
-      - name: Homebrew bump test
+      - name: Homebrew packaging tests
         run: PATH="$TASK_PATH" mise run test packaging
 
   # The suite inside ops' container layer (containers/Dockerfile.bootstrap in

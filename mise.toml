@@ -22,7 +22,7 @@ depends = ["build"]
 run = "rust/target/release/wpantry tools"
 
 [tasks.test]
-description = "Test suites; `all` (the default) is the Rust tests, the CA trust test, the mitigation scripts' tests, the install.sh test, the scripts/ tests and the Homebrew bump test"
+description = "Test suites; `all` (the default) is the Rust tests, the CA trust test, the mitigation scripts' tests, the install.sh test, the scripts/ tests and the Homebrew packaging tests"
 usage = '''
 arg "[suite]" default="all" help="all, rust, ca-trust, mitigations, install, scripts or packaging" {
   choices "all" "rust" "ca-trust" "mitigations" "install" "scripts" "packaging"
@@ -32,14 +32,15 @@ run = '''
 cargo_test() { (cd rust && env -u RUSTUP_TOOLCHAIN cargo test --locked); }
 mitigations_test() { local t; for t in mitigations/test-*.sh; do "$t" || return 1; done; }
 scripts_test() { python3 -m unittest discover -s scripts; }
+packaging_test() { tests/packaging/test-bump.sh && tests/packaging/test-tap-pr.sh; }
 case "${usage_suite:-all}" in
-  all) cargo_test && ca-trust/test-ca-trust.sh && mitigations_test && tests/install/test-install.sh && scripts_test && tests/packaging/test-bump.sh ;;
+  all) cargo_test && ca-trust/test-ca-trust.sh && mitigations_test && tests/install/test-install.sh && scripts_test && packaging_test ;;
   rust) cargo_test ;;
   ca-trust) exec ca-trust/test-ca-trust.sh ;;
   mitigations) mitigations_test ;;
   install) exec tests/install/test-install.sh ;;
   scripts) scripts_test ;;
-  packaging) exec tests/packaging/test-bump.sh ;;
+  packaging) packaging_test ;;
 esac
 '''
 

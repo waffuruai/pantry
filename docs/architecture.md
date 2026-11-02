@@ -15,7 +15,7 @@ flowchart TB
   read["<b>2 READ, in parallel</b><br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages;<br/>apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings;<br/>container images; documents and code. gitleaks runs on repos whose HEAD moved."]
   ask["<b>3 ASK</b><br/>(ecosystem, name, version) to OSV in batches of 1000, only new or changed records fetched;<br/>KEV, end-of-life, the malicious index, licenses and release feeds. Every answer memoized for a day."]
   judge["<b>4 JUDGE</b><br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own<br/>comparator; fail, warn, or not checked."]
-  report["<b>5 REPORT</b><br/>Grouped by kind, one line per component with the reason and the fix; the --json envelope;<br/>exit 0 clean, 1 fails, 2 usage, 3 internal. --update runs the unattended fixes, then re-checks."]
+  report["<b>5 REPORT</b><br/>Grouped by kind, one line per component with the reason and the fix; the --json envelope;<br/>exit 0 clean, 1 fails, 2 usage, 3 internal. --fix runs the unattended fixes, then re-checks."]
   scope --> read --> ask --> judge --> report
 ```
 

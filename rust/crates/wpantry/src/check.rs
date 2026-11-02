@@ -93,7 +93,7 @@ impl Finding {
 
 /// The policy files a scan reads; the bundled defaults unless the caller
 /// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`,
-/// `--repo-hooks`).
+/// `--repo-hooks`, `--posture-policy`, `--suspect-policy`, `--hooks-policy`).
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
     pub gitleaks_config: Option<PathBuf>,
@@ -106,6 +106,9 @@ pub struct Policy {
     /// Suspicious-code exemptions (`--suspect-policy`): ids and paths that
     /// only warn; the bundled, empty list by default.
     pub suspect: Option<PathBuf>,
+    /// Repo hooks a person has read and accepted (`--hooks-policy`); the
+    /// bundled, empty list by default.
+    pub hooks: Option<PathBuf>,
 }
 
 impl Policy {
@@ -121,6 +124,14 @@ impl Policy {
         crate::suspect::Policy::parse(&match &self.suspect {
             Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
             None => crate::defaults::SUSPECT.to_string(),
+        })
+    }
+
+    /// The accepted repo hooks (see `hooks::Accepted`).
+    pub fn hooks_policy(&self) -> crate::hooks::Accepted {
+        crate::hooks::Accepted::parse(&match &self.hooks {
+            Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+            None => crate::defaults::HOOKS.to_string(),
         })
     }
 
@@ -223,6 +234,10 @@ pub struct Options {
     /// Skip the machine's security settings (`--no-posture`); they run
     /// with the machine inventory otherwise.
     pub no_posture: bool,
+    /// Skip the clipboard self-test (`--no-clipboard`): it copies a canary
+    /// address of each shape and reads it back, which writes to the
+    /// clipboard for a second. The passive persistence check still runs.
+    pub no_clipboard: bool,
     pub policy: Policy,
     /// Check dependency licenses against the allowlist (`--licenses`); off
     /// by default, it's noisy.

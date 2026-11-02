@@ -175,6 +175,30 @@ pub fn cores() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
+/// `cmd.spawn()`, retried briefly on "text file busy": on Unix a program
+/// written moments ago can still be open for writing in a child another
+/// thread forked between our close and its exec (the descriptor leaks until
+/// that exec), and the kernel refuses to run it until then. Transient, so
+/// try again for up to a second before giving up.
+fn spawn(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// errno for "text file busy" on Linux and the BSDs (macOS included).
+#[cfg(unix)]
+const ETXTBSY: i32 = 26;
+#[cfg(not(unix))]
+const ETXTBSY: i32 = -1;
+
 /// Run `argv` with stdin closed and `NO_COLOR=1`, killing it after
 /// `timeout`. An error only when it can't start or times out. The deadline
 /// covers the program and its output: a process it started in the
@@ -187,7 +211,7 @@ pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))?;
+    let mut child = spawn(&mut cmd).map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))?;
     let drain = |pipe: Box<dyn Read + Send>| {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

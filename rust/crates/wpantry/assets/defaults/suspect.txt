@@ -1,0 +1,5 @@
+# Suspicious-code findings that should warn rather than fail, one per line:
+# an id (SUSPECT-PRIV-ESCALATION, or just PRIV-ESCALATION) or `path:<text>`
+# matched against the file's path inside the repo (path:scripts/legacy/).
+# Nothing is ever silenced: an exempted finding is still reported as a
+# warning. Replace this file with --suspect-policy FILE.

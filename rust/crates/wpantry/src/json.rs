@@ -69,6 +69,21 @@ impl From<i64> for J {
 }
 
 /// An object from (key, value) pairs, in order.
+/// A parsed value (`serde_json`) as an output value, so what one part of
+/// the program reads or builds can be written by another.
+impl From<&Value> for J {
+    fn from(v: &Value) -> J {
+        match v {
+            Value::Null => J::Null,
+            Value::Bool(b) => J::Bool(*b),
+            Value::Number(n) => n.as_i64().map(J::Int).or_else(|| n.as_f64().map(J::Float)).unwrap_or(J::Null),
+            Value::String(s) => J::Str(s.clone()),
+            Value::Array(a) => J::Arr(a.iter().map(J::from).collect()),
+            Value::Object(o) => J::Obj(o.iter().map(|(k, v)| (k.clone(), J::from(v))).collect()),
+        }
+    }
+}
+
 pub fn obj<const N: usize>(pairs: [(&str, J); N]) -> J {
     J::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
@@ -221,5 +236,19 @@ mod tests {
         assert!(matches!(parse(b"{", 100), Err(Error::Invalid(_))));
         let deep = "[".repeat(1000) + &"]".repeat(1000);
         assert!(matches!(parse(deep.as_bytes(), 1 << 20), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn escapes_and_special_floats_like_python() {
+        assert_eq!(J::from("a\\b\n\r\t\u{8}\u{c}".to_string()).dumps(), r#""a\\b\n\r\t\b\f""#);
+        assert_eq!(J::Arr(vec![]).dumps(), "[]");
+        assert_eq!(J::Arr(vec![J::from(true), J::from(7i64)]).dumps_indent(2), "[\n  true,\n  7\n]");
+        assert_eq!(J::Float(f64::NAN).dumps(), "NaN");
+        assert_eq!(J::Float(f64::INFINITY).dumps(), "Infinity");
+        assert_eq!(J::Float(f64::NEG_INFINITY).dumps(), "-Infinity");
+        assert_eq!(J::Float(1e16).dumps(), "10000000000000000");
+        assert_eq!(J::Float(2.5).dumps(), "2.5");
+        assert_eq!(strs_at(&serde_json::json!({"a": ["x", 1, "y"]}), "a"), ["x", "y"]);
+        assert_eq!(str_at(&serde_json::json!({"a": 1}), "a"), "");
     }
 }

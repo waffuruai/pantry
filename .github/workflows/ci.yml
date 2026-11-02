@@ -1,8 +1,8 @@
 name: CI
 
 # wpantry's build, tests and supply-chain gates and the CLI contract suite
-# against the binary, on Linux and macOS (specs/01-rust-port.md); the CA trust
-# scripts and install.sh on both; shell and workflow lint.
+# against the binary, on Linux and macOS (specs/cli-contract.md); the CA trust
+# scripts and install.sh on both; shell and workflow lint; the coverage gate.
 on:
   pull_request:
   push:
@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install: false
           cache: true
@@ -48,13 +48,29 @@ jobs:
       - name: install.sh test
         run: PATH="$TASK_PATH" mise run test install
 
+      - name: Install pinned Node for the offline viewer tests
+        run: mise install node
+
+      - name: HTML viewer behavior
+        run: PATH="$TASK_PATH" mise run test html
+
   # The suite inside ops' container layer (containers/Dockerfile.bootstrap in
   # waffuruai/ops), the image org containers start from: a fresh ubuntu:24.04
   # with ops' pinned tools, as a non-root user. Built from ops at OPS_REF so
   # the layer has one source, until ops publishes the image; bump OPS_REF by
-  # PR. ops is private, so WSCANNER_OP_DEPLOY_KEY is a read-only deploy key on it.
+  # PR. ops is private, so PANTRY_OPS_DEPLOY_KEY is a read-only deploy key on
+  # it. A pull request from a fork can't have it, and Dependabot's runs read
+  # a separate secret store this key is kept out of: a workflow file a pull
+  # request can edit reads every secret its event is given, and a bump
+  # touches nothing this job tests. So this job runs only for pushes and for
+  # pull requests a maintainer opened here; the others stay green on the jobs
+  # they can run.
   container:
     name: Test (ops bootstrap container)
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.head.repo.full_name == github.repository
+          && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -63,10 +79,10 @@ jobs:
     steps:
       - name: Check for the ops deploy key
         env:
-          WSCANNER_OP_DEPLOY_KEY: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+          PANTRY_OPS_DEPLOY_KEY: ${{ secrets.PANTRY_OPS_DEPLOY_KEY }}
         run: |
-          [ -n "$WSCANNER_OP_DEPLOY_KEY" ] || {
-            echo "::error::WSCANNER_OP_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's WSCANNER_OP_DEPLOY_KEY secret"
+          [ -n "$PANTRY_OPS_DEPLOY_KEY" ] || {
+            echo "::error::PANTRY_OPS_DEPLOY_KEY is not set: add a read-only deploy key to waffuruai/ops and its private key as this repo's PANTRY_OPS_DEPLOY_KEY secret"
             exit 1
           }
 
@@ -80,7 +96,7 @@ jobs:
           repository: waffuruai/ops
           ref: ${{ env.OPS_REF }}
           path: ops
-          ssh-key: ${{ secrets.WSCANNER_OP_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.PANTRY_OPS_DEPLOY_KEY }}
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -112,10 +128,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The same pins laptops use: shellcheck and actionlint from mise.toml,
-      # fetched through mise's checksummed registry. Python is not needed here.
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+      # fetched through mise's checksummed registry, and Python for the
+      # actions audit check and the scripts/ tests.
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
-          install_args: shellcheck actionlint
+          install_args: shellcheck actionlint python
           cache: true
 
       - name: Cut PATH to mise and the base system
@@ -128,6 +145,18 @@ jobs:
       # and actionlint.
       - name: lint
         run: PATH="$TASK_PATH" mise run lint
+
+      # Every action the workflows use is pinned by commit and audited in
+      # .github/actions-audits.toml, its tag is that commit, and its release is
+      # 72 hours old (docs/internal/dependencies.md). The token only raises the
+      # API rate limit.
+      - name: vet actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: PATH="$TASK_PATH" mise run vet actions
+
+      - name: scripts tests
+        run: PATH="$TASK_PATH" mise run test scripts
 
   # The Rust port (rust/): rustfmt, clippy, unit and golden-file tests, the
   # release build, then the contract suite against the binary it built. The
@@ -178,6 +207,39 @@ jobs:
         env:
           WPANTRY: rust/target/release/wpantry
         run: python3 -m unittest discover -s tests/contract -v
+
+  # The coverage gate: the Rust tests and the contract suite together, through
+  # cargo-llvm-cov, must cover 90% of the workspace's lines (CONTRIBUTING.md).
+  # Nothing is excluded from the measurement; what unit tests can't reach on a
+  # hosted runner (the probes that shell out to the real machine) counts as
+  # uncovered. The HTML report is the job's artifact.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cargo-llvm-cov at the version mise.toml pins, through mise's checksummed
+      # registry, and Python for the contract suite.
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          install_args: python aqua:taiki-e/cargo-llvm-cov
+          cache: true
+
+      - name: Install the pinned toolchain
+        working-directory: rust
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: mise run coverage
+        run: mise run coverage --html
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-html
+          path: rust/target/llvm-cov/html
+          if-no-files-found: error
 
   # S2: cargo deny (advisories, crates.io-only sources, license allowlist)
   # and cargo vet (every dependency audited or explicitly exempted). Either

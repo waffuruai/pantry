@@ -1,11 +1,10 @@
-//! Print the findings, and plan or apply the fixes (`wpantry --update`).
+//! Print the findings, and plan or apply the fixes (`wpantry --fix`).
 
-use std::collections::HashSet;
 use wpantry::check::{Finding, Outcome};
 use wpantry::system::short;
 use wpantry::versions;
 
-pub const MISE_FIX: &str = "mise: manual, bump MISE_VERSION in ops, then rerun its scripts/bootstrap.sh";
+pub const MISE_FIX: &str = "mise: manual, update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it";
 
 /// Many packages inside one thing: one entry per thing.
 fn bundle(kind: &str) -> Option<&'static str> {
@@ -35,6 +34,7 @@ pub fn covering<'a>(fs: &[&'a Finding]) -> &'a Finding {
 /// The order kinds are listed in: what's installed on the machine, then
 /// what the repos lock, then what the harnesses run, then everything else.
 const KIND_ORDER: &[&str] = &[
+    "posture",
     "os",
     "runtime",
     "compiler",
@@ -52,6 +52,10 @@ const KIND_ORDER: &[&str] = &[
     "image",
     "bundled",
     "mcp",
+    "repo-hook",
+    "hidden-text",
+    "suspect-code",
+    "document",
     "secret",
     "install-script",
     "license",
@@ -269,7 +273,7 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
     if fails > 0 {
         let advisories = scan.findings.iter().filter(|f| f.status == "fail").count();
         out(&format!(
-            "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry --update --dryrun{incomplete}"
+            "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry --fix --dryrun{incomplete}"
         ));
     } else if !gaps.is_empty() {
         out(&format!("⚠ nothing with a released fix found in what could be checked.{incomplete}"));
@@ -281,36 +285,110 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
     i32::from(fails > 0)
 }
 
-/// (unattended, needs you, also worth doing): one fix per component, the
-/// one covering all its advisories, failures before warnings.
-pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
-    type Component<'a> = (&'a str, &'a str, &'a str, &'a str);
-    let mut groups: Vec<(Component, Vec<&Finding>)> = Vec::new();
-    for f in findings {
-        let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), f.location.as_str());
-        match groups.iter_mut().find(|(key, _)| *key == k) {
-            Some((_, v)) => v.push(f),
-            None => groups.push((k, vec![f])),
+/// One step of the update plan: a command (or an instruction), whether
+/// `--fix` runs it unattended, whether it clears a failing finding, and
+/// the findings (indices into the slice `steps` was given) it covers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub cmd: String,
+    pub unattended: bool,
+    pub fails: bool,
+    pub findings: Vec<usize>,
+}
+
+impl Step {
+    /// `auto` (runs unattended), `manual` (needs you, clears a failure) or
+    /// `optional` (needs you, a warning).
+    pub fn mode(&self) -> &'static str {
+        if self.unattended {
+            "auto"
+        } else if self.fails {
+            "manual"
+        } else {
+            "optional"
         }
     }
-    groups.sort_by_key(|(_, fs)| fs.iter().all(|f| f.status != "fail"));
-    let (mut seen, mut auto, mut manual, mut optional) = (HashSet::new(), Vec::new(), Vec::new(), Vec::new());
-    for (_, fs) in &groups {
-        let f = covering(fs);
-        let (cmd, unattended) =
-            if upgrades_mise(&f.fix_cmd) { (MISE_FIX.to_string(), false) } else { (f.fix_cmd.clone(), f.fix_auto) };
-        if cmd.is_empty() || !seen.insert(cmd.clone()) {
+}
+
+/// The update plan: one fix per component, the one covering all its
+/// advisories, failures before warnings; a command two components share
+/// is one step covering both.
+pub fn steps(findings: &[Finding]) -> Vec<Step> {
+    type Component<'a> = (&'a str, &'a str, &'a str, &'a str);
+    let mut groups: Vec<(Component, Vec<usize>)> = Vec::new();
+    for (i, f) in findings.iter().enumerate() {
+        // Every hit in one file is one decision (rotate, or allow the file),
+        // not one step per line.
+        let location = if f.kind == "secret" { "" } else { f.location.as_str() };
+        let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), location);
+        match groups.iter_mut().find(|(key, _)| *key == k) {
+            Some((_, v)) => v.push(i),
+            None => groups.push((k, vec![i])),
+        }
+    }
+    groups.sort_by_key(|(_, is)| is.iter().all(|i| findings[*i].status != "fail"));
+    let mut out: Vec<Step> = Vec::new();
+    for (_, is) in &groups {
+        let fs: Vec<&Finding> = is.iter().map(|i| &findings[*i]).collect();
+        let f = covering(&fs);
+        let (cmd, unattended) = if upgrades_mise(&f.fix_cmd) {
+            (MISE_FIX.to_string(), false)
+        } else if f.kind == "secret" && fs.len() > 1 {
+            (secrets_fix(&fs), false)
+        } else {
+            (f.fix_cmd.clone(), f.fix_auto)
+        };
+        if cmd.is_empty() {
             continue;
         }
-        if unattended {
-            auto.push(cmd);
-        } else if fs.iter().any(|x| x.status == "fail") {
-            manual.push(cmd);
-        } else {
-            optional.push(cmd);
+        let fails = fs.iter().any(|x| x.status == "fail");
+        match out.iter_mut().find(|s| s.cmd == cmd) {
+            // The first component to name a command decides how it runs.
+            Some(s) => s.findings.extend(is.iter().copied()),
+            None => out.push(Step { cmd, unattended, fails, findings: is.clone() }),
+        }
+    }
+    out
+}
+
+/// (unattended, needs you, also worth doing): the plan's commands by mode.
+pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (mut auto, mut manual, mut optional) = (Vec::new(), Vec::new(), Vec::new());
+    for s in steps(findings) {
+        match s.mode() {
+            "auto" => auto.push(s.cmd),
+            "manual" => manual.push(s.cmd),
+            _ => optional.push(s.cmd),
         }
     }
     (auto, manual, optional)
+}
+
+/// One step for every hit in a file: `component` is `repo/file`, and each
+/// finding's own fix names its fingerprint.
+fn secrets_fix(fs: &[&Finding]) -> String {
+    let file = fs[0].component.as_str();
+    let generic = fs.iter().all(|f| f.status != "fail");
+    let ignore = fs[0]
+        .fix_cmd
+        .rsplit_once(" to ")
+        .map(|(_, path)| path.to_string())
+        .unwrap_or_else(|| "its repo's .gitleaksignore".to_string());
+    let fps: Vec<&str> = fs
+        .iter()
+        .filter_map(|f| f.fix_cmd.strip_prefix("If it's real: rotate it, then purge it from history. If not: add "))
+        .filter_map(|rest| rest.split_once(" to ").map(|(fp, _)| fp))
+        .collect();
+    let listed = if fps.len() <= 3 {
+        fps.join(", ")
+    } else {
+        format!("the {} fingerprints (each hit's `fix_cmd` in `wpantry check --json` names one)", fps.len())
+    };
+    format!(
+        "{} hits in {file}{}: if any is real, rotate it, then purge it from history; if none are, add {listed} to {ignore}",
+        fs.len(),
+        if generic { " (generic rules: review)" } else { "" }
+    )
 }
 
 /// Whether a fix would update mise, which only a human bumps (ops pins
@@ -323,19 +401,27 @@ pub fn upgrades_mise(cmd: &str) -> bool {
         || (w.len() >= 2 && w[..2] == ["mise", "self-update"])
 }
 
-/// Run (or, on a dry run, print) the unattended fixes and list the rest;
-/// 1 when an unattended fix failed. `confirm` gets the unattended commands
-/// before any runs; on false nothing is run.
+/// What `apply` did: the exit status (1 when an unattended fix failed) and
+/// each unattended command with whether it succeeded (dry runs list none).
+pub struct Applied {
+    pub status: i32,
+    pub ran: Vec<(String, bool)>,
+}
+
+/// Run (or, on a dry run, print) the unattended fixes and list the rest.
+/// `confirm` gets the unattended commands before any runs; on false
+/// nothing is run.
 pub fn apply(
     findings: &[Finding],
     dryrun: bool,
     confirm: &dyn Fn(&[String]) -> bool,
     out: &mut dyn FnMut(&str),
-) -> i32 {
+) -> Applied {
     let (auto, manual, optional) = plan(findings);
+    let mut ran = Vec::new();
     if auto.is_empty() && manual.is_empty() && optional.is_empty() {
         out("Nothing to update.");
-        return 0;
+        return Applied { status: 0, ran };
     }
     out("");
     out(&format!("==> Update plan{}", if dryrun { " (dry run: nothing is changed)" } else { "" }));
@@ -350,14 +436,12 @@ pub fn apply(
             continue;
         }
         out(&format!("  → {cmd}"));
-        let ok = shlex_split(cmd)
-            .filter(|w| !w.is_empty())
-            .and_then(|w| std::process::Command::new(&w[0]).args(&w[1..]).status().ok())
-            .is_some_and(|s| s.success());
+        let ok = shlex_split(cmd).filter(|w| !w.is_empty()).is_some_and(|w| run_bounded(&w, APPLY_TIMEOUT));
         if !ok {
             out(&format!("  ✗ failed: {cmd}"));
             status = 1;
         }
+        ran.push((cmd.clone(), ok));
     }
     for (title, cmds) in [
         ("Needs you (sudo, a shell function, a vendor update, or a change in a repo, made on a branch):", &manual),
@@ -370,7 +454,33 @@ pub fn apply(
             }
         }
     }
-    status
+    Applied { status, ran }
+}
+
+/// How long one unattended fix may take (a package manager download).
+const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Run `argv` as is (no shell), with the terminal, killing it after
+/// `timeout`; whether it exited 0.
+fn run_bounded(argv: &[String], timeout: std::time::Duration) -> bool {
+    let Ok(mut child) =
+        std::process::Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).spawn()
+    else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => return false,
+        }
+    }
 }
 
 /// POSIX shell word splitting, as Python's `shlex.split`; None on an
@@ -465,6 +575,64 @@ mod tests {
         );
     }
 
+    /// Seventeen generic hits in one test-vector file are one decision in
+    /// the plan, not seventeen steps.
+    #[test]
+    fn secret_hits_in_one_file_are_one_step() {
+        let hit = |n: i64| Finding {
+            kind: "secret".into(),
+            component: "repo/TestVectors/xts.txt".into(),
+            location: format!("line {n}, commit abc"),
+            vuln_id: "generic-api-key".into(),
+            status: "warn".into(),
+            fix_cmd: format!(
+                "If it's real: rotate it, then purge it from history. If not: add abc:TestVectors/xts.txt:generic-api-key:{n} to ~/repo/.gitleaksignore"
+            ),
+            ..Default::default()
+        };
+        let fs: Vec<Finding> = (1..=5).map(hit).collect();
+        let (auto, manual, optional) = plan(&fs);
+        assert!(auto.is_empty() && manual.is_empty());
+        assert_eq!(optional.len(), 1, "{optional:?}");
+        assert!(
+            optional[0].starts_with("5 hits in repo/TestVectors/xts.txt (generic rules: review): "),
+            "{}",
+            optional[0]
+        );
+        assert!(optional[0].ends_with("to ~/repo/.gitleaksignore"), "{}", optional[0]);
+        assert!(optional[0].contains("the 5 fingerprints"), "{}", optional[0]);
+        let two: Vec<Finding> = (1..=2).map(hit).collect();
+        let (_, _, optional) = plan(&two);
+        assert!(
+            optional[0]
+                .contains("abc:TestVectors/xts.txt:generic-api-key:1, abc:TestVectors/xts.txt:generic-api-key:2"),
+            "{}",
+            optional[0]
+        );
+    }
+
+    #[test]
+    fn steps_keep_the_findings_each_command_covers() {
+        let fs = [
+            f("brew upgrade a", true, "fail"),
+            f("brew upgrade a", true, "fail"),
+            Finding { component: "b".into(), ..f("sudo apt-get install b", false, "warn") },
+            Finding { component: "c".into(), ..f("sudo apt-get install b", false, "fail") },
+            Finding { fix_cmd: String::new(), ..f("", false, "fail") },
+        ];
+        let steps = steps(&fs);
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert_eq!(
+            (steps[0].cmd.as_str(), steps[0].mode(), steps[0].findings.as_slice()),
+            ("brew upgrade a", "auto", &[0, 1][..])
+        );
+        // Two components sharing a command are one step; a failing one anywhere makes it manual, not optional.
+        assert_eq!(
+            (steps[1].cmd.as_str(), steps[1].mode(), steps[1].findings.as_slice()),
+            ("sudo apt-get install b", "manual", &[3, 2][..])
+        );
+    }
+
     #[test]
     fn one_fix_per_component_covers_every_advisory() {
         let fs: Vec<Finding> = [("CVE-1", "0.23.45"), ("CVE-2", "0.23.46")]
@@ -482,10 +650,10 @@ mod tests {
     #[test]
     fn dryrun_runs_nothing() {
         let mut lines = Vec::new();
-        assert_eq!(apply(&[f("false", true, "fail")], true, &|_| true, &mut |l| lines.push(l.to_string())), 0);
+        assert_eq!(apply(&[f("false", true, "fail")], true, &|_| true, &mut |l| lines.push(l.to_string())).status, 0);
         assert!(lines.contains(&"  would run: false".to_string()));
         let mut lines = Vec::new();
-        assert_eq!(apply(&[f("false", true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string())), 1);
+        assert_eq!(apply(&[f("false", true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string())).status, 1);
         assert!(lines.contains(&"  ✗ failed: false".to_string()));
         // Declined: the command is offered, and nothing runs.
         let mut lines = Vec::new();
@@ -494,7 +662,7 @@ mod tests {
             offered.borrow_mut().extend_from_slice(cmds);
             false
         };
-        assert_eq!(apply(&[f("false", true, "fail")], false, &decline, &mut |l| lines.push(l.to_string())), 0);
+        assert_eq!(apply(&[f("false", true, "fail")], false, &decline, &mut |l| lines.push(l.to_string())).status, 0);
         assert_eq!(*offered.borrow(), ["false"]);
         assert!(lines.contains(&"  Nothing was changed.".to_string()));
         assert!(!lines.iter().any(|l| l.contains("failed")));
@@ -540,6 +708,7 @@ mod tests {
             ..Default::default()
         };
         let scan = Outcome {
+            scan_id: 1,
             findings: vec![
                 Finding {
                     kind: "unchecked".into(),
@@ -612,7 +781,7 @@ mod tests {
                 "  ⚠ CISA KEV - down",
                 "",
                 "  · 1 applicable advisories have no released fix yet (wpantry search --applicable)",
-                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wpantry --update --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
+                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wpantry --fix --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
             ]
         );
     }

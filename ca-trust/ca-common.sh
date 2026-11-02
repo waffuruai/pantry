@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Output helpers shared by check-ca-trust.sh and fix-ca-trust.sh. Sourced, not
-# run.
+# Output helpers for check-ca-trust.sh (and the scripts that source this).
+# Sourced, not run.
 
 is_macos() {
   [ "$(uname -s)" = "Darwin" ]

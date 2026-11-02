@@ -1,4 +1,4 @@
-# cargo deny (specs/01-rust-port.md S2): advisories, sources and licenses, for the targets we
+# cargo deny (docs/internal/dependencies.md): advisories, sources and licenses, for the targets we
 # ship. Run from rust/: `cargo deny --locked check`. Failing blocks the merge.
 
 [graph]

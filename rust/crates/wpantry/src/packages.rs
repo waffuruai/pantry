@@ -15,11 +15,14 @@ use std::time::Duration;
 /// processing, so no `.pth` startup hook in its site-packages runs (and no
 /// pip). With `-S` Python doesn't apply a venv itself, so its
 /// `pyvenv.cfg` is read here, as `site.venv` would. `sites` are the
-/// directories `pip list` reads, in sys.path order.
+/// directories `pip list` reads, in sys.path order. The base interpreter's
+/// site-packages are asked for by its base prefixes: from 3.14 a venv is
+/// `sys.prefix` even under `-S`, so the plain call would give the venv's
+/// own directories and leave out the system ones it inherits.
 const PY_INFO: &str = r#"import json, os, platform, site, sys, sysconfig
 exe = os.path.dirname(os.path.abspath(sys.executable))
 cfg = next((c for c in (os.path.join(d, "pyvenv.cfg") for d in (exe, os.path.dirname(exe))) if os.path.isfile(c)), None)
-base = [site.getusersitepackages()] + site.getsitepackages()
+base = [site.getusersitepackages()] + site.getsitepackages([sys.base_prefix, sys.base_exec_prefix])
 sites = base
 if cfg:
     system = False
@@ -53,8 +56,16 @@ fn str_of(v: &Value, k: &str) -> String {
 }
 
 /// Every Python on PATH or installed by a version manager, with pip and its
-/// packages.
-pub fn pythons() -> Vec<Component> {
+/// packages; and, per Python, the installed distributions whose metadata
+/// couldn't be read, for the scan to report unchecked (incomplete metadata
+/// must never read as fewer packages).
+pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
+    pythons_from(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15))
+}
+
+/// Every Python on PATH or installed by a version manager, as (shown path,
+/// real path), without the ones the OS or a package manager vouches for.
+fn find_pythons() -> Vec<(String, String)> {
     let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
     dirs.extend(expand(PYTHON_DIRS));
     let minor = Regex::new(r"python3\.\d+");
@@ -67,10 +78,17 @@ pub fn pythons() -> Vec<Component> {
     names.sort();
     names.dedup();
     names.insert(0, "python3".into());
-    let found: Vec<(String, String)> =
-        names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect();
-    let probed = system::par_map(&found, system::PROBES, |(shown, _)| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15));
+    names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect()
+}
+
+/// `pythons` for the interpreters `found`, each asked `PY_INFO` by `probe`.
+fn pythons_from(
+    found: Vec<(String, String)>,
+    probe: &(dyn Fn(&str) -> String + Sync),
+) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
+    let probed = system::par_map(&found, system::PROBES, |(shown, _)| probe(shown));
     let mut out = Vec::new();
+    let mut unread = Vec::new();
     let mut seen = Vec::new();
     for ((shown, real), raw) in found.into_iter().zip(probed) {
         let last = raw.trim().lines().last().unwrap_or("");
@@ -89,18 +107,25 @@ pub fn pythons() -> Vec<Component> {
         c.auto = auto;
         out.push(c);
         let sites: Vec<String> = crate::json::strs_at(&info, "sites");
-        out.extend(pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto)));
+        let (pkgs, gaps) = pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto));
+        out.extend(pkgs);
+        if !gaps.is_empty() {
+            unread.push((shown, gaps));
+        }
     }
-    out
+    (out, unread)
 }
 
 /// The distributions installed in `sites` (what `pip list` shows), read
 /// from their metadata: `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` or a
 /// bare `*.egg-info` file. The first of a name on the path wins, as on
-/// import. Nothing is run.
-pub fn installed(sites: &[String]) -> Vec<(String, String)> {
+/// import. Nothing is run. With them, the distributions that couldn't be
+/// read: metadata that is missing, unreadable or names no version is a
+/// gap in the inventory, never a package that isn't there.
+pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
+    let mut gaps = Vec::new();
     let mut dirs: Vec<&String> = Vec::new();
     for d in sites {
         if !dirs.contains(&d) {
@@ -122,7 +147,13 @@ pub fn installed(sites: &[String]) -> Vec<(String, String)> {
             } else {
                 continue;
             };
-            let Ok(text) = system::read_capped(&meta, 1 << 20) else { continue };
+            let text = match system::read_capped(&meta, 1 << 20) {
+                Ok(text) => text,
+                Err(e) => {
+                    gaps.push(format!("{}: {e}", meta.display()));
+                    continue;
+                }
+            };
             let (mut n, mut v) = (String::new(), String::new());
             for line in text.lines() {
                 if line.trim().is_empty() {
@@ -134,18 +165,23 @@ pub fn installed(sites: &[String]) -> Vec<(String, String)> {
                     v = x.trim().to_string();
                 }
             }
-            if !n.is_empty() && !v.is_empty() && seen.insert(crate::malicious::norm("PyPI", &n)) {
+            if n.is_empty() || v.is_empty() {
+                let field = if v.is_empty() { "Version" } else { "Name" };
+                gaps.push(format!("{}: no {field} in its metadata", meta.display()));
+            } else if seen.insert(crate::malicious::norm("PyPI", &n)) {
                 out.push((n, v));
             }
         }
     }
-    out
+    (out, gaps)
 }
 
-fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> Vec<Component> {
+/// pip and the packages installed for one Python, and what couldn't be read.
+fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> (Vec<Component>, Vec<String>) {
     let real = system::realpath(py);
     let mut out = Vec::new();
-    for (name, ver) in installed(sites) {
+    let (found, gaps) = installed(sites);
+    for (name, ver) in found {
         let (fix, auto) = if managed && real.contains("/uv/") {
             runtime_fix.clone() // uv's Python builds bundle pip; a newer build brings a newer one
         } else if managed {
@@ -161,7 +197,7 @@ fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -
         c.auto = auto;
         out.push(c);
     }
-    out
+    (out, gaps)
 }
 
 /// npm itself and the global npm packages of each Node in `found`.
@@ -250,7 +286,12 @@ pub fn cargo_installs() -> Vec<Component> {
         .ok()
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| format!("{}/.cargo", system::home().display()));
-    let f = Path::new(&home).join(".crates2.json");
+    cargo_installs_in(Path::new(&home))
+}
+
+/// The `cargo install`s recorded in a cargo home's `.crates2.json`.
+fn cargo_installs_in(home: &Path) -> Vec<Component> {
+    let f = home.join(".crates2.json");
     let re = Regex::new(r"(\S+) (\S+) \(registry\+");
     let mut out = Vec::new();
     if let Some(installs) = read_json(&f).and_then(|j| j.get("installs").and_then(Value::as_object).cloned()) {
@@ -272,7 +313,12 @@ pub fn cargo_installs() -> Vec<Component> {
 pub fn pipx_packages() -> Vec<Component> {
     let Some(exe) = which("pipx") else { return Vec::new() };
     let exe = exe.display().to_string();
-    let data = json_in(&sh(&[&exe, "list", "--json"], 60), '{', '}').unwrap_or(Value::Null);
+    pipx_from(&exe, &sh(&[&exe, "list", "--json"], 60))
+}
+
+/// The packages in `pipx list --json`'s output `listing`.
+fn pipx_from(exe: &str, listing: &str) -> Vec<Component> {
+    let data = json_in(listing, '{', '}').unwrap_or(Value::Null);
     let mut out = Vec::new();
     if let Some(venvs) = data.get("venvs").and_then(Value::as_object) {
         for (name, v) in venvs {
@@ -285,7 +331,7 @@ pub fn pipx_packages() -> Vec<Component> {
                 p if p.is_empty() => name.clone(),
                 p => p,
             };
-            let mut c = Component::new("package", &format!("pipx:{name}"), &ver, &exe);
+            let mut c = Component::new("package", &format!("pipx:{name}"), &ver, exe);
             c.osv = Some(("PyPI".into(), pkg, ver));
             c.fix = format!("{exe} upgrade {name}");
             c.auto = true;
@@ -367,10 +413,11 @@ mod tests {
         put(venv.join("old.egg-info/PKG-INFO"), "Name: old\nVersion: 0.1\n");
         put(venv.join("legacy-1.0-py3.9.egg-info"), "Name: legacy\nVersion: 1.0\n");
         put(venv.join("broken.dist-info/METADATA"), "Name: broken\n");
+        std::fs::create_dir_all(venv.join("half-1.0.dist-info")).unwrap();
         put(venv.join("review_hook.pth"), "import os; os.system('never run')\n");
         put(user.join("jinja2-2.0.dist-info/METADATA"), "Name: jinja2\nVersion: 2.0\n");
         let sites = [venv.display().to_string(), user.display().to_string(), "/nonexistent".into()];
-        let got = installed(&sites);
+        let (got, gaps) = installed(&sites);
         assert_eq!(
             got,
             [
@@ -381,6 +428,49 @@ mod tests {
             ],
             "the first of a name on the path wins; nothing without a version"
         );
+        assert_eq!(gaps.len(), 2, "metadata without a version, and a dist-info without metadata: {gaps:?}");
+        assert!(gaps[0].contains("broken.dist-info/METADATA: no Version"), "{gaps:?}");
+        assert!(gaps[1].contains("half-1.0.dist-info/METADATA"), "{gaps:?}");
+    }
+
+    /// The probe lists the base interpreter's site-packages for a venv made
+    /// with `--system-site-packages`, and not otherwise, on every Python
+    /// here (from 3.14 a venv is `sys.prefix` even under `-S`).
+    #[test]
+    fn the_probe_lists_the_sites_a_venv_inherits() {
+        let d = system::TempDir::new("venvs").unwrap();
+        let mut pythons: Vec<String> = which("python3").into_iter().map(|p| p.display().to_string()).collect();
+        pythons.extend(
+            ["python3.12", "python3.13", "python3.14", "python3.15"]
+                .iter()
+                .filter_map(|n| which(n))
+                .map(|p| p.display().to_string()),
+        );
+        let sites_of = |py: &str| -> Vec<String> {
+            let raw = sh(&[py, "-I", "-S", "-c", PY_INFO], 30);
+            let info = json_in(raw.trim().lines().last().unwrap_or(""), '{', '}').unwrap_or(Value::Null);
+            crate::json::strs_at(&info, "sites")
+        };
+        for (i, py) in pythons.iter().enumerate() {
+            // The user site first, then the interpreter's own.
+            let base: Vec<String> = sites_of(py).into_iter().skip(1).collect();
+            if base.is_empty() {
+                continue;
+            }
+            for (flag, inherits) in [("--system-site-packages", true), ("--without-pip", false)] {
+                let venv = d.path().join(format!("{i}{flag}"));
+                let made = sh(&[py, "-m", "venv", "--without-pip", flag, &venv.display().to_string()], 60);
+                let vpy = venv.join("bin/python3");
+                if !vpy.exists() {
+                    panic!("{py} -m venv {flag}: {made}");
+                }
+                let sites = sites_of(&vpy.display().to_string());
+                let own = format!("{i}{flag}/lib/python"); // the probe may resolve the temp dir's symlink
+                assert!(sites.iter().any(|s| s.contains(&own)), "{py} {flag}: no venv site in {sites:?}");
+                let has_base = base.iter().any(|b| sites.contains(b));
+                assert_eq!(has_base, inherits, "{py} {flag}: base {base:?}, venv sites {sites:?}");
+            }
+        }
     }
 
     #[test]
@@ -391,5 +481,245 @@ mod tests {
         let cargo = Regex::new(r"(\S+) (\S+) \(registry\+");
         let m = cargo.match_start("ripgrep 14.1.1 (registry+https://github.com/rust-lang/crates.io-index)").unwrap();
         assert_eq!((m.get(1), m.get(2)), ("ripgrep", "14.1.1"));
+    }
+
+    #[test]
+    fn json_strings_of_a_value() {
+        let v = serde_json::json!({"s": "x", "n": null, "i": 3});
+        assert_eq!(str_of(&v, "s"), "x");
+        assert_eq!(str_of(&v, "n"), "");
+        assert_eq!(str_of(&v, "missing"), "");
+        assert_eq!(str_of(&v, "i"), "3");
+    }
+
+    /// An executable script at `dir/name` answering by its first arguments.
+    #[cfg(unix)]
+    fn script(dir: &Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        system::realpath(&p.display().to_string()) // the probes resolve symlinks (/var on macOS)
+    }
+
+    /// The probe's JSON for each interpreter becomes a runtime and its
+    /// packages; interpreters that resolve to the same file are one; a
+    /// probe that fails is skipped; what couldn't be read is reported.
+    #[test]
+    fn pythons_from_probe_answers() {
+        let home = system::test_home();
+        let d = system::TempDir::new("pyprobe").unwrap();
+        let site = d.path().join("site-packages");
+        std::fs::create_dir_all(site.join("requests-2.32.0.dist-info")).unwrap();
+        std::fs::write(site.join("requests-2.32.0.dist-info/METADATA"), "Name: requests\nVersion: 2.32.0\n").unwrap();
+        std::fs::create_dir_all(site.join("pip-25.0.dist-info")).unwrap();
+        std::fs::write(site.join("pip-25.0.dist-info/METADATA"), "Name: pip\nVersion: 25.0\n").unwrap();
+        std::fs::create_dir_all(site.join("half-1.dist-info")).unwrap();
+        let (plain, managed, uv) = ("/x/bin/python3", "/usr/bin/python3.13", "/x/uv/python/cpython-3.13/bin/python3");
+        let info = |exe: &str, managed: bool| {
+            format!(
+                "warning\n{{\"v\": \"3.13.2\", \"exe\": \"{exe}\", \"sites\": [\"{}\"], \"managed\": {managed}}}",
+                site.display()
+            )
+        };
+        let probe = move |shown: &str| match shown {
+            "/x/bin/python3" => info("/x/bin/python3.13", false),
+            "/x/bin/python3.13" => info("/x/bin/python3.13", false),
+            "/usr/bin/python3.13" => info("/usr/bin/python3.13", true),
+            "/x/uv/python/cpython-3.13/bin/python3" => info("/x/uv/python/cpython-3.13/bin/python3", true),
+            _ => "Traceback: boom\n".to_string(),
+        };
+        let found: Vec<(String, String)> = [plain, "/x/bin/python3.13", managed, uv, "/nowhere/python3"]
+            .iter()
+            .map(|p| (p.to_string(), p.to_string()))
+            .collect();
+        let (got, unread) = pythons_from(found, &probe);
+        let runtimes: Vec<&str> = got.iter().filter(|c| c.kind == "runtime").map(|c| c.path.as_str()).collect();
+        assert_eq!(runtimes, [plain, managed, uv], "the second path to the same interpreter is skipped");
+        let rt = &got[0];
+        assert_eq!((rt.name.as_str(), rt.version.as_str()), ("python", "3.13.2"));
+        assert_eq!(rt.osv, Some(("GIT".into(), github("python/cpython"), "v3.13.2".into())));
+        assert_eq!(rt.eol, Some(("python".into(), "3.13".into())));
+        let pkgs = |py: &str| -> Vec<(String, String, String, bool)> {
+            got.iter()
+                .filter(|c| c.path == py && c.kind != "runtime")
+                .map(|c| (c.kind.clone(), c.name.clone(), c.fix.clone(), c.auto))
+                .collect()
+        };
+        assert_eq!(
+            pkgs(plain),
+            [
+                (
+                    "pkgmgr".to_string(),
+                    "pip".to_string(),
+                    format!("{plain} -m pip install --upgrade 'pip>={{safe}}'"),
+                    true
+                ),
+                (
+                    "package".into(),
+                    "pip:requests".into(),
+                    format!("{plain} -m pip install --upgrade 'requests>={{safe}}'"),
+                    true
+                ),
+            ]
+        );
+        assert_eq!(
+            pkgs(managed)[1],
+            (
+                "package".into(),
+                "pip:requests".into(),
+                format!("Upgrade requests through the package manager that owns {managed}"),
+                false
+            )
+        );
+        let (uv_fix, uv_auto) = updater(uv, "python");
+        assert_eq!(pkgs(uv)[0], ("pkgmgr".into(), "pip".into(), uv_fix, uv_auto), "uv's pip comes with its Python");
+        assert_eq!(unread.len(), 3, "{unread:?}");
+        assert!(
+            unread.iter().all(|(py, gaps)| gaps.len() == 1 && gaps[0].contains("half-1.dist-info") && !py.is_empty())
+        );
+        drop(home);
+    }
+
+    /// The real interpreters on this machine, probed for real: every
+    /// runtime has a version, and nothing is listed twice.
+    #[test]
+    fn pythons_on_this_machine_are_consistent() {
+        let (got, _) = pythons();
+        let runtimes: Vec<&Component> = got.iter().filter(|c| c.kind == "runtime").collect();
+        assert!(runtimes.iter().all(|c| c.name == "python" && !c.version.is_empty()));
+        let mut paths: Vec<&str> = runtimes.iter().map(|c| c.path.as_str()).collect();
+        paths.dedup();
+        assert_eq!(paths.len(), runtimes.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_globals_from_the_root_or_npm_ls() {
+        let bin = system::TempDir::new("nodebin").unwrap();
+        let root = system::TempDir::new("npmroot2").unwrap();
+        for (dir, json) in [
+            ("npm", r#"{"name": "npm", "version": "11.1.0"}"#),
+            ("corepack", r#"{"version": "0.30.0"}"#),
+            ("left-pad", r#"{"version": "1.3.0"}"#),
+            ("broken", r#"{"name": "broken"}"#),
+        ] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+            std::fs::write(root.path().join(dir).join("package.json"), json).unwrap();
+        }
+        let node = script(bin.path(), "node", "echo v22.0.0\n");
+        let n = Component::new("runtime", "node", "22.0.0", &node);
+        assert!(npm_globals(&n).is_empty(), "no npm beside node");
+        let npm =
+            script(bin.path(), "npm", &format!("case \"$1\" in root) echo \"{}\";; esac\n", root.path().display()));
+        let got = node_packages(&[n.clone(), Component::new("runtime", "ruby", "3", "/x")]);
+        let names: Vec<(&str, &str, &str)> =
+            got.iter().map(|c| (c.kind.as_str(), c.name.as_str(), c.version.as_str())).collect();
+        assert_eq!(
+            names,
+            [("pkgmgr", "npm", "11.1.0"), ("pkgmgr", "corepack", "0.30.0"), ("package", "npm:left-pad", "1.3.0")]
+        );
+        assert_eq!(got[2].osv, Some(("npm".into(), "left-pad".into(), "1.3.0".into())));
+        assert_eq!(got[2].fix, format!("{npm} install -g left-pad@{{safe}}"));
+        assert!(got[2].auto && got[2].path == npm);
+        // No usable root: `npm ls -g --json`, with npm's own version asked separately.
+        let ls = r#"{"dependencies": {"typescript": {"version": "5.9.3"}, "odd": {}}}"#;
+        script(
+            bin.path(),
+            "npm",
+            &format!(
+                "case \"$1\" in root) echo 'npm warn nothing';; ls) echo '{ls}';; --version) echo 11.2.0;; esac\n"
+            ),
+        );
+        let got = npm_globals(&n);
+        let names: Vec<(&str, &str)> = got.iter().map(|c| (c.name.as_str(), c.version.as_str())).collect();
+        assert_eq!(names, [("npm:typescript", "5.9.3"), ("npm", "11.2.0")]);
+        script(
+            bin.path(),
+            "npm",
+            "case \"$1\" in ls) echo '{\"dependencies\": {\"npm\": {\"version\": \"11.3.0\"}}}';; esac\n",
+        );
+        let got = npm_globals(&n);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].kind.as_str(), got[0].version.as_str()), ("pkgmgr", "11.3.0"));
+    }
+
+    #[test]
+    fn cargo_installs_from_crates2_json() {
+        let home = system::test_home();
+        let cargo = system::home().join(".cargo");
+        assert!(cargo_installs_in(&cargo).is_empty(), "no .crates2.json yet");
+        std::fs::create_dir_all(&cargo).unwrap();
+        std::fs::write(
+            cargo.join(".crates2.json"),
+            r#"{"installs": {
+                "ripgrep 14.1.1 (registry+https://github.com/rust-lang/crates.io-index)": {"bins": ["rg"]},
+                "mine 0.1.0 (path+file:///x/mine)": {"bins": ["mine"]},
+                "tool 2.0.0 (git+https://github.com/x/tool#abc)": {"bins": ["tool"]}
+            }}"#,
+        )
+        .unwrap();
+        let got = cargo_installs_in(&cargo);
+        assert_eq!(got.len(), 1, "only registry installs have a version to check: {got:?}");
+        let c = &got[0];
+        assert_eq!((c.kind.as_str(), c.name.as_str(), c.version.as_str()), ("package", "cargo:ripgrep", "14.1.1"));
+        assert_eq!(c.osv, Some(("crates.io".into(), "ripgrep".into(), "14.1.1".into())));
+        assert_eq!(c.fix, "cargo install --locked ripgrep@{safe}");
+        assert!(c.auto && c.path == cargo.join(".crates2.json").display().to_string());
+        std::fs::write(cargo.join(".crates2.json"), "{}").unwrap();
+        assert!(cargo_installs_in(&cargo).is_empty());
+        // The real cargo home: $CARGO_HOME when set, else ~/.cargo (the temp home here).
+        let real = cargo_installs();
+        if std::env::var("CARGO_HOME").is_ok_and(|h| !h.is_empty()) {
+            assert!(real.iter().all(|c| c.name.starts_with("cargo:")));
+        } else {
+            assert!(real.is_empty());
+        }
+        drop(home);
+    }
+
+    #[test]
+    fn pipx_venvs_from_the_listing() {
+        let listing = r#"{"pipx_spec_version": "0.1", "venvs": {
+            "black": {"metadata": {"main_package": {"package": "black", "package_version": "24.1.0"}}},
+            "hatch": {"metadata": {"main_package": {"package_version": "1.9.0"}}},
+            "odd": {"metadata": {"main_package": {"package": "odd"}}},
+            "none": {}
+        }}"#;
+        let got = pipx_from("/opt/pipx", listing);
+        let names: Vec<(&str, &str)> = got.iter().map(|c| (c.name.as_str(), c.version.as_str())).collect();
+        assert_eq!(names, [("pipx:black", "24.1.0"), ("pipx:hatch", "1.9.0")]);
+        assert_eq!(got[0].osv, Some(("PyPI".into(), "black".into(), "24.1.0".into())));
+        assert_eq!(
+            got[1].osv,
+            Some(("PyPI".into(), "hatch".into(), "1.9.0".into())),
+            "the venv's name when the package isn't given"
+        );
+        assert_eq!(got[0].fix, "/opt/pipx upgrade black");
+        assert!(got[0].auto && got[0].path == "/opt/pipx");
+        assert!(pipx_from("/opt/pipx", "not json").is_empty());
+        // Whatever this machine has (nothing in CI).
+        assert!(pipx_packages().iter().all(|c| c.name.starts_with("pipx:")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gems_of_each_ruby() {
+        let bin = system::TempDir::new("rubybin").unwrap();
+        let ruby = script(bin.path(), "ruby", "echo ruby 3.3.0\n");
+        let r = Component::new("runtime", "ruby", "3.3.0", &ruby);
+        let not_ruby = Component::new("runtime", "node", "22", &ruby);
+        assert!(gems(&[r.clone(), not_ruby.clone()]).is_empty(), "no gem beside ruby");
+        let gem = script(
+            bin.path(),
+            "gem",
+            "echo '*** LOCAL GEMS ***'\necho\necho 'json (default: 2.7.2, 2.6.1)'\necho 'rake (13.2.1)'\necho 'bundler (2.5.6)'\necho\n",
+        );
+        let got = gems(&[r, not_ruby]);
+        let names: Vec<(&str, &str)> = got.iter().map(|c| (c.name.as_str(), c.version.as_str())).collect();
+        assert_eq!(names, [("gem:json", "2.7.2"), ("gem:rake", "13.2.1"), ("gem:bundler", "2.5.6")]);
+        assert_eq!(got[1].osv, Some(("RubyGems".into(), "rake".into(), "13.2.1".into())));
+        assert_eq!(got[1].fix, format!("{gem} update rake"));
+        assert!(got[1].auto && got[1].path == gem);
     }
 }

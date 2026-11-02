@@ -2,11 +2,15 @@
 
 Waffuru's security vulnerability scanner, built on the OSV database and other CVE sources. Its command is `wpantry`.
 
+![How Pantry checks your computer: this computer and its repos are read, asked about at OSV.dev and the feeds, judged, cached in SQLite, and reported as a terminal report, JSON, exports, logs and an HTML report; releases come from GitHub](docs/images/architecture.png)
+
+[Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/architecture.md)
+
 Pantry finds the vulnerabilities that actually apply to your computer. It inventories what is installed and what your git repos lock, asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. Answers live in a local SQLite cache, so a second run the same day takes seconds. Nothing that isn't installed is reported, and a source it can't reach is reported "not checked", never clean.
 
 | What you get | What it checks |
 |---|---|
-| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--update` never updates it) |
+| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--fix` never updates it) |
 | Catch vulnerable dependencies before they ship | Lockfiles in every git repo: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer, Maven, Gradle, NuGet and more |
 | Catch malware, not just CVEs | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | Find leaked credentials in history | Secrets committed anywhere in each repo's git history (`gitleaks`) |
@@ -14,12 +18,13 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | Keep the OS, browsers and apps current | macOS Software Update, Debian/Ubuntu/Alpine/openSUSE packages, dnf distros, Arch; Chrome, Firefox; Electron apps; other apps against the Homebrew cask catalog |
 | Know when a runtime stops getting fixes | End-of-life dates for runtimes and datastores |
 | Know whether the machine itself is set up safely | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock (CIS benchmark items, read-only; `--no-posture` skips them) |
-| Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
+| Spot a compromised certificate authority | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`wpantry harden ca-trust` distrusts them) |
 | Review supply-chain risk | Dependency licenses outside an allowlist, npm install scripts, container images your repos build from |
-| Catch code that behaves like an attack | Decoded-then-executed strings, payload arrays, decoders, `sudo` and persistence in install scripts, credential theft, crypto-wallet signing and drainers, unpinned third-party scripts, in the repos and in every editor, agent and browser extension installed; harsher where the pattern is out of place for its language, warn elsewhere, with a policy file that downgrades but never silences |
+| Know whether a clipper is swapping wallet addresses | A valid address of each shape (EVM, Bitcoin, Tron, Solana, XRP, Stellar) copied to the clipboard and read back; launch agents and autostart entries that touch the clipboard with wallet addresses in hand; browser extensions and repos with the clipper shape (`--no-clipboard` skips the copy); a resident guard that alerts the moment a copied address is swapped (`wpantry clipboard --watch`, `wpantry schedule install --clipboard-guard`) |
+| Catch code that behaves like an attack | Decoded-then-executed strings, payload arrays, decoders, `sudo` and persistence in install scripts, credential theft, crypto-wallet signing, drainers and account takeovers on Ethereum, Tempo, Solana, Stellar, XRP and Tron, clipboard clippers, unpinned third-party scripts, in the repos and in every editor, agent and browser extension installed; harsher where the pattern is out of place for its language, warn elsewhere, with a policy file that downgrades but never silences |
 | See text the way a parser sees it | Bidi overrides (Trojan Source), invisible tag and zero-width characters that hide instructions from you but not from an AI assistant, mixed-script identifiers, and weapon-vocabulary identifiers meant to make an AI reviewer refuse the file |
 | Don't get owned by opening a clone | Hooks a repo runs on open or install (Claude Code, Gemini, MCP servers in the repo, VS Code folder-open tasks, devcontainers, direnv, `postinstall`, gyp, native addons) and the indicators of known hijacked-repo campaigns |
-| Fix it, safely | `--update` runs only unattended, user-level fixes; everything needing sudo or a code change is printed as a step |
+| Fix it, safely | `--fix` runs only unattended, user-level fixes and, after a yes, the stopgaps wpantry has for advisories with no fix yet (`wpantry mitigate`); everything else needing sudo or a code change is printed as a step |
 
 Every check, every source it asks and exactly what is sent to each: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md).
 
@@ -43,13 +48,13 @@ wpantry check --json --no-input               # findings for tools and agents
 wpantry search "tarfile" --applicable         # ranked search of cached advisories
 wpantry export --csv findings.csv             # id, url, component, affected and safe version
 wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
-wpantry --update --dryrun                     # the update plan, change nothing
-wpantry --update                              # apply the unattended fixes, then re-check
+wpantry --fix --dryrun                     # the update plan, change nothing
+wpantry --fix                              # apply the unattended fixes, then re-check
 ```
 
 Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).
 
-**Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config`, `--install-scripts` and `--repo-hooks`. Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
+**Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy`, `--posture-policy` and `--hooks-policy` (the repo hooks you have read and accept). Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
 
 **Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
 
@@ -62,17 +67,17 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 ## Docs
 
 - [Install and verify a release](docs/public/install.md), [use wpantry](docs/public/usage.md), [what it checks and its sources](docs/public/checks-and-sources.md), and [the machine's settings it checks](docs/public/posture.md).
-- [How it works](docs/architecture.md): the run, the readers, the cache, the binary, and what is still open.
+- [How it works](docs/architecture.md): the picture and a run in five steps; the detail is [docs/internal/architecture.md](docs/internal/architecture.md).
 - For maintainers: the [release playbook](docs/internal/release.md), [publishing to crates.io](docs/internal/crates-io.md) and [dependency rules](docs/internal/dependencies.md).
 
 ## Development
 
 ```bash
 mise bootstrap   # the pinned tools, then build wpantry and run `wpantry tools` to confirm them
-mise run test    # the Rust tests, the CA trust and mitigation script tests and the install.sh test, offline
+mise run test    # the Rust tests, the CA trust test and the install.sh test, offline
 ```
 
-`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test mitigations`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md) maps the source; [docs/architecture.md](docs/architecture.md) is how it works); the standalone CA trust check and fix are in `ca-trust/`, and the stopgap scripts for advisories that have no fix to install yet are in [`mitigations/`](mitigations/).
+`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md) maps the source; [docs/architecture.md](docs/architecture.md) is how it works); the standalone CA trust check and fix are in `ca-trust/`; the stopgaps for advisories that have no fix to install yet are in the binary (`wpantry mitigate <ID>`, [docs/public/usage.md](docs/public/usage.md#advisories-with-no-fix-yet)).
 
 The CLI contract wpantry keeps is [specs/cli-contract.md](specs/cli-contract.md); the specs, current and archived, are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

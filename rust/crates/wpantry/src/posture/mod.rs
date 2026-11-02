@@ -13,6 +13,7 @@
 use std::ffi::OsStr;
 use std::time::Duration;
 
+pub mod dns;
 pub mod linux;
 pub mod macos;
 pub mod tools;

@@ -7,8 +7,21 @@
 use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] = &[
-    "check", "search", "export", "breach", "watch", "version", "tools", "skill", "sync", "schedule", "cache", "update",
-    "report", "harden",
+    "check",
+    "search",
+    "export",
+    "breach",
+    "watch",
+    "version",
+    "tools",
+    "skill",
+    "sync",
+    "schedule",
+    "cache",
+    "update",
+    "report",
+    "harden",
+    "clipboard",
 ];
 
 #[derive(Debug, Default, PartialEq)]
@@ -20,6 +33,7 @@ pub struct Check {
     pub refresh: bool,
     pub offline: bool,
     pub json: bool,
+    pub html: Option<PathBuf>,
     pub no_input: bool,
     /// `--jobs N`: CPU-bound scans at once.
     pub jobs: Option<usize>,
@@ -30,6 +44,7 @@ pub struct Check {
     pub install_scripts: Option<PathBuf>,
     pub repo_hooks: Option<PathBuf>,
     pub no_posture: bool,
+    pub no_clipboard: bool,
     pub posture_policy: Option<PathBuf>,
     pub suspect_policy: Option<PathBuf>,
 }
@@ -37,18 +52,70 @@ pub struct Check {
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Check(Check),
-    Search { query: String, applicable: bool, limit: i64, json: bool },
-    Export { csv: Option<String>, jsonl: Option<String>, all: bool },
-    Breach { enable: bool, disable: bool },
-    Watch { json: bool, offline: bool },
-    Version { json: bool },
-    Tools { json: bool },
-    Report { sections: Vec<String>, since_days: i64, format: String, out: Option<String> },
-    Sync { refresh: bool, json: bool },
-    Schedule { action: String, every: String, at: String, dry_run: bool },
-    Cache { action: String, older_than: i64 },
-    Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
-    Harden { what: String, hours: u32 },
+    Search {
+        query: String,
+        applicable: bool,
+        limit: i64,
+        json: bool,
+    },
+    Export {
+        csv: Option<String>,
+        jsonl: Option<String>,
+        all: bool,
+    },
+    Breach {
+        enable: bool,
+        disable: bool,
+    },
+    Watch {
+        json: bool,
+        offline: bool,
+    },
+    Version {
+        json: bool,
+    },
+    Tools {
+        json: bool,
+    },
+    Report {
+        sections: Vec<String>,
+        since_days: i64,
+        format: String,
+        out: Option<String>,
+    },
+    Sync {
+        refresh: bool,
+        json: bool,
+    },
+    Schedule {
+        action: String,
+        every: String,
+        at: String,
+        dry_run: bool,
+        clipboard_guard: bool,
+    },
+    Cache {
+        action: String,
+        older_than: i64,
+    },
+    /// `clipboard`: the self-test once, or with `watch` the resident guard.
+    Clipboard {
+        watch: bool,
+        once: bool,
+        window: f64,
+        json: bool,
+    },
+    Update {
+        check: bool,
+        yes: bool,
+        no_input: bool,
+        offline: bool,
+        version: Option<String>,
+    },
+    Harden {
+        what: String,
+        hours: u32,
+    },
     Skill,
 }
 
@@ -61,12 +128,12 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
         "check" => {
-            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]"
+            "usage: wpantry check [-h] [--path DIR] [--no-machine] [--update] [--dryrun] [--refresh] [--offline] [--json] [--html FILE]\n                      [--no-input] [--jobs N] [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE]\n                      [--no-posture] [--posture-policy FILE] [--repo-hooks FILE] [--suspect-policy FILE]\n                      [--no-clipboard]"
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
         "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
@@ -75,6 +142,10 @@ pub fn usage(cmd: &str) -> &'static str {
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
+        "schedule" => {
+            "usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] [--clipboard-guard] {install,status,uninstall,run}"
+        }
+        "clipboard" => "usage: wpantry clipboard [-h] [--watch] [--once] [--window SECONDS] [--json]",
         _ => TOP_USAGE,
     }
 }
@@ -82,7 +153,7 @@ pub fn usage(cmd: &str) -> &'static str {
 fn help(cmd: &str) -> String {
     let body = match cmd {
         "check" => {
-            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)"
+            "scan this computer (default)\n\noptions:\n  -h, --help            show this help message and exit\n  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --update              apply the fixes that can run unattended, then re-check\n  --dryrun              print the update plan without changing anything\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)"
         }
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
@@ -107,7 +178,10 @@ fn help(cmd: &str) -> String {
             "refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so check --offline has fresh answers\n\noptions:\n  -h, --help  show this help message and exit\n  --refresh   ask every source again, even when its answer is fresh\n  --json      print what was refreshed as JSON"
         }
         "schedule" => {
-            "run sync and check on a schedule (launchd, a systemd user timer, or cron); never --update\n\npositional arguments:\n  {install,status,uninstall,run}\n\noptions:\n  -h, --help       show this help message and exit\n  --every WHEN     hourly, daily (default) or weekly\n  --at HH:MM       the time of day (default 09:30; weekly: Mondays)\n  --dry-run        print the job definition without installing it"
+            "run sync and check on a schedule (launchd, a systemd user timer, or cron); never --update\n\npositional arguments:\n  {install,status,uninstall,run}\n\noptions:\n  -h, --help         show this help message and exit\n  --every WHEN       hourly, daily (default) or weekly\n  --at HH:MM         the time of day (default 09:30; weekly: Mondays)\n  --dry-run          print the job definition without installing it\n  --clipboard-guard  install or uninstall the resident clipboard guard (wpantry clipboard --watch) instead of the scan: a launch agent or systemd user service that starts at login, off by default"
+        }
+        "clipboard" => {
+            "test the clipboard for a clipper now, or with --watch guard it while you work: alert when a copied wallet address becomes a different address of the same chain within the window\n\noptions:\n  -h, --help        show this help message and exit\n  --watch           keep reading the clipboard four times a second until stopped; never writes it\n  --once            with --watch: exit 0 after the first alert\n  --window SECONDS  with --watch: how long after one address a different one of the same chain is a swap (default 2; a double copy inside it is the false positive)\n  --json            the self-test's result as one object, or with --watch one object per alert"
         }
         "cache" => {
             "maintain the cache\n\npositional arguments:\n  {prune}               drop what no scan has used in a while, then compact the file\n\noptions:\n  -h, --help            show this help message and exit\n  --older-than DAYS     what counts as unused (default 90)"
@@ -122,7 +196,7 @@ fn help(cmd: &str) -> String {
             "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -144,6 +218,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--refresh", false),
             ("--offline", false),
             ("--json", false),
+            ("--html", true),
             ("--no-input", false),
             ("--jobs", true),
             ("--gitleaks-config", true),
@@ -153,6 +228,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-posture", false),
             ("--posture-policy", true),
             ("--suspect-policy", true),
+            ("--no-clipboard", false),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
         "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
@@ -170,7 +246,12 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--out", true),
         ],
         "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
-        "schedule" => &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false)],
+        "schedule" => {
+            &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false), ("--clipboard-guard", false)]
+        }
+        "clipboard" => {
+            &[("--help", false), ("--watch", false), ("--once", false), ("--window", true), ("--json", false)]
+        }
         "cache" => &[("--help", false), ("--older-than", true)],
         "update" => &[
             ("--help", false),
@@ -283,8 +364,15 @@ pub fn parse(argv: &[String]) -> Parsed {
                 no_input: flag("--no-input"),
                 check_licenses: flag("--licenses"),
                 no_posture: flag("--no-posture"),
+                no_clipboard: flag("--no-clipboard"),
                 ..Default::default()
             };
+            if let Some(v) = value("--html") {
+                if v.is_empty() || v == "-" {
+                    return fail("argument --html: expected a file path, not stdout".into());
+                }
+                c.html = Some(expand(&v));
+            }
             let paths: Vec<PathBuf> = given
                 .iter()
                 .filter(|(o, _)| *o == "--path")
@@ -405,7 +493,32 @@ pub fn parse(argv: &[String]) -> Parsed {
             if !ok_time {
                 return fail(format!("argument --at: expected HH:MM, got '{at}'"));
             }
-            Command::Schedule { action, every, at, dry_run: flag("--dry-run") }
+            let clipboard_guard = flag("--clipboard-guard");
+            if clipboard_guard && action == "run" {
+                return fail(
+                    "argument --clipboard-guard: not allowed with run (it is wpantry clipboard --watch)".into(),
+                );
+            }
+            Command::Schedule { action, every, at, dry_run: flag("--dry-run"), clipboard_guard }
+        }
+        "clipboard" => {
+            if !positional.is_empty() {
+                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
+            }
+            let watch = flag("--watch");
+            for opt in ["--once", "--window"] {
+                if flag(opt) && !watch {
+                    return fail(format!("argument {opt}: requires --watch"));
+                }
+            }
+            let window = match value("--window") {
+                None => wpantry::guard::WINDOW.as_secs_f64(),
+                Some(v) => match v.trim().parse::<f64>() {
+                    Ok(s) if s.is_finite() && (0.1..=3600.0).contains(&s) => s,
+                    _ => return fail(format!("argument --window: expected seconds between 0.1 and 3600, got '{v}'")),
+                },
+            };
+            Command::Clipboard { watch, once: flag("--once"), window, json: flag("--json") }
         }
         "cache" => {
             let action = match positional.as_slice() {
@@ -491,6 +604,16 @@ mod tests {
     }
 
     #[test]
+    fn html_is_optional_and_composes_with_json() {
+        let Parsed::Run(Command::Check(c)) = p(&["--ht=report with spaces.html", "--json"]) else { panic!() };
+        assert!(c.json);
+        assert_eq!(c.html, Some(PathBuf::from("report with spaces.html")));
+        for bad in [&["--html"][..], &["--html="], &["--html=-"]] {
+            assert!(matches!(p(bad), Parsed::Usage(_)));
+        }
+    }
+
+    #[test]
     fn usage_errors() {
         for bad in [
             &["--bogus"][..],
@@ -522,6 +645,36 @@ mod tests {
         assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
         assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
         assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
+    }
+
+    #[test]
+    fn clipboard_and_the_guard_flags() {
+        assert_eq!(
+            p(&["clipboard"]),
+            Parsed::Run(Command::Clipboard { watch: false, once: false, window: 2.0, json: false })
+        );
+        assert_eq!(
+            p(&["clipboard", "--watch", "--once", "--window", "1.5", "--json"]),
+            Parsed::Run(Command::Clipboard { watch: true, once: true, window: 1.5, json: true })
+        );
+        for bad in [
+            &["clipboard", "--once"][..],
+            &["clipboard", "--window", "3"],
+            &["clipboard", "--watch", "--window", "0"],
+            &["clipboard", "--watch", "--window", "soon"],
+            &["clipboard", "extra"],
+            &["schedule", "run", "--clipboard-guard"],
+        ] {
+            assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
+        }
+        let Parsed::Run(Command::Schedule { action, clipboard_guard, dry_run, .. }) =
+            p(&["schedule", "install", "--clipboard-guard", "--dry-run"])
+        else {
+            panic!()
+        };
+        assert!(action == "install" && clipboard_guard && dry_run);
+        let Parsed::Run(Command::Schedule { clipboard_guard, .. }) = p(&["schedule", "status"]) else { panic!() };
+        assert!(!clipboard_guard);
     }
 
     #[test]
@@ -629,7 +782,8 @@ mod tests {
                 action: "install".into(),
                 every: "daily".into(),
                 at: "09:30".into(),
-                dry_run: false
+                dry_run: false,
+                clipboard_guard: false
             })
         );
         assert_eq!(
@@ -638,7 +792,8 @@ mod tests {
                 action: "install".into(),
                 every: "weekly".into(),
                 at: "7:05".into(),
-                dry_run: true
+                dry_run: true,
+                clipboard_guard: false
             })
         );
         assert_eq!(p(&["cache", "prune"]), Parsed::Run(Command::Cache { action: "prune".into(), older_than: 90 }));

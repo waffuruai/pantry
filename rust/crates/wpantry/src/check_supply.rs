@@ -462,7 +462,7 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
         }
         s
     });
-    for ((name, _, kind), hits) in targets.iter().zip(found) {
+    for ((name, dir, kind), hits) in targets.iter().zip(found) {
         scan.count(
             if *kind == suspect::Kind::Repo {
                 "repos checked for suspicious code"
@@ -471,6 +471,9 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
             },
             1,
         );
+        if *kind == suspect::Kind::Installed {
+            extension_clipboard(scan, name, dir, &hits);
+        }
         for h in hits {
             scan.add(Finding {
                 kind: "suspect-code".into(),
@@ -490,6 +493,39 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
             });
         }
     }
+}
+
+/// A browser extension whose manifest lets it read and write the clipboard
+/// can clip; one whose code has the clipper shape does. The manifest alone
+/// warns (a clipboard manager, a password manager); with the code shape
+/// beside it, it fails (kind `clipper`, `CLIPPER-EXTENSION`).
+fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspect::Suspect]) {
+    let Some(p) = crate::clipper::extension_permissions(dir) else { return };
+    if !(p.read && p.write) {
+        return;
+    }
+    let swaps = hits.iter().any(|h| h.id == "SUSPECT-CLIPBOARD-SWAP");
+    let shown = if p.name.is_empty() { name.to_string() } else { format!("{name} ({})", p.name) };
+    scan.add(Finding {
+        kind: "clipper".into(),
+        component: shown,
+        location: system::short(&dir.to_string_lossy()),
+        vuln_id: "CLIPPER-EXTENSION".into(),
+        status: if swaps { "fail" } else { "warn" }.into(),
+        severity: if swaps { "CRITICAL" } else { "" }.into(),
+        note: format!(
+            "may read and write the clipboard (manifest permissions clipboardRead and clipboardWrite){}{}",
+            if p.all_sites { ", and runs on every site" } else { "" },
+            if swaps { "; its code reads the clipboard with wallet addresses in hand: a clipper" } else { "; a clipboard or password manager does this, a clipper needs it" }
+        ),
+        fix_cmd: if swaps {
+            "Remove the extension now, don't send funds from this machine until it is gone, then report the addresses in its code on chainabuse.com".into()
+        } else {
+            "If you don't know why this extension needs both clipboard permissions, remove it; a wallet's own extension never needs to read the clipboard".into()
+        },
+        fix_auto: false,
+        ..Default::default()
+    });
 }
 
 /// Code on this machine that came from somewhere else and runs with the

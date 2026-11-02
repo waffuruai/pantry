@@ -1,6 +1,5 @@
 //! Print the findings, and plan or apply the fixes (`wpantry --update`).
 
-use std::collections::HashSet;
 use wpantry::check::{Finding, Outcome};
 use wpantry::system::short;
 use wpantry::versions;
@@ -286,41 +285,80 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
     i32::from(fails > 0)
 }
 
-/// (unattended, needs you, also worth doing): one fix per component, the
-/// one covering all its advisories, failures before warnings.
-pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
+/// One step of the update plan: a command (or an instruction), whether
+/// `--update` runs it unattended, whether it clears a failing finding, and
+/// the findings (indices into the slice `steps` was given) it covers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub cmd: String,
+    pub unattended: bool,
+    pub fails: bool,
+    pub findings: Vec<usize>,
+}
+
+impl Step {
+    /// `auto` (runs unattended), `manual` (needs you, clears a failure) or
+    /// `optional` (needs you, a warning).
+    pub fn mode(&self) -> &'static str {
+        if self.unattended {
+            "auto"
+        } else if self.fails {
+            "manual"
+        } else {
+            "optional"
+        }
+    }
+}
+
+/// The update plan: one fix per component, the one covering all its
+/// advisories, failures before warnings; a command two components share
+/// is one step covering both.
+pub fn steps(findings: &[Finding]) -> Vec<Step> {
     type Component<'a> = (&'a str, &'a str, &'a str, &'a str);
-    let mut groups: Vec<(Component, Vec<&Finding>)> = Vec::new();
-    for f in findings {
+    let mut groups: Vec<(Component, Vec<usize>)> = Vec::new();
+    for (i, f) in findings.iter().enumerate() {
         // Every hit in one file is one decision (rotate, or allow the file),
         // not one step per line.
         let location = if f.kind == "secret" { "" } else { f.location.as_str() };
         let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), location);
         match groups.iter_mut().find(|(key, _)| *key == k) {
-            Some((_, v)) => v.push(f),
-            None => groups.push((k, vec![f])),
+            Some((_, v)) => v.push(i),
+            None => groups.push((k, vec![i])),
         }
     }
-    groups.sort_by_key(|(_, fs)| fs.iter().all(|f| f.status != "fail"));
-    let (mut seen, mut auto, mut manual, mut optional) = (HashSet::new(), Vec::new(), Vec::new(), Vec::new());
-    for (_, fs) in &groups {
-        let f = covering(fs);
+    groups.sort_by_key(|(_, is)| is.iter().all(|i| findings[*i].status != "fail"));
+    let mut out: Vec<Step> = Vec::new();
+    for (_, is) in &groups {
+        let fs: Vec<&Finding> = is.iter().map(|i| &findings[*i]).collect();
+        let f = covering(&fs);
         let (cmd, unattended) = if upgrades_mise(&f.fix_cmd) {
             (MISE_FIX.to_string(), false)
         } else if f.kind == "secret" && fs.len() > 1 {
-            (secrets_fix(fs), false)
+            (secrets_fix(&fs), false)
         } else {
             (f.fix_cmd.clone(), f.fix_auto)
         };
-        if cmd.is_empty() || !seen.insert(cmd.clone()) {
+        if cmd.is_empty() {
             continue;
         }
-        if unattended {
-            auto.push(cmd);
-        } else if fs.iter().any(|x| x.status == "fail") {
-            manual.push(cmd);
-        } else {
-            optional.push(cmd);
+        let fails = fs.iter().any(|x| x.status == "fail");
+        match out.iter_mut().find(|s| s.cmd == cmd) {
+            // The first component to name a command decides how it runs.
+            Some(s) => s.findings.extend(is.iter().copied()),
+            None => out.push(Step { cmd, unattended, fails, findings: is.clone() }),
+        }
+    }
+    out
+}
+
+/// (unattended, needs you, also worth doing): the plan's commands by mode.
+pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (mut auto, mut manual, mut optional) = (Vec::new(), Vec::new(), Vec::new());
+    for s in steps(findings) {
+        match s.mode() {
+            "auto" => auto.push(s.cmd),
+            "manual" => manual.push(s.cmd),
+            _ => optional.push(s.cmd),
         }
     }
     (auto, manual, optional)
@@ -570,6 +608,28 @@ mod tests {
                 .contains("abc:TestVectors/xts.txt:generic-api-key:1, abc:TestVectors/xts.txt:generic-api-key:2"),
             "{}",
             optional[0]
+        );
+    }
+
+    #[test]
+    fn steps_keep_the_findings_each_command_covers() {
+        let fs = [
+            f("brew upgrade a", true, "fail"),
+            f("brew upgrade a", true, "fail"),
+            Finding { component: "b".into(), ..f("sudo apt-get install b", false, "warn") },
+            Finding { component: "c".into(), ..f("sudo apt-get install b", false, "fail") },
+            Finding { fix_cmd: String::new(), ..f("", false, "fail") },
+        ];
+        let steps = steps(&fs);
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert_eq!(
+            (steps[0].cmd.as_str(), steps[0].mode(), steps[0].findings.as_slice()),
+            ("brew upgrade a", "auto", &[0, 1][..])
+        );
+        // Two components sharing a command are one step; a failing one anywhere makes it manual, not optional.
+        assert_eq!(
+            (steps[1].cmd.as_str(), steps[1].mode(), steps[1].findings.as_slice()),
+            ("sudo apt-get install b", "manual", &[3, 2][..])
         );
     }
 

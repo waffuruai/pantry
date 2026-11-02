@@ -5,6 +5,7 @@ PRDs and design docs for wpantry: a PRD states the problem, the functional, secu
 | Spec | What | Status |
 |---|---|---|
 | [cli-contract.md](cli-contract.md) | The CLI, exit codes, JSON and cache every implementation keeps | frozen (schema 1) |
+| [02-html-report.md](02-html-report.md) | Optional offline HTML scan reports | in review |
 
 ## Archived
 

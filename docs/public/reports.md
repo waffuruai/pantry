@@ -8,7 +8,7 @@
 | Remediation (`--remediation`) | What was done about it | One per unattended fix `--update` ran: when, the command, whether it exited 0, the exposures it addressed, and the scan that verified it: a complete re-check (no source `unchecked`) in which none of those exposures were still listed. A failed fix, an incomplete re-check, or a finding still present leaves it blank |
 | Audit (`--audit`) | That the checks happened | One per scan (when, host, user, wpantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
 
-`--since DAYS` bounds all three (default 90). `--format md` (default) is Markdown with a summary line (open exposures, resolved, median days to resolve); `--format json` is one document with every section asked for; `--format csv` is the exposure log alone. `-o FILE` writes instead of printing.
+`--since DAYS` bounds all three (default 90). The HTML report of a scan (`wpantry check --html report.html`, [usage.md](usage.md)) carries the exposure and remediation logs of the last 90 days too, under its History section, when the cache has any. `--format md` (default) is Markdown with a summary line (open exposures, resolved, median days to resolve); `--format json` is one document with every section asked for; `--format csv` is the exposure log alone. `-o FILE` writes instead of printing.
 
 ## For SOC 2 and incident response
 

@@ -570,6 +570,7 @@ mod tests {
         drop(taken);
     }
 
+    #[cfg(unix)]
     #[test]
     fn words_escapes_and_every_spelling() {
         assert_eq!(Every::parse("hourly"), Some(Every::Hourly));

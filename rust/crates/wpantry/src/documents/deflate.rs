@@ -251,14 +251,205 @@ mod tests {
         assert_eq!(inflate(reserved_type, 1 << 20), None, "block type 3 is reserved");
     }
 
-    /// Real streams against zlib's answer: `WPANTRY_INFLATE_FIXTURES=<dir>`
-    /// holding `*.raw` (zlib-wrapped or raw deflate) and `*.out` pairs.
+    /// Writes a DEFLATE stream a bit at a time: header fields LSB first,
+    /// Huffman codes MSB first (RFC 1951 3.1.1).
+    struct Writer {
+        out: Vec<u8>,
+        acc: u32,
+        n: u32,
+    }
+
+    impl Writer {
+        fn new() -> Writer {
+            Writer { out: Vec::new(), acc: 0, n: 0 }
+        }
+
+        fn bits(&mut self, v: u32, count: u32) {
+            self.acc |= v << self.n;
+            self.n += count;
+            while self.n >= 8 {
+                self.out.push(self.acc as u8);
+                self.acc >>= 8;
+                self.n -= 8;
+            }
+        }
+
+        fn code(&mut self, code: u32, len: u32) {
+            for i in (0..len).rev() {
+                self.bits((code >> i) & 1, 1);
+            }
+        }
+
+        fn align(&mut self) {
+            if self.n > 0 {
+                self.bits(0, 8 - self.n);
+            }
+        }
+
+        fn stored(&mut self, last: bool, data: &[u8]) {
+            self.bits(last as u32, 1);
+            self.bits(0, 2);
+            self.align();
+            let len = data.len() as u16;
+            self.out.extend(len.to_le_bytes());
+            self.out.extend((!len).to_le_bytes());
+            self.out.extend(data);
+        }
+
+        /// A literal/length symbol in the fixed code.
+        fn fixed(&mut self, sym: u32) {
+            match sym {
+                0..=143 => self.code(0x30 + sym, 8),
+                144..=255 => self.code(0x190 + sym - 144, 9),
+                256..=279 => self.code(sym - 256, 7),
+                _ => self.code(0xC0 + sym - 280, 8),
+            }
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            self.align();
+            self.out
+        }
+    }
+
     #[test]
-    #[ignore]
-    fn inflate_matches_zlib_on_real_streams() {
-        let Ok(dir) = std::env::var("WPANTRY_INFLATE_FIXTURES") else { return };
+    fn stored_blocks_chain_and_the_cap_holds_across_blocks() {
+        let mut w = Writer::new();
+        w.stored(false, b"ab");
+        w.stored(true, b"c");
+        let data = w.finish();
+        assert_eq!(inflate(&data, 1 << 20).as_deref(), Some(b"abc" as &[u8]));
+        assert_eq!(inflate(&data, 2), None);
+    }
+
+    #[test]
+    fn fixed_blocks_check_their_symbols_and_distances() {
+        let mut w = Writer::new();
+        w.bits(1, 1);
+        w.bits(1, 2);
+        w.fixed(b'a' as u32);
+        w.fixed(257); // length 3 ...
+        w.code(0, 5); // ... at distance 1
+        w.fixed(256);
+        assert_eq!(inflate(&w.finish(), 1 << 20).as_deref(), Some(b"aaaa" as &[u8]));
+        let mut w = Writer::new();
+        w.bits(1, 1);
+        w.bits(1, 2);
+        w.fixed(b'a' as u32);
+        w.fixed(257);
+        w.code(1, 5); // distance 2, with one byte written
+        assert_eq!(inflate(&w.finish(), 1 << 20), None, "a distance before the start");
+        let mut w = Writer::new();
+        w.bits(1, 1);
+        w.bits(1, 2);
+        w.fixed(286); // a code the fixed table has, that means nothing
+        assert_eq!(inflate(&w.finish(), 1 << 20), None);
+    }
+
+    /// The header of a dynamic block whose code-length code has the symbols
+    /// 0, 3, 16 and 18, each two bits (codes 00, 01, 10, 11), for 257
+    /// literal/length and one distance length.
+    fn dynamic_header(w: &mut Writer) {
+        w.bits(1, 1);
+        w.bits(2, 2);
+        w.bits(0, 5);
+        w.bits(0, 5);
+        w.bits(15, 4);
+        for sym in [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15] {
+            w.bits(if matches!(sym, 0 | 3 | 16 | 18) { 2 } else { 0 }, 3);
+        }
+    }
+
+    fn code_length(w: &mut Writer, sym: u32) {
+        w.code(
+            match sym {
+                0 => 0,
+                3 => 1,
+                16 => 2,
+                _ => 3,
+            },
+            2,
+        );
+    }
+
+    #[test]
+    fn dynamic_blocks_read_repeated_lengths() {
+        let mut w = Writer::new();
+        dynamic_header(&mut w);
+        code_length(&mut w, 18);
+        w.bits(86, 7); // 97 zero lengths
+        code_length(&mut w, 3); // 'a'
+        code_length(&mut w, 16);
+        w.bits(0, 2); // 'b' 'c' 'd' the same
+        code_length(&mut w, 18);
+        w.bits(127, 7);
+        code_length(&mut w, 18);
+        w.bits(5, 7); // zeros up to the end code ...
+        code_length(&mut w, 0); // ... and one more
+        code_length(&mut w, 3); // 256
+        code_length(&mut w, 3); // the one distance code
+        for code in [0, 1, 2, 4] {
+            w.code(code, 3); // a b c end
+        }
+        assert_eq!(inflate(&w.finish(), 1 << 20).as_deref(), Some(b"abc" as &[u8]));
+    }
+
+    #[test]
+    fn dynamic_headers_that_do_not_add_up() {
+        let mut w = Writer::new();
+        w.bits(1, 1);
+        w.bits(2, 2);
+        w.bits(31, 5);
+        w.bits(0, 5);
+        w.bits(0, 4);
+        assert_eq!(inflate(&w.finish(), 1 << 20), None, "288 literal codes");
+
+        let mut w = Writer::new();
+        dynamic_header(&mut w);
+        code_length(&mut w, 16);
+        assert_eq!(inflate(&w.finish(), 1 << 20), None, "nothing to repeat");
+
+        let mut w = Writer::new();
+        dynamic_header(&mut w);
+        code_length(&mut w, 3);
+        code_length(&mut w, 18);
+        w.bits(127, 7);
+        code_length(&mut w, 18);
+        w.bits(106, 7);
+        code_length(&mut w, 16);
+        w.bits(0, 2);
+        assert_eq!(inflate(&w.finish(), 1 << 20), None, "a repeat past the end");
+
+        let mut w = Writer::new();
+        dynamic_header(&mut w);
+        code_length(&mut w, 18);
+        w.bits(127, 7);
+        code_length(&mut w, 18);
+        w.bits(127, 7);
+        assert_eq!(inflate(&w.finish(), 1 << 20), None, "zeros past the end");
+
+        let mut w = Writer::new();
+        dynamic_header(&mut w);
+        code_length(&mut w, 18);
+        w.bits(127, 7);
+        code_length(&mut w, 18);
+        w.bits(109, 7);
+        assert_eq!(inflate(&w.finish(), 1 << 20), None, "no end-of-block code");
+    }
+
+    #[test]
+    fn huffman_tables_reject_what_they_cannot_hold() {
+        assert!(Huff::new(&[16]).is_none(), "lengths stop at 15");
+        let one = Huff::new(&[1]).unwrap();
+        let mut bits = Bits { data: &[0xff; 4], pos: 0, acc: 0, n: 0 };
+        assert_eq!(one.decode(&mut bits), None, "a code the table never assigned");
+    }
+
+    /// `*.raw` (zlib-wrapped or raw deflate) in `dir` against its `*.out`:
+    /// how many pairs were checked.
+    fn check_fixtures(dir: &std::path::Path) -> usize {
         let mut n = 0;
-        for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
+        for e in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
             let path = e.path();
             if path.extension().and_then(|x| x.to_str()) != Some("raw") {
                 continue;
@@ -272,6 +463,27 @@ mod tests {
             assert!(got.as_deref() == Some(&want[..]), "{}: content differs", path.display());
             n += 1;
         }
-        assert!(n > 0);
+        n
+    }
+
+    #[test]
+    fn fixture_pairs_are_checked_with_or_without_the_zlib_header() {
+        let d = crate::system::TempDir::new("inflate").unwrap();
+        let wrapped: Vec<u8> = [0x78, 0x9c].iter().chain(DYNAMIC).copied().collect();
+        std::fs::write(d.path().join("a.raw"), wrapped).unwrap();
+        std::fs::write(d.path().join("a.out"), DYNAMIC_TEXT).unwrap();
+        std::fs::write(d.path().join("b.raw"), DYNAMIC).unwrap();
+        std::fs::write(d.path().join("b.out"), DYNAMIC_TEXT).unwrap();
+        std::fs::write(d.path().join("notes.txt"), "not a pair").unwrap();
+        assert_eq!(check_fixtures(d.path()), 2);
+    }
+
+    /// Real streams against zlib's answer: `WPANTRY_INFLATE_FIXTURES=<dir>`
+    /// holding `*.raw` (zlib-wrapped or raw deflate) and `*.out` pairs.
+    #[test]
+    #[ignore]
+    fn inflate_matches_zlib_on_real_streams() {
+        let Ok(dir) = std::env::var("WPANTRY_INFLATE_FIXTURES") else { return };
+        assert!(check_fixtures(std::path::Path::new(&dir)) > 0);
     }
 }

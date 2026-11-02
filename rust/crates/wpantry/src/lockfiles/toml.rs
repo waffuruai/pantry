@@ -249,5 +249,43 @@ mod tests {
         let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["git", "editable", "n", "a", "s"]);
         assert_eq!(got[4].1, Val::Str("q,}".into()));
+        // A string inside a raw value is skipped whole, and the table may end
+        // after a raw value.
+        let got = inline("{ a = [\"x, }\", 'y]'], b = 1 }");
+        assert_eq!(
+            got,
+            [("a".to_string(), Val::Raw("[\"x, }\", 'y]']".into())), ("b".to_string(), Val::Raw("1".into()))]
+        );
+        assert_eq!(inline("{ n = 1 }"), [("n".to_string(), Val::Raw("1".into()))]);
+        assert_eq!(inline("{ a = [\"open] }"), [("a".to_string(), Val::Raw("[\"open]".into()))]);
+        assert_eq!(inline("{ = 1 }"), []);
+        assert_eq!(inline("{ a 1 }"), []);
+        assert_eq!(inline("{ a = \"open }"), []);
+        assert_eq!(inline("x"), []);
+    }
+
+    #[test]
+    fn string_escapes_and_quoted_keys() {
+        assert_eq!(
+            string(r#""a\nb\tc\rd\be\ff\"g\\h\u00e9\U0001F600" rest"#),
+            Some(("a\nb\tc\rd\u{8}e\u{c}f\"g\\h\u{e9}\u{1f600}".to_string(), " rest"))
+        );
+        assert_eq!(string(r#""\q""#), None, "an unknown escape");
+        assert_eq!(string(r#""\u12""#), None, "a short unicode escape");
+        assert_eq!(string(r#""open"#), None);
+        assert_eq!(string("'open"), None);
+        assert_eq!(string("x"), None);
+        assert_eq!(string(""), None);
+        let t = parse(
+            "\"quoted key\" = 'v'\n'k2' = \"w\"\nml = \"\"\"x\"\"\"\na = [ 1, # ] a comment with a bracket\n  2 ]\n",
+        )
+        .unwrap();
+        assert_eq!(t[0].str("quoted key"), "v");
+        assert_eq!(t[0].str("k2"), "w");
+        assert_eq!(t[0].get("ml"), Some(&Val::Raw("\"\"\"x\"\"\"".into())), "multi-line strings are kept raw");
+        assert_eq!(t[0].get("a"), Some(&Val::Raw("[ 1, # ] a comment with a bracket\n  2 ]".into())));
+        assert!(parse("x = \"unterminated\n").is_err());
+        assert!(parse("x = \"a\n").is_err());
+        assert!(parse("= 1\n").is_err());
     }
 }

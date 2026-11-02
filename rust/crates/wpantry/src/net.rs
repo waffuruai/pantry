@@ -190,23 +190,28 @@ const TRIES: u32 = 3;
 impl Net for Http {
     fn send(&self, req: &Request) -> Result<Response> {
         allowed(&req.url)?;
-        let mut last = None;
-        for attempt in 0..TRIES {
-            match self.send_once(req) {
-                Ok((resp, retry_after)) if attempt + 1 < TRIES && matches!(resp.status, 429 | 502 | 503 | 504) => {
-                    std::thread::sleep(retry_after.unwrap_or_else(|| backoff(attempt)));
-                    last = Some(Ok(resp));
-                }
-                Ok((resp, _)) => return Ok(resp),
-                Err(e @ Error::Offline(_)) if attempt + 1 < TRIES => {
-                    std::thread::sleep(backoff(attempt));
-                    last = Some(Err(e));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        last.expect("at least one try")
+        with_retries(|| self.send_once(req))
     }
+}
+
+/// `once` up to [`TRIES`] times: the response and the server's Retry-After.
+fn with_retries(mut once: impl FnMut() -> Result<(Response, Option<Duration>)>) -> Result<Response> {
+    let mut last = None;
+    for attempt in 0..TRIES {
+        match once() {
+            Ok((resp, retry_after)) if attempt + 1 < TRIES && matches!(resp.status, 429 | 502 | 503 | 504) => {
+                std::thread::sleep(retry_after.unwrap_or_else(|| backoff(attempt)));
+                last = Some(Ok(resp));
+            }
+            Ok((resp, _)) => return Ok(resp),
+            Err(e @ Error::Offline(_)) if attempt + 1 < TRIES => {
+                std::thread::sleep(backoff(attempt));
+                last = Some(Err(e));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    last.expect("at least one try")
 }
 
 /// 250 ms, 500 ms, …, each with up to a quarter of jitter.
@@ -241,17 +246,23 @@ impl Http {
         };
         let status = resp.status().as_u16();
         let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(|s| std::time::Duration::from_secs(s.min(10)));
-        let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(|e| match e {
-            ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{}: response over {MAX_BODY} bytes", req.url)),
-            e => offline(e),
-        })?;
+        let retry_after = retry_after(resp.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+        let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(|e| body_error(&req.url, e))?;
         Ok((Response { status, body, etag }, retry_after))
+    }
+}
+
+/// A Retry-After header in seconds, capped at 10 s; a date form is ignored.
+fn retry_after(header: Option<&str>) -> Option<std::time::Duration> {
+    header.and_then(|s| s.trim().parse::<u64>().ok()).map(|s| std::time::Duration::from_secs(s.min(10)))
+}
+
+/// A body that couldn't be read: over the cap is `Invalid`, anything else
+/// (a dropped connection) `Offline`.
+fn body_error(url: &str, e: ureq::Error) -> Error {
+    match e {
+        ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{url}: response over {MAX_BODY} bytes")),
+        e => Error::Offline(format!("{url}: {e}")),
     }
 }
 
@@ -358,5 +369,81 @@ mod tests {
         post_json(&net, "https://x/ok", &serde_json::json!({"q": 1})).unwrap();
         let post = net.requests().pop().unwrap();
         assert_eq!((post.method, post.header("content-type")), ("POST", Some("application/json")));
+    }
+
+    #[test]
+    fn github_headers_ask_for_the_api_json() {
+        let h = github_headers();
+        assert_eq!(h[0], ("Accept".to_string(), "application/vnd.github+json".to_string()));
+        // A token, when the environment has one, is sent as a bearer.
+        assert!(h.iter().skip(1).all(|(k, v)| k == "Authorization" && v.starts_with("Bearer ")));
+        assert_eq!(h.len(), 1 + usize::from(std::env::var("GITHUB_TOKEN").is_ok_and(|t| !t.is_empty())));
+    }
+
+    #[test]
+    fn retries_stop_at_the_first_answer_or_hard_error() {
+        let resp = |status: u16| Response { status, body: Vec::new(), etag: None };
+        // Retryable statuses are tried again after Retry-After (0 s here), then
+        // the last answer is returned as it is.
+        let mut n = 0;
+        let r = with_retries(|| {
+            n += 1;
+            Ok((resp(503), Some(Duration::ZERO)))
+        });
+        assert_eq!((r.unwrap().status, n), (503, TRIES));
+        let mut n = 0;
+        let r = with_retries(|| {
+            n += 1;
+            Ok((resp(if n == 1 { 429 } else { 200 }), Some(Duration::ZERO)))
+        });
+        assert_eq!((r.unwrap().status, n), (200, 2));
+        // A dropped connection is tried again after the backoff; a refused
+        // host or an oversized body is not.
+        let mut n = 0;
+        let r = with_retries(|| {
+            n += 1;
+            if n == 1 { Err(Error::Offline("reset".into())) } else { Ok((resp(404), None)) }
+        });
+        assert_eq!((r.unwrap().status, n), (404, 2));
+        let mut n = 0;
+        let r = with_retries(|| {
+            n += 1;
+            Err(Error::Invalid("too big".into()))
+        });
+        assert!(matches!(r, Err(Error::Invalid(_))) && n == 1);
+        let mut n = 0;
+        let r = with_retries(|| {
+            n += 1;
+            Err::<(Response, Option<Duration>), Error>(Error::Offline("down".into()))
+        });
+        assert!(matches!(r, Err(Error::Offline(_))) && n == TRIES);
+    }
+
+    #[test]
+    fn retry_after_and_body_errors_are_read_as_the_server_meant() {
+        assert_eq!(retry_after(Some(" 3 ")), Some(Duration::from_secs(3)));
+        assert_eq!(retry_after(Some("600")), Some(Duration::from_secs(10)), "capped");
+        assert_eq!(retry_after(Some("Wed, 21 Oct 2026 07:28:00 GMT")), None);
+        assert_eq!(retry_after(None), None);
+        let big = body_error("https://x/", ureq::Error::BodyExceedsLimit(MAX_BODY));
+        assert!(matches!(big, Error::Invalid(m) if m == format!("https://x/: response over {MAX_BODY} bytes")));
+        let cut = body_error("https://x/", ureq::Error::Io(std::io::Error::other("reset")));
+        assert!(matches!(cut, Error::Offline(m) if m.starts_with("https://x/: ")));
+    }
+
+    /// Nothing listens on port 1 of the loopback: the connection is refused
+    /// before any byte leaves the machine, and comes back as `Offline`.
+    #[test]
+    fn a_refused_connection_is_offline() {
+        let http = Http::default();
+        for body in [None, Some(b"{}".to_vec())] {
+            let req = Request {
+                method: if body.is_some() { "POST" } else { "GET" },
+                url: "https://127.0.0.1:1/".into(),
+                headers: vec![("Accept".into(), "application/json".into())],
+                body,
+            };
+            assert!(matches!(http.send_once(&req), Err(Error::Offline(m)) if m.starts_with("https://127.0.0.1:1/")));
+        }
     }
 }

@@ -9,6 +9,7 @@ python = "3.15.1"   # the CLI contract suite (tests/contract) and scripts/
 gitleaks = "8.30.1" # wpantry's secret scan
 shellcheck = "0.11.0"
 actionlint = "1.7.12"
+"aqua:taiki-e/cargo-llvm-cov" = "0.9.1" # the coverage gate (mise run coverage)
 
 # A global mise rust sets RUSTUP_TOOLCHAIN, which would win over rust/rust-toolchain.toml.
 [tasks.build]
@@ -42,6 +43,30 @@ case "${usage_suite:-all}" in
   scripts) scripts_test ;;
   packaging) packaging_test ;;
 esac
+'''
+
+[tasks.coverage]
+description = "Line coverage of the Rust tests and the contract suite together (cargo-llvm-cov); fails under 90%. --html also writes rust/target/llvm-cov/html"
+usage = '''
+flag "--html" help="Also write the HTML report, to rust/target/llvm-cov/html"
+'''
+dir = "rust"
+run = '''
+set -e
+# The global mise rust sets RUSTUP_TOOLCHAIN, which would win over rust-toolchain.toml;
+# the pinned cargo-llvm-cov goes ahead of any `cargo install`ed one on PATH.
+unset RUSTUP_TOOLCHAIN
+PATH="$(mise where aqua:taiki-e/cargo-llvm-cov):$PATH"; export PATH
+rustup component add llvm-tools
+# One instrumented build (show-env) serves both suites: the Rust tests, then the
+# contract suite against the instrumented debug binary. The report counts both.
+eval "$(cargo llvm-cov show-env --sh)"
+cargo llvm-cov clean --workspace
+cargo test --locked --workspace --all-targets
+cargo build --locked
+(cd .. && WPANTRY=rust/target/debug/wpantry python3 -m unittest discover -s tests/contract)
+if [ "${usage_html:-false}" = true ]; then cargo llvm-cov report --html; fi
+cargo llvm-cov report --fail-under-lines 90
 '''
 
 [tasks.vet]

@@ -86,7 +86,18 @@ const MAX_TIPS: usize = 200;
 /// whether to [`run_job`] it, [`finish`] reads or stores the result.
 /// `Missing` without gitleaks. `threads` is what each run may use.
 pub fn job(cache: &Cache, repo: &Path, default_config: &Path, threads: usize) -> Result<Job> {
-    let exe = which("gitleaks").ok_or_else(|| Error::Missing("gitleaks".into()))?;
+    job_with(cache, repo, default_config, threads, which("gitleaks"))
+}
+
+/// As [`job`], with the gitleaks binary given (None: not installed).
+pub fn job_with(
+    cache: &Cache,
+    repo: &Path,
+    default_config: &Path,
+    threads: usize,
+    exe: Option<PathBuf>,
+) -> Result<Job> {
+    let exe = exe.ok_or_else(|| Error::Missing("gitleaks".into()))?;
     let own_policy = repo.join(".gitleaks.toml").is_file();
     let config = default_config.to_path_buf();
     let fingerprint =
@@ -400,6 +411,9 @@ mod tests {
             format!("# pack-refs with: peeled\n{c} refs/remotes/origin/dev\n^{a}\n"),
         )
         .unwrap();
+        // Refs nested past the depth cap are not read.
+        std::fs::create_dir_all(git.join("refs/d1/d2/d3/d4/d5/d6/d7/d8/d9")).unwrap();
+        std::fs::write(git.join("refs/d1/d2/d3/d4/d5/d6/d7/d8/d9/deep"), format!("{}\n", "e".repeat(40))).unwrap();
         assert_eq!(tips(d.path()), [a.clone(), b.clone(), c.clone()].into_iter().collect());
         // A worktree: .git is a file naming the gitdir, whose commondir holds the refs.
         let wt = d.path().join("wt");
@@ -411,5 +425,214 @@ mod tests {
         std::fs::write(wtgit.join("HEAD"), format!("{}\n", "d".repeat(40))).unwrap();
         let got = tips(&wt);
         assert!(got.contains(&"d".repeat(40)) && got.contains(&a) && got.contains(&c), "{got:?}");
+    }
+
+    /// A git repo made here: `git` with a private HOME, so nothing of the
+    /// machine's config is read. None when git can't make one.
+    fn git_repo(d: &TempDir, args: &[&[&str]]) -> Option<PathBuf> {
+        let home = d.path().join("home");
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(&home).ok()?;
+        std::fs::create_dir_all(&repo).ok()?;
+        let git = |argv: &[&str]| -> bool {
+            let mut full: Vec<&OsStr> = vec![OsStr::new("git"), OsStr::new("-C"), repo.as_os_str()];
+            full.extend(["-c", "user.name=w", "-c", "user.email=w@example.invalid"].map(OsStr::new));
+            full.extend(argv.iter().map(OsStr::new));
+            let env = [("HOME", home.to_str().unwrap()), ("GIT_CONFIG_NOSYSTEM", "1")];
+            exec(&full, &env, Duration::from_secs(30)).is_ok_and(|o| o.code == Some(0))
+        };
+        for a in args {
+            if !git(a) {
+                return None;
+            }
+        }
+        Some(repo)
+    }
+
+    /// Refs kept the reftable way (git 2.45+) can't be read as files: the
+    /// tips come from git itself then.
+    #[test]
+    fn tips_of_an_unfamiliar_layout_come_from_git() {
+        let d = TempDir::new("tips-reftable").unwrap();
+        let Some(repo) =
+            git_repo(&d, &[&["init", "-q", "--ref-format=reftable"], &["commit", "-q", "--allow-empty", "-m", "a"]])
+        else {
+            eprintln!("skipped: this git can't make a reftable repo");
+            return;
+        };
+        let got = tips(&repo);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got.iter().all(|t| t.len() == 40 && t.bytes().all(|b| b.is_ascii_hexdigit())));
+    }
+
+    /// An executable script standing in for gitleaks: `version` prints one;
+    /// a scan records its argv beside the script, copies `report.json`
+    /// there to the report path, and exits with `exit.code` when present.
+    #[cfg(unix)]
+    fn gitleaks(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("gitleaks");
+        std::fs::write(
+            &p,
+            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\necho run >> \"$d/runs.txt\"\n\
+             if [ \"$1\" = version ]; then echo 8.21.2; exit 0; fi\n\
+             printf '%s\\n' \"$@\" > \"$d/argv.txt\"\nprev=\"\"\n\
+             for a in \"$@\"; do if [ \"$prev\" = --report-path ]; then cp \"$d/report.json\" \"$a\"; fi; prev=\"$a\"; done\n\
+             if [ -f \"$d/exit.code\" ]; then echo \"rules failed to load\" >&2; exit \"$(cat \"$d/exit.code\")\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("report.json"), "[]").unwrap();
+        p
+    }
+
+    fn hit(fp: &str) -> Value {
+        json!({"rule": "aws-access-token", "file": "x.env", "line": 3, "commit": "0123456789ab",
+               "fingerprint": fp, "description": "AWS"})
+    }
+
+    fn argv(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("argv.txt")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn without_gitleaks_the_job_is_missing() {
+        let d = TempDir::new("no-gitleaks").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        // With whatever this machine has on PATH: a job, or Missing.
+        match job(&c, d.path(), &d.path().join("gitleaks.toml"), 1) {
+            Ok(j) => assert!(!j.own_policy && j.cached.is_none()),
+            Err(Error::Missing(m)) => assert_eq!(m, "gitleaks"),
+            Err(e) => panic!("{e}"),
+        }
+        let Err(err) = job_with(&c, d.path(), &d.path().join("gitleaks.toml"), 1, None) else { panic!("no gitleaks") };
+        assert!(matches!(err, Error::Missing(ref m) if m == "gitleaks"), "{err}");
+    }
+
+    /// The first scan is full; its hits and the tips are cached under the
+    /// policy's and gitleaks' fingerprint, and reused while the refs stand
+    /// still (also offline, where nothing ever runs).
+    #[cfg(unix)]
+    #[test]
+    fn a_first_scan_is_full_and_cached_until_the_refs_move() {
+        let d = TempDir::new("gitleaks-full").unwrap();
+        let exe = gitleaks(d.path());
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git/refs/heads")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let a = "a".repeat(40);
+        std::fs::write(repo.join(".git/refs/heads/main"), format!("{a}\n")).unwrap();
+        std::fs::write(repo.join(".gitleaks.toml"), "[allowlist]\n").unwrap();
+        let config = d.path().join("gitleaks.toml");
+        std::fs::write(&config, "title = \"wpantry\"\n").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        let job = job_with(&c, &repo, &config, 3, Some(exe.clone())).unwrap();
+        assert!(job.own_policy, "the repo's own config is reported, not used");
+        assert!(job.fingerprint.starts_with("v2:8.21.2:"), "{}", job.fingerprint);
+        assert!(job.cached.is_none() && job.since().is_none());
+        assert!(stale(&job, false, false), "nothing cached");
+        assert!(!stale(&job, false, true), "never offline");
+        assert!(matches!(finish(&c, &job, None, false, true), Err(Error::Offline(_))), "offline and not cached");
+        std::fs::write(
+            d.path().join("report.json"),
+            json!([{"RuleID": "aws-access-token", "File": "x.env",
+            "StartLine": 3, "Commit": "0123456789abcdef", "Fingerprint": "fp1", "Description": "AWS"}])
+            .to_string(),
+        )
+        .unwrap();
+        let res = run_job(&job).unwrap();
+        assert_eq!(res["tips"], json!([a]));
+        assert_eq!(res["hits"], json!([hit("fp1")]));
+        let args = argv(d.path());
+        let i = args.iter().position(|x| x == "git").unwrap();
+        assert_eq!(args[i + 1], repo.to_string_lossy());
+        assert!(args.contains(&"--redact".to_string()) && args.contains(&"--config".to_string()), "{args:?}");
+        assert!(!args.contains(&"--log-opts".to_string()), "a first scan has no history to exclude");
+        let found = finish(&c, &job, Some(Ok(res)), false, false).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (found[0].rule.as_str(), found[0].fingerprint.as_str(), found[0].line),
+            ("aws-access-token", "fp1", 3)
+        );
+        // The next job finds the result cached and current: no run, offline or not.
+        let job = job_with(&c, &repo, &config, 3, Some(exe.clone())).unwrap();
+        assert_eq!(job.since().map(|t| t.len()), Some(1));
+        assert!(!stale(&job, false, false));
+        assert!(stale(&job, true, false), "--refresh");
+        let runs = || std::fs::read_to_string(d.path().join("runs.txt")).unwrap().lines().count();
+        let before = runs();
+        assert_eq!(finish(&c, &job, None, false, false).unwrap()[0].fingerprint, "fp1");
+        assert_eq!(finish(&c, &job, None, false, true).unwrap().len(), 1);
+        assert_eq!(runs(), before, "gitleaks' version is asked once per binary, and the scan not at all");
+        // A source failure while a result is cached keeps the cached one;
+        // without one it is the failure; an internal error passes through.
+        let job = job_with(&c, &repo, &config, 3, Some(exe.clone())).unwrap();
+        assert_eq!(finish(&c, &job, Some(Err(Error::Offline("x".into()))), true, false).unwrap().len(), 1);
+        assert_eq!(finish(&c, &job, Some(Err(Error::Invalid("x".into()))), true, false).unwrap().len(), 1);
+        assert!(matches!(finish(&c, &job, Some(Err(Error::Failed("x".into()))), true, false), Err(Error::Failed(_))));
+        let other = d.path().join("other");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        let job = job_with(&c, &other, &config, 3, Some(exe.clone())).unwrap();
+        assert!(matches!(
+            finish(&c, &job, Some(Err(Error::Offline("x".into()))), false, false),
+            Err(Error::Offline(_))
+        ));
+        // A failing run is an error with the tail of its stderr, never a clean result.
+        std::fs::write(d.path().join("exit.code"), "3").unwrap();
+        let err = run_job(&job).unwrap_err();
+        assert_eq!(err.to_string(), "gitleaks exited 3: rules failed to load");
+        assert!(
+            matches!(finish(&c, &job, None, false, false), Err(Error::Failed(_))),
+            "finish runs it when nothing ran ahead"
+        );
+    }
+
+    /// Once the refs move, only the commits since the remembered tips are
+    /// scanned and the earlier hits carried over, minus any now ignored;
+    /// a remembered tip that is gone (rewritten history), or too many of
+    /// them, means a full scan again.
+    #[cfg(unix)]
+    #[test]
+    fn later_scans_cover_the_new_commits_and_keep_the_old_hits() {
+        let d = TempDir::new("gitleaks-incr").unwrap();
+        let Some(repo) = git_repo(&d, &[&["init", "-q"], &["commit", "-q", "--allow-empty", "-m", "a"]]) else {
+            panic!("git can't make a repo here");
+        };
+        let exe = gitleaks(d.path());
+        let config = d.path().join("gitleaks.toml");
+        std::fs::write(&config, "").unwrap();
+        let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+        let first = tips(&repo);
+        assert_eq!(first.len(), 1, "{first:?}");
+        let old = first.iter().next().unwrap().clone();
+        let job = job_with(&c, &repo, &config, 1, Some(exe.clone())).unwrap();
+        c.put_run(&job.key, &job.fingerprint, &json!({"tips": [old], "hits": [hit("fp1"), hit("fp2")]})).unwrap();
+        assert!(git_repo(&d, &[&["commit", "-q", "--allow-empty", "-m", "b"]]).is_some());
+        std::fs::write(repo.join(".gitleaksignore"), "# reviewed\nfp2\n\n").unwrap();
+        let job = job_with(&c, &repo, &config, 1, Some(exe.clone())).unwrap();
+        assert!(job.cached.is_none(), "the ignore file changed the fingerprint: scanned in full again");
+        c.put_run(&job.key, &job.fingerprint, &json!({"tips": [old], "hits": [hit("fp1"), hit("fp2")]})).unwrap();
+        let job = job_with(&c, &repo, &config, 1, Some(exe.clone())).unwrap();
+        assert!(stale(&job, false, false), "the refs moved");
+        std::fs::write(d.path().join("report.json"), "[]").unwrap();
+        let res = run_job(&job).unwrap();
+        let args = argv(d.path());
+        let i = args.iter().position(|x| x == "--log-opts").expect("only the new commits");
+        assert_eq!(args[i + 1], format!("--full-history --all --diff-filter=tuxdb ^{old}"));
+        assert_eq!(res["hits"], json!([hit("fp1")]), "fp2 is ignored now; fp1 still stands");
+        assert_eq!(res["tips"], json!(tips(&repo).iter().collect::<Vec<_>>()));
+        // A remembered tip that no longer exists: everything is scanned.
+        c.put_run(&job.key, &job.fingerprint, &json!({"tips": ["f".repeat(40)], "hits": [hit("fp1")]})).unwrap();
+        let job = job_with(&c, &repo, &config, 1, Some(exe.clone())).unwrap();
+        let res = run_job(&job).unwrap();
+        assert!(!argv(d.path()).contains(&"--log-opts".to_string()));
+        assert_eq!(res["hits"], json!([]), "a full scan reports what it found, not the old hits");
+        // Too many tips to list: a full scan too.
+        let many: Vec<String> = (0..=MAX_TIPS).map(|i| format!("{i:040x}")).collect();
+        c.put_run(&job.key, &job.fingerprint, &json!({"tips": many, "hits": []})).unwrap();
+        let job = job_with(&c, &repo, &config, 1, Some(exe)).unwrap();
+        assert!(job.since().is_none());
+        run_job(&job).unwrap();
+        assert!(!argv(d.path()).contains(&"--log-opts".to_string()));
     }
 }

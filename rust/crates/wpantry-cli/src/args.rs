@@ -66,6 +66,9 @@ pub enum Target {
 }
 
 #[derive(Debug, PartialEq)]
+// `Check` carries every check option; the other commands take a few fields.
+// One value is built per process, so the size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     Check(Check),
     Search {

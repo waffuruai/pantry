@@ -1,20 +1,26 @@
 //! Hardcoded passwords in source and config: a `password`, `passwd`, `pwd`
-//! or `secret` assignment whose value is a known-weak password fails; any
-//! other non-empty password literal warns, since a committed default is
-//! still a credential to rotate. This is the source-level, non-git part of
-//! password hygiene; full secret scanning (provider tokens, entropy) lives
-//! in the gitleaks pass, so this rule stays on human-chosen passwords and
-//! leaves API keys to it.
+//! or `secret` assignment whose value is a known-weak password. The bundled
+//! list is in two tiers. A shipped default or committed throwaway
+//! (`changeme`, `admin`, `password`) fails, since it is almost never a real
+//! secret. A common dictionary or pop-culture password (`monkey`, `dragon`,
+//! `sunshine`) only warns: it is weak, but more likely a real bad password
+//! than a default. Any other non-empty password literal also warns, since a
+//! committed default is still a credential to rotate. This is the
+//! source-level, non-git part of password hygiene; full secret scanning
+//! (provider tokens, entropy) lives in the gitleaks pass, so this rule
+//! stays on human-chosen passwords and leaves API keys to it.
 //!
-//! Placeholders (`changeme` is weak and fails, but `${VAR}`, `<your pass>`,
-//! `xxx`, an env lookup) and tests and fixtures are skipped.
+//! Before matching, the value is normalized — trailing digits and symbols
+//! dropped, common leet substitutions undone — so `Admin1` and `p@ssw0rd`
+//! match too. Placeholders (`changeme` is a default and fails, but `${VAR}`,
+//! `<your pass>`, `xxx`, an env lookup) and tests and fixtures are skipped.
 
 use super::{Context, Suspect, line_at, push, test_path};
 
 pub(super) const ID: &str = "SUSPECT-WEAK-PASSWORD";
 
-/// The bundled known-weak list.
-const WEAK: &str = include_str!("../../assets/defaults/weak-passwords.txt");
+/// The bundled known-weak list, in two tiers (see the file).
+const LIST: &str = include_str!("../../assets/defaults/weak-passwords.txt");
 /// Identifier tails that name a password.
 const KEYS: &[&str] = &["password", "passwd", "passphrase", "pwd", "secret"];
 
@@ -34,26 +40,100 @@ pub(super) fn scan(file: &str, text: &str, ctx: Context, out: &mut Vec<Suspect>)
         if value.is_empty() {
             continue;
         }
-        if is_weak(&value) {
-            push(out, file, ID, line_at(text, line_start), format!("`{key}` is assigned a known-weak password"), true);
-            return;
-        }
-        if quoted && !placeholder(&value) {
-            push(
-                out,
-                file,
-                ID,
-                line_at(text, line_start),
-                format!("`{key}` holds a hardcoded password literal in source"),
-                false,
-            );
-            return;
+        match classify(&value) {
+            Some(Tier::Fail) => {
+                push(
+                    out,
+                    file,
+                    ID,
+                    line_at(text, line_start),
+                    format!("`{key}` is assigned a known default or weak password"),
+                    true,
+                );
+                return;
+            }
+            Some(Tier::Warn) => {
+                push(
+                    out,
+                    file,
+                    ID,
+                    line_at(text, line_start),
+                    format!("`{key}` is assigned a common, easily-guessed password"),
+                    false,
+                );
+                return;
+            }
+            None => {
+                if quoted && !placeholder(&value) {
+                    push(
+                        out,
+                        file,
+                        ID,
+                        line_at(text, line_start),
+                        format!("`{key}` holds a hardcoded password literal in source"),
+                        false,
+                    );
+                    return;
+                }
+            }
         }
     }
 }
 
-fn is_weak(value: &str) -> bool {
-    WEAK.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).any(|w| w.eq_ignore_ascii_case(value))
+/// Which tier a known-weak password falls in.
+enum Tier {
+    Fail,
+    Warn,
+}
+
+/// Classify a value against the bundled list, matching it as written and in
+/// a normalized form so simple mutations are caught. `# tier: warn` in the
+/// list marks where the warn tier begins; entries before it fail.
+fn classify(value: &str) -> Option<Tier> {
+    let raw = value.trim().to_ascii_lowercase();
+    if raw.is_empty() {
+        return None;
+    }
+    let norm = normalize(&raw);
+    let mut warn = false;
+    for line in LIST.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix('#') {
+            if rest.trim().eq_ignore_ascii_case("tier: warn") {
+                warn = true;
+            }
+            continue;
+        }
+        let entry = l.to_ascii_lowercase();
+        if entry == raw || (!norm.is_empty() && entry == norm) {
+            return Some(if warn { Tier::Warn } else { Tier::Fail });
+        }
+    }
+    None
+}
+
+/// Fold a value toward its dictionary form: drop trailing digits and symbols
+/// (an appended number or `!`), then undo common leet substitutions.
+/// Interior digits read as letters (`adm1n` -> `admin`) while trailing ones
+/// are suffixes (`monkey1` -> `monkey`), so the strip comes first.
+fn normalize(v: &str) -> String {
+    let stem = v.trim_end_matches(|c: char| !c.is_ascii_alphabetic());
+    stem.chars()
+        .map(|c| match c {
+            '0' => 'o',
+            '1' => 'i',
+            '3' => 'e',
+            '4' => 'a',
+            '5' => 's',
+            '7' => 't',
+            '@' => 'a',
+            '$' => 's',
+            other => other,
+        })
+        .collect()
 }
 
 /// A value that stands in for a real password rather than being one.
@@ -153,7 +233,7 @@ mod tests {
     fn a_known_weak_password_fails() {
         let got = scan_text("config/app.env", "DB_PASSWORD=letmein\n", Kind::Repo);
         assert_eq!(ids(&got), [("SUSPECT-WEAK-PASSWORD", true)], "{got:?}");
-        assert!(got[0].note.contains("known-weak password"), "{}", got[0].note);
+        assert!(got[0].note.contains("known default or weak"), "{}", got[0].note);
         assert_eq!(
             ids(&scan_text("conf/db.yaml", "password: changeme\n", Kind::Repo)),
             [("SUSPECT-WEAK-PASSWORD", true)],
@@ -195,5 +275,46 @@ mod tests {
         assert_eq!(assignment("  secret: \"abc\"").map(|(_, v, q)| (v, q)), Some(("abc".into(), true)));
         assert_eq!(assignment("keyboard = 3"), None, "the key must be a password word");
         assert!(placeholder("${X}") && placeholder("xxx") && !placeholder("hunter2"));
+    }
+
+    #[test]
+    fn dictionary_words_warn_and_defaults_fail() {
+        // monkey/sunshine are common but not shipped defaults: warn, not fail.
+        assert_eq!(
+            ids(&scan_text("conf/app.yaml", "password: monkey\n", Kind::Repo)),
+            [("SUSPECT-WEAK-PASSWORD", false)],
+            "a common dictionary password warns, it does not fail"
+        );
+        let got = scan_text("conf/app.yaml", "password: sunshine\n", Kind::Repo);
+        assert_eq!(ids(&got), [("SUSPECT-WEAK-PASSWORD", false)]);
+        assert!(got[0].note.contains("common, easily-guessed"), "{}", got[0].note);
+        // changeme stays a hard fail: a shipped default, not a real secret.
+        assert_eq!(
+            ids(&scan_text("conf/app.yaml", "password: changeme\n", Kind::Repo)),
+            [("SUSPECT-WEAK-PASSWORD", true)]
+        );
+    }
+
+    #[test]
+    fn normalization_catches_simple_mutations() {
+        assert_eq!(
+            ids(&scan_text("a.env", "ADMIN_PASSWORD=Admin1\n", Kind::Repo)),
+            [("SUSPECT-WEAK-PASSWORD", true)],
+            "a trailing digit does not hide a default"
+        );
+        assert_eq!(
+            ids(&scan_text("a.env", "PASSWORD=p@ssw0rd\n", Kind::Repo)),
+            [("SUSPECT-WEAK-PASSWORD", true)],
+            "leet substitutions are undone"
+        );
+        assert_eq!(
+            ids(&scan_text("a.yaml", "password: Monkey99!\n", Kind::Repo)),
+            [("SUSPECT-WEAK-PASSWORD", false)],
+            "a mutated dictionary word still warns"
+        );
+        assert_eq!(normalize("p@ssw0rd"), "password");
+        assert_eq!(normalize("admin1"), "admin");
+        assert_eq!(normalize("monkey99!"), "monkey");
+        assert!(classify("Tr0ub4dour&3xplr").is_none(), "a strong password is not matched");
     }
 }

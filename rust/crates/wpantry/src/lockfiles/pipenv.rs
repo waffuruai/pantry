@@ -2,7 +2,7 @@
 //! pinned `==version` count; git, path and editable entries have no
 //! version and are skipped. Names are normalized (PEP 503).
 
-use super::{Package, plausible, requirements::normalize};
+use super::{Package, Scope, plausible, requirements::normalize};
 use crate::error::Result;
 use crate::json::{self, str_at};
 use serde_json::Value;
@@ -10,11 +10,11 @@ use serde_json::Value;
 pub fn parse(text: &str) -> Result<Vec<Package>> {
     let data = json::parse(text.as_bytes(), json::MAX_DOCUMENT)?;
     let mut out = Vec::new();
-    for section in ["default", "develop"] {
+    for (section, scope) in [("default", Scope::Runtime), ("develop", Scope::Dev)] {
         for (name, entry) in data.get(section).and_then(Value::as_object).into_iter().flatten() {
             let Some(version) = str_at(entry, "version").strip_prefix("==") else { continue };
             if plausible(version) && !version.contains('*') {
-                out.push(Package::new("PyPI", &normalize(name), version));
+                out.push(Package::new("PyPI", &normalize(name), version).scoped(scope));
             }
         }
     }
@@ -33,7 +33,10 @@ mod tests {
             "develop": {"pytest": {"version": "==7.4.0", "markers": "python_version >= '3.7'"}}}"#;
         assert_eq!(
             parse(text).unwrap(),
-            [Package::new("PyPI", "jinja2", "3.1.2"), Package::new("PyPI", "pytest", "7.4.0")]
+            [
+                Package::new("PyPI", "jinja2", "3.1.2").scoped(Scope::Runtime),
+                Package::new("PyPI", "pytest", "7.4.0").scoped(Scope::Dev)
+            ]
         );
     }
 }

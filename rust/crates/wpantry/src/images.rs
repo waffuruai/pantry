@@ -128,11 +128,12 @@ fn pax(data: &[u8]) -> BTreeMap<String, String> {
         if n == 0 || n > rest.len() {
             break;
         }
-        let record = &rest[len.len() + 1..n];
+        let Some(record) = rest.get(len.len() + 1..n) else { break };
         if let Some((k, v)) = record.trim_end_matches('\n').split_once('=') {
             out.insert(k.to_string(), v.to_string());
         }
-        rest = &rest[n..];
+        let Some(next) = rest.get(n..) else { break };
+        rest = next;
     }
     out
 }
@@ -264,14 +265,14 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
     let mut gaps = Vec::new();
     let rel = ["etc/os-release", "usr/lib/os-release"]
         .iter()
-        .find_map(|f| std::fs::read_to_string(root.join(f)).ok())
+        .find_map(|f| crate::system::read_capped(&root.join(f), 1 << 20).ok())
         .map(|t| parse_os_release(&t))
         .unwrap_or_default();
     let dbs = [("var/lib/dpkg/status", "/var/lib/dpkg/status"), ("lib/apk/db/installed", "/lib/apk/db/installed")];
     let present: Vec<&(&str, &str)> = dbs.iter().filter(|(f, _)| root.join(f).is_file()).collect();
     match (present.first(), osdb::ecosystem(&rel)) {
         (Some((file, shown)), Ok(eco)) => {
-            let text = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+            let text = crate::system::read_capped(&root.join(file), 64 << 20).unwrap_or_default();
             let found = if file.contains("dpkg") { osdb::dpkg(&text) } else { osdb::apk(&text) };
             pkgs.extend(found.into_iter().map(|p| ImagePackage {
                 ecosystem: eco.clone(),
@@ -306,7 +307,13 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
 
 fn export(engine: &Path, r: &str, dir: &Path) -> Result<PathBuf> {
     let create = exec(
-        &[engine.as_os_str(), OsStr::new("create"), OsStr::new(r), OsStr::new("wpantry-export")],
+        &[
+            engine.as_os_str(),
+            OsStr::new("create"),
+            OsStr::new("--pull=never"),
+            OsStr::new(r),
+            OsStr::new("wpantry-export"),
+        ],
         &[],
         Duration::from_secs(120),
     )?;
@@ -499,5 +506,9 @@ mod tests {
         assert_eq!(normalize("../../x"), None);
         assert_eq!(octal(b"00000000017\0"), 15);
         assert_eq!(pax(b"29 path=a/very/long/name.txt\n")["path"], "a/very/long/name.txt");
+        // Short, oversized and non-UTF-8 records end the parse, never panic.
+        assert!(pax(b"1 x").is_empty());
+        assert!(pax(b"3 \xff\xfe=1\n9 k=v\n").len() <= 1);
+        assert!(pax(b"99 path=short\n").is_empty());
     }
 }

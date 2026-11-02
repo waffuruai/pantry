@@ -142,8 +142,10 @@ fn load(path: &Path, fmt: &str) -> Value {
         _ => {
             let v = read_json(path);
             if v.is_null() && path.to_string_lossy().ends_with(".jsonc") {
-                let text = std::fs::read_to_string(path).unwrap_or_default();
-                let text = crate::re::Regex::with_flags(r"^\s*//.*$|/\*.*?\*/", "ms").replace_all(&text, "");
+                let text = crate::system::read_capped(path, 16 << 20).unwrap_or_default();
+                // A line comment ends at its line: `.` must not cross newlines
+                // here, or the first `//` would swallow the rest of the file.
+                let text = crate::re::Regex::with_flags(r"^\s*//[^\n]*$|/\*.*?\*/", "ms").replace_all(&text, "");
                 return if text.trim().is_empty() {
                     Value::Object(Map::new())
                 } else {
@@ -175,7 +177,10 @@ fn servers(data: &Value, keys: &[&str]) -> Vec<(String, Value)> {
 }
 
 fn read_json(path: &Path) -> Value {
-    std::fs::read(path).ok().and_then(|b| json::parse(&b, 16 << 20).ok()).unwrap_or(Value::Null)
+    crate::system::read_capped_bytes(path, 16 << 20)
+        .ok()
+        .and_then(|b| json::parse(&b, 16 << 20).ok())
+        .unwrap_or(Value::Null)
 }
 
 fn as_text(v: &Value) -> String {
@@ -403,6 +408,16 @@ fn yaml_servers(path: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jsonc_line_comments_end_at_their_line() {
+        let d = crate::system::TempDir::new("jsonc").unwrap();
+        let f = d.path().join("opencode.jsonc");
+        std::fs::write(&f, "// header\n{\n  // the servers\n  \"mcp\": {\"db\": {\"command\": \"bunx\"}} /* c */\n}\n")
+            .unwrap();
+        let v = load(&f, "json");
+        assert_eq!(v["mcp"]["db"]["command"], "bunx", "{v}");
+    }
 
     type Ref = Option<(String, String, String)>;
 

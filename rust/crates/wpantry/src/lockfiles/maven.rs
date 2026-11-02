@@ -117,6 +117,9 @@ fn leaves(xml: &str) -> Result<Vec<Leaf>> {
     Ok(out)
 }
 
+/// The longest a property may expand to: a version or a group id, not a document.
+const MAX_EXPANSION: usize = 4096;
+
 /// `${name}` references replaced from `props`, recursively; None if one
 /// is undefined or the references loop.
 fn interpolate(s: &str, props: &BTreeMap<String, String>, depth: usize) -> Option<String> {
@@ -132,6 +135,9 @@ fn interpolate(s: &str, props: &BTreeMap<String, String>, depth: usize) -> Optio
         out.push_str(&rest[..i]);
         let end = rest[i..].find('}')? + i;
         out.push_str(&interpolate(props.get(&rest[i + 2..end])?, props, depth + 1)?);
+        if out.len() > MAX_EXPANSION {
+            return None; // properties that multiply (a billion laughs)
+        }
         rest = &rest[end + 1..];
     }
     out.push_str(rest);
@@ -235,6 +241,17 @@ pub fn parse(text: &str) -> Result<Vec<Package>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiplying_properties_are_refused() {
+        let mut props = BTreeMap::new();
+        props.insert("p0".to_string(), "lol".to_string());
+        for i in 1..=8 {
+            props.insert(format!("p{i}"), format!("${{p{}}}", i - 1).repeat(100));
+        }
+        assert_eq!(interpolate("${p0}-${p0}", &props, 0).as_deref(), Some("lol-lol"));
+        assert_eq!(interpolate("${p8}", &props, 0), None);
+    }
 
     #[test]
     fn literal_property_and_managed_versions() {

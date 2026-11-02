@@ -1,0 +1,16 @@
+# Dependency and action bumps as pull requests, weekly. Every crate is pinned
+# `=x.y.z` and every action by commit, so a bump is a reviewed PR here, never
+# a floating range.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, ignore-for-release]
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    open-pull-requests-limit: 5

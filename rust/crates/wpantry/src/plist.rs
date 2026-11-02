@@ -12,11 +12,7 @@ const MAX: u64 = 16 << 20;
 /// The plist at `path` as JSON, or an empty object.
 pub fn read(path: &Path) -> Value {
     let empty = Value::Object(Map::new());
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() <= MAX => {}
-        _ => return empty,
-    }
-    let Ok(bytes) = std::fs::read(path) else { return empty };
+    let Ok(bytes) = crate::system::read_capped_bytes(path, MAX) else { return empty };
     parse(&bytes).filter(Value::is_object).unwrap_or(empty)
 }
 
@@ -142,7 +138,13 @@ struct Bin<'a> {
     b: &'a [u8],
     offsets: Vec<usize>,
     ref_size: usize,
+    /// Objects decoded so far (see [`MAX_OBJECTS`]).
+    visited: std::cell::Cell<usize>,
 }
+
+/// The most objects one plist may decode into: an app's Info.plist has
+/// hundreds, never a hundred thousand.
+const MAX_OBJECTS: usize = 100_000;
 
 fn be(bytes: &[u8]) -> Option<u64> {
     if bytes.len() > 8 {
@@ -167,7 +169,9 @@ impl Bin<'_> {
     }
 
     fn object(&self, idx: usize, depth: usize) -> Option<Value> {
-        if depth > 64 {
+        // Depth alone doesn't bound the work: references may fan out, so a
+        // few nested arrays can name 2^n objects. Count them.
+        if depth > 64 || self.visited.replace(self.visited.get() + 1) >= MAX_OBJECTS {
             return None;
         }
         let at = *self.offsets.get(idx)?;
@@ -246,7 +250,7 @@ fn binary(b: &[u8]) -> Option<Value> {
     let offsets = (0..count)
         .map(|i| be(b.get(table + i * offset_size..table + (i + 1) * offset_size)?).map(|o| o as usize))
         .collect::<Option<Vec<_>>>()?;
-    Bin { b, offsets, ref_size }.object(top, 0)
+    Bin { b, offsets, ref_size, visited: std::cell::Cell::new(0) }.object(top, 0)
 }
 
 #[cfg(test)]

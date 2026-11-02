@@ -85,7 +85,9 @@ pub fn apps() -> Vec<Component> {
 }
 
 fn firefox_channel(bundle: &Path) -> String {
-    let Ok(prefs) = std::fs::read_to_string(bundle.join("Contents/Resources/defaults/pref/channel-prefs.js")) else {
+    let Ok(prefs) =
+        crate::system::read_capped(&bundle.join("Contents/Resources/defaults/pref/channel-prefs.js"), 1 << 20)
+    else {
         return String::new();
     };
     Regex::new(r#""app\.update\.channel",\s*"([^"]+)""#)

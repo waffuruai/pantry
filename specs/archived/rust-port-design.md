@@ -1,6 +1,8 @@
 # Rust port: design detail
 
-Detail for [01-rust-port.md](../01-rust-port.md). The PRD holds the criteria; this page holds the tables they point at. Status: draft, 2026-10-25; updated 2026-10-27 with what the port settled (marked "settled"). Everything here is proposed until its criterion has evidence.
+> Archived 2026-10-31 with [01-rust-port.md](01-rust-port.md). The tables here were carried into [docs/architecture.md](../../docs/architecture.md), which is kept current; this copy is the record of what the port proposed and settled.
+
+Detail for [01-rust-port.md](01-rust-port.md). The PRD holds the criteria; this page holds the tables they point at. Status: draft, 2026-10-25; updated 2026-10-27 with what the port settled (marked "settled"). Everything here is proposed until its criterion has evidence.
 
 ## Workspace
 
@@ -17,9 +19,9 @@ rust/
     └── wpantry-cli/          binary: argument parsing, report, JSON envelope, exit codes
 ```
 
-The library has no global state and never prints; the CLI owns stdout, stderr and exit codes. Embedders (wsentinel, control-plane) depend on the library at an exact `0.x` version and accept breakage between minors; the [CLI contract](../cli-contract.md) is what stays stable.
+The library has no global state and never prints; the CLI owns stdout, stderr and exit codes. Embedders (wsentinel, syrup) depend on the library at an exact `0.x` version and accept breakage between minors; the [CLI contract](../cli-contract.md) is what stays stable.
 
-Modules map onto `python/wscanner/` one to one (`check`, `check_machine`, `check_supply`, `repos`, `osv`, `feeds`, `db`, …), so a parity diff (F3) can be traced to a file.
+Modules map one to one onto the Python implementation this port replaced (`python/wscanner/`, removed once parity was shown) (`check`, `check_machine`, `check_supply`, `repos`, `osv`, `feeds`, `db`, …), so a parity diff (F3) can be traced to a file.
 
 ## Dependencies
 
@@ -100,7 +102,7 @@ OSV decides whether a version is affected; the scanner only orders fixed version
 | RubyGems | RubyGems | rubygems' `test_gem_version.rb` (`Gem::Version#<=>`) |
 | Maven | Maven | maven-artifact's `ComparableVersionTest` (3.9) |
 | Composer | Packagist | composer/semver's `VersionParserTest`, `ComparatorTest`, `SemverTest` (normalize, then PHP's `version_compare`) |
-| generic | ConanCenter, upstream release tags, apps, everything else | today's `python/wscanner/versions.py` tests |
+| generic | ConanCenter, upstream release tags, apps, everything else | the former `python/wscanner/versions.py` tests |
 
 ## OSV client
 

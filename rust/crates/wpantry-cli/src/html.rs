@@ -5,11 +5,23 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use wpantry::check::{Options, Outcome};
+use wpantry::db::Cache;
 use wpantry::error::Result;
+use wpantry::history;
 use wpantry::json::{J, obj};
 
 const TEMPLATE: &str = include_str!("../assets/report.html");
 const TOKEN: &str = "{{PANTRY_BUNDLE}}";
+/// The brand faces (SIL OFL, `assets/fonts/`), embedded so a report opens
+/// offline without fetching a font.
+const FONTS: [(&str, &[u8]); 4] = [
+    ("{{FONT_SERIF}}", include_bytes!("../assets/fonts/instrument-serif-latin-400-normal.woff2")),
+    ("{{FONT_SERIF_ITALIC}}", include_bytes!("../assets/fonts/instrument-serif-latin-400-italic.woff2")),
+    ("{{FONT_SANS}}", include_bytes!("../assets/fonts/geist-latin-wght-normal.woff2")),
+    ("{{FONT_MONO}}", include_bytes!("../assets/fonts/geist-mono-latin-wght-normal.woff2")),
+];
+/// How far back the history sections look, as `wpantry report` does.
+const HISTORY_DAYS: f64 = 90.0;
 
 pub struct Output {
     destination: PathBuf,
@@ -56,11 +68,66 @@ impl Drop for Output {
 fn render(bundle: &J) -> String {
     // JSON escaping alone does not protect an HTML script element's end tag.
     let payload = bundle.dumps().replace('&', "\\u0026").replace('<', "\\u003c").replace('>', "\\u003e");
-    TEMPLATE.replacen(TOKEN, &payload, 1)
+    let mut html = TEMPLATE.replacen(TOKEN, &payload, 1);
+    for (token, bytes) in FONTS {
+        html = html.replacen(token, &base64(bytes), 1);
+    }
+    html
+}
+
+/// Standard base64 with padding, for the `data:` URLs the fonts ride in.
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// What the cache remembers across scans, for the report's patched and
+/// history sections: the exposures, the fixes `--update` ran and the scans
+/// of the last [`HISTORY_DAYS`], plus the host and user of this scan. Null
+/// when the cache can't be read: the report still describes the scan.
+fn history_json(scan_id: i64) -> (J, String, String) {
+    let Ok(cache) = Cache::open(None) else { return (J::Null, String::new(), String::new()) };
+    let since = wpantry::system::now() - HISTORY_DAYS * wpantry::db::DAY;
+    let out = match (history::exposures(&cache, since), history::fixes(&cache, since), history::scans(&cache, since)) {
+        (Ok(exposures), Ok(fixes), Ok(scans)) => {
+            let this = scans.iter().find(|s| s.id == scan_id);
+            let (host, user) = this.map(|s| (s.host.clone(), s.user.clone())).unwrap_or_default();
+            let h = obj([
+                ("since_days", J::Int(HISTORY_DAYS as i64)),
+                ("exposures", J::Arr(exposures.iter().map(|e| J::from(&e.to_json())).collect())),
+                ("fixes", J::Arr(fixes.iter().map(|f| J::from(&f.to_json())).collect())),
+                ("scans", J::Arr(scans.iter().map(|s| J::from(&s.to_json())).collect())),
+            ]);
+            (h, host, user)
+        }
+        _ => (J::Null, String::new(), String::new()),
+    };
+    let _ = cache.close();
+    out
 }
 
 pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &str) -> Result<()> {
     let Some(output) = output else { return Ok(()) };
+    let (history, host, user) = history_json(report.scan_id);
+    output.write(&render(&bundle(report, opts, phase, history, &host, &user)))?;
+    Ok(())
+}
+
+/// Everything the viewer renders: the scan (the `check --json` envelope,
+/// unchanged), its scope, the update plan (one step per command, the
+/// findings it covers by index), and what the cache remembers.
+fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str, user: &str) -> J {
     let paths = opts
         .paths
         .as_ref()
@@ -70,7 +137,17 @@ pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &
     let policy_path =
         |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "bundled".into());
     let strings = |xs: Vec<String>| J::Arr(xs.into_iter().map(J::from).collect());
-    let bundle = obj([
+    let plan: Vec<J> = super::report::steps(&report.findings)
+        .iter()
+        .map(|s| {
+            obj([
+                ("command", s.cmd.as_str().into()),
+                ("mode", s.mode().into()),
+                ("findings", J::Arr(s.findings.iter().map(|i| J::Int(*i as i64)).collect())),
+            ])
+        })
+        .collect();
+    obj([
         (
             "runs",
             J::Arr(vec![obj([
@@ -82,6 +159,10 @@ pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &
         ("generated_at", J::Int((wpantry::system::now() * 1000.0) as i64)),
         ("phase", phase.into()),
         ("scan_id", J::Int(report.scan_id)),
+        ("host", host.into()),
+        ("user", user.into()),
+        ("plan", J::Arr(plan)),
+        ("history", history),
         (
             "scope",
             obj([
@@ -105,14 +186,13 @@ pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &
                 ("paths", J::Arr(paths)),
             ]),
         ),
-    ]);
-    output.write(&render(&bundle))?;
-    Ok(())
+    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wpantry::check::Finding;
 
     #[test]
     fn hostile_text_stays_json_data() {
@@ -130,6 +210,164 @@ mod tests {
         let parsed = wpantry::json::parse(payload.as_bytes(), usize::MAX).unwrap();
         assert_eq!(parsed["note"], hostile);
         assert!(!html.contains(TOKEN));
+    }
+
+    #[test]
+    fn fonts_are_embedded_and_no_token_is_left() {
+        let html = render(&obj([]));
+        assert!(!html.contains("{{"), "a template token survived");
+        assert_eq!(html.matches("data:font/woff2;base64,").count(), FONTS.len());
+        assert!(!html.contains("http://") && !html.contains("https://fonts."), "nothing is fetched");
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    /// Every opened element is closed, in order, outside the script and
+    /// style elements (the viewer's own output is checked by
+    /// tests/html/test-viewer.cjs).
+    #[test]
+    fn template_is_well_formed() {
+        let html = render(&obj([]));
+        assert_eq!(well_formed(&strip(&strip(&html, "script"), "style")), None);
+        assert_eq!(well_formed("<div><p>x</div>"), Some("mismatch: </div> closes p".into()));
+        assert_eq!(well_formed("<div><br><img src=x>ok</div>"), None);
+    }
+
+    fn strip(html: &str, raw: &str) -> String {
+        let (open, close) = (format!("<{raw}"), format!("</{raw}>"));
+        let mut out = String::new();
+        let mut rest = html;
+        while let Some(start) = rest.find(&open) {
+            let end = rest[start..].find(&close).map(|e| start + e + close.len()).expect("closed");
+            out.push_str(&rest[..start]);
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// None when every element closes in order; the first problem otherwise.
+    fn well_formed(html: &str) -> Option<String> {
+        const VOID: &[&str] =
+            &["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"];
+        let mut stack: Vec<String> = Vec::new();
+        let mut rest = html;
+        while let Some(lt) = rest.find('<') {
+            let after = &rest[lt + 1..];
+            if after.starts_with("!--") {
+                let end = after.find("-->").map(|e| e + 3).unwrap_or(after.len());
+                rest = &after[end..];
+                continue;
+            }
+            let gt = after.find('>')?;
+            let tag = &after[..gt];
+            rest = &after[gt + 1..];
+            if tag.starts_with('!') {
+                continue;
+            }
+            let (closing, body) = match tag.strip_prefix('/') {
+                Some(b) => (true, b),
+                None => (false, tag),
+            };
+            let name: String =
+                body.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>().to_lowercase();
+            if name.is_empty() {
+                return Some(format!("stray tag <{tag}>"));
+            }
+            if closing {
+                match stack.pop() {
+                    Some(open) if open == name => {}
+                    Some(open) => return Some(format!("mismatch: </{name}> closes {open}")),
+                    None => return Some(format!("</{name}> closes nothing")),
+                }
+            } else if !VOID.contains(&name.as_str()) && !body.trim_end().ends_with('/') {
+                stack.push(name);
+            }
+        }
+        if rest.contains('>') {
+            return Some("stray >".into());
+        }
+        if stack.is_empty() { None } else { Some(format!("unclosed {}", stack.join(", "))) }
+    }
+
+    fn fixture() -> Outcome {
+        let f = |kind: &str, component: &str, id: &str, status: &str, fix_cmd: &str, auto: bool| Finding {
+            kind: kind.into(),
+            component: component.into(),
+            version: "1.0".into(),
+            location: format!("/w/{component}"),
+            vuln_id: id.into(),
+            status: status.into(),
+            fix_cmd: fix_cmd.into(),
+            fix_auto: auto,
+            ..Default::default()
+        };
+        Outcome {
+            scan_id: 7,
+            findings: vec![
+                f("brew", "openssl", "CVE-2026-1", "fail", "brew upgrade openssl", true),
+                f("brew", "curl", "CVE-2026-2", "fail", "brew upgrade curl", true),
+                f(
+                    "posture",
+                    "Firewall",
+                    "POSTURE-FIREWALL",
+                    "fail",
+                    "sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on",
+                    false,
+                ),
+                f("extension", "evil.ext", "MALICIOUS", "fail", "Remove the extension evil.ext", false),
+                f("app", "Slack", "OUTDATED", "warn", "Update Slack from the vendor", false),
+                f("unchecked", "CISA KEV", "UNCHECKED", "warn", "", false),
+                f("project", "zip", "CVE-2026-3", "warn", "", false),
+            ],
+            counts: vec![("git repos".into(), 3), ("apps".into(), 40)],
+            unfixed: 2,
+            unknown_licenses: 0,
+        }
+    }
+
+    /// The plan the viewer lists is wpantry's own: each non-auto fix as a
+    /// manual (fail) or optional (warn) step with the findings it covers,
+    /// the unattended ones as auto; gaps and fixless advisories take no step.
+    #[test]
+    fn bundle_carries_the_scan_its_plan_and_its_history() {
+        let scan = fixture();
+        let b = bundle(&scan, &Options::default(), "scan", J::Null, "mac", "eric");
+        let text = b.dumps();
+        let v = wpantry::json::parse(text.as_bytes(), usize::MAX).unwrap();
+        assert_eq!(v["runs"][0]["report"]["findings"].as_array().unwrap().len(), scan.findings.len());
+        assert_eq!(
+            (v["host"].as_str(), v["user"].as_str(), v["scan_id"].as_i64()),
+            (Some("mac"), Some("eric"), Some(7))
+        );
+        assert!(v["history"].is_null());
+        let plan = v["plan"].as_array().unwrap();
+        let step = |cmd: &str| {
+            plan.iter().find(|s| s["command"] == cmd).unwrap_or_else(|| panic!("no step for {cmd}: {text}"))
+        };
+        for f in scan.findings.iter().filter(|f| !f.fix_cmd.is_empty()) {
+            let s = step(&f.fix_cmd);
+            let expected = if f.fix_auto {
+                "auto"
+            } else if f.status == "fail" {
+                "manual"
+            } else {
+                "optional"
+            };
+            assert_eq!(s["mode"], expected, "{}", f.fix_cmd);
+            let i = scan.findings.iter().position(|x| x == f).unwrap() as i64;
+            assert!(s["findings"].as_array().unwrap().iter().any(|n| n.as_i64() == Some(i)), "{}", f.fix_cmd);
+        }
+        assert_eq!(plan.len(), 5, "one step per command, none for the gap or the fixless advisory: {text}");
+        // Failures come first, as the terminal plan orders them.
+        let modes: Vec<&str> = plan.iter().map(|s| s["mode"].as_str().unwrap()).collect();
+        assert_eq!(modes, ["auto", "auto", "manual", "manual", "optional"]);
+        // The rendered page is still well formed with a real bundle in it.
+        let html = render(&b);
+        assert_eq!(well_formed(&strip(&strip(&html, "script"), "style")), None);
     }
 
     #[test]

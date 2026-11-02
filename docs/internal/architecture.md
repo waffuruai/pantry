@@ -154,7 +154,7 @@ The network client (`net::Http`) connects only to the hosts in `net::HOSTS`, the
 
 - Unit tests live beside the code. Readers have golden files ([`tests/lockfiles/`](../../rust/crates/wpantry/tests/lockfiles/README.md)); comparators have their upstream's vectors ([`tests/vectors/`](../../rust/crates/wpantry/tests/vectors/)); `tests/scan.rs` runs a scan end to end against the recording fake network; `tests/image.rs` scans real `alpine` and `debian` images (ignored by default; CI runs it on Linux); `tests/pins.rs` and `tests/assets.rs` enforce the dependency and packaging rules.
 - The contract suite, `tests/contract/test_contract.py` (Python standard library, `mise run contract`), starts the binary with a temp `HOME` and `WPANTRY_DB`, offline, and checks stdout, stderr, exit codes and the cache file only.
-- `mise run test` runs the Rust tests, the CA trust scripts' test and the install.sh test; `mise run lint` the shell and workflow linters. CI runs the same tasks on Linux and macOS, plus `cargo deny` and `cargo vet`.
+- `mise run test` runs the Rust tests, the CA trust scripts' test and the install.sh test; `mise run lint` the shell and workflow linters; `mise run coverage` both test suites under cargo-llvm-cov, failing under 90% line coverage. CI runs the same tasks on Linux and macOS, plus `cargo deny` and `cargo vet`.
 
 ## What the port left open, and where it closed
 

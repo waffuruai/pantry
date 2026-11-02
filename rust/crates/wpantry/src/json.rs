@@ -222,4 +222,18 @@ mod tests {
         let deep = "[".repeat(1000) + &"]".repeat(1000);
         assert!(matches!(parse(deep.as_bytes(), 1 << 20), Err(Error::Invalid(_))));
     }
+
+    #[test]
+    fn escapes_and_special_floats_like_python() {
+        assert_eq!(J::from("a\\b\n\r\t\u{8}\u{c}".to_string()).dumps(), r#""a\\b\n\r\t\b\f""#);
+        assert_eq!(J::Arr(vec![]).dumps(), "[]");
+        assert_eq!(J::Arr(vec![J::from(true), J::from(7i64)]).dumps_indent(2), "[\n  true,\n  7\n]");
+        assert_eq!(J::Float(f64::NAN).dumps(), "NaN");
+        assert_eq!(J::Float(f64::INFINITY).dumps(), "Infinity");
+        assert_eq!(J::Float(f64::NEG_INFINITY).dumps(), "-Infinity");
+        assert_eq!(J::Float(1e16).dumps(), "10000000000000000");
+        assert_eq!(J::Float(2.5).dumps(), "2.5");
+        assert_eq!(strs_at(&serde_json::json!({"a": ["x", 1, "y"]}), "a"), ["x", "y"]);
+        assert_eq!(str_at(&serde_json::json!({"a": 1}), "a"), "");
+    }
 }

@@ -41,6 +41,7 @@ Both verify the release before installing: mise against the release's signed pac
 wpantry                                       # this computer: machine + every git repo under ~
 wpantry --path ~/code/myproject --no-machine  # one project, no machine inventory
 wpantry check --json --no-input               # findings for tools and agents
+wpantry check --html report.html              # optional report to open in a browser
 wpantry search "tarfile" --applicable         # ranked search of cached advisories
 wpantry export --csv findings.csv             # id, url, component, affected and safe version
 wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
@@ -59,6 +60,10 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 **Agents.** `wpantry skill` prints the agent skill ([rust/crates/wpantry/assets/SKILL.md](rust/crates/wpantry/assets/SKILL.md)).
 
 **Output.** On a terminal the report is coloured (failures red, warnings yellow, what's fine green) and questions are `y/n` prompts; `NO_COLOR` turns colour off, and pipes, files and `--json` never get it.
+
+**HTML reports.** Add `--html report.html` to any check to save a single file you can open in a browser, offline: the visual summary of that run, in Waffuru's design language. It answers four questions in order: what was scanned (counts by area, and every source that could not be checked listed as a gap, never as clean), what is at risk (one row per component, grouped by area in the order the fixes should go, with KEV and severity badges), what can be patched (the commands `--update` runs unattended, what the local history says was already patched, what has no released fix yet) and what to do by hand (numbered steps with the exact command or setting). With history in the cache it also carries the exposure and remediation logs of `wpantry report`. `--json --html report.html` keeps stdout valid JSON. With `--update`, HTML describes the final recheck; `--dryrun` describes the initial scan. No flag means no HTML file.
+
+The parent directory must exist; a successful export replaces the named file. Files are owner-readable/writable on Unix. Reports include component names, local paths and proposed commands: review their contents before sharing. Opening one never runs updates or uploads findings; commands are copied only on request. Loading JSON or CSV into the viewer stays in that browser, and CSV is marked as partial coverage.
 
 ## Docs
 

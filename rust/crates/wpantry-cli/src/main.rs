@@ -103,6 +103,7 @@ fn cmd_check(a: Check) -> Result<i32> {
         paths: a.path.clone(),
         machine: !a.no_machine,
         no_posture: a.no_posture,
+        no_clipboard: a.no_clipboard,
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),

@@ -93,7 +93,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// What the cache remembers across scans, for the report's patched and
-/// history sections: the exposures, the fixes `--fix` ran and the scans
+/// history sections: the exposures, the fixes `wpantry fix` ran and the scans
 /// of the last [`HISTORY_DAYS`], plus the host and user of this scan. Null
 /// when the cache can't be read: the report still describes the scan.
 fn history_json(report: &Outcome) -> (J, String, String) {
@@ -133,7 +133,7 @@ pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &
     Ok(())
 }
 
-/// Everything the viewer renders: the scan (the `check --json` envelope,
+/// Everything the viewer renders: the scan (the `scan --json` envelope,
 /// unchanged), its scope, the update plan (one step per command, the
 /// findings it covers by index), and what the cache remembers.
 fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str, user: &str) -> J {
@@ -161,7 +161,7 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
             "runs",
             J::Arr(vec![obj([
                 ("title", "Security scan".into()),
-                ("file", "wpantry check".into()),
+                ("file", "wpantry scan".into()),
                 ("report", super::envelope(report)),
             ])]),
         ),

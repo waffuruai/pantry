@@ -260,6 +260,78 @@ class Contract(unittest.TestCase):
         self.assertIn("pruned", out)
         self.assertTrue(self.db.exists())
 
+    def test_clipboard_guard_alerts_on_a_swap_and_records_it(self):
+        """`clipboard --watch` over a scripted clipboard (WPANTRY_CLIPBOARD_FAKE, one line per read,
+        a quarter second apart): an address that becomes another of the same chain is one JSON
+        event on stdout and a `clipper` row in the cache; a double copy outside the window, prose
+        in between, or another chain is nothing."""
+        a = "0x52908400098527886E0F7030069857D2E4169EE7"
+        b = "0xD62Eb957610d49f77cFce8bCc9827b5428D790E6"
+        btc = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+        script = Path(self.tmp.name, "clipboard.txt")
+
+        def watch(lines, *extra):
+            script.write_text("".join(l + "\n" for l in lines))
+            env = dict(self.env, WPANTRY_CLIPBOARD_FAKE=str(script))
+            return self.run_bin("clipboard", "--watch", "--json", *extra, env=env, timeout=60)
+
+        code, out, err = watch(["meeting notes", a, a, b, b], "--once")
+        self.assertEqual(code, 0, err)
+        events = [json.loads(l) for l in out.splitlines() if l.strip()]
+        self.assertEqual(len(events), 1, out)
+        e = events[0]
+        self.assertEqual(e["schema"], 1)
+        self.assertEqual(e["event"], "clipper")
+        self.assertEqual((e["from"], e["to"]), (a, b))
+        self.assertIn("EVM", e["chain"])
+        self.assertAlmostEqual(e["seconds"], 0.5, places=2)
+        self.assertIsInstance(e["at"], float)
+        self.assertIn("If you copied two addresses yourself, ignore this", e["note"])
+        with sqlite3.connect(self.db) as c:
+            rows = c.execute("SELECT kind, detail FROM events WHERE kind = 'clipper'").fetchall()
+        self.assertEqual(len(rows), 1, rows)
+        detail = json.loads(rows[0][1])
+        self.assertEqual((detail["from"], detail["to"], detail["event"]), (a, b, "clipper"))
+        self.assertNotIn("schema", detail)
+        # Without --once every alert streams; the same pair twice is two alerts.
+        code, out, _ = watch([a, b, a, b])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(out.splitlines()), 3)
+        # 2 s is 8 reads: a copy 2.25 s later is outside the default window, inside --window 5.
+        code, out, _ = watch([a] * 9 + [b])
+        self.assertEqual((code, out), (0, ""))
+        code, out, _ = watch([a] * 9 + [b], "--window", "5")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(out.splitlines()), 1)
+        # Prose in between ends the run of addresses; another chain isn't a swap; an empty read says nothing.
+        self.assertEqual(watch([a, "paste this into the form", b])[1], "")
+        self.assertEqual(watch([a, btc, a])[1], "")
+        self.assertEqual(len(watch([a, "", "", b])[1].splitlines()), 1)
+        # The text line names both addresses and the chain.
+        script.write_text(f"{a}\n{b}\n")
+        code, out, err = self.run_bin("clipboard", "--watch", env=dict(self.env, WPANTRY_CLIPBOARD_FAKE=str(script)))
+        self.assertEqual(code, 0, err)
+        self.assertIn(a, out)
+        self.assertIn(b, out)
+        self.assertIn("EVM", out)
+        # Usage: --once and --window need --watch; the window is seconds.
+        self.assertEqual(self.run_bin("clipboard", "--once")[0], 2)
+        self.assertEqual(self.run_bin("clipboard", "--watch", "--window", "never")[0], 2)
+        self.assertEqual(self.run_bin("clipboard", "--watch", "--window", "0")[0], 2)
+        # The guard as a login job: the dry run prints a resident job that runs `clipboard --watch`, never the scan.
+        code, out, err = self.run_bin("schedule", "install", "--clipboard-guard", "--dry-run")
+        self.assertIn(code, (0, 3), err)  # 3: no launchd or systemd user session here (cron can't keep it resident)
+        if code == 0:
+            self.assertIn("clipboard", out)
+            self.assertIn("--watch", out)
+            self.assertNotIn("schedule run", out)
+        else:
+            self.assertIn("clipboard --watch", err)
+        self.assertEqual(self.run_bin("schedule", "run", "--clipboard-guard")[0], 2)
+        code, out, err = self.run_bin("schedule", "status", env=dict(self.env, XDG_STATE_HOME=str(self.home / "state")))
+        self.assertEqual(code, 0, err)
+        self.assertIn("clipboard guard: no", out)
+
     def test_update_check_offline_reports_and_exits_0_or_10(self):
         code, out, err = self.run_bin("update", "--check", "--offline")
         # Offline with an empty cache: nothing known, so no update is claimed.

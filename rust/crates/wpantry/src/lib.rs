@@ -27,6 +27,7 @@ pub mod error;
 pub mod export;
 pub mod external;
 pub mod feeds;
+pub mod guard;
 pub mod harnesses;
 pub mod hidden;
 pub mod history;

@@ -94,6 +94,21 @@ wpantry cache prune                   # drop what no scan has used in 90 days, c
 ```
 
 `sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `check --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the check's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry --update` yourself when the morning report says so.
+
+## Guarding the clipboard
+
+A clipper swaps the wallet address you copied for its own, and a browser extension can do it as you paste, so a scan that copies a canary catches only a clipper that is running and takes the bait. The guard watches instead, while you work:
+
+```bash
+wpantry clipboard                     # the self-test now: copy a canary of each shape, read it back
+wpantry clipboard --watch             # guard the clipboard until Ctrl-C; alerts on stdout and the desktop
+wpantry clipboard --watch --window 5  # a swap is two addresses of one chain within 5 s (default 2)
+wpantry clipboard --watch --once --json   # exit after the first alert, as one JSON object
+wpantry schedule install --clipboard-guard    # start it at login (launchd, or a systemd user service)
+wpantry schedule uninstall --clipboard-guard
+```
+
+The guard reads the clipboard about four times a second (on macOS a `pbpaste` per read: about five percent of one core on an M-series Mac, nearly all of it `pbpaste`; the rest of the time it sleeps) and keeps the last wallet address it saw and when. When text holding one address of some chain becomes a different valid address of the same chain within the window, with nothing but addresses on the clipboard in between, that is a swap: one line naming both addresses and the chain, a desktop notification, and a `clipper` event in the cache that `wpantry report --audit` lists. Don't paste it; find what rewrote it (the `CLIPPER-PERSISTENCE` findings, login items, browser extensions). The guard never writes the clipboard: a guard that put your address back would hide the clipper from you and fight it for the clipboard. The one false positive is copying two addresses of the same chain yourself within the window; the alert says so, and `--window` sets it. Installed with `schedule install --clipboard-guard`, it is a launch agent (`~/Library/LaunchAgents/ai.waffuru.wpantry.clipboard.plist`) or a systemd user service of your graphical session (`~/.config/systemd/user/wpantry-clipboard.service`), off unless you install it, with its output in `~/.local/state/wpantry/clipboard.log`; `wpantry schedule status` says whether it is installed and shows the last alert. Without launchd or a systemd user session, add `wpantry clipboard --watch` to your desktop's autostart.
 ## Keeping wpantry current
 
 ```bash
@@ -203,6 +218,7 @@ Package names and versions go to OSV.dev; the feeds are downloaded; the breach c
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
 | `WPANTRY_TIMINGS` | Any value: each scan step on stderr with the seconds since the scan began, to see where a slow run spends its time |
+| `WPANTRY_CLIPBOARD_FAKE` | A test hook: `clipboard --watch` reads this file instead of the clipboard, one line per read, and sends no notification. The contract suite uses it; you shouldn't need to |
 | `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
 | `HTTPS_PROXY` | Requests go through the proxy |
 

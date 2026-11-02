@@ -527,8 +527,10 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
 }
 
-fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, clipboard_guard: bool) -> Result<i32> {
     match action {
+        "install" if clipboard_guard => schedule::install_guard(dry_run),
+        "uninstall" if clipboard_guard => schedule::uninstall_guard(),
         "install" => {
             let every = schedule::Every::parse(every).expect("validated");
             let (h, m) = at.split_once(':').expect("validated");
@@ -538,6 +540,117 @@ fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i3
         "uninstall" => schedule::uninstall(),
         _ => schedule::run(),
     }
+}
+
+/// `clipboard`: the self-test now (exit 1 when a canary came back
+/// changed; a test that couldn't run says so and exits 0, as an unchecked
+/// source does), or with `--watch` the resident guard, which runs until
+/// stopped, or after the first alert with `--once`. Each alert is one
+/// line (or one JSON object), a desktop notification and a `clipper`
+/// event in the cache. `WPANTRY_CLIPBOARD_FAKE=<file>` reads the
+/// clipboard from a script instead (one line per read; the contract
+/// tests' hook) and sends no notification.
+fn cmd_clipboard(watch: bool, once: bool, window: f64, json: bool) -> Result<i32> {
+    use wpantry::clipper::{self, Clipboard, SelfTest};
+    use wpantry::guard;
+    if !watch {
+        let result = clipper::run_self_test();
+        let (code, state, detail) = match &result {
+            SelfTest::Skipped(why) => (EXIT_OK, "skipped", vec![("why", J::from(why.as_str()))]),
+            SelfTest::Clean(n) => (EXIT_OK, "clean", vec![("canaries", J::Int(*n as i64))]),
+            SelfTest::Swapped(swaps) => (
+                EXIT_FAIL,
+                "swapped",
+                vec![(
+                    "swaps",
+                    J::Arr(
+                        swaps
+                            .iter()
+                            .map(|s| {
+                                obj([
+                                    ("chain", s.chain.name().into()),
+                                    ("canary", s.canary.as_str().into()),
+                                    ("got", s.got.as_str().into()),
+                                    ("read", J::Int(s.read as i64)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                )],
+            ),
+        };
+        if json {
+            let mut pairs: Vec<(&str, J)> = vec![
+                ("schema", J::Int(SCHEMA)),
+                ("impl", IMPL.into()),
+                ("version", VERSION.into()),
+                ("self_test", state.into()),
+            ];
+            pairs.extend(detail);
+            emit(&J::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()).dumps_indent(1));
+            return Ok(code);
+        }
+        match result {
+            SelfTest::Skipped(why) => show(&format!("  ⚠ clipboard self-test not run: {why}")),
+            SelfTest::Clean(n) => {
+                show(&format!("  ✓ {n} canary addresses copied to the clipboard came back unchanged"))
+            }
+            SelfTest::Swapped(swaps) => {
+                for s in &swaps {
+                    show(&format!(
+                        "  ✗ the {} canary {} came back as {} on read {}: something rewrites the clipboard. Don't send funds from this machine",
+                        s.chain.name(),
+                        s.canary,
+                        s.got,
+                        s.read
+                    ));
+                }
+            }
+        }
+        return Ok(code);
+    }
+    let settings =
+        guard::Settings { window: std::time::Duration::from_secs_f64(window), interval: guard::INTERVAL, once };
+    let fake = std::env::var_os("WPANTRY_CLIPBOARD_FAKE").filter(|v| !v.is_empty());
+    let scripted = fake.is_some();
+    let mut on_alert = |a: &guard::Alert| {
+        if json {
+            emit(&a.to_json(wpantry::system::now()).to_string());
+        } else {
+            show(&format!("  ✗ {}", a.note()));
+        }
+        if !scripted {
+            guard::notify(a);
+        }
+        if let Err(e) = Cache::open(None).and_then(|c| guard::record(&c, a).and_then(|()| c.close())) {
+            eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: the alert wasn't recorded in the cache: {e}")));
+        }
+    };
+    match fake {
+        Some(file) => {
+            let script = std::fs::read_to_string(&file)?;
+            guard::run_script(&script, &settings, &mut on_alert);
+        }
+        None => {
+            let cb =
+                clipper::real().map_err(|why| wpantry::Error::Failed(format!("can't guard the clipboard: {why}")))?;
+            eprintln!(
+                "{}",
+                Style::stderr().dim(&format!(
+                    "guarding the clipboard: a read every {} ms, a swap is two addresses of one chain within {window} s (Ctrl-C stops)",
+                    settings.interval.as_millis()
+                ))
+            );
+            guard::run(
+                &mut || Some(cb.read()),
+                &mut std::time::Instant::now,
+                &std::thread::sleep,
+                &settings,
+                &mut on_alert,
+            );
+        }
+    }
+    Ok(EXIT_OK)
 }
 
 /// `cache prune`: what no scan has used in `days`, then VACUUM.
@@ -650,8 +763,11 @@ fn dispatch(cmd: Command) -> Result<i32> {
             cmd_report(&sections, since_days, &format, out.as_deref())
         }
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
-        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
+        Command::Schedule { action, every, at, dry_run, clipboard_guard } => {
+            cmd_schedule(&action, &every, &at, dry_run, clipboard_guard)
+        }
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
+        Command::Clipboard { watch, once, window, json } => cmd_clipboard(watch, once, window, json),
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }

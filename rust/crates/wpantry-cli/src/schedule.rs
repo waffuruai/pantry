@@ -13,6 +13,10 @@ use wpantry::error::{Error, Result};
 use wpantry::system::{exec, home, which};
 
 pub const LABEL: &str = "ai.waffuru.wpantry";
+/// The resident clipboard guard's launch agent (`schedule install --clipboard-guard`).
+pub const GUARD_LABEL: &str = "ai.waffuru.wpantry.clipboard";
+/// Its systemd user service.
+const GUARD_UNIT: &str = "wpantry-clipboard.service";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Every {
@@ -70,6 +74,10 @@ fn plist_path() -> PathBuf {
     home().join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
 }
 
+fn guard_plist_path() -> PathBuf {
+    home().join("Library/LaunchAgents").join(format!("{GUARD_LABEL}.plist"))
+}
+
 fn unit_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
@@ -103,7 +111,8 @@ pub fn install(every: Every, at: (u32, u32), dry_run: bool) -> Result<i32> {
         Backend::Cron => cron_line(&program, every, hour, minute, &p),
     };
     if dry_run {
-        say(&text);
+        // Line by line: `say` drops control characters, newlines included.
+        text.lines().for_each(say);
         return Ok(EXIT_OK);
     }
     std::fs::create_dir_all(&p.state)?;
@@ -223,6 +232,133 @@ pub fn uninstall() -> Result<i32> {
             say(if was { "✓ removed the cron entry" } else { "nothing scheduled" });
         }
     }
+    if guard_installed() {
+        say("  The clipboard guard is still installed: wpantry schedule uninstall --clipboard-guard removes it.");
+    }
+    Ok(EXIT_OK)
+}
+
+/// Whether the clipboard guard is installed on this OS's backend.
+fn guard_installed() -> bool {
+    match backend() {
+        Backend::Launchd => guard_plist_path().exists(),
+        Backend::Systemd => unit_dir().join(GUARD_UNIT).exists(),
+        Backend::Cron => false,
+    }
+}
+
+/// `schedule install --clipboard-guard`: `wpantry clipboard --watch` as a
+/// launch agent or a systemd user service that starts at login and is
+/// restarted when it fails; its alerts go to `clipboard.log` in the state
+/// directory, to the desktop and to the cache. Cron can't keep a process
+/// resident, so without launchd or a systemd user session this says what
+/// to run instead.
+pub fn install_guard(dry_run: bool) -> Result<i32> {
+    let p = paths();
+    let program = program()?;
+    let text = match backend() {
+        Backend::Launchd => guard_plist(&program, &p),
+        Backend::Systemd => guard_unit(&program, &p),
+        Backend::Cron => {
+            return Err(Error::Failed(
+                "the clipboard guard needs launchd or a systemd user session to stay resident; add `wpantry clipboard --watch` to your desktop's autostart instead".into(),
+            ));
+        }
+    };
+    if dry_run {
+        // Line by line: `say` drops control characters, newlines included.
+        text.lines().for_each(say);
+        return Ok(EXIT_OK);
+    }
+    std::fs::create_dir_all(&p.state)?;
+    match backend() {
+        Backend::Launchd => {
+            let plist_file = guard_plist_path();
+            std::fs::create_dir_all(plist_file.parent().expect("LaunchAgents has a parent"))?;
+            std::fs::write(&plist_file, text)?;
+            let domain = format!("gui/{}", uid());
+            let _ = exec(
+                &[OsStr::new("launchctl"), OsStr::new("bootout"), OsStr::new(&format!("{domain}/{GUARD_LABEL}"))],
+                &[],
+                Duration::from_secs(30),
+            );
+            let out = exec(
+                &[OsStr::new("launchctl"), OsStr::new("bootstrap"), OsStr::new(&domain), plist_file.as_os_str()],
+                &[],
+                Duration::from_secs(30),
+            )?;
+            if out.code != Some(0) {
+                return Err(Error::Failed(format!("launchctl bootstrap failed: {}", out.stderr.trim())));
+            }
+            say(&format!("✓ the clipboard guard runs at login with launchd ({})", plist_file.display()));
+        }
+        Backend::Systemd => {
+            let dir = unit_dir();
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(GUARD_UNIT), text)?;
+            for args in [vec!["daemon-reload"], vec!["enable", "--now", GUARD_UNIT]] {
+                let mut argv: Vec<&OsStr> = vec![OsStr::new("systemctl"), OsStr::new("--user")];
+                argv.extend(args.iter().map(OsStr::new));
+                let out = exec(&argv, &[], Duration::from_secs(30))?;
+                if out.code != Some(0) {
+                    return Err(Error::Failed(format!(
+                        "systemctl --user {} failed: {}",
+                        args.join(" "),
+                        out.stderr.trim()
+                    )));
+                }
+            }
+            say(&format!(
+                "✓ the clipboard guard runs at login as a systemd user service ({})",
+                dir.join(GUARD_UNIT).display()
+            ));
+        }
+        Backend::Cron => unreachable!("refused above"),
+    }
+    say(&format!(
+        "  It reads the clipboard four times a second and never writes it; a copied wallet address that becomes a different one is an alert in {}, a desktop notification and a `clipper` event in `wpantry report --audit`.",
+        p.state.join("clipboard.log").display()
+    ));
+    say("  Two addresses of one chain you copied yourself within two seconds raise the same alert; the alert says so.");
+    Ok(EXIT_OK)
+}
+
+pub fn uninstall_guard() -> Result<i32> {
+    match backend() {
+        Backend::Launchd => {
+            let _ = exec(
+                &[OsStr::new("launchctl"), OsStr::new("bootout"), OsStr::new(&format!("gui/{}/{GUARD_LABEL}", uid()))],
+                &[],
+                Duration::from_secs(30),
+            );
+            let f = guard_plist_path();
+            let was = f.exists();
+            let _ = std::fs::remove_file(&f);
+            say(if was { "✓ removed the clipboard guard's launchd job" } else { "no clipboard guard installed" });
+        }
+        Backend::Systemd => {
+            let _ = exec(
+                &[
+                    OsStr::new("systemctl"),
+                    OsStr::new("--user"),
+                    OsStr::new("disable"),
+                    OsStr::new("--now"),
+                    OsStr::new(GUARD_UNIT),
+                ],
+                &[],
+                Duration::from_secs(30),
+            );
+            let f = unit_dir().join(GUARD_UNIT);
+            let was = f.exists();
+            let _ = std::fs::remove_file(&f);
+            say(if was {
+                "✓ removed the clipboard guard's systemd user service"
+            } else {
+                "no clipboard guard installed"
+            });
+        }
+        Backend::Cron => say("no clipboard guard installed (cron can't keep one resident)"),
+    }
     Ok(EXIT_OK)
 }
 
@@ -234,6 +370,15 @@ pub fn status() -> Result<i32> {
         Backend::Cron => crontab().contains(CRON_MARK),
     };
     say(&format!("scheduled: {}", if installed { "yes" } else { "no (wpantry schedule install)" }));
+    say(&format!(
+        "clipboard guard: {}",
+        if guard_installed() { "yes" } else { "no (wpantry schedule install --clipboard-guard)" }
+    ));
+    if let Ok(log) = std::fs::read_to_string(p.state.join("clipboard.log"))
+        && let Some(last) = log.lines().rev().find(|l| l.contains("clipboard swap"))
+    {
+        say(&format!("  last clipboard alert: {}", last.trim()));
+    }
     match std::fs::metadata(&p.last) {
         Ok(m) => {
             let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
@@ -414,6 +559,49 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
     )
 }
 
+/// The clipboard guard's launch agent: started at login, kept running
+/// while the session lasts, restarted a minute after a failure (a clean
+/// exit, which only `--once` gives, is left alone), low priority, its
+/// alerts in `clipboard.log`.
+pub fn guard_plist(program: &Path, p: &Paths) -> String {
+    let out = xml_escape(&p.state.join("clipboard.log").to_string_lossy());
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+    <key>Label</key>\n    <string>{GUARD_LABEL}</string>\n\
+    <key>ProgramArguments</key>\n    <array>\n      <string>{}</string>\n      <string>clipboard</string>\n      <string>--watch</string>\n    </array>\n\
+    <key>RunAtLoad</key>\n    <true/>\n\
+    <key>KeepAlive</key>\n    <dict>\n      <key>SuccessfulExit</key>\n      <false/>\n    </dict>\n\
+    <key>ThrottleInterval</key>\n    <integer>60</integer>\n\
+    <key>LimitLoadToSessionType</key>\n    <string>Aqua</string>\n\
+    <key>ProcessType</key>\n    <string>Background</string>\n\
+    <key>Nice</key>\n    <integer>10</integer>\n\
+    <key>StandardOutPath</key>\n    <string>{out}</string>\n\
+    <key>StandardErrorPath</key>\n    <string>{out}</string>\n\
+    <key>EnvironmentVariables</key>\n    <dict>\n      <key>PATH</key>\n      <string>{}</string>\n    </dict>\n\
+</dict>\n\
+</plist>\n",
+        xml_escape(&program.to_string_lossy()),
+        xml_escape(&std::env::var("PATH").unwrap_or_default()),
+    )
+}
+
+/// The clipboard guard's systemd user service: part of the graphical
+/// session (the clipboard tools need `DISPLAY` or `WAYLAND_DISPLAY`, which
+/// the desktop imports into the user manager), restarted on failure.
+pub fn guard_unit(program: &Path, p: &Paths) -> String {
+    let log = p.state.join("clipboard.log");
+    format!(
+        "[Unit]\nDescription=wpantry: clipboard guard (alerts when a copied wallet address is swapped)\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nType=simple\nExecStart={} clipboard --watch\nRestart=on-failure\nRestartSec=60\nNice=10\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=graphical-session.target\n",
+        program.display(),
+        std::env::var("PATH").unwrap_or_default(),
+        log.display(),
+        log.display(),
+    )
+}
+
 /// The systemd user service and timer.
 pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> (String, String) {
     let calendar = match every {
@@ -506,6 +694,22 @@ mod tests {
         assert!(line.starts_with("30 9 * * * nice -n 10 /u/bin/wpantry schedule run"));
         assert!(line.ends_with(CRON_MARK));
         assert!(cron_line(Path::new("/x"), Every::Weekly, 1, 2, &p()).starts_with("2 1 * * 1 "));
+    }
+
+    #[test]
+    fn the_guard_is_a_resident_job_that_never_runs_the_scan() {
+        let text = guard_plist(Path::new("/u/.local/bin/wpantry"), &p());
+        assert!(text.contains(&format!("<string>{GUARD_LABEL}</string>")));
+        assert!(text.contains("<string>clipboard</string>\n      <string>--watch</string>"));
+        assert!(text.contains("<key>RunAtLoad</key>\n    <true/>"));
+        assert!(text.contains("<key>SuccessfulExit</key>\n      <false/>"), "restarted on failure only");
+        assert!(text.contains("<string>/s/wpantry/clipboard.log</string>"));
+        assert!(!text.contains("schedule"), "{text}");
+        let unit = guard_unit(Path::new("/u/bin/wpantry"), &p());
+        assert!(unit.contains("ExecStart=/u/bin/wpantry clipboard --watch"));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("WantedBy=graphical-session.target"));
+        assert!(unit.contains("StandardOutput=append:/s/wpantry/clipboard.log"));
     }
 
     #[test]

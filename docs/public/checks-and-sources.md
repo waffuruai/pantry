@@ -21,7 +21,7 @@ wpantry inventories what is installed on your computer and what your git repos l
 | Installed software | Runtimes and compilers (every version a version manager keeps, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`), apps, browsers, Electron apps, editor extensions; mise itself against OSV and its latest release |
 | Homebrew without `brew` | Bottles poured into the Cellar by mise's `brew:` engine (no `brew` command, so no `brew vulns`): each formula the tool catalog knows is checked against OSV and endoflife.date; the rest are reported "not checked" |
 | End of life | Runtimes and datastores past their end-of-life date fail |
-| Certificate authorities | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`ca-trust/fix-ca-trust.sh` distrusts them) |
+| Certificate authorities | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`wpantry harden ca-trust` distrusts them until the OS update ships) |
 | The machine's settings | FileVault or LUKS, the firewall, Gatekeeper and SIP, automatic updates, Remote Login and the sharing services, guest and automatic login, the screen lock, and more ([posture.md](posture.md)); `--no-posture` skips them |
 | Developer-tool guardrails | Editor extensions wait 72 hours before a new version installs (`wpantry harden extension-cooldown`), git hooks that check commits |
 

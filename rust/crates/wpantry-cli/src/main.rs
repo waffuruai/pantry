@@ -111,6 +111,7 @@ fn cmd_check(a: Check) -> Result<i32> {
             repo_hooks: a.repo_hooks.clone(),
             posture: a.posture_policy.clone(),
             suspect: a.suspect_policy.clone(),
+            hooks: a.hooks_policy.clone(),
         },
         refresh: a.refresh,
         offline: a.offline,

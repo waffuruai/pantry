@@ -291,6 +291,54 @@ class Contract(unittest.TestCase):
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("OPEN-HOOK", "warn")], hooks)
 
+    def test_hooks_policy_accepts_a_reviewed_hook_until_its_command_changes(self):
+        repo = git_repo(self.home / "mine")
+        (repo / "assets").mkdir()
+        (repo / "assets" / "package.json").write_text('{"name": "x", "scripts": {"postinstall": "node bin/postinstall"}}')
+        scan = ("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin(*scan)
+        hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
+        self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("INSTALL-HOOK", "warn")], hooks)
+        # The warning's fix text ends with the exact policy line to paste.
+        marker = "add to your hooks policy (--hooks-policy FILE): "
+        self.assertIn(marker, hooks[0]["fix_cmd"])
+        line = hooks[0]["fix_cmd"].split(marker, 1)[1]
+        self.assertEqual(line, 'hook assets/package.json "npm postinstall script" node bin/postinstall')
+        policy = self.home / "hooks.txt"
+        policy.write_text("# reviewed\n" + line + "\n")
+        # Accepted: no finding, but counted, so the report shows it was seen.
+        code, out, err = self.run_bin(*scan, "--hooks-policy", str(policy))
+        env = json.loads(out)
+        self.assertFalse([f for f in env["findings"] if f["kind"] == "repo-hook"], env["findings"])
+        self.assertEqual(env["checked"].get("repo hooks accepted by policy"), 1, env["checked"])
+        # A changed command is a new hook: reported again, with its own line.
+        (repo / "assets" / "package.json").write_text('{"name": "x", "scripts": {"postinstall": "node bin/postinstall --quiet"}}')
+        code, out, err = self.run_bin(*scan, "--hooks-policy", str(policy))
+        env = json.loads(out)
+        hooks = [f for f in env["findings"] if f["kind"] == "repo-hook"]
+        self.assertEqual([h["vuln_id"] for h in hooks], ["INSTALL-HOOK"], hooks)
+        self.assertTrue(hooks[0]["fix_cmd"].endswith("node bin/postinstall --quiet"), hooks[0]["fix_cmd"])
+        self.assertNotIn("repo hooks accepted by policy", env["checked"])
+        # A `repo` line accepts every warning under that path.
+        policy.write_text(f"repo {self.home}\n")
+        code, out, err = self.run_bin(*scan, "--hooks-policy", str(policy))
+        env = json.loads(out)
+        self.assertFalse([f for f in env["findings"] if f["kind"] == "repo-hook"], env["findings"])
+        self.assertEqual(env["checked"].get("repo hooks accepted by policy"), 1, env["checked"])
+        # A hook that fails is never accepted, by line or by repo, and the finding says so.
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "node .github/init.js"}]}]}}))
+        (repo / ".github").mkdir()
+        (repo / ".github" / "init.js").write_text("console.log('hi')\n")
+        code, out, err = self.run_bin(*scan, "--hooks-policy", str(policy))
+        self.assertEqual(code, 1, err)
+        hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
+        self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("RUNS-REPO-FILE", "fail")], hooks)
+        self.assertIn("never accepted", hooks[0]["fix_cmd"])
+        code, _, err = self.run_bin("check", "--hooks-policy", str(self.home / "missing.txt"))
+        self.assertEqual(code, 2, err)
+
     def test_posture_flags(self):
         # Repo-only scans never report the machine's settings.
         code, out, _ = self.project_run("--json")

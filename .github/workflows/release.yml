@@ -325,6 +325,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
+    # The token is an environment secret: `needs` orders jobs but gives this
+    # one no access to it. So the job waits for the environment's approval
+    # too, a second one after publish, this time for the push to the tap.
+    environment: release
     permissions:
       contents: read
     env:

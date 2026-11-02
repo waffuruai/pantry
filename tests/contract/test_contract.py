@@ -12,6 +12,7 @@ import csv
 import io
 import json
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
@@ -413,11 +414,15 @@ class Contract(unittest.TestCase):
         self.assertRegex(err, r"\[ *\d+\.\d\ds\] ")
         self.assertNotIn("s] ", out)
 
-    def test_update_with_nothing_to_apply_rechecks(self):
-        code, out, err = self.project_run("--update")
+    def test_fix_with_nothing_to_apply_rechecks(self):
+        code, out, err = self.project_run("--fix")
         self.assertEqual(code, 0, err)
         self.assertIn("Re-checking after the updates", out)
         self.assertEqual(out.count("Incomplete"), 2, "the report, then the re-check's")
+        # --update is the old spelling and still works
+        code, out, err = self.project_run("--update")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Re-checking after the updates", out)
 
     def test_schedule_dry_run_and_cache_prune(self):
         code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
@@ -538,6 +543,96 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("no VS Code-family editor", out)
 
+    def test_mitigate_usage(self):
+        code, _, err = self.run_bin("mitigate")
+        self.assertEqual(code, 2, err)
+        self.assertIn("required: target", err)
+        code, _, err = self.run_bin("mitigate", "kernel")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run", "--undo")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("mitigate", "all", "--remove")
+        self.assertEqual(code, 2, err)
+        code, out, _ = self.run_bin("mitigate", "--help")
+        self.assertEqual(code, 0)
+        self.assertIn("--dry-run", out)
+
+    def test_mitigate_list_names_the_stopgaps_and_the_unattended_fixes(self):
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
+                      "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "manual", "1.0.0", "/opt/manual", "GHSA-manual", "fail", "1.0.1", 0, "HIGH",
+                      "needs a person", "sudo something", 0, "", None, ""))
+        conn.commit()
+        conn.close()
+        code, out, err = self.run_bin("mitigate", "list")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("CVE-2026-98432", out)
+        if platform.system() != "Linux":
+            self.assertIn("a Linux kernel bug; nothing to do on", out)
+        self.assertIn("GHSA-demo  demo 1.0.0 → 1.0.1: true", out)
+        self.assertNotIn("GHSA-manual", out, "only the unattended ones")
+
+    def test_mitigate_errors_for_an_advisory_nothing_is_known_about(self):
+        self.project_run()
+        code, out, err = self.run_bin("mitigate", "CVE-1999-0001", "--dry-run")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("nothing known for CVE-1999-0001 here", out)
+        self.assertIn("no stopgap", out)
+
+    def test_mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias(self):
+        """A finding with `fix_auto` true: --dry-run prints the command, a run
+        runs it (here `true`) and records it in the remediation log; the
+        advisory's alias finds it too, any case."""
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("GHSA-demo", "CVE-2020-99999", "demo bug", "", "HIGH", "", "",
+                      "https://osv.dev/vulnerability/GHSA-demo", "{}"))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
+                      "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "other", "2.0.0", "/opt/other", "GHSA-other", "fail", "2.0.1", 0, "HIGH",
+                      "another bug", "false", 1, "", None, ""))
+        conn.commit()
+        conn.close()
+        code, out, err = self.run_bin("mitigate", "cve-2020-99999", "--dry-run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("CVE-2020-99999: 1 finding in the last scan (demo 1.0.0)", out)
+        self.assertIn("would run: true", out)
+        self.assertNotIn("false", out, "only the advisory asked about")
+        code, out, err = self.run_bin("mitigate", "GHSA-demo", "--yes")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("→ true", out)
+        conn = sqlite3.connect(str(self.db))
+        rows = conn.execute("SELECT command, mode, ok FROM fixes").fetchall()
+        conn.close()
+        self.assertEqual(rows, [("true", "mitigate", 1)])
+        # a fix that fails: exit 1
+        code, out, err = self.run_bin("mitigate", "GHSA-other", "--yes")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("failed: false", out)
+
+    def test_mitigate_has_a_stopgap_for_the_kernel_bug(self):
+        """CVE-2026-98432's stopgap: on Linux --dry-run reports the kernel,
+        the rule and MPTCP and prints the plan without writing anything; on
+        another OS it says so. Either way exit 0: a dry run is a look."""
+        self.project_run()
+        code, out, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("wpantry has a stopgap for it", out)
+        if platform.system() == "Linux":
+            self.assertIn("kernel", out)
+            self.assertTrue("would write /etc/nftables-cve-2026-98432.nft" in out or "has the CVE-2026-98432 fix" in out, out)
+            self.assertFalse(os.path.exists("/etc/nftables-cve-2026-98432.nft") and "would write" not in out)
+        else:
+            self.assertIn("a Linux kernel bug; nothing to do on", out)
     def test_harden_ca_trust_rewrites_a_bundle(self):
         if shutil.which("openssl") is None:
             self.skipTest("openssl")
@@ -583,6 +678,32 @@ class Contract(unittest.TestCase):
         self.assertTrue(all(f["kind"] == "tool" for f in fails), fails)
         found = sorted((f["vuln_id"], f["status"]) for f in findings if f["kind"] == "suspect-code")
         self.assertEqual([s for _, s in found], ["warn"] * 5, found)
+
+    def test_go_servers_warn_about_mptcp_until_they_opt_out(self):
+        """A Go 1.24+ module that listens for TCP is exposed to CVE-2026-98432
+        through the program (Go turns MPTCP on by default): a `project` warning
+        with `fixed` empty and the opt-out as the step, counted as unfixed; an
+        opt-out in the service's environment ends it."""
+        repo = git_repo(self.home / "api")
+        (repo / "go.mod").write_text("module example.com/api\n\ngo 1.24.0\n")
+        (repo / "main.go").write_text('package main\n\nimport "net/http"\n\nfunc main() {\n\thttp.ListenAndServe(":8080", nil)\n}\n')
+        code, out, err = self.project_run("--json")
+        env = self.envelope(out)
+        self.assertEqual(code, 1 if any(f["status"] == "fail" for f in env["findings"]) else 0, err)
+        self.assertTrue(all(f["kind"] == "tool" for f in env["findings"] if f["status"] == "fail"), env["findings"])
+        [f] = [f for f in env["findings"] if f["vuln_id"] == "CVE-2026-98432"]
+        self.assertEqual((f["kind"], f["status"], f["fixed"], f["severity"], f["fix_auto"], f["location"]),
+                         ("project", "warn", "", "CRITICAL", False, "line 6"))
+        self.assertTrue(f["component"].endswith("api/main.go"), f["component"])
+        self.assertIn("Multipath TCP", f["note"])
+        self.assertIn("multipathtcp=0", f["fix_cmd"])
+        self.assertIn("SetMultipathTCP(false)", f["fix_cmd"])
+        self.assertEqual(env["unfixed"], 1)
+        (repo / "Dockerfile").write_text("FROM golang:1.24\nENV GODEBUG=multipathtcp=0\n")
+        _, out, _ = self.project_run("--json")
+        env = self.envelope(out)
+        self.assertEqual([f for f in env["findings"] if f["vuln_id"] == "CVE-2026-98432"], [])
+        self.assertEqual(env["unfixed"], 0)
 
     def test_text_aimed_at_agents_and_prose_that_runs_nothing(self):
         repo = git_repo(self.home / "agentbait")
@@ -1142,9 +1263,14 @@ class Contract(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("git"), "no git")
     def test_dryrun_changes_nothing(self):
-        code, out, _ = self.project_run("--update", "--dryrun")
+        code, out, _ = self.project_run("--fix", "--dryrun")
         self.assertIn(code, (0, 1))
         self.assertNotIn("Re-checking", out)
+        # mitigate all is check --fix with the same flags
+        code, out2, _ = self.run_bin("mitigate", "all", "--dry-run", "--no-machine", "--path", str(self.home), "--offline", "--no-input")
+        self.assertIn(code, (0, 1))
+        self.assertNotIn("Re-checking", out2)
+        self.assertEqual("Update plan" in out, "Update plan" in out2)
 
 
 if __name__ == "__main__":

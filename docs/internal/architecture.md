@@ -16,7 +16,7 @@ flowchart LR
     readers["Readers<br/>lockfiles, OS package databases,<br/>plists, tar exports"]
     judge["Judgement<br/>alias groups, per-ecosystem<br/>comparators, KEV, EOL"]
     cache[("SQLite cache<br/>one file, a day")]
-    out["Report, --json,<br/>exit code, --update plan"]
+    out["Report, --json,<br/>exit code, --fix plan"]
   end
   subgraph tools["Local tools"]
     gl["gitleaks"]
@@ -51,7 +51,7 @@ flowchart TB
   read["2 READ, in parallel<br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages; apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings; container images. gitleaks runs on repos whose HEAD moved."]
   ask["3 ASK<br/>(ecosystem, name, version) to OSV in batches of 1000; only new or changed records fetched; KEV, end-of-life, the malicious index, licenses and release feeds. Every answer memoized for a day."]
   judge["4 JUDGE<br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own comparator; fail, warn, or unchecked."]
-  report["5 REPORT<br/>Grouped by kind, one line per component with the reason and the fix; --json envelope; exit 0 clean, 1 fails, 2 usage, 3 internal. --update runs the unattended fixes, then re-checks."]
+  report["5 REPORT<br/>Grouped by kind, one line per component with the reason and the fix; --json envelope; exit 0 clean, 1 fails, 2 usage, 3 internal. --fix runs the unattended fixes, then re-checks."]
   scope --> read --> ask --> judge --> report
 ```
 
@@ -63,7 +63,7 @@ flowchart TB
 
 **Judge.** Records are grouped by id, aliases and upstream CVE, so one vulnerability from two databases is one finding, named by its bare CVE when a record carries one. The fix a finding recommends is the version that repairs every record in the group, ordered by the ecosystem's own comparator. OSV decides whether a version is affected; wpantry only orders fixed versions to pick the safe one and to compare against "latest".
 
-**Report.** Failures are a released fix, end of life, a malicious package, a committed secret from a provider-specific rule, or a Critical or High posture setting. Warnings are no fix yet, an outdated app, an unpinned MCP server, an install script, a generic secret rule, a Medium or Low posture setting. "Not checked" is a source that couldn't be reached and had nothing cached, or a file that couldn't be read.
+**Report.** Failures are a released fix, end of life, a malicious package, a committed secret from a provider-specific rule, or a Critical or High posture setting. Warnings are no fix yet (including a program exposed to an unfixed kernel advisory by what it does: a Go 1.24+ module listening with Multipath TCP on), an outdated app, an unpinned MCP server, an install script, a generic secret rule, a Medium or Low posture setting. "Not checked" is a source that couldn't be reached and had nothing cached, or a file that couldn't be read.
 
 ## Missing evidence is never clean
 

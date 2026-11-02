@@ -183,4 +183,27 @@ mod tests {
         let with: Vec<String> = vec![first.to_string()];
         assert_eq!(run(&with, &runner).len(), all - 1);
     }
+
+    #[test]
+    fn severities_and_odd_flags() {
+        assert_eq!(Severity::Critical.as_str(), "CRITICAL");
+        assert_eq!(Severity::High.as_str(), "HIGH");
+        assert_eq!(Severity::Medium.as_str(), "MEDIUM");
+        assert_eq!(Severity::Low.as_str(), "LOW");
+        assert_eq!(flag("maybe\n"), None);
+        assert_eq!(flag("true"), Some(true));
+        // Every check has an id, a title and an explanation, and the tool checks come last.
+        let all = checks();
+        assert!(all.iter().all(|c| c.id.starts_with("POSTURE-") && !c.title.is_empty() && !c.explain.is_empty()));
+        assert!(all.len() >= tools::CHECKS.len());
+        let tail: Vec<&str> = all[all.len() - tools::CHECKS.len()..].iter().map(|c| c.id).collect();
+        assert_eq!(tail, tools::CHECKS.iter().map(|c| c.id).collect::<Vec<_>>());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_real_runner_runs_a_command() {
+        assert_eq!(real_runner(&["echo", "x"]), "x\n");
+        assert_eq!(real_runner(&["/nonexistent/command"]), "");
+    }
 }

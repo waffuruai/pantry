@@ -4,8 +4,11 @@
 use super::{Check, Fix, Outcome, Runner, Severity, dns};
 use std::path::Path;
 
-fn text(p: &str) -> String {
-    crate::system::read_capped(Path::new(p), 1 << 20).unwrap_or_default()
+/// The system configuration directory; tests read a copy.
+const ETC: &str = "/etc";
+
+fn text(p: &Path) -> String {
+    crate::system::read_capped(p, 1 << 20).unwrap_or_default()
 }
 
 fn disk_encryption(r: Runner) -> Outcome {
@@ -52,7 +55,11 @@ fn firewall(r: Runner) -> Outcome {
 }
 
 fn unattended_upgrades(r: Runner) -> Outcome {
-    let apt = text("/etc/apt/apt.conf.d/20auto-upgrades");
+    unattended_upgrades_in(r, Path::new(ETC))
+}
+
+fn unattended_upgrades_in(r: Runner, etc: &Path) -> Outcome {
+    let apt = text(&etc.join("apt/apt.conf.d/20auto-upgrades"));
     if !apt.is_empty() {
         let on = apt.lines().any(|l| l.contains("Unattended-Upgrade") && l.contains("\"1\""));
         return Outcome::of(
@@ -68,15 +75,15 @@ fn unattended_upgrades(r: Runner) -> Outcome {
             return Outcome::pass(format!("{timer} is enabled"));
         }
     }
-    if Path::new("/etc/apt").is_dir() || Path::new("/etc/dnf").is_dir() {
+    if etc.join("apt").is_dir() || etc.join("dnf").is_dir() {
         return Outcome::fail("no automatic security updates are configured");
     }
     Outcome::manual("automatic updates: not a Debian or Red Hat family system; check your distro's way")
 }
 
-fn sshd_config() -> String {
-    let mut all = text("/etc/ssh/sshd_config");
-    if let Ok(rd) = std::fs::read_dir("/etc/ssh/sshd_config.d") {
+fn sshd_config(etc: &Path) -> String {
+    let mut all = text(&etc.join("ssh/sshd_config"));
+    if let Ok(rd) = std::fs::read_dir(etc.join("ssh/sshd_config.d")) {
         let mut extra: Vec<_> = rd
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -85,7 +92,7 @@ fn sshd_config() -> String {
         extra.sort();
         for p in extra {
             all.push('\n');
-            all.push_str(&text(&p.to_string_lossy()));
+            all.push_str(&text(&p));
         }
     }
     all
@@ -108,10 +115,14 @@ fn ssh_running(r: Runner) -> bool {
 }
 
 fn ssh_root_login(r: Runner) -> Outcome {
+    ssh_root_login_in(r, Path::new(ETC))
+}
+
+fn ssh_root_login_in(r: Runner, etc: &Path) -> Outcome {
     if !ssh_running(r) {
         return Outcome::pass("no ssh server is running");
     }
-    let cfg = sshd_config();
+    let cfg = sshd_config(etc);
     if cfg.trim().is_empty() {
         return Outcome::manual("sshd is running and its config can't be read here");
     }
@@ -124,10 +135,14 @@ fn ssh_root_login(r: Runner) -> Outcome {
 }
 
 fn ssh_passwords(r: Runner) -> Outcome {
+    ssh_passwords_in(r, Path::new(ETC))
+}
+
+fn ssh_passwords_in(r: Runner, etc: &Path) -> Outcome {
     if !ssh_running(r) {
         return Outcome::pass("no ssh server is running");
     }
-    let cfg = sshd_config();
+    let cfg = sshd_config(etc);
     if cfg.trim().is_empty() {
         return Outcome::manual("sshd is running and its config can't be read here");
     }
@@ -139,22 +154,26 @@ fn ssh_passwords(r: Runner) -> Outcome {
 }
 
 fn auto_login(_: Runner) -> Outcome {
-    for f in ["/etc/gdm3/custom.conf", "/etc/gdm/custom.conf"] {
-        let t = text(f);
+    auto_login_in(Path::new(ETC))
+}
+
+fn auto_login_in(etc: &Path) -> Outcome {
+    for f in ["gdm3/custom.conf", "gdm/custom.conf"] {
+        let t = text(&etc.join(f));
         if t.lines().any(|l| l.replace(' ', "").to_ascii_lowercase().starts_with("automaticloginenable=true")) {
-            return Outcome::fail(format!("automatic login is on in {f}"));
+            return Outcome::fail(format!("automatic login is on in {}", etc.join(f).display()));
         }
     }
-    let lightdm = text("/etc/lightdm/lightdm.conf");
+    let lightdm = text(&etc.join("lightdm/lightdm.conf"));
     if lightdm
         .lines()
         .any(|l| l.trim_start().starts_with("autologin-user=") && l.trim().len() > "autologin-user=".len())
     {
-        return Outcome::fail("automatic login is on in /etc/lightdm/lightdm.conf");
+        return Outcome::fail(format!("automatic login is on in {}", etc.join("lightdm/lightdm.conf").display()));
     }
-    let sddm = text("/etc/sddm.conf");
+    let sddm = text(&etc.join("sddm.conf"));
     if sddm.contains("[Autologin]") && sddm.lines().any(|l| l.trim_start().starts_with("User=") && l.trim().len() > 5) {
-        return Outcome::fail("automatic login is on in /etc/sddm.conf");
+        return Outcome::fail(format!("automatic login is on in {}", etc.join("sddm.conf").display()));
     }
     Outcome::pass("no automatic login")
 }
@@ -727,5 +746,118 @@ mod tests {
             assert_eq!(o.status, Status::Fail);
             assert!(o.evidence.contains("open"), "{}", o.evidence);
         }
+    }
+
+    /// A copy of /etc with the given files.
+    fn etc(files: &[(&str, &str)]) -> crate::system::TempDir {
+        let d = crate::system::TempDir::new("etc").unwrap();
+        for (rel, body) in files {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn automatic_updates_from_apt_config_then_timers() {
+        let none = machine(&[]);
+        let on = etc(&[(
+            "apt/apt.conf.d/20auto-upgrades",
+            "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";\n",
+        )]);
+        assert_eq!(unattended_upgrades_in(&none, on.path()).status, Status::Pass);
+        let off = etc(&[("apt/apt.conf.d/20auto-upgrades", "APT::Periodic::Unattended-Upgrade \"0\";\n")]);
+        assert_eq!(unattended_upgrades_in(&none, off.path()).status, Status::Fail);
+        let dnf = etc(&[("dnf/dnf.conf", "[main]\n")]);
+        let timer = machine(&[("dnf-automatic-install.timer", "enabled\n")]);
+        let o = unattended_upgrades_in(&timer, dnf.path());
+        assert_eq!((o.status, o.evidence.as_str()), (Status::Pass, "dnf-automatic-install.timer is enabled"));
+        assert_eq!(unattended_upgrades_in(&none, dnf.path()).status, Status::Fail);
+        let other = etc(&[]);
+        assert_eq!(unattended_upgrades_in(&none, other.path()).status, Status::Manual);
+        // The real /etc: whatever this machine is, it answers.
+        assert!(matches!(unattended_upgrades(&none).status, Status::Pass | Status::Fail | Status::Manual));
+    }
+
+    #[test]
+    fn ssh_settings_from_sshd_config_and_its_drop_ins() {
+        let running = machine(&[("is-active ssh", "active\n")]);
+        let d = etc(&[
+            ("ssh/sshd_config", "# default\nPermitRootLogin yes\nPasswordAuthentication yes\n"),
+            ("ssh/sshd_config.d/10-hardening.conf", "PermitRootLogin no\n"),
+            ("ssh/sshd_config.d/notes.txt", "PasswordAuthentication no\n"),
+        ]);
+        assert_eq!(sshd_config(d.path()).matches("PermitRootLogin").count(), 2, "only .conf drop-ins");
+        // The main file's setting comes first, as sshd reads it (Include is at its top on Debian).
+        let o = ssh_root_login_in(&running, d.path());
+        assert_eq!((o.status, o.evidence.as_str()), (Status::Fail, "PermitRootLogin yes"));
+        assert_eq!(ssh_passwords_in(&running, d.path()).status, Status::Fail);
+        let hardened = etc(&[("ssh/sshd_config", "PermitRootLogin prohibit-password\nPasswordAuthentication no\n")]);
+        assert_eq!(ssh_root_login_in(&running, hardened.path()).status, Status::Pass);
+        assert_eq!(ssh_passwords_in(&running, hardened.path()).status, Status::Pass);
+        let no = etc(&[("ssh/sshd_config", "PermitRootLogin no\n")]);
+        assert_eq!(ssh_root_login_in(&running, no.path()).status, Status::Pass);
+        let unset = etc(&[("ssh/sshd_config", "Port 22\n")]);
+        assert!(ssh_root_login_in(&running, unset.path()).evidence.contains("unset"));
+        assert!(ssh_passwords_in(&running, unset.path()).evidence.contains("unset"));
+        let unreadable = etc(&[]);
+        assert_eq!(ssh_root_login_in(&running, unreadable.path()).status, Status::Manual);
+        assert_eq!(ssh_passwords_in(&running, unreadable.path()).status, Status::Manual);
+        let stopped = machine(&[("is-active", "inactive\n")]);
+        assert_eq!(ssh_passwords(&stopped).status, Status::Pass);
+    }
+
+    #[test]
+    fn automatic_login_in_display_manager_configs() {
+        let r = machine(&[]);
+        let gdm = etc(&[("gdm3/custom.conf", "[daemon]\nAutomaticLoginEnable = true\nAutomaticLogin = eric\n")]);
+        let o = auto_login_in(gdm.path());
+        assert_eq!(o.status, Status::Fail);
+        assert!(o.evidence.contains("gdm3/custom.conf"), "{}", o.evidence);
+        let gdm_off = etc(&[("gdm/custom.conf", "[daemon]\nAutomaticLoginEnable=false\n")]);
+        assert_eq!(auto_login_in(gdm_off.path()).status, Status::Pass);
+        let lightdm = etc(&[("lightdm/lightdm.conf", "[Seat:*]\nautologin-user=eric\n")]);
+        assert!(auto_login_in(lightdm.path()).evidence.contains("lightdm.conf"));
+        let lightdm_empty = etc(&[("lightdm/lightdm.conf", "[Seat:*]\nautologin-user=\n")]);
+        assert_eq!(auto_login_in(lightdm_empty.path()).status, Status::Pass);
+        let sddm = etc(&[("sddm.conf", "[Autologin]\nUser=eric\nSession=plasma\n")]);
+        assert!(auto_login_in(sddm.path()).evidence.contains("sddm.conf"));
+        let sddm_empty = etc(&[("sddm.conf", "[Autologin]\nUser=\n")]);
+        assert_eq!(auto_login_in(sddm_empty.path()).status, Status::Pass);
+        assert_eq!(
+            auto_login(&r).status,
+            Status::Pass,
+            "this machine's /etc (a Mac or CI runner has no display manager autologin)"
+        );
+    }
+
+    #[test]
+    fn the_remaining_branches() {
+        assert_eq!(disk_encryption(&machine(&[])).status, Status::Unknown);
+        assert_eq!(firewall(&machine(&[("firewall-cmd --state", "not running\n")])).status, Status::Fail);
+        assert_eq!(firewall(&machine(&[("iptables -S INPUT", "-P INPUT DROP\n")])).status, Status::Pass);
+        assert_eq!(
+            firewall(&machine(&[("iptables -S INPUT", "-P INPUT ACCEPT\n-A INPUT -j DROP\n")])).status,
+            Status::Pass
+        );
+        assert_eq!(time_sync(&machine(&[])).status, Status::Unknown);
+        assert_eq!(
+            mandatory_access_control(&machine(&[("aa-enabled", "No - disabled at boot.\n")])).status,
+            Status::Fail
+        );
+        assert_eq!(mandatory_access_control(&machine(&[("getenforce", "Enforcing\n")])).status, Status::Pass);
+        assert_eq!(mandatory_access_control(&machine(&[("getenforce", "Disabled\n")])).status, Status::Fail);
+        // An upstream kernel in the range, root, and no rule: a plain failure.
+        let upstream = machine(&[("uname -r", "6.8.0\n"), ("id -u", "0\n")]);
+        let o = tcp_ip_options(&upstream);
+        assert_eq!(o.status, Status::Fail);
+        assert!(!o.evidence.contains("distro"), "{}", o.evidence);
+        assert_eq!(kernel_version(&machine(&[("uname -r", "6\n")])), None);
+        assert_eq!(kernel_version(&machine(&[("uname -r", "6.1-rc1\n")])), Some((6, 1, 0, "6.1-rc1".into())));
+        // This process's PATH, read for real.
+        assert!(matches!(path_dirs(&machine(&[])).status, Status::Pass | Status::Fail));
+        assert_eq!(admin("x"), Some(Fix { cmd: "x", admin: true }));
+        assert!(CHECKS.iter().all(|c| c.id.starts_with("POSTURE-") && !c.title.is_empty()));
     }
 }

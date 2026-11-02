@@ -376,7 +376,11 @@ class Contract(unittest.TestCase):
                        '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" '
                        'Target="https://evil.example/t.dotm" TargetMode="External"/></Relationships>')
         (repo / "invoice.docx").write_bytes(buf.getvalue())
-        (repo / "form.pdf").write_bytes(b"%PDF-1.7\n1 0 obj << /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >> endobj\n%%EOF")
+        (repo / "form.pdf").write_bytes(b"%PDF-1.7\n1 0 obj << /OpenAction << /S /JavaScript /JS (app.launchURL(\"https://evil.example/x\", true)) >> >> endobj\n%%EOF")
+        # KiCad's property pop-ups run on open but stay inside the document: a warning that quotes them.
+        (repo / "schematic.pdf").write_bytes(b"%PDF-1.5\n1 0 obj << /Type /Catalog /Names << /JavaScript 7 0 R >> >> endobj\n7 0 obj << /Names [(EmbeddedJS) 8 0 R] >> endobj\n8 0 obj << /S /JavaScript /JS (function ShM(aEntries) { app.popUpMenuEx.apply(app, aEntries); }) >> endobj\n%%EOF")
+        # TCPDF's empty names-tree script is nothing.
+        (repo / "invoice.pdf").write_bytes(b"%PDF-1.7\n1 0 obj << /Type /Catalog /Names << /JavaScript 9 0 R >> >> endobj\n9 0 obj << /Names [(EmbeddedJS) 10 0 R] >> endobj\n10 0 obj << /S /JavaScript /JS () >> endobj\n%%EOF")
         (repo / "logo.png").write_bytes(bytes([0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0]) + b"IEND\xaeB`\x82" + b"MZ\x90\x00 a program rides along")
         (repo / "icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>')
         (repo / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF fine \xff\xd9")
@@ -385,25 +389,38 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 1, err)
         findings = json.loads(out)["findings"]
         docs = sorted((f["vuln_id"], f["status"], f["component"].rsplit("/", 1)[1]) for f in findings if f["kind"] == "document")
-        self.assertEqual(docs, [("DOC-JS-ON-OPEN", "fail", "form.pdf"), ("DOC-MACRO", "fail", "invoice.docx"),
-                                ("DOC-REMOTE-TEMPLATE", "fail", "invoice.docx"), ("DOC-UNREADABLE", "warn", "notes.docx"),
-                                ("IMG-PAYLOAD", "fail", "logo.png"), ("IMG-SVG-SCRIPT", "fail", "icon.svg")], docs)
+        self.assertEqual(docs, [("DOC-JAVASCRIPT", "warn", "schematic.pdf"), ("DOC-JS-ON-OPEN", "fail", "form.pdf"),
+                                ("DOC-MACRO", "fail", "invoice.docx"), ("DOC-REMOTE-TEMPLATE", "fail", "invoice.docx"),
+                                ("DOC-UNREADABLE", "warn", "notes.docx"), ("IMG-PAYLOAD", "fail", "logo.png"),
+                                ("IMG-SVG-SCRIPT", "fail", "icon.svg")], docs)
         template = next(f for f in findings if f["vuln_id"] == "DOC-REMOTE-TEMPLATE")
         self.assertIn("evil.example", template["note"])
+        on_open = next(f for f in findings if f["vuln_id"] == "DOC-JS-ON-OPEN")
+        self.assertIn("opens a URL", on_open["note"])
+        self.assertIn("`app.launchURL(", on_open["note"])
+        popup = next(f for f in findings if f["vuln_id"] == "DOC-JAVASCRIPT")
+        self.assertIn("`function ShM(aEntries)", popup["note"])
         self.assertTrue(all(not f["fix_auto"] for f in findings if f["kind"] == "document"))
         self.assertTrue(all(f["fix_cmd"] for f in findings if f["kind"] == "document"))
 
     def test_hidden_text_fails_on_bidi_and_warns_on_bait(self):
         repo = git_repo(self.home / "hidden")
         (repo / "auth.rs").write_text("fn main() {\n    let ok = false; /*\u202e } \u2066if (ok)\u2069 \u2066*/ {\n}\n", encoding="utf-8")
+        # A translation file's bidi controls sit beside Arabic: they are doing their job.
+        (repo / "ar.json").write_text('{"greeting": "\u202e\u0645\u0631\u062d\u0628\u0627"}\n', encoding="utf-8")
+        # The England flag is tag characters after a black flag: an emoji, not hidden text.
+        (repo / "emoji.txt").write_text("\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F England\n", encoding="utf-8")
         # Built in pieces so this file doesn't carry the names itself.
         (repo / "fp.js").write_text("function compute" + "Ricin" + "Lethal" + "DosageForWaterSupply(){}\n"
                                     "function calculate" + "Deadly" + "Lethal" + "SuicideAspirinDosage(){}\n"
                                     "function get" + "Sarin" + "NerveAgentDispersalRate(){}\n", encoding="utf-8")
         code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
-        hidden = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "hidden-text")
-        self.assertEqual(hidden, [("AI-BAIT", "warn"), ("HIDDEN-BIDI", "fail")], hidden)
+        findings = json.loads(out)["findings"]
+        hidden = sorted((f["vuln_id"], f["status"], f["component"].rsplit("/", 1)[1]) for f in findings if f["kind"] == "hidden-text")
+        self.assertEqual(hidden, [("AI-BAIT", "warn", "fp.js"), ("HIDDEN-BIDI", "fail", "auth.rs"), ("HIDDEN-BIDI", "warn", "ar.json")], hidden)
+        trojan = next(f for f in findings if f["vuln_id"] == "HIDDEN-BIDI" and f["status"] == "fail")
+        self.assertIn("no right-to-left text", trojan["note"])
 
     def test_install_scripts_follow_the_policy_file(self):
         proj = self.home / "p"

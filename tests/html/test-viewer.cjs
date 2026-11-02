@@ -176,13 +176,17 @@ const manual=section('manual');
 for(const c of manualCmds)assert(manual.includes('<code>'+esc(c)+'</code>'),'by hand: '+c);
 for(const c of autoCmds)assert(!manual.includes('<code>'+esc(c)+'</code>'),'not by hand: '+c);
 assert.equal((manual.match(/<li class="opt">|<li>/g)||[]).length,manualCmds.length);
-const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth doing')[1].split('<details class="agent">')[0];
+const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth doing')[1];
 assert(needs.includes('sudo fdesetup enable') && needs.includes('rotate it, then purge it') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
 assert(manual.includes('Clears <span class="mono">FileVault 1.0 · POSTURE-FILEVAULT</span>'));
 assert(manual.includes('<ol class="steps" data-paged="optional" style="counter-reset:step '+failSteps+'">'),'warnings continue the numbering');
-assert(manual.includes('Copy agent prompt') && manual.includes('Preview prompt') && !manual.includes('<pre>'),'the preview renders on request');
+// the agent call-out sits under the verdict, above Scanned, with its caution and the liability notice; the preview renders on request
+const callout=()=>main().split('<section class="agent" id="agent">')[1].split('</section>')[0];
+assert(main().indexOf('<section class="agent"')>main().indexOf('class="verdict') && main().indexOf('<section class="agent"')<main().indexOf('id="scanned"'),'call-out between the verdict and Scanned');
+assert(callout().includes('Copy agent prompt') && callout().includes('Preview prompt') && !callout().includes('<pre>') && !manual.includes('Copy agent prompt'),'the preview renders on request');
+assert(callout().includes('Read the report before you hand it over.') && callout().includes('Waffuru AI, Inc. is not liable'),'caution and disclaimer');
 click({preview:'1'});
-assert(section('manual').includes('<pre>Help me review') && section('manual').includes('&lt;b&gt;x&lt;/b&gt;'),'the preview is escaped text');
+assert(callout().includes('<pre>Help me review') && callout().includes('&lt;b&gt;x&lt;/b&gt;'),'the preview is escaped text');
 click({preview:'1'});
 ctx.viewerTest.state.size={}; ctx.viewerTest.state.sizeDefault=10;
 
@@ -228,6 +232,7 @@ assert.equal(wellFormed(printed),null,'print document');
 assert.equal(areas(printed).length,kinds.length,'print lists every area, whatever the search');
 assert(printed.includes('CVE-2019-15551'),'print opens every row');
 assert(!printed.includes('<button') && !printed.includes('Copy agent prompt') && !printed.includes('class="jump"'));
+assert(printed.includes('Waffuru AI, Inc. is not liable') && printed.includes('Read the report before you hand it over.'),'print keeps the caution and the notice');
 assert(printed.includes('Not checked') && printed.includes('CISA KEV') && printed.includes('sudo fdesetup enable') && printed.includes('Exposure log'));
 assert.equal(main(),screenBefore,'print leaves the screen alone');
 events['window:afterprint']();
@@ -354,6 +359,26 @@ assert.equal((section('manual',printedMany).match(/<li>/g)||[]).length,60,'print
 assert(!printedMany.includes('class="pager"') && !printedMany.includes('data-fold'));
 click({fold:'area:brew'});
 assert.equal(comps(areas()[0][1]).length,60);
+assert.equal(wellFormed(main()),null);
+// counts read with thousands separators; the verdict names known exploits
+const big=[]; for(let i=0;i<1200;i++)big.push(finding('brew','pkg-'+i,'CVE-2026-'+(10000+i),'fail',{severity:'HIGH',kev:i<1001,fixed:'2',fix_cmd:'brew upgrade pkg-'+i,fix_auto:true}));
+load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,checked:{'project dependencies':203841},findings:big}}],plan:planOf(big),history:null});
+assert(main().includes('<div class="v">203,841</div>') && main().includes('1,200 things to update') && main().includes('1,200 failing findings across 1,200 components, 0 warnings, 1,001 known exploits.'),main().split('class="verdict')[1].slice(0,300));
+assert(areas()[0][1].includes('1,200 components') && areas()[0][1].includes('1–10 of 1,200 components'));
+assert(section('patching').includes('<div class="big">1,200<small>commands</small></div>') && section('patching').includes('<ul class="long">') && !section('patching').includes('class="pager"'),'patching lists everything, scrolling, never paged');
+assert(main().includes('A detailed summary of what was checked, what you are potentially exposed to, what can be patched, and how to do it. Results cover only what was checked and may not be exhaustive.'));
+// a search opens the areas that match and shows the others folded
+load(bundle);
+click({fold:'area:project'});
+assert(areas().find(x=>x[0]==='project')[1].includes('aria-expanded="false"'));
+search('smallvec');
+let proj=areas().find(x=>x[0]==='project')[1];
+assert(proj.includes('aria-expanded="true"') && proj.includes('smallvec'),'a folded area with a match opens');
+assert.equal(areas().filter(x=>x[1].includes('no match in')).length,areas().length-1,'the areas without a match stay as folded headers');
+assert(!areas().some(x=>x[1].includes('nomatch') && x[1].includes('data-fold')),'a no-match header is not a control');
+search('');
+assert(areas().find(x=>x[0]==='project')[1].includes('aria-expanded="false"'),'the fold comes back once the search clears');
+click({fold:'area:project'});
 assert.equal(wellFormed(main()),null);
 // the history logs fold too, and page
 load({...bundle,history:{...history,exposures:Array.from({length:30},(_,i)=>({...history.exposures[0],component:'exp-'+i,resolved_at:1,resolved:'2026-10-30'}))}});

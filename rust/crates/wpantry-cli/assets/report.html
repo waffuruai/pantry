@@ -62,7 +62,7 @@ h1,h2,h3{font-family:var(--serif);font-weight:400;letter-spacing:-.01em;margin:0
 h1{font-size:clamp(34px,6vw,52px);line-height:1.05}
 h2{font-size:clamp(26px,4vw,34px);line-height:1.15;margin:6px 0 4px}
 h3{font-size:22px;line-height:1.2}
-.lede{color:var(--soft);font-size:16px;max-width:70ch;margin:10px 0 0}
+.lede{color:var(--soft);font-size:16px;margin:10px 0 0}
 .muted{color:var(--muted)}
 .wrap{max-width:1120px;margin:0 auto;padding:0 16px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
@@ -98,7 +98,7 @@ h3{font-size:22px;line-height:1.2}
 .verdict{display:flex;gap:16px;align-items:flex-start;margin-top:26px;padding:18px 20px;border:1px solid var(--off);border-left:4px solid var(--faint);border-radius:var(--r);background:var(--card)}
 .verdict.fail{border-left-color:var(--fail)}.verdict.warn{border-left-color:var(--gold)}.verdict.ok{border-left-color:var(--ok)}
 .verdict .t{font-family:var(--serif);font-size:26px;line-height:1.15}
-.verdict .d{color:var(--soft);margin-top:4px;max-width:80ch}
+.verdict .d{color:var(--soft);margin-top:4px}
 .verdict .x{margin-top:8px;font:13px var(--mono);color:var(--gold-ink)}
 .all-clear{display:flex;align-items:center;gap:24px;margin-top:26px;padding:28px;border:1px solid var(--off);border-top:3px solid var(--gold);border-radius:var(--r);background:var(--card)}
 .all-clear .clear-mark{position:relative;flex:none;width:72px;height:72px;display:grid;place-items:center}
@@ -116,7 +116,7 @@ h3{font-size:22px;line-height:1.2}
 
 /* sections */
 .sec{padding:40px 0 8px}
-.sec>p.intro{color:var(--soft);max-width:72ch;margin:6px 0 18px}
+.sec>p.intro{color:var(--soft);margin:6px 0 18px}
 .card{border:1px solid var(--off);border-radius:var(--r);background:var(--card);padding:18px 20px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:18px}
 .tile{border:1px solid var(--off);border-radius:var(--r);background:var(--card);padding:14px 16px;min-height:88px;display:flex;flex-direction:column;justify-content:space-between}
@@ -162,6 +162,7 @@ details.scope .card{margin-top:10px}
 button.area-h{cursor:pointer}
 button.area-h:hover{background:var(--bg)}
 .area.collapsed .area-h{border-bottom:0}
+.area.nomatch{opacity:.6}
 .area-h .chev{align-self:center}
 .area:not(.collapsed) .area-h .chev{transform:rotate(180deg)}
 .area-h .m{font:12px var(--mono);color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
@@ -225,6 +226,7 @@ h3.fold button[aria-expanded="true"] .chev{transform:rotate(180deg)}
 .col-b{padding:8px 18px 16px;font-size:14px;flex:1}
 .col-b p{margin:8px 0;color:var(--soft)}
 .col-b ul{list-style:none;margin:0;padding:0}
+.col-b ul.long{max-height:560px;overflow:auto;padding-right:6px}
 .col-b li{padding:10px 0;border-top:1px solid var(--off)}
 .col-b li:first-child{border-top:0}
 .col-b li .l1{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px}
@@ -244,10 +246,16 @@ h3.fold button[aria-expanded="true"] .chev{transform:rotate(180deg)}
 .step-for{margin-top:8px;color:var(--muted);font-size:13px}
 .step-for .mono{color:var(--soft)}
 .sub{margin:26px 0 0;font:500 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-.agent{margin-top:28px}
-.agent summary{cursor:pointer;font-size:15px}
-.agent .card{margin-top:10px}
-.agent p{color:var(--soft);max-width:80ch;margin:0 0 12px}
+.agent{margin-top:26px;padding:22px 24px;border:1px solid var(--gold);border-radius:var(--r);background:var(--card)}
+.agent .eyebrow{margin-bottom:6px}
+.agent h2{margin:0 0 8px}
+.agent p{color:var(--soft);margin:0 0 12px}
+.agent .warn-box{display:flex;gap:12px;margin:14px 0;padding:12px 14px;border:1px solid var(--off);border-left:4px solid var(--gold);border-radius:8px;background:var(--bg)}
+.agent .warn-box b{color:var(--ink);font-weight:500}
+.agent .warn-box p{margin:0}
+.agent .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.agent .actions .btn.primary{border-color:var(--gold);color:var(--gold-ink)}
+.agent .legal{margin:14px 0 0;font:12px/1.6 var(--mono);color:var(--muted)}
 .agent pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font:12px/1.6 var(--mono);margin:12px 0 0;padding:12px;border:1px solid var(--off);border-radius:8px;background:var(--bg)}
 
 /* history */
@@ -302,7 +310,9 @@ td .badge{vertical-align:baseline}
   .print-report .area{break-inside:auto}
   .print-report .row{break-inside:avoid}
   .print-report .rhead{grid-template-columns:60px minmax(0,1.6fr) minmax(0,1fr) auto;padding:3mm 4mm}
-  .print-report .chev,.print-report .pager,.print-report .copy,.print-report .bar,.print-report .jump,.print-report .agent,.print-report .runs{display:none!important}
+  .print-report .chev,.print-report .pager,.print-report .copy,.print-report .bar,.print-report .jump,.print-report .actions,.print-report .runs{display:none!important}
+  .print-report .col-b ul.long{max-height:none;overflow:visible}
+  .print-report .agent{break-inside:avoid}
   .print-report .detail{padding:2mm 4mm 4mm 24mm}
   .print-report .tiles{grid-template-columns:repeat(4,1fr)}
   .print-report .cols{grid-template-columns:repeat(3,1fr)}
@@ -363,7 +373,8 @@ var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, IMPORTANT:2, MODERATE:3, MEDIUM
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function ticks(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>')} // `code` spans from scanner notes, safely
-function plural(n,w,p){return n+' '+(n===1?w:(p||w+'s'))}
+function fmt(n){return typeof n==='number'&&Number.isFinite(n)?n.toLocaleString('en-US'):String(n==null?'':n)} // 12,566 reads; 12566 doesn't
+function plural(n,w,p){return fmt(n)+' '+(n===1?w:(p||w+'s'))}
 function kindLabel(k){return Object.prototype.hasOwnProperty.call(KIND_LABEL,k)?KIND_LABEL[k]:(k?k.charAt(0).toUpperCase()+k.slice(1):'Other')}
 function kindIndex(k){var i=KIND_ORDER.indexOf(k);return i<0?KIND_ORDER.length:i}
 function shortPath(p){return String(p||'').replace(/^\/(?:Users|home)\/[^\/]+(?=\/|$)/,'~')}
@@ -549,11 +560,12 @@ function paged(items,key,print,word){
   var total=items.length;
   if(print||total<=PAGE_SIZES[0])return {html:items.join(''),nav:'',from:0};
   var size=pageSize(key), pages=Math.ceil(total/size), p=Math.min(Math.max(state.page[key]||0,0),pages-1), from=p*size, to=Math.min(from+size,total);
-  var nav='<div class="pager" data-pager="'+esc(key)+'"><span>'+(from+1)+'\u2013'+to+' of '+total+' '+esc(word||'rows')+'</span>';
+  var nav='<div class="pager" data-pager="'+esc(key)+'"><span>'+fmt(from+1)+'\u2013'+fmt(to)+' of '+fmt(total)+' '+esc(word||'rows')+'</span>';
   if(pages>1)nav+='<span class="pg"><button type="button" data-page="'+esc(key)+'" data-to="'+(p-1)+'"'+(p===0?' disabled':'')+' aria-label="Previous page">\u2039</button>'+pageButtons(key,p,pages)+'<button type="button" data-page="'+esc(key)+'" data-to="'+(p+1)+'"'+(p>=pages-1?' disabled':'')+' aria-label="Next page">\u203a</button></span>';
   nav+='<span class="sizes">Per page '+PAGE_SIZES.map(function(n){return '<button type="button" data-size="'+esc(key)+'" data-n="'+n+'" aria-current="'+(n===size)+'">'+n+'</button>'}).join('')+'</span></div>';
   return {html:items.slice(from,to).join(''),nav:nav,from:from};
 }
+function whole(items){return '<ul'+(items.length>PAGE_SIZES[0]?' class="long"':'')+'>'+items.join('')+'</ul>'} // a column list: complete, scrolling when long
 function foldable(key,title,print){ // a heading that hides what follows it; never folded in print
   if(print)return '<h3 style="margin-top:22px">'+esc(title)+'</h3>';
   return '<h3 class="fold" style="margin-top:22px"><button type="button" data-fold="'+esc(key)+'" aria-expanded="'+!state.collapsed[key]+'">'+esc(title)+'<span class="chev" aria-hidden="true">\u25be</span></button></h3>';
@@ -582,7 +594,7 @@ function verdictHTML(r){
   var fails=r.findings.filter(function(f){return f.state==='fail'}).length;
   if(c.fail){
     t=plural(c.components,'thing')+' to update';
-    d=plural(fails,'failing finding')+' across '+plural(c.components,'component')+', '+plural(c.warn,'warning')+(c.kev?', '+plural(c.kev,'known exploited'):'')+'. Results cover only what was checked.';
+    d=plural(fails,'failing finding')+' across '+plural(c.components,'component')+', '+plural(c.warn,'warning')+(c.kev?', '+plural(c.kev,'known exploit'):'')+'. Results cover only what was checked.';
   } else if(c.unchecked){
     t='Nothing with a released fix found in what could be checked';
     d=plural(c.warn,'warning')+'. '+plural(c.unchecked,'source')+' could not be checked, so this is not a clean result.';
@@ -606,7 +618,7 @@ function scannedHTML(r,print){
   var keys=Object.keys(r.checked);
   var out='<section class="sec" id="scanned">'+label(1,'Scanned')+'<h2>What was <em>checked</em></h2>';
   out+='<p class="intro">The scanner’s own counts of what it inventoried, by area. They are not a completeness score: an area can be inventoried and still have a source below that could not be asked about it.</p>';
-  out+=keys.length?'<div class="tiles">'+keys.map(function(k){return '<div class="tile"><div class="v">'+esc(r.checked[k])+'</div><div class="k">'+esc(k)+'</div></div>'}).join('')+'</div>':
+  out+=keys.length?'<div class="tiles">'+keys.map(function(k){return '<div class="tile"><div class="v">'+esc(fmt(r.checked[k]))+'</div><div class="k">'+esc(k)+'</div></div>'}).join('')+'</div>':
     '<div class="empty"><b>No inventory counts recorded</b>'+(r.partial?'CSV exports leave them out.':'This report does not say what was inventoried.')+'</div>';
   var gaps=r.findings.filter(function(f){return f.state==='unchecked'});
   if(gaps.length){
@@ -698,13 +710,18 @@ function riskHTML(r,print){
     }).join('')+'<button class="chip'+(state.kevOnly?'':' off')+'" data-kev="1" type="button" aria-pressed="'+state.kevOnly+'"><span class="dot fail"></span>KEV only<span class="n">'+c.kev+'</span></button>'+
     '<label class="search"><span class="sr">Search findings</span><input id="q" type="search" placeholder="Search findings" value="'+esc(state.q)+'"><span class="kbd">⌘K</span></label></div>';
   }
-  var shown=0;
+  var shown=0, searching=!print&&!!state.q.trim();
   areas.forEach(function(a){
     var rows=print?a.rows:a.rows.filter(function(row){return row.fs.some(matches)});
-    if(!rows.length)return; shown+=rows.length;
+    if(!rows.length){
+      // while searching, an area with no match keeps its header, folded, so the page's shape stays
+      if(searching)out+='<section class="area collapsed nomatch" id="area-'+esc(a.kind)+'" data-area="'+esc(a.kind)+'"><div class="area-h"><h3>'+esc(a.label)+'</h3><span class="m">'+esc(a.kind.toUpperCase()+' · no match in '+plural(a.rows.length,'component'))+'</span></div></section>';
+      return;
+    }
+    shown+=rows.length;
     var ids=Object.create(null); a.fs.forEach(function(f){if(isAdvisory(f))ids[f.vuln_id]=1});
     var m=[a.kind.toUpperCase(), plural(a.rows.length,'component'), plural(a.fs.length,'finding')]; var na=Object.keys(ids).length; if(na)m.push(plural(na,'advisory','advisories'));
-    var key='area:'+a.kind, folded=!print&&!!state.collapsed[key], pg=paged(rows.map(function(row){return rowHTML(row,print)}),key,print,'components');
+    var key='area:'+a.kind, folded=!print&&!searching&&!!state.collapsed[key], pg=paged(rows.map(function(row){return rowHTML(row,print)}),key,print,'components');
     var head='<h3>'+esc(a.label)+'</h3><span class="m">'+esc(m.join(' · '))+'</span><span class="tags">'+(a.fails?badge('fail',a.fails+' fail'):'')+(a.kev?badge('kev','KEV'):'')+'</span>';
     out+='<section class="area'+(folded?' collapsed':'')+'" id="area-'+esc(a.kind)+'" data-area="'+esc(a.kind)+'" data-paged="'+esc(key)+'">'+
       (print?'<div class="area-h">'+head+'</div>':'<button class="area-h" type="button" data-fold="'+esc(key)+'" aria-expanded="'+!folded+'">'+head+'<span class="chev" aria-hidden="true">\u25be</span></button>')+
@@ -715,17 +732,16 @@ function riskHTML(r,print){
 }
 
 /* 3 PATCHING */
-function col(lbl,big,small,body){return '<div class="col"><div class="col-h">'+'<div class="lbl">'+esc(lbl)+'</div><div class="big">'+big+(small?'<small>'+esc(small)+'</small>':'')+'</div></div><div class="col-b">'+body+'</div></div>'}
+function col(lbl,big,small,body){return '<div class="col"><div class="col-h">'+'<div class="lbl">'+esc(lbl)+'</div><div class="big">'+esc(fmt(big))+(small?'<small>'+esc(small)+'</small>':'')+'</div></div><div class="col-b">'+body+'</div></div>'}
 function stepLine(s,print){return '<li><div class="l1"><code>'+esc(s.cmd)+'</code>'+copyBtn(s.cmd,print)+'</div><div class="l2">'+esc(s.findings.map(describe).slice(0,3).join('; '))+(s.findings.length>3?' and '+(s.findings.length-3)+' more':'')+'</div></li>'}
 function patchingHTML(r,print){
   var auto=stepsOf(r,'auto'), h=r.history;
   var out='<section class="sec" id="patching">'+label(3,'Patching')+'<h2>What can be <em>patched</em></h2>';
   out+='<p class="intro">What <code>wpantry --update</code> runs unattended, what the local history says has already been fixed, and what has no released fix yet.</p><div class="cols">';
   // runs for you
-  var pgA=paged(auto.map(function(s){return stepLine(s,print)}),'auto',print,'commands');
-  var body=auto.length?'<ul data-paged="auto">'+pgA.html+'</ul>'+pgA.nav+'<p class="hint">wpantry --update runs these, then re-checks. --dryrun lists them without changing anything.</p>':
+  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry --update runs these, then re-checks. --dryrun lists them without changing anything.</p>':
     '<p>'+(r.partial?'CSV exports leave out suggested actions.':'Nothing in this scan runs unattended. The steps that need you are under By hand.')+'</p>';
-  out+=col('Runs for you',auto.length,plural(auto.length,'command').replace(/^\d+ /,''),body);
+  out+=col('Runs for you',auto.length,plural(auto.length,'command').replace(/^[\d,]+ /,''),body);
   // patched
   var fixes=h&&Array.isArray(h.fixes)?h.fixes.filter(function(f){return f&&typeof f.command==='string'}):[];
   var verified=fixes.filter(function(f){return f.ok&&f.verified_scan!=null});
@@ -733,10 +749,10 @@ function patchingHTML(r,print){
   if(h){
     body='';
     if(!verified.length&&!resolved.length)body+='<p>No fix has been verified and no exposure resolved in the last '+esc(h.since_days||90)+' days of local history. A fix counts only when a complete re-check no longer lists what it addressed.</p>';
-    if(verified.length){var pgV=paged(verified.map(function(f){return '<li><div class="l1">'+badge('ok','Verified')+'<code>'+esc(f.command)+'</code></div><div class="l2">'+esc(f.when||'')+' · verified by scan #'+esc(f.verified_scan)+'</div></li>'}),'verified',print,'fixes');body+='<ul data-paged="verified">'+pgV.html+'</ul>'+pgV.nav;}
+    if(verified.length){body+=whole(verified.map(function(f){return '<li><div class="l1">'+badge('ok','Verified')+'<code>'+esc(f.command)+'</code></div><div class="l2">'+esc(f.when||'')+' · verified by scan #'+esc(f.verified_scan)+'</div></li>'}));}
     var other=fixes.filter(function(f){return !(f.ok&&f.verified_scan!=null)});
     if(other.length)body+='<p>'+esc(plural(other.length,'other fix'))+' ran: '+esc(other.filter(function(f){return !f.ok}).length)+' failed, '+esc(other.filter(function(f){return f.ok}).length)+' not yet verified by a complete re-check.</p>';
-    if(resolved.length){var pgR=paged(resolved.map(function(e){return '<li><div class="l1"><span>'+esc(e.component)+'</span><span class="mono" style="font-size:13px">'+esc(e.vuln_id)+'</span>'+(e.kev?badge('kev','KEV'):'')+sevBadge(e.severity)+'</div><div class="l2">'+esc(e.first||'')+' → '+esc(e.resolved||'')+' · '+esc(e.days_exposed)+' days exposed</div></li>'}),'resolved',print,'exposures');body+='<p><b>'+esc(plural(resolved.length,'exposure'))+' resolved</b>: no longer listed by a complete scan of the same scope.</p><ul data-paged="resolved">'+pgR.html+'</ul>'+pgR.nav;}
+    if(resolved.length){body+='<p><b>'+esc(plural(resolved.length,'exposure'))+' resolved</b>: no longer listed by a complete scan of the same scope.</p>'+whole(resolved.map(function(e){return '<li><div class="l1"><span>'+esc(e.component)+'</span><span class="mono" style="font-size:13px">'+esc(e.vuln_id)+'</span>'+(e.kev?badge('kev','KEV'):'')+sevBadge(e.severity)+'</div><div class="l2">'+esc(e.first||'')+' → '+esc(e.resolved||'')+' · '+esc(e.days_exposed)+' days exposed</div></li>'}));}
     out+=col('Patched',verified.length+resolved.length,'verified or resolved',body);
   } else {
     out+=col('Patched','—','',"<p>"+(r.original?'The local history could not be read for this scan.':'Not recorded in an imported report; the history lives in the cache of the machine that scanned.')+"</p>");
@@ -744,12 +760,12 @@ function patchingHTML(r,print){
   // no fix yet
   var unfixed=r.findings.filter(function(f){return isAdvisory(f)&&!f.fixed&&f.severity!=='MALICIOUS'}), rows=[], seen=Object.create(null);
   rowsOf(unfixed).forEach(function(row){var k=row.name+'\u0000'+row.version; if(seen[k]){seen[k].places++;return} row.places=1; seen[k]=row; rows.push(row)});
-  var pgU=paged(rows.map(function(row){
+  var items=rows.map(function(row){
     return '<li><div class="l1"><span>'+esc(row.name)+(row.version?' '+esc(row.version):'')+'</span><span class="mono" style="font-size:13px">'+esc(row.ids.join(', '))+'</span>'+(row.kev?badge('kev','KEV'):'')+sevBadge(row.severity)+(row.places>1?'<span class="muted">in '+row.places+' places</span>':'')+'</div>'+
       (row.top.fix_cmd?'<div class="fix"><code>'+esc(row.top.fix_cmd)+'</code>'+copyBtn(row.top.fix_cmd,print)+'</div>':'<div class="l2">No mitigation given.</div>')+'</li>';
-  }),'unfixed',print,'advisories');
-  body=rows.length?'<ul data-paged="unfixed">'+pgU.html+'</ul>'+pgU.nav:'<p>No listed advisory is without a released fix.</p>';
-  if(r.unfixed&&!r.partial)body+='<p class="hint">'+esc(r.unfixed)+' more applicable '+(r.unfixed===1?'advisory has':'advisories have')+' no released fix and are only counted: wpantry search --applicable</p>';
+  });
+  body=rows.length?whole(items):'<p>No listed advisory is without a released fix.</p>';
+  if(r.unfixed&&!r.partial)body+='<p class="hint">'+esc(fmt(r.unfixed))+' more applicable '+(r.unfixed===1?'advisory has':'advisories have')+' no released fix and are only counted: wpantry search --applicable</p>';
   if(rows.length)body+='<p class="hint">wpantry watch re-asks hourly; exit 10 means a fix landed.</p>';
   out+=col('No fix yet',rows.length+(r.partial?0:r.unfixed),'advisories',body);
   return out+'</div></section>';
@@ -769,7 +785,6 @@ function manualHTML(r,print){
     if(optional.length)out+='<div class="sub">Also worth doing (warnings) · '+esc(plural(optional.length,'step'))+'</div><ol class="steps" data-paged="optional" style="counter-reset:step '+(manual.length+pgO.from)+'">'+pgO.html+'</ol>'+pgO.nav;
     if(r.plan.length&&!r.plan[0].own)out+='<p class="hint">Grouped from the findings’ suggested actions; the generating scan’s own plan is not in an imported report.</p>';
   }
-  if(!print)out+='<details class="agent"'+(state.preview?' open':'')+'><summary>Hand this to an AI agent</summary><div class="card"><p>Copy a prompt with every finding and the coverage context of this scan into the agent of your choice. Review the preview for local paths you do not want to share; copying sends nothing and runs nothing.</p><button class="btn" type="button" data-agent-prompt="1">Copy agent prompt</button> <button class="btn" type="button" data-preview="1">'+(state.preview?'Hide preview':'Preview prompt')+'</button>'+(state.preview?'<pre>'+esc(agentPrompt(r))+'</pre>':'')+'</div></details>';
   return out+'</section>';
 }
 function agentPrompt(r){
@@ -836,13 +851,21 @@ function heroHTML(r){
   var sc=r.original&&bundle.scope&&typeof bundle.scope==='object'?bundle.scope:null;
   var title=sc&&sc.machine===true?'What this machine is <em>exposed</em> to':sc&&sc.machine===false?'What these repos are <em>exposed</em> to':'What this scan <em>found</em>';
   var out='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>'+title+'</h1>';
-  out+='<p class="lede">What was checked, what applies, what can be patched and what to do by hand, from one scan. Results cover only what was checked.</p>';
+  out+='<p class="lede">A detailed summary of what was checked, what you are potentially exposed to, what can be patched, and how to do it. Results cover only what was checked and may not be exhaustive.</p>';
   if(bits.length)out+='<div class="meta">'+bits.map(function(b){return '<span>'+b+'</span>'}).join('')+'</div>';
   if(runs.length>1)out+='<div class="runs">'+runs.map(function(x,i){return '<button class="run'+(i===state.run?' on':'')+'" data-run="'+i+'" type="button"><span class="dot '+x.verdict+'"></span>'+esc(x.title)+'<span class="n muted">'+plural(x.findings.length,'finding')+'</span></button>'}).join('')+'</div>';
   if(r.schema!=null&&r.schema!==1)out+='<div class="notice">This report uses schema '+esc(r.schema)+'. The viewer was built for schema 1, so some fields may be missing.</div>';
   if(r.original&&typeof bundle.phase==='string'&&bundle.phase.indexOf('an update command failed')!==-1)out+='<div class="notice fail">An update command failed. Review the command output and recheck before relying on the result.</div>';
   if(r.partial)out+='<div class="notice">This scan came from a CSV export, which leaves out explanations, suggested actions and coverage counts. Load the JSON report for the full picture.</div>';
   out+=verdictHTML(r);
+  return out+'</section>';
+}
+function agentHTML(r,print){
+  var out='<section class="agent" id="agent"><div class="eyebrow">Hand this to an AI agent</div><h2>Let an <em>agent</em> do the patching</h2>';
+  out+='<p>Copy a prompt that carries every finding of this scan, its coverage gaps and its update plan into the coding agent of your choice. Copying sends nothing and runs nothing; the agent does, once you approve it.</p>';
+  out+='<div class="warn-box"><span aria-hidden="true">\u26a0</span><p><b>Read the report before you hand it over.</b> Agents make mistakes: they update the wrong package, skip a step, or break a build to make a finding go away. Know what is on this list first, have the agent work on a branch with the repo\u2019s tests, review every change it proposes, and run a fresh scan afterwards. Nothing here is fixed until a scan says so.</p></div>';
+  if(!print)out+='<div class="actions"><button class="btn primary" type="button" data-agent-prompt="1">Copy agent prompt</button><button class="btn" type="button" data-preview="1">'+(state.preview?'Hide preview':'Preview prompt')+'</button></div>'+(state.preview?'<pre>'+esc(agentPrompt(r))+'</pre>':'');
+  out+='<p class="legal">wpantry and this report are provided \u201cas is\u201d, without warranty of any kind, express or implied. Waffuru AI, Inc. is not liable for any damage, data loss, downtime or other loss arising from running wpantry, from acting on this report, or from giving this prompt or its commands to an AI agent or any other tool. You are responsible for reviewing and approving every change made to your systems.</p>';
   return out+'</section>';
 }
 function jumpHTML(r){
@@ -852,7 +875,7 @@ function jumpHTML(r){
   return '<nav class="jump" aria-label="Sections">'+items.map(function(x,i){return '<a href="#'+x[0]+'"><b>'+(i+1)+'</b>'+esc(x[1])+(x[2]?'<span class="c">'+esc(x[2])+'</span>':'')+'</a>'}).join('')+'</nav>';
 }
 function pageHTML(r,print){
-  return heroHTML(r)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+
+  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+
     '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span></footer>';
 }
 function render(){

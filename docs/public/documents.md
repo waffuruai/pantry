@@ -1,6 +1,6 @@
 # Documents and images
 
-The files people are sent are the files scanners skip: a spreadsheet with macros, a PDF that runs JavaScript when it opens, a Word file whose template lives on someone else's server, a picture that is really a program. wpantry reads PDFs, Office documents (old and new), RTF and images in the repos it scans and, on a machine scan, the top of `~/Downloads` and `~/Desktop`, for the shapes document malware takes. Nothing is opened, rendered, executed or fetched: every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess. When ClamAV is installed, it runs over the same files.
+The files people are sent are the files scanners skip: a spreadsheet with macros, a PDF that runs JavaScript when it opens, a Word file whose template lives on someone else's server, a picture that is really a program. wpantry reads PDFs, Office documents (old and new), RTF and images in the repos it scans and, on a machine scan, the top of `~/Downloads`, `~/Desktop` and `~/Documents`, for the shapes document malware takes. Nothing is opened, rendered, executed or fetched: every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess. When ClamAV is installed, it runs over the same files.
 
 **A clean result is not a clean file.** These checks find the shapes; ClamAV finds what it has signatures for. A document from someone you don't know still goes in a sandbox or a viewer with scripting off.
 

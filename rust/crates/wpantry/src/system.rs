@@ -522,7 +522,12 @@ pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> 
 }
 
 pub fn brew_prefix() -> String {
-    match which("brew") {
+    brew_prefix_of(which("brew"))
+}
+
+/// What the `brew` at `brew` says its prefix is, or "" without one.
+fn brew_prefix_of(brew: Option<PathBuf>) -> String {
+    match brew {
         Some(b) => run(&[b.as_os_str(), "--prefix".as_ref()], Duration::from_secs(15)).trim().to_string(),
         None => String::new(),
     }
@@ -565,9 +570,15 @@ pub fn caskroom(dir: &Path) -> Option<BTreeMap<String, String>> {
 
 /// {cask token: installed version} for Homebrew-installed casks.
 pub fn brew_casks() -> BTreeMap<String, String> {
+    let brew = which("brew");
+    brew_casks_in(brew.as_deref().and_then(homebrew_prefix), brew.as_deref())
+}
+
+/// [`brew_casks`] for the Homebrew at `prefix` with its `brew` command.
+fn brew_casks_in(prefix: Option<PathBuf>, brew: Option<&Path>) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    if let Some(b) = which("brew") {
-        if let Some(casks) = homebrew_prefix(&b).and_then(|p| caskroom(&p.join("Caskroom"))) {
+    if let Some(b) = brew {
+        if let Some(casks) = prefix.and_then(|p| caskroom(&p.join("Caskroom"))) {
             return casks;
         }
         for line in
@@ -777,5 +788,115 @@ mod tests {
         assert_ne!(before, after);
         std::fs::write(&f, "xy").unwrap();
         assert_ne!(after, fingerprint(&[&f]));
+    }
+
+    #[test]
+    fn short_paths_and_github_urls() {
+        let _home = test_home();
+        let home = home().display().to_string();
+        assert_eq!(short(&format!("{home}/.cargo/bin")), "~/.cargo/bin");
+        assert_eq!(short("/usr/bin/git"), "/usr/bin/git");
+        assert_eq!(github("jdx/mise"), "https://github.com/jdx/mise.git");
+    }
+
+    #[test]
+    fn which_takes_a_path_as_given() {
+        assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
+        assert_eq!(which("/nonexistent/wpantry-no-such-binary"), None);
+        assert_eq!(which("wpantry-no-such-binary-on-path"), None);
+    }
+
+    #[test]
+    fn os_release_is_the_file_or_nothing() {
+        let rel = os_release();
+        match std::fs::read_to_string("/etc/os-release") {
+            Ok(text) => assert_eq!(rel, parse_os_release(&text)),
+            Err(_) => assert!(rel.is_empty()),
+        }
+    }
+
+    #[test]
+    fn os_fixes_per_family() {
+        assert_eq!(os_fix(&parse_os_release("ID=alpine\n"), "openssl"), "sudo apk upgrade openssl");
+        assert_eq!(os_fix(&parse_os_release("ID=arch\n"), "openssl"), "sudo pacman -Syu");
+        let fedora = os_fix(&parse_os_release("ID=fedora\n"), "openssl");
+        assert!(fedora == "sudo dnf upgrade openssl" || fedora == "sudo yum upgrade openssl", "{fedora}");
+    }
+
+    #[test]
+    fn relative_globs_read_the_working_directory() {
+        // cargo runs tests from the crate root, where Cargo.toml is.
+        assert_eq!(glob("Cargo.toml"), ["Cargo.toml"]);
+        assert_eq!(glob("Cargo.tom?"), ["Cargo.toml"]);
+        assert!(glob("Cargo.toml/*").is_empty());
+    }
+
+    #[test]
+    fn more_owners() {
+        assert_eq!(owner("/home/u/.local/pipx/venvs/x/bin/x"), "pipx");
+        assert_eq!(owner("/Library/Developer/CommandLineTools/usr/bin/git"), if MACOS { "os" } else { "" });
+        let os = owner("/usr/bin/ssh");
+        assert_eq!(os, if os_vouches() { "os" } else { "" });
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn on_path_lists_distinct_binaries_from_extra_dirs() {
+        let d = TempDir::new("onpath").unwrap();
+        let name = "wpantry-no-such-binary-on-path";
+        executable(&d.path().join("a/bin").join(name), "#!/bin/sh\n");
+        std::fs::create_dir_all(d.path().join("b")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("a/bin").join(name), d.path().join("b").join(name)).unwrap();
+        std::fs::create_dir_all(d.path().join("c")).unwrap();
+        std::fs::write(d.path().join("c").join(name), "not executable").unwrap();
+        let root = d.path().display().to_string();
+        let got = on_path(name, &[format!("{root}/*/bin/"), format!("{root}/b"), format!("{root}/c")]);
+        let real = realpath(&format!("{root}/a/bin/{name}"));
+        assert_eq!(got, [(format!("{root}/a/bin/{name}"), real)], "the symlink in b is the same binary");
+        assert_eq!(realpath("/nonexistent/x"), "/nonexistent/x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn brew_prefix_and_casks_from_a_fake_brew() {
+        let d = TempDir::new("brew").unwrap();
+        let brew = d.path().join("prefix/bin/brew");
+        executable(
+            &brew,
+            "#!/bin/sh\nif [ \"$1\" = --prefix ]; then echo /opt/x; else printf 'firefox 150.0\\nslack 4.41.0 4.42.0\\nbad\\n'; fi\n",
+        );
+        assert_eq!(brew_prefix_of(Some(brew.clone())), "/opt/x");
+        assert_eq!(brew_prefix_of(None), "");
+        let listed = brew_casks_in(Some(d.path().join("prefix")), Some(&brew));
+        assert_eq!(
+            listed.into_iter().collect::<Vec<_>>(),
+            [("firefox".into(), "150.0".into()), ("slack".into(), "4.42.0".into())],
+            "no Caskroom: brew list says"
+        );
+        std::fs::create_dir_all(d.path().join("prefix/Caskroom/firefox/150.0")).unwrap();
+        let from_caskroom = brew_casks_in(Some(d.path().join("prefix")), Some(&brew));
+        assert_eq!(from_caskroom.into_iter().collect::<Vec<_>>(), [("firefox".into(), "150.0".into())]);
+        assert!(brew_casks_in(None, None).is_empty());
+        // The prefix is HOMEBREW_PREFIX when set, else the folder above brew's bin.
+        let want = std::env::var_os("HOMEBREW_PREFIX").map(PathBuf::from).unwrap_or_else(|| d.path().join("prefix"));
+        assert_eq!(homebrew_prefix(&brew), Some(want));
+    }
+
+    #[test]
+    fn app_clis_live_in_applications() {
+        let _home = test_home();
+        let cli = home().join("Applications/Wpantry Test.app/Contents/Resources/app/bin/cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "").unwrap();
+        assert_eq!(app_cli(&["Wpantry Missing", "Wpantry Test"], "bin/cli"), cli.display().to_string());
+        assert_eq!(app_cli(&["Wpantry Missing"], "bin/cli"), "");
     }
 }

@@ -53,6 +53,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "dep_direct", "INTEGER"),
     ("exposures", "affected_range", "TEXT"),
     ("exposures", "fix_cmd", "TEXT"),
+    ("scans", "unchecked", "INTEGER"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -567,11 +568,25 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE findings (kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT, status TEXT, \
              fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT, fix_auto INTEGER); \
-             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1);",
+             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1); \
+             CREATE TABLE scans (id INTEGER PRIMARY KEY, started_at REAL, finished_at REAL, host TEXT, user TEXT, \
+             version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER);",
         )
         .unwrap();
         conn.close().unwrap();
         let c = Cache::open(Some(&file)).unwrap();
+        // A cache from before scans counted their unchecked sources (v0.2.0) still records a scan.
+        let scan_cols: Vec<String> = c
+            .conn
+            .prepare("PRAGMA table_info(scans)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(scan_cols.iter().any(|c| c == "unchecked"), "{scan_cols:?}");
+        crate::history::record_scan(&c, 1.0, &[], &[], &crate::check::Options::default())
+            .expect("a scan records on the migrated table");
         let cols: Vec<String> = c
             .conn
             .prepare("PRAGMA table_info(findings)")

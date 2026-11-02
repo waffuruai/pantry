@@ -33,6 +33,8 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Refresh the cache so `--offline` checks are current | `wpantry sync` |
 | Scan daily without anyone running it (sync + check, never --fix) | `wpantry schedule install`; `wpantry schedule status` |
 | The last scheduled run's findings | `~/.local/state/wpantry/last.json` |
+| Is a clipper swapping copied wallet addresses right now (exit 1 when a canary came back changed) | `wpantry clipboard --json` |
+| Guard the clipboard while the user works (never writes it); keep it running from login | `wpantry clipboard --watch`; `wpantry schedule install --clipboard-guard` |
 | Is there a newer wpantry (exit 10 when there is); install it verified | `wpantry update --check`; `wpantry update --yes` |
 | Make every VS Code-family editor wait 72 h before installing a new extension version | `wpantry harden extension-cooldown --hours 72` |
 
@@ -45,7 +47,7 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 ## Triage
 
 1. Run `wpantry check --json --no-input` and group `findings` by component. One component often carries many advisories; one update clears them.
-2. Order: `suspect-code`, `hidden-text` and `repo-hook` fails first (a repo that runs a file of its own on open: don't open it, don't run its hooks, read the file it names), then malicious packages and extensions (uninstall or remove them, then rotate credentials), then committed secrets from a provider rule (rotate first, then purge history), then anything in KEV, then end-of-life runtimes, then by severity, then everything else with a fix.
+2. Order: `clipper` fails first (`CLIPPER-ACTIVE`: the clipboard swapped a copied wallet address; `CLIPPER-PERSISTENCE`: a login item that reads the clipboard with addresses in hand; `CLIPPER-EXTENSION`: a browser extension that can read and write the clipboard, failing when its code clips. Tell the user not to send funds from this machine until it is gone, and that Handoff passes the swapped address to their other Apple devices), then `suspect-code`, `hidden-text` and `repo-hook` fails (a repo that runs a file of its own on open: don't open it, don't run its hooks, read the file it names), then malicious packages and extensions (uninstall or remove them, then rotate credentials), then committed secrets from a provider rule (rotate first, then purge history), then anything in KEV, then end-of-life runtimes, then by severity, then everything else with a fix.
 3. Say what each fix touches before running it. `wpantry --fix` only runs unattended, user-level updates (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, uninstalling malicious extensions). It prints the rest as steps.
 4. Never run the printed steps that need sudo (OS updates, `fix-ca-trust.sh`, `wpantry mitigate <ID>` without `--dry-run`) yourself. Hand them to the user; `wpantry mitigate <ID> --dry-run` is the one you may run: it prints what would be written and the services to restart, and changes nothing.
 5. A fix in a repo's lockfile is a code change. Follow that repo's contribution rules: an issue, a branch, the printed `cargo update` / `pnpm update` / `npm install` there, the repo's build and tests, and a draft PR. Never edit a shared checkout in place.

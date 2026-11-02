@@ -8,6 +8,7 @@
 //! stderr and exit codes. The stable surface is the CLI
 //! contract (`specs/cli-contract.md`), not this crate's API.
 
+pub mod addresses;
 pub mod apps;
 pub mod breach;
 pub mod catalog;
@@ -16,6 +17,7 @@ pub mod cellar;
 pub mod check;
 pub mod check_machine;
 pub mod check_supply;
+pub mod clipper;
 pub mod compare;
 pub mod db;
 pub mod distros;
@@ -25,6 +27,7 @@ pub mod error;
 pub mod export;
 pub mod external;
 pub mod feeds;
+pub mod guard;
 pub mod harnesses;
 pub mod hidden;
 pub mod history;

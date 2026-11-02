@@ -2,7 +2,7 @@
 //! to `eval`, payloads kept as arrays of numbers, hand-rolled decoders,
 //! privilege escalation and persistence in scripts, reads of credential
 //! stores sent over the network, code that asks a crypto wallet to sign or
-//! approve, pages that load third-party scripts without a pinned hash
+//! approve, clippers that swap the wallet address on the clipboard, pages that load third-party scripts without a pinned hash
 //! (the supply-chain drainer pattern), traffic to raw IP addresses, and
 //! prebuilt binaries with nothing to build them from.
 //!
@@ -19,7 +19,9 @@
 //! One file per group of rules: [`obfuscation`] (decoded `eval`, numeric
 //! payloads, string decoders, escaped source), [`escalation`] (privilege
 //! and persistence), [`credentials`] (credential stores and the network),
-//! [`wallet`] (signing and approvals), [`network`] (raw IP addresses),
+//! [`wallet`] (signing, approvals and account takeovers on every chain),
+//! [`clipper`] (clipboard reads and writes with wallet addresses in hand),
+//! [`network`] (raw IP addresses),
 //! [`scripts`] (unpinned third-party scripts on a page) and [`blobs`]
 //! (binaries without sources). This file is the index: the finding, the
 //! contexts a path falls into, the policy, the size limits, the walk and
@@ -29,6 +31,7 @@ use crate::repos;
 use std::path::{Path, PathBuf};
 
 mod blobs;
+mod clipper;
 mod credentials;
 mod escalation;
 mod network;
@@ -37,6 +40,7 @@ mod scripts;
 mod wallet;
 
 pub use blobs::dependency_blobs;
+pub(crate) use clipper::PATTERNS as ADDRESS_PATTERNS;
 pub use scripts::third_party_scripts;
 
 /// One suspicious thing in one file.
@@ -233,6 +237,7 @@ pub fn scan_text(file: &str, text: &str, kind: Kind) -> Vec<Suspect> {
     escalation::scan(file, text, ctx, kind, &mut out);
     credentials::scan(file, text, ctx, kind, &mut out);
     wallet::scan(file, text, ctx, kind, &mut out);
+    clipper::scan(file, text, ctx, kind, &mut out);
     network::scan(file, text, ctx, &mut out);
     out
 }

@@ -237,10 +237,10 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
         listeners(host, say);
     }
 
+    let unit_there = host.read(&["systemctl", "cat", UNIT]).contains("[Unit]");
+    let sysctl_there = host.read(&["cat", SYSCTL_FILE]).contains("mptcp");
     match mode {
         Mode::Remove => {
-            let unit_there = host.read(&["systemctl", "cat", UNIT]).contains("[Unit]");
-            let sysctl_there = host.read(&["cat", SYSCTL_FILE]).contains("mptcp");
             if rule != Some(true) && !unit_there && !sysctl_there {
                 return Ok(Done::Nothing("the stopgap isn't installed; nothing to remove".into()));
             }
@@ -249,12 +249,14 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
                 return Ok(Done::Declined);
             }
             if unit_there {
+                // stopping the unit runs its ExecStop, which deletes the table itself
                 let _ = host.root(&["systemctl", "disable", "--now", UNIT]);
                 host.root(&["rm", "-f", UNIT_FILE])?;
                 host.root(&["systemctl", "daemon-reload"])?;
             }
             host.root(&["rm", "-f", RULE_FILE])?;
-            if rule == Some(true) {
+            // so the table is deleted here only when it is still there (checked again after the stop)
+            if rule == Some(true) && (!unit_there || linux::drops_ip_options(&r) == Some(true)) {
                 host.root(&["nft", "delete", "table", "inet", TABLE])?;
             }
             if sysctl_there {
@@ -270,6 +272,11 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
             }
             if fixed {
                 return Ok(Done::Nothing("the kernel has the fix; the stopgap isn't needed".into()));
+            }
+            if rule == Some(true) && unit_there && (!mptcp_built || mptcp.trim() == "0") {
+                return Ok(Done::Nothing(format!(
+                    "the stopgap is already in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --remove"
+                )));
             }
             let verb = if mode == Mode::DryRun { "would write" } else { "will write" };
             say(&format!("  → {verb} {RULE_FILE}:"));
@@ -325,16 +332,18 @@ mod tests {
     use std::sync::Mutex;
 
     /// A recorded machine: reads answered by the first matching key, root
-    /// writes recorded.
+    /// writes recorded. A key listed in `once` answers only until a root
+    /// command has run (the unit's stop deleting the table).
     struct Fake {
         answers: Vec<(&'static str, &'static str)>,
         root: Mutex<Vec<String>>,
         fail: Option<&'static str>,
+        once: &'static [&'static str],
     }
 
     impl Fake {
         fn new(answers: &[(&'static str, &'static str)]) -> Fake {
-            Fake { answers: answers.to_vec(), root: Mutex::new(Vec::new()), fail: None }
+            Fake { answers: answers.to_vec(), root: Mutex::new(Vec::new()), fail: None, once: &[] }
         }
         fn did(&self) -> Vec<String> {
             self.root.lock().unwrap().clone()
@@ -344,7 +353,12 @@ mod tests {
     impl Host for Fake {
         fn read(&self, argv: &[&str]) -> String {
             let joined = argv.join(" ");
-            self.answers.iter().find(|(k, _)| joined.contains(k)).map(|(_, v)| v.to_string()).unwrap_or_default()
+            let acted = !self.root.lock().unwrap().is_empty();
+            self.answers
+                .iter()
+                .find(|(k, _)| joined.contains(k) && !(acted && self.once.contains(k)))
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default()
         }
         fn root(&self, argv: &[&str]) -> Result<()> {
             let joined = argv.join(" ");
@@ -480,6 +494,43 @@ mod tests {
     }
 
     #[test]
+    fn an_installed_stopgap_is_reported_not_rewritten() {
+        let installed = Fake::new(&[
+            ("uname -s", "Linux\n"),
+            ("uname -r", "6.8.0-45-generic\n"),
+            ("id -u", "0\n"),
+            (
+                "nft list ruleset",
+                "table inet cve_2026_98432 {\n\tchain pre {\n\t\tip hdrlength > 5 meta l4proto tcp counter packets 0 bytes 0 drop\n\t}\n}\n",
+            ),
+            ("systemctl cat", "[Unit]\nDescription=…\n"),
+            ("mptcp/enabled", "0\n"),
+            ("ss -tlnpi", "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process\n"),
+        ]);
+        let (done, _) = run(&installed, Mode::Apply, true);
+        assert!(matches!(done, Done::Nothing(ref why) if why.contains("already in place")), "{done:?}");
+        assert!(installed.did().is_empty());
+        // MPTCP turned back on since: the sysctl is written again
+        let reenabled = Fake::new(&[
+            ("uname -s", "Linux\n"),
+            ("uname -r", "6.8.0-45-generic\n"),
+            ("id -u", "0\n"),
+            ("nft --version", "nftables v1.0.9\n"),
+            (
+                "nft list ruleset",
+                "table inet cve_2026_98432 {\n\tchain pre {\n\t\tip hdrlength > 5 meta l4proto tcp counter packets 0 bytes 0 drop\n\t}\n}\n",
+            ),
+            ("systemctl cat", "[Unit]\nDescription=…\n"),
+            ("systemctl --version", "systemd 255\n"),
+            ("mptcp/enabled", "1\n"),
+            ("ss -tlnpi", "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process\n"),
+        ]);
+        let (done, _) = run(&reenabled, Mode::Apply, true);
+        assert_eq!(done, Done::Applied);
+        assert!(reenabled.did().iter().any(|c| c == "sysctl -q -w net.mptcp.enabled=0"), "{:?}", reenabled.did());
+    }
+
+    #[test]
     fn remove_takes_the_stopgap_away_and_is_a_no_op_without_it() {
         let installed = Fake::new(&[
             ("uname -s", "Linux\n"),
@@ -510,6 +561,22 @@ mod tests {
         );
         assert!(lines.iter().any(|l| l.contains("✓ listeners: no program holds")), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("✓ removed")), "{lines:?}");
+        // the unit's ExecStop already deleted the table: no second delete, which would fail
+        let mut stopped = Fake::new(&[
+            ("uname -s", "Linux\n"),
+            ("uname -r", "6.8.0-45-generic\n"),
+            ("id -u", "0\n"),
+            (
+                "nft list ruleset",
+                "table inet cve_2026_98432 {\n\tchain pre {\n\t\tip hdrlength > 5 meta l4proto tcp counter packets 0 bytes 0 drop\n\t}\n}\n",
+            ),
+            ("systemctl cat", "[Unit]\nDescription=…\n"),
+            ("mptcp/enabled", "0\n"),
+        ]);
+        stopped.once = &["nft list ruleset"];
+        let (done, _) = run(&stopped, Mode::Remove, true);
+        assert_eq!(done, Done::Applied);
+        assert!(!stopped.did().iter().any(|c| c.starts_with("nft delete")), "{:?}", stopped.did());
         let bare = Fake::new(&[
             ("uname -s", "Linux\n"),
             ("uname -r", "6.8.0-45-generic\n"),

@@ -737,9 +737,9 @@ function stepLine(s,print){return '<li><div class="l1"><code>'+esc(s.cmd)+'</cod
 function patchingHTML(r,print){
   var auto=stepsOf(r,'auto'), h=r.history;
   var out='<section class="sec" id="patching">'+label(3,'Patching')+'<h2>What can be <em>patched</em></h2>';
-  out+='<p class="intro">What <code>wpantry --update</code> runs unattended, what the local history says has already been fixed, and what has no released fix yet.</p><div class="cols">';
+  out+='<p class="intro">What <code>wpantry --fix</code> runs unattended, what the local history says has already been fixed, and what has no released fix yet.</p><div class="cols">';
   // runs for you
-  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry --update runs these, then re-checks. --dryrun lists them without changing anything.</p>':
+  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry --fix runs these, then re-checks. --dryrun lists them without changing anything.</p>':
     '<p>'+(r.partial?'CSV exports leave out suggested actions.':'Nothing in this scan runs unattended. The steps that need you are under By hand.')+'</p>';
   out+=col('Runs for you',auto.length,plural(auto.length,'command').replace(/^[\d,]+ /,''),body);
   // patched

@@ -93,7 +93,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// What the cache remembers across scans, for the report's patched and
-/// history sections: the exposures, the fixes `--update` ran and the scans
+/// history sections: the exposures, the fixes `--fix` ran and the scans
 /// of the last [`HISTORY_DAYS`], plus the host and user of this scan. Null
 /// when the cache can't be read: the report still describes the scan.
 fn history_json(report: &Outcome) -> (J, String, String) {

@@ -209,7 +209,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.html_bundle(path)["phase"], "before updates (dry run)")
         self.assertIn("Incomplete", out)
         # Empty, offline scope has no fixes to execute.
-        code, out, _ = self.project_run("--update", "--html", str(path))
+        code, out, _ = self.project_run("--fix", "--html", str(path))
         self.assertEqual(code, 0)
         self.assertIn("Re-checking", out)
         bundle = self.html_bundle(path)

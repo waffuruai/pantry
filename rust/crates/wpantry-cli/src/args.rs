@@ -662,11 +662,11 @@ mod tests {
         );
         assert_eq!(
             p(&["harden", "extension-cooldown"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72 })
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72, bundle: None })
         );
         assert_eq!(
             p(&["harden", "extension-cooldown", "--hours", "48"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48 })
+            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48, bundle: None })
         );
         for (bad, msg) in [
             (&["schedule"][..], "the following arguments are required: action"),

@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .DS_Store
 target/
+
+# cargo-llvm-cov raw profiles, if a run is interrupted
+*.profraw

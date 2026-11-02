@@ -2,6 +2,10 @@
 
 Waffuru's security vulnerability scanner, built on the OSV database and other CVE sources. Its command is `wpantry`.
 
+![How Pantry checks your computer: this computer and its repos are read, asked about at OSV.dev and the feeds, judged, cached in SQLite, and reported as a terminal report, JSON, exports, logs and an HTML report; releases come from GitHub](docs/images/architecture.png)
+
+[Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/architecture.md)
+
 Pantry finds the vulnerabilities that actually apply to your computer. It inventories what is installed and what your git repos lock, asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. Answers live in a local SQLite cache, so a second run the same day takes seconds. Nothing that isn't installed is reported, and a source it can't reach is reported "not checked", never clean.
 
 | What you get | What it checks |
@@ -63,7 +67,7 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 ## Docs
 
 - [Install and verify a release](docs/public/install.md), [use wpantry](docs/public/usage.md), [what it checks and its sources](docs/public/checks-and-sources.md), and [the machine's settings it checks](docs/public/posture.md).
-- [How it works](docs/architecture.md): the run, the readers, the cache, the binary, and what is still open.
+- [How it works](docs/architecture.md): the picture and a run in five steps; the detail is [docs/internal/architecture.md](docs/internal/architecture.md).
 - For maintainers: the [release playbook](docs/internal/release.md), [publishing to crates.io](docs/internal/crates-io.md) and [dependency rules](docs/internal/dependencies.md).
 
 ## Development

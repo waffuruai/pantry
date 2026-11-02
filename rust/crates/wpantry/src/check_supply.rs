@@ -1477,8 +1477,8 @@ mod tests {
         assert!(mal[0].kev);
     }
 
-    /// A command on open warns, a repo file run on open fails, and a
-    /// campaign's branch name is a marker.
+    /// A command on open warns, a repo file run on open fails, and a hooks
+    /// policy accepts the first and never the second.
     #[test]
     fn repo_hooks_fail_on_repo_files_and_warn_on_commands() {
         let d = TempDir::new("hooks").unwrap();
@@ -1494,7 +1494,7 @@ mod tests {
         write(&root, "scripts/setup.sh", "#!/bin/sh\nnpm ci\n");
         repo_hooks(&mut s, &[]);
         assert!(s.findings.is_empty());
-        repo_hooks(&mut s, &[(name, root.clone())]);
+        repo_hooks(&mut s, &[(name.clone(), root.clone())]);
         assert!(s.counts.contains(&("repos checked for hooks".to_string(), 1)));
         let open = by_id(&s, "OPEN-HOOK");
         assert_eq!(open.len(), 1, "{:?}", s.findings);
@@ -1503,20 +1503,50 @@ mod tests {
             ("repo-hook", "app/.envrc", "warn")
         );
         assert!(open[0].note.ends_with(": `source_up`"), "{}", open[0].note);
+        let line = "hook .envrc \"direnv, on every cd (once allowed)\" source_up";
         assert_eq!(
             open[0].fix_cmd,
-            "Read .envrc before opening or installing this repo; remove the hook if you don't need it"
+            format!(
+                "Read .envrc before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {line}"
+            )
         );
         let runs = by_id(&s, "RUNS-REPO-FILE");
         assert_eq!(runs.len(), 1, "{:?}", s.findings);
         assert_eq!((runs[0].component.as_str(), runs[0].status.as_str()), ("app/.vscode/tasks.json", "fail"));
-        assert_eq!(
-            runs[0].fix_cmd,
-            format!(
-                "Don't open {} in an agent or editor until you've read .vscode/tasks.json: remove the hook, or review what it runs",
-                short(&root.to_string_lossy())
-            )
+        let refuse = format!(
+            "Don't open {} in an agent or editor until you've read .vscode/tasks.json: remove the hook, or review what it runs",
+            short(&root.to_string_lossy())
         );
+        assert_eq!(runs[0].fix_cmd, refuse);
+
+        // The printed line, in a hooks policy, accepts the warning: counted, not
+        // reported. A `repo` line covering the clone accepts it too, and names
+        // the failing hook without accepting it.
+        for policy in [line.to_string(), format!("repo {}", root.display())] {
+            let file = d.path().join("hooks.txt");
+            std::fs::write(&file, format!("# mine\n{policy}\n")).unwrap();
+            let opts = Options {
+                policy: crate::check::Policy { hooks: Some(file), ..Default::default() },
+                ..Default::default()
+            };
+            let mut s = scan(&net, &d, opts);
+            repo_hooks(&mut s, &[(name.clone(), root.clone())]);
+            assert!(by_id(&s, "OPEN-HOOK").is_empty(), "{policy}: {:?}", s.findings);
+            assert!(s.counts.contains(&("repo hooks accepted by policy".to_string(), 1)), "{policy}: {:?}", s.counts);
+            let runs = by_id(&s, "RUNS-REPO-FILE");
+            assert_eq!(runs.len(), 1, "{policy}: {:?}", s.findings);
+            assert_eq!(runs[0].status, "fail");
+            if policy.starts_with("repo ") {
+                assert_eq!(
+                    runs[0].fix_cmd,
+                    format!(
+                        "{refuse}. Your hooks policy names it, but a RUNS-REPO-FILE hook is never accepted: the policy only covers hooks that warn"
+                    )
+                );
+            } else {
+                assert_eq!(runs[0].fix_cmd, refuse);
+            }
+        }
     }
 
     /// A git repo made here with a private HOME; None when git can't.

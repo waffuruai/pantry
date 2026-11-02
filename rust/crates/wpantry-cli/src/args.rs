@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] = &[
     "check", "search", "export", "breach", "watch", "version", "tools", "skill", "sync", "schedule", "cache", "update",
-    "report", "harden",
+    "report", "harden", "mitigate",
 ];
 
 #[derive(Debug, Default, PartialEq)]
@@ -49,6 +49,7 @@ pub enum Command {
     Cache { action: String, older_than: i64 },
     Update { check: bool, yes: bool, no_input: bool, offline: bool, version: Option<String> },
     Harden { what: String, hours: u32 },
+    Mitigate { id: String, dry_run: bool, yes: bool, no_input: bool, remove: bool },
     Skill,
 }
 
@@ -61,7 +62,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate} ...";
 
 pub fn usage(cmd: &str) -> &'static str {
     match cmd {
@@ -75,6 +76,7 @@ pub fn usage(cmd: &str) -> &'static str {
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
+        "mitigate" => "usage: wpantry mitigate [-h] [--dry-run] [--yes] [--no-input] [--remove] id",
         _ => TOP_USAGE,
     }
 }
@@ -121,8 +123,11 @@ fn help(cmd: &str) -> String {
         "harden" => {
             "apply one of the user-level posture fixes\n\npositional arguments:\n  {extension-cooldown}  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      the cooldown (default 72)"
         }
+        "mitigate" => {
+            "do what this host can about one advisory: run the fixes the last scan found for it that may run unattended (a version bump), run wpantry's own stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), and print the steps that need you\n\npositional arguments:\n  id            the advisory (CVE-…, GHSA-…; an alias works)\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgap is skipped unless --yes\n  --remove      take wpantry's stopgap away again (the real fix is installed)\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
+        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {check,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate}\n    check               scan this computer (default)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline checks\n    schedule            run sync and check on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a user-level posture fix (extension-cooldown)\n    mitigate            do what this host can about one advisory: its unattended fixes, its stopgap, the steps left for you\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -181,6 +186,9 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--version", true),
         ],
         "harden" => &[("--help", false), ("--hours", true)],
+        "mitigate" => {
+            &[("--help", false), ("--dry-run", false), ("--yes", false), ("--no-input", false), ("--remove", false)]
+        }
         _ => &[("--help", false)],
     }
 }
@@ -451,6 +459,28 @@ pub fn parse(argv: &[String]) -> Parsed {
             };
             Command::Harden { what, hours }
         }
+        "mitigate" => {
+            let id = match positional.as_slice() {
+                [id] if id.contains('-') && id.len() >= 6 => id.trim().to_ascii_uppercase(),
+                [id] => {
+                    return fail(format!("argument id: expected an advisory id such as CVE-2026-98432, got '{id}'"));
+                }
+                [] => return fail("the following arguments are required: id".into()),
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
+            if flag("--dry-run") && flag("--remove") {
+                return fail(
+                    "--dry-run and --remove can't be combined: --dry-run prints what applying would write".into(),
+                );
+            }
+            Command::Mitigate {
+                id,
+                dry_run: flag("--dry-run"),
+                yes: flag("--yes"),
+                no_input: flag("--no-input"),
+                remove: flag("--remove"),
+            }
+        }
         "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
@@ -664,8 +694,42 @@ mod tests {
             p(&["harden", "extension-cooldown", "--hours", "48"]),
             Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48 })
         );
+        assert_eq!(
+            p(&["mitigate", "cve-2026-98432"]),
+            Parsed::Run(Command::Mitigate {
+                id: "CVE-2026-98432".into(),
+                dry_run: false,
+                yes: false,
+                no_input: false,
+                remove: false
+            })
+        );
+        assert_eq!(
+            p(&["mitigate", "--dry-run", "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
+            Parsed::Run(Command::Mitigate {
+                id: "GHSA-XXXX-YYYY-ZZZZ".into(),
+                dry_run: true,
+                yes: true,
+                no_input: true,
+                remove: false
+            })
+        );
+        assert_eq!(
+            p(&["mitigate", "CVE-2026-98432", "--remove"]),
+            Parsed::Run(Command::Mitigate {
+                id: "CVE-2026-98432".into(),
+                dry_run: false,
+                yes: false,
+                no_input: false,
+                remove: true
+            })
+        );
         for (bad, msg) in [
-            (&["schedule"][..], "the following arguments are required: action"),
+            (&["mitigate"][..], "the following arguments are required: id"),
+            (&["mitigate", "kernel"], "argument id: expected an advisory id such as CVE-2026-98432, got 'kernel'"),
+            (&["mitigate", "CVE-2026-98432", "now"], "unrecognized arguments: now"),
+            (&["mitigate", "CVE-2026-98432", "--dry-run", "--remove"], "--dry-run and --remove can't be combined"),
+            (&["schedule"], "the following arguments are required: action"),
             (
                 &["schedule", "dance"],
                 "argument action: invalid choice: 'dance' (choose from install, status, uninstall, run)",

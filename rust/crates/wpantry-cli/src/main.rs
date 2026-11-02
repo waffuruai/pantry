@@ -628,6 +628,154 @@ fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
+/// `mitigate ID`: the last scan's findings for the advisory (by id or
+/// alias), their unattended fixes run, wpantry's stopgap for it run where
+/// one exists, and the steps that need a person printed. Exit 1 when a
+/// step is left, a fix failed, or nothing is known for the id here.
+fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, remove: bool) -> Result<i32> {
+    use wpantry::mitigate::{self, Done, Mode};
+    let cache = Cache::open(None)?;
+    // the id, its aliases, and the records that list it as one
+    let mut ids: Vec<String> = vec![id.to_string()];
+    {
+        let mut stmt = cache.conn.prepare("SELECT id, aliases FROM vulns WHERE id = ?1 OR aliases LIKE ?2")?;
+        let rows = stmt.query_map(rusqlite::params![id, format!("%{id}%")], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+        })?;
+        for (vid, aliases) in rows.flatten() {
+            let names = std::iter::once(vid.as_str()).chain(aliases.split_whitespace());
+            if names.clone().any(|n| n.eq_ignore_ascii_case(id)) {
+                for n in names {
+                    if !ids.iter().any(|i| i.eq_ignore_ascii_case(n)) {
+                        ids.push(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let findings: Vec<wpantry::check::Finding> = wpantry::export::findings(&cache)?
+        .into_iter()
+        .filter(|f| ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id)))
+        .collect();
+    let stopgap = mitigate::stopgap(id);
+    let interactive = !no_input && std::io::stdin().is_terminal();
+    let bundled = wpantry::check::mitigation(id);
+    show(&format!(
+        "==> {id}: {}{}",
+        match findings.len() {
+            0 => "not in the last scan's findings".to_string(),
+            1 => format!("1 finding in the last scan ({} {})", findings[0].component, findings[0].version),
+            n => format!("{n} findings in the last scan"),
+        },
+        if stopgap.is_some() { "; wpantry has a stopgap for it" } else { "" }
+    ));
+    for f in &findings {
+        show(&format!(
+            "  {} {} {} ({}) {}",
+            if f.status == "fail" { "✗" } else { "⚠" },
+            f.component,
+            f.version,
+            f.kind,
+            f.location
+        ));
+    }
+    let mut status = EXIT_OK;
+    let mut did_something = false;
+    // the unattended fixes (a version bump), the way --update runs them
+    if findings.iter().any(|f| f.fix_auto && !f.fix_cmd.is_empty()) {
+        // as `check --update`: without a terminal they run; a terminal is asked
+        let confirm = |cmds: &[String]| {
+            if yes || !interactive {
+                return true;
+            }
+            for c in cmds {
+                show(&format!("  • {c}"));
+            }
+            progress::Progress::new(false).ask("Run these now?", true).unwrap_or(false)
+        };
+        let auto: Vec<wpantry::check::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
+        let applied = report::apply(&auto, dry_run, &confirm, &mut |l| show(l));
+        for (cmd, ok) in &applied.ran {
+            let targets: Vec<String> =
+                auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
+            wpantry::history::record_fix(&cache, None, cmd, "mitigate", *ok, &targets)?;
+        }
+        did_something = dry_run || !applied.ran.is_empty();
+        if applied.status != 0 {
+            status = EXIT_FAIL;
+        }
+    }
+    // wpantry's own stopgap
+    if let Some(s) = stopgap {
+        show(&format!("\n==> stopgap: {}{}", s.what, if remove { " (removing)" } else { "" }));
+        let mode = if remove {
+            Mode::Remove
+        } else if dry_run {
+            Mode::DryRun
+        } else {
+            Mode::Apply
+        };
+        let confirm = |what: &str| {
+            if yes {
+                return true;
+            }
+            if !interactive {
+                show(&format!("  ✗ not a terminal: pass --yes to {what} without asking (or --dry-run to look)"));
+                return false;
+            }
+            progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
+        };
+        match (s.run)(&mitigate::Real, mode, &confirm, &mut |l| show(l))? {
+            Done::Applied => did_something = true,
+            Done::Nothing(why) => {
+                show(&format!("  ✓ {why}"));
+                did_something = true;
+            }
+            Done::NotHere(why) => show(&format!("  · {why}")),
+            Done::Declined => {
+                show("  nothing changed");
+                status = EXIT_FAIL;
+            }
+        }
+    }
+    // what needs a person: the fix texts that aren't the stopgap's own description
+    let manual: Vec<&str> = {
+        let mut seen = Vec::new();
+        for f in &findings {
+            let c = f.fix_cmd.as_str();
+            if c.is_empty() || f.fix_auto || seen.contains(&c) || (stopgap.is_some() && bundled.as_deref() == Some(c)) {
+                continue;
+            }
+            seen.push(c);
+        }
+        seen
+    };
+    if !manual.is_empty() {
+        show("\n==> Needs you:");
+        for m in &manual {
+            show(&format!("  • {m}"));
+        }
+        status = EXIT_FAIL;
+    }
+    if !did_something && manual.is_empty() {
+        if let Some(m) = bundled.filter(|_| stopgap.is_none()) {
+            show(&format!("\n==> Needs you: {m}"));
+        } else if findings.is_empty() && stopgap.is_none() {
+            show(&format!(
+                "\n✗ nothing known for {id} here: it isn't in the last scan's findings (run wpantry check) and wpantry has no stopgap for it"
+            ));
+        } else if findings.is_empty() {
+            show("  nothing to do here");
+            cache.close()?;
+            return Ok(EXIT_OK);
+        }
+        cache.close()?;
+        return Ok(EXIT_FAIL);
+    }
+    cache.close()?;
+    Ok(status)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -655,6 +803,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
         Command::Harden { what: _, hours } => cmd_harden_cooldown(hours),
+        Command::Mitigate { id, dry_run, yes, no_input, remove } => cmd_mitigate(&id, dry_run, yes, no_input, remove),
     }
 }
 

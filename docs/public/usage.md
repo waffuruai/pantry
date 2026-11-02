@@ -133,7 +133,7 @@ wpantry watch                 # each watched advisory: "no fix yet" + the mitiga
 wpantry watch --json          # {"schema": 1, …, "watched": [{"id", "severity", "summary", "ecosystem", "package", "version", "fixed", "mitigation"}]}
 ```
 
-Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry --update --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on (see [posture.md](posture.md)). The repo side is covered too: a Go module on `go 1.24` or newer that listens for TCP without `GODEBUG=multipathtcp=0` or `SetMultipathTCP(false)` (Go turns Multipath TCP on by default there, which is the path the bug is reached through), or any source that asks for MPTCP by name, is a `project` warning naming the file and the opt-out ([checks-and-sources.md](checks-and-sources.md#what-it-checks)); it is never auto-fixed.
+Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry --update --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on or a program still holds an MPTCP listening socket (the sysctl only stops new ones; the evidence names the services to restart) (see [posture.md](posture.md)). The repo side is covered too: a Go module on `go 1.24` or newer that listens for TCP without `GODEBUG=multipathtcp=0` or `SetMultipathTCP(false)` (Go turns Multipath TCP on by default there, which is the path the bug is reached through), or any source that asks for MPTCP by name, is a `project` warning naming the file and the opt-out ([checks-and-sources.md](checks-and-sources.md#what-it-checks)); it is never auto-fixed.
 
 ## JSON
 
@@ -186,9 +186,17 @@ Each finding also says how the vulnerable dependency is depended on, where the l
 
 ## Advisories with no fix yet
 
-Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. For a few of those there is something a host can do meanwhile, and that is a script in [`mitigations/`](../../mitigations/), one per advisory. The first is [`mitigations/cve-2026-98432.sh`](../../mitigations/cve-2026-98432.sh), for the Linux kernel's IPv4 TCP use-after-free (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, reloaded at boot, and MPTCP off.
+Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. `wpantry mitigate <ID>` does what this host can about one advisory, by id or alias:
 
-Every script works the same way. `--status` says whether the host is exposed (exit 0 fixed or mitigated, 1 exposed, 2 when it needs root it does not have) and changes nothing, `--dry-run` prints what it would write, a plain run shows the same plan and asks before writing (`--yes` skips the question, for provisioning and CI), and `--remove` takes the stopgap away once the real fix is installed. A scan never runs one; it prints the script as the step. They are a reduction of exposure, not the patch: update when the fix ships, then `--remove`.
+```
+wpantry mitigate CVE-2026-98432 --dry-run   # the state of the host and what would be written; nothing changes
+wpantry mitigate CVE-2026-98432             # the plan, a question, then the stopgap (as root: sudo asks on the terminal)
+wpantry mitigate CVE-2026-98432 --yes       # the same without the question (provisioning)
+wpantry mitigate CVE-2026-98432 --remove    # take the stopgap away once the kernel update is in
+wpantry mitigate GHSA-xxxx-yyyy-zzzz        # an advisory with a released fix: runs its unattended fix, prints the rest
+```
+
+It runs the fixes the last scan found for the id that may run unattended (a version bump, the way `--update` does), runs wpantry's own stopgap for it where one exists, and prints the steps that need you; exit 1 when a step is left, a fix failed, or nothing is known for the id here (not in the last scan, no stopgap). The first stopgap is for the Linux kernel's IPv4 TCP use-after-free, [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432) (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, a systemd unit that reloads it at boot, MPTCP off through `sysctl.d`, and the services still holding an MPTCP listening socket named for a restart (`sudo systemctl restart …`, printed, never run: `net.mptcp.enabled=0` only stops new sockets, a program that already listens keeps its until restarted). The listeners are read from `ss -tlnpi` as root (every TCP listener whose upper-layer protocol is MPTCP is marked `tcp-ulp-mptcp`, which needs no `mptcp_diag` module), else from `ss -M` where the kernel has that module, else reported as unseen. A scan never runs any of it; it prints the command as the step. A stopgap is a reduction of exposure, not the patch: update when the fix ships, then `--remove`.
 
 ## What leaves your machine
 

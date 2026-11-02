@@ -12,6 +12,7 @@ import csv
 import io
 import json
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
@@ -322,6 +323,75 @@ class Contract(unittest.TestCase):
         code, out, err = self.run_bin("harden", "extension-cooldown")
         self.assertEqual(code, 0, err)
         self.assertIn("no VS Code-family editor", out)
+
+    def test_mitigate_usage(self):
+        code, _, err = self.run_bin("mitigate")
+        self.assertEqual(code, 2, err)
+        self.assertIn("required: id", err)
+        code, _, err = self.run_bin("mitigate", "kernel")
+        self.assertEqual(code, 2, err)
+        code, _, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run", "--remove")
+        self.assertEqual(code, 2, err)
+        code, out, _ = self.run_bin("mitigate", "--help")
+        self.assertEqual(code, 0)
+        self.assertIn("--dry-run", out)
+
+    def test_mitigate_errors_for_an_advisory_nothing_is_known_about(self):
+        self.project_run()
+        code, out, err = self.run_bin("mitigate", "CVE-1999-0001", "--dry-run")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("nothing known for CVE-1999-0001 here", out)
+        self.assertIn("no stopgap", out)
+
+    def test_mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias(self):
+        """A finding with `fix_auto` true: --dry-run prints the command, a run
+        runs it (here `true`) and records it in the remediation log; the
+        advisory's alias finds it too, any case."""
+        self.project_run()
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("GHSA-demo", "CVE-2020-99999", "demo bug", "", "HIGH", "", "",
+                      "https://osv.dev/vulnerability/GHSA-demo", "{}"))
+        conn.execute("DELETE FROM findings")
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
+                      "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
+        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("app", "other", "2.0.0", "/opt/other", "GHSA-other", "fail", "2.0.1", 0, "HIGH",
+                      "another bug", "false", 1, "", None, ""))
+        conn.commit()
+        conn.close()
+        code, out, err = self.run_bin("mitigate", "cve-2020-99999", "--dry-run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("CVE-2020-99999: 1 finding in the last scan (demo 1.0.0)", out)
+        self.assertIn("would run: true", out)
+        self.assertNotIn("false", out, "only the advisory asked about")
+        code, out, err = self.run_bin("mitigate", "GHSA-demo", "--yes")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("→ true", out)
+        conn = sqlite3.connect(str(self.db))
+        rows = conn.execute("SELECT command, mode, ok FROM fixes").fetchall()
+        conn.close()
+        self.assertEqual(rows, [("true", "mitigate", 1)])
+        # a fix that fails: exit 1
+        code, out, err = self.run_bin("mitigate", "GHSA-other", "--yes")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("failed: false", out)
+
+    def test_mitigate_has_a_stopgap_for_the_kernel_bug(self):
+        """CVE-2026-98432's stopgap: on Linux --dry-run reports the kernel,
+        the rule and MPTCP and prints the plan without writing anything; on
+        another OS it says so. Either way exit 0: a dry run is a look."""
+        self.project_run()
+        code, out, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("wpantry has a stopgap for it", out)
+        if platform.system() == "Linux":
+            self.assertIn("kernel", out)
+            self.assertTrue("would write /etc/nftables-cve-2026-98432.nft" in out or "has the CVE-2026-98432 fix" in out, out)
+            self.assertFalse(os.path.exists("/etc/nftables-cve-2026-98432.nft") and "would write" not in out)
+        else:
+            self.assertIn("a Linux kernel bug; nothing to do on", out)
 
     def test_suspect_code_fails_where_out_of_place_and_policy_downgrades(self):
         repo = git_repo(self.home / "suspect")

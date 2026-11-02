@@ -12,7 +12,7 @@
 //! (`IPPROTO_MPTCP`, socket2's `Protocol::MPTCP`, `SetMultipathTCP(true)`).
 //! Each is a warning with the opt-out as its step, as an unfixed Critical
 //! advisory is; [`crate::posture::linux`] judges the kernel itself and
-//! `mitigations/cve-2026-98432.sh` is the host's stopgap. Nothing is ever
+//! `wpantry mitigate CVE-2026-98432` is the host's stopgap. Nothing is ever
 //! changed.
 //!
 //! The `go` line decides, not `toolchain`: Go takes a program's default
@@ -27,10 +27,10 @@ use std::path::{Path, PathBuf};
 pub const ID: &str = "CVE-2026-98432";
 
 /// The step for a Go listener: the opt-out, until the kernel is fixed.
-pub const GO_FIX: &str = "Until the kernel it runs on has the fix for CVE-2026-98432: set GODEBUG=multipathtcp=0 in the service's environment (Dockerfile ENV, the compose file, the Kubernetes manifest, the systemd unit or .env), add `godebug multipathtcp=0` to go.mod, or call ListenConfig.SetMultipathTCP(false) before listening; the host's stopgap is mitigations/cve-2026-98432.sh (docs/public/usage.md#advisories-with-no-fix-yet)";
+pub const GO_FIX: &str = "Until the kernel it runs on has the fix for CVE-2026-98432: set GODEBUG=multipathtcp=0 in the service's environment (Dockerfile ENV, the compose file, the Kubernetes manifest, the systemd unit or .env), add `godebug multipathtcp=0` to go.mod, or call ListenConfig.SetMultipathTCP(false) before listening; the host's stopgap is wpantry mitigate CVE-2026-98432 (docs/public/usage.md#advisories-with-no-fix-yet)";
 
 /// The step for an explicit opt-in.
-pub const OPT_IN_FIX: &str = "Until the kernel it runs on has the fix for CVE-2026-98432: take the MPTCP opt-in out, or put it behind a setting that is off by default; the host's stopgap is mitigations/cve-2026-98432.sh (docs/public/usage.md#advisories-with-no-fix-yet)";
+pub const OPT_IN_FIX: &str = "Until the kernel it runs on has the fix for CVE-2026-98432: take the MPTCP opt-in out, or put it behind a setting that is off by default; the host's stopgap is wpantry mitigate CVE-2026-98432 (docs/public/usage.md#advisories-with-no-fix-yet)";
 
 const UNFIXED: &str = "a remote use-after-free in the IPv4 TCP handshake, kernels 4.4 and later; no fixed kernel released for Ubuntu or RHEL yet";
 

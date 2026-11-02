@@ -286,6 +286,7 @@ mod tests {
     }
 
     /// A fake tool: a shell script printing what the real one would.
+    #[cfg(unix)]
     fn tool(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
         let p = dir.join(name);
         std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -297,6 +298,7 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     const RPM: &str = "printf 'openssl-libs 1:3.5.9-1.fc44\\nbinutils 0:2.35.2-67.el9_7.1\\nbash 0:5.2-1\\n'";
 
     #[cfg(unix)]

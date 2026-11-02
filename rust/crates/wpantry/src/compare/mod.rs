@@ -91,4 +91,18 @@ mod tests {
         assert_eq!(Comparator::for_ecosystem("GIT"), Comparator::Generic);
         assert_eq!(Comparator::Semver.cmp("1.0.0-rc.1", "1.0.0"), Ordering::Less);
     }
+
+    #[test]
+    fn each_comparator_dispatches_to_its_ecosystem() {
+        assert_eq!(Comparator::Pep440.cmp("1.0a1", "1.0"), Ordering::Less);
+        assert_eq!(Comparator::Go.cmp("v1.2.0", "v1.10.0"), Ordering::Less);
+        assert_eq!(Comparator::Dpkg.cmp("1:1.0", "2.0"), Ordering::Greater);
+        assert_eq!(Comparator::Apk.cmp("1.0_rc1", "1.0"), Ordering::Less);
+        assert_eq!(Comparator::Rpm.cmp("1.0-1.el9", "1.0-2.el9"), Ordering::Less);
+        assert_eq!(Comparator::RubyGems.cmp("1.0.0.pre", "1.0.0"), Ordering::Less);
+        assert_eq!(Comparator::Maven.cmp("1.0-SNAPSHOT", "1.0"), Ordering::Less);
+        assert_eq!(Comparator::Packagist.cmp("1.0.0-beta", "1.0.0"), Ordering::Less);
+        assert_eq!(Comparator::Generic.cmp("1.2", "1.10"), Ordering::Less);
+        assert_eq!(Comparator::Generic.cmp("2.0", "2.0"), Ordering::Equal);
+    }
 }

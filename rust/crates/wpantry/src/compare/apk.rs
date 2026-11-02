@@ -186,13 +186,28 @@ mod tests {
         );
     }
 
-    /// The whole of apk-tools' test/version.data (GPL-2.0, so not vendored
-    /// here): `WPANTRY_APK_VECTORS=path/to/version.data cargo test -- --ignored`.
     #[test]
-    #[ignore]
-    fn apk_version_data_file() {
-        let path = std::env::var("WPANTRY_APK_VECTORS").expect("WPANTRY_APK_VECTORS");
-        let text = std::fs::read_to_string(path).unwrap();
+    fn odd_input_never_panics() {
+        let odd =
+            ["", "1.0\u{0}x", "1.0a1", "1.0+1", "1.0_rc1.2", "1.00", "1234567890123456789", "1.0_foo", "1.0-", "_"];
+        for a in odd {
+            for b in odd {
+                assert_eq!(cmp(a, b), cmp(b, a).reverse(), "{a:?} vs {b:?}");
+            }
+            assert_eq!(cmp(a, a), Ordering::Equal, "{a:?}");
+        }
+        assert_eq!(cmp("", "1"), Ordering::Less);
+        assert_eq!(cmp("1.0\u{0}x", "1.0"), Ordering::Equal, "apk reads up to a NUL");
+        assert_eq!(cmp("1.0a1", "1.0a2"), Ordering::Less, "a digit after a letter");
+        assert_eq!(cmp("1.00", "1.0"), Ordering::Less, "leading zeros count against a part");
+        assert_eq!(cmp("1234567890123456789", "1"), Ordering::Less, "too many digits is invalid");
+        assert_eq!(cmp("1.0_foo", "1.0"), Ordering::Less, "an unknown suffix is invalid");
+        assert_eq!(cmp("1.0_rc1.2", "1.0_rc1"), Ordering::Greater, "a part after a suffix number is invalid");
+    }
+
+    /// `version.data` lines (`a < b`, `a > b`, `a = b`; `#` comments) checked
+    /// against [`cmp`]: how many were.
+    fn check_vectors(text: &str) -> usize {
         let mut n = 0;
         for line in text.lines() {
             let line = line.split('#').next().unwrap_or("").trim();
@@ -207,6 +222,21 @@ mod tests {
             assert_eq!(cmp(a, b), want, "{a} {op} {b}");
             n += 1;
         }
+        n
+    }
+
+    #[test]
+    fn version_data_lines_are_read() {
+        assert_eq!(check_vectors("# comment\n1.0 < 1.1 # trailing\n1.0 = 1.0\n1.1 > 1.0\n1.0 ? 1.0\nnot a case\n"), 3);
+    }
+
+    /// The whole of apk-tools' test/version.data (GPL-2.0, so not vendored
+    /// here): `WPANTRY_APK_VECTORS=path/to/version.data cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn apk_version_data_file() {
+        let path = std::env::var("WPANTRY_APK_VECTORS").expect("WPANTRY_APK_VECTORS");
+        let n = check_vectors(&std::fs::read_to_string(path).unwrap());
         assert!(n > 700, "{n} cases");
     }
 }

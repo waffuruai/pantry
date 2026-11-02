@@ -30,6 +30,8 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Refresh the cache so `--offline` checks are current | `wpantry sync` |
 | Scan daily without anyone running it (sync + check, never --update) | `wpantry schedule install`; `wpantry schedule status` |
 | The last scheduled run's findings | `~/.local/state/wpantry/last.json` |
+| Is a clipper swapping copied wallet addresses right now (exit 1 when a canary came back changed) | `wpantry clipboard --json` |
+| Guard the clipboard while the user works (never writes it); keep it running from login | `wpantry clipboard --watch`; `wpantry schedule install --clipboard-guard` |
 | Is there a newer wpantry (exit 10 when there is); install it verified | `wpantry update --check`; `wpantry update --yes` |
 | Make every VS Code-family editor wait 72 h before installing a new extension version | `wpantry harden extension-cooldown --hours 72` |
 

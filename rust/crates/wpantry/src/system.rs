@@ -799,6 +799,7 @@ mod tests {
         assert_eq!(github("jdx/mise"), "https://github.com/jdx/mise.git");
     }
 
+    #[cfg(unix)]
     #[test]
     fn which_takes_a_path_as_given() {
         assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
@@ -890,6 +891,7 @@ mod tests {
         assert_eq!(homebrew_prefix(&brew), Some(want));
     }
 
+    #[cfg(unix)]
     #[test]
     fn app_clis_live_in_applications() {
         let _home = test_home();

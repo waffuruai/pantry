@@ -511,6 +511,7 @@ mod tests {
     /// The probe's JSON for each interpreter becomes a runtime and its
     /// packages; interpreters that resolve to the same file are one; a
     /// probe that fails is skipped; what couldn't be read is reported.
+    #[cfg(unix)]
     #[test]
     fn pythons_from_probe_answers() {
         let home = system::test_home();

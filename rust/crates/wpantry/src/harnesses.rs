@@ -519,6 +519,7 @@ mod tests {
         assert_eq!(got, [("db".to_string(), t("npm", "db-mcp", "")), ("oc".to_string(), t("npm", "oc-mcp", "1.0.0"))]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn plugin_and_skill_dirs_are_the_installed_ones() {
         let _home = crate::system::test_home();

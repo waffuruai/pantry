@@ -1413,6 +1413,7 @@ mod tests {
         assert_eq!(unchecked_note(&s3, "CA trust stores"), "openssl crashed");
     }
 
+    #[cfg(unix)]
     #[test]
     fn downloads_and_desktop_are_read_when_present() {
         let home = crate::system::test_home();

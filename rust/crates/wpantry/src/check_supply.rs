@@ -1181,6 +1181,7 @@ mod tests {
     /// the per-ecosystem fix), a package one keystroke from a popular one
     /// in the same lockfile fails as a typosquat, and a lockfile linking
     /// out of the repo is reported unchecked rather than read.
+    #[cfg(unix)]
     #[test]
     fn projects_reads_the_lockfiles_and_reports_osv_hits() {
         let d = TempDir::new("projects").unwrap();
@@ -1606,6 +1607,7 @@ mod tests {
     }
 
     /// Each kind of hidden or misleading text gets its own advice.
+    #[cfg(unix)]
     #[test]
     fn hidden_text_advice_per_kind() {
         let d = TempDir::new("hidden").unwrap();
@@ -1997,6 +1999,7 @@ mod tests {
     /// The npm packages bundled in extensions and plugins, and the lockfiles
     /// shipped in those and in skills: a vulnerable one warns (its vendor
     /// fixes it).
+    #[cfg(unix)]
     #[test]
     fn bundles_read_node_modules_and_shipped_lockfiles() {
         let _home = crate::system::test_home();

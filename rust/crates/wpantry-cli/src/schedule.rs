@@ -503,7 +503,9 @@ fn set_crontab(text: &str, run: Run) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use wpantry::system::{TempDir, test_home};
+    #[cfg(unix)]
+    use wpantry::system::TempDir;
+    use wpantry::system::test_home;
 
     fn p() -> Paths {
         let state = PathBuf::from("/s/wpantry");

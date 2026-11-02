@@ -486,11 +486,13 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     fn hit(fp: &str) -> Value {
         json!({"rule": "aws-access-token", "file": "x.env", "line": 3, "commit": "0123456789ab",
                "fingerprint": fp, "description": "AWS"})
     }
 
+    #[cfg(unix)]
     fn argv(dir: &Path) -> Vec<String> {
         std::fs::read_to_string(dir.join("argv.txt")).unwrap_or_default().lines().map(str::to_string).collect()
     }

@@ -441,6 +441,7 @@ pub fn packages(
 /// the scan driver's.
 #[cfg(test)]
 pub(crate) mod testing {
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
     /// One ustar header: `size` is what the header claims (the data may be

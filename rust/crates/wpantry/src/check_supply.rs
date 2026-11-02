@@ -385,13 +385,15 @@ fn secrets(
 /// Code each repo runs when it is opened, installed or built (agent hooks,
 /// MCP servers in the repo, editor tasks on open, install scripts, native
 /// addons), and the markers of known hijacked-repo campaigns. Running a file
-/// kept in the repo fails; running a command at all warns.
+/// kept in the repo fails; running a command at all warns, unless the hooks
+/// policy accepts that exact hook, in which case it is only counted.
 pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     if repos.is_empty() {
         return;
     }
     scan.status("Looking for code the repos run on open or install");
     let iocs = hooks::Indicators::parse(&scan.opts.policy.repo_hooks());
+    let accepted = scan.opts.policy.hooks_policy();
     let found: Vec<Vec<hooks::Hook>> = system::par_map(repos, system::PROBES, |(_, root)| {
         let mut h = hooks::scan_repo(root, &iocs);
         h.extend(hooks::campaign_markers(root));
@@ -400,8 +402,13 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     for ((name, root), hooks) in repos.iter().zip(found) {
         scan.count("repos checked for hooks", 1);
         for h in hooks {
+            let listed = accepted.lists(root, &h);
+            if listed && h.acceptable() {
+                scan.count("repo hooks accepted by policy", 1);
+                continue;
+            }
             let fails = h.fails();
-            let (status, fix_cmd) = if fails {
+            let (status, mut fix_cmd) = if fails {
                 (
                     "fail",
                     format!(
@@ -419,11 +426,18 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
                 (
                     "warn",
                     format!(
-                        "Read {} before opening or installing this repo; remove the hook if you don't need it",
-                        h.file
+                        "Read {} before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {}",
+                        h.file,
+                        h.policy_line()
                     ),
                 )
             };
+            if listed {
+                fix_cmd.push_str(&format!(
+                    ". Your hooks policy names it, but a {} hook is never accepted: the policy only covers hooks that warn",
+                    h.id
+                ));
+            }
             scan.add(Finding {
                 kind: "repo-hook".into(),
                 component: format!("{name}/{}", h.file),
@@ -462,7 +476,7 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
         }
         s
     });
-    for ((name, _, kind), hits) in targets.iter().zip(found) {
+    for ((name, dir, kind), hits) in targets.iter().zip(found) {
         scan.count(
             if *kind == suspect::Kind::Repo {
                 "repos checked for suspicious code"
@@ -471,6 +485,9 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
             },
             1,
         );
+        if *kind == suspect::Kind::Installed {
+            extension_clipboard(scan, name, dir, &hits);
+        }
         for h in hits {
             scan.add(Finding {
                 kind: "suspect-code".into(),
@@ -483,6 +500,10 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
                     "SUSPECT-THIRD-PARTY-SCRIPT" => "Pin the script with an integrity hash (SRI) and crossorigin, or serve a copy yourself".into(),
                     "SUSPECT-WALLET-SIGNING" => "Read exactly what is signed or approved and by what; never approve an unlimited allowance to code you didn't audit".into(),
                     "SUSPECT-PRIV-ESCALATION" | "SUSPECT-CREDENTIAL-ACCESS" => "Read it before running or installing it; if it is yours and meant to, list it in the suspect policy (--suspect-policy) so it warns instead".into(),
+                    "SUSPECT-PROFILING-PROMPT" => "Read the prompt: it directs an AI to profile a person and rank their assets to monetize. Remove it, or if it is a deliberate fixture, list it in the suspect policy (path:) so it warns instead".into(),
+                    "SUSPECT-CARDHOLDER-DATA" => "Never store a PAN in the clear or log a CVV; keep cardholder data out of source, config and logs and out of PCI DSS scope (use a tokenizing payment provider)".into(),
+                    "SUSPECT-WEAK-PASSWORD" => "Don't hardcode passwords; read them from the environment or a secret manager, and never ship a known-weak default. Rotate anything already committed".into(),
+                    "SUSPECT-KEYLOGGER" => "Confirm this captures keystrokes for a feature you expect (accessibility, hotkeys); a dependency or extension logging or sending keys is a keylogger. If it is yours, list it in the suspect policy so it warns instead".into(),
                     "SUSPECT-BINARY-BLOB" => "Prefer a dependency that builds from source, or check the publisher and pin the package by version; a binary you've verified goes in the suspect policy (path:) so it warns instead".into(),
                     _ => "Read what runs, not what is written: decode it yourself, or drop the dependency; a legitimate table or decoder goes in the suspect policy so it warns instead".into(),
                 },
@@ -490,6 +511,39 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
             });
         }
     }
+}
+
+/// A browser extension whose manifest lets it read and write the clipboard
+/// can clip; one whose code has the clipper shape does. The manifest alone
+/// warns (a clipboard manager, a password manager); with the code shape
+/// beside it, it fails (kind `clipper`, `CLIPPER-EXTENSION`).
+fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspect::Suspect]) {
+    let Some(p) = crate::clipper::extension_permissions(dir) else { return };
+    if !(p.read && p.write) {
+        return;
+    }
+    let swaps = hits.iter().any(|h| h.id == "SUSPECT-CLIPBOARD-SWAP");
+    let shown = if p.name.is_empty() { name.to_string() } else { format!("{name} ({})", p.name) };
+    scan.add(Finding {
+        kind: "clipper".into(),
+        component: shown,
+        location: system::short(&dir.to_string_lossy()),
+        vuln_id: "CLIPPER-EXTENSION".into(),
+        status: if swaps { "fail" } else { "warn" }.into(),
+        severity: if swaps { "CRITICAL" } else { "" }.into(),
+        note: format!(
+            "may read and write the clipboard (manifest permissions clipboardRead and clipboardWrite){}{}",
+            if p.all_sites { ", and runs on every site" } else { "" },
+            if swaps { "; its code reads the clipboard with wallet addresses in hand: a clipper" } else { "; a clipboard or password manager does this, a clipper needs it" }
+        ),
+        fix_cmd: if swaps {
+            "Remove the extension now, don't send funds from this machine until it is gone, then report the addresses in its code on chainabuse.com".into()
+        } else {
+            "If you don't know why this extension needs both clipboard permissions, remove it; a wallet's own extension never needs to read the clipboard".into()
+        },
+        fix_auto: false,
+        ..Default::default()
+    });
 }
 
 /// Code on this machine that came from somewhere else and runs with the
@@ -1463,8 +1517,8 @@ mod tests {
         assert!(mal[0].kev);
     }
 
-    /// A command on open warns, a repo file run on open fails, and a
-    /// campaign's branch name is a marker.
+    /// A command on open warns, a repo file run on open fails, and a hooks
+    /// policy accepts the first and never the second.
     #[test]
     fn repo_hooks_fail_on_repo_files_and_warn_on_commands() {
         let d = TempDir::new("hooks").unwrap();
@@ -1480,7 +1534,7 @@ mod tests {
         write(&root, "scripts/setup.sh", "#!/bin/sh\nnpm ci\n");
         repo_hooks(&mut s, &[]);
         assert!(s.findings.is_empty());
-        repo_hooks(&mut s, &[(name, root.clone())]);
+        repo_hooks(&mut s, &[(name.clone(), root.clone())]);
         assert!(s.counts.contains(&("repos checked for hooks".to_string(), 1)));
         let open = by_id(&s, "OPEN-HOOK");
         assert_eq!(open.len(), 1, "{:?}", s.findings);
@@ -1489,20 +1543,50 @@ mod tests {
             ("repo-hook", "app/.envrc", "warn")
         );
         assert!(open[0].note.ends_with(": `source_up`"), "{}", open[0].note);
+        let line = "hook .envrc \"direnv, on every cd (once allowed)\" source_up";
         assert_eq!(
             open[0].fix_cmd,
-            "Read .envrc before opening or installing this repo; remove the hook if you don't need it"
+            format!(
+                "Read .envrc before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {line}"
+            )
         );
         let runs = by_id(&s, "RUNS-REPO-FILE");
         assert_eq!(runs.len(), 1, "{:?}", s.findings);
         assert_eq!((runs[0].component.as_str(), runs[0].status.as_str()), ("app/.vscode/tasks.json", "fail"));
-        assert_eq!(
-            runs[0].fix_cmd,
-            format!(
-                "Don't open {} in an agent or editor until you've read .vscode/tasks.json: remove the hook, or review what it runs",
-                short(&root.to_string_lossy())
-            )
+        let refuse = format!(
+            "Don't open {} in an agent or editor until you've read .vscode/tasks.json: remove the hook, or review what it runs",
+            short(&root.to_string_lossy())
         );
+        assert_eq!(runs[0].fix_cmd, refuse);
+
+        // The printed line, in a hooks policy, accepts the warning: counted, not
+        // reported. A `repo` line covering the clone accepts it too, and names
+        // the failing hook without accepting it.
+        for policy in [line.to_string(), format!("repo {}", root.display())] {
+            let file = d.path().join("hooks.txt");
+            std::fs::write(&file, format!("# mine\n{policy}\n")).unwrap();
+            let opts = Options {
+                policy: crate::check::Policy { hooks: Some(file), ..Default::default() },
+                ..Default::default()
+            };
+            let mut s = scan(&net, &d, opts);
+            repo_hooks(&mut s, &[(name.clone(), root.clone())]);
+            assert!(by_id(&s, "OPEN-HOOK").is_empty(), "{policy}: {:?}", s.findings);
+            assert!(s.counts.contains(&("repo hooks accepted by policy".to_string(), 1)), "{policy}: {:?}", s.counts);
+            let runs = by_id(&s, "RUNS-REPO-FILE");
+            assert_eq!(runs.len(), 1, "{policy}: {:?}", s.findings);
+            assert_eq!(runs[0].status, "fail");
+            if policy.starts_with("repo ") {
+                assert_eq!(
+                    runs[0].fix_cmd,
+                    format!(
+                        "{refuse}. Your hooks policy names it, but a RUNS-REPO-FILE hook is never accepted: the policy only covers hooks that warn"
+                    )
+                );
+            } else {
+                assert_eq!(runs[0].fix_cmd, refuse);
+            }
+        }
     }
 
     /// A git repo made here with a private HOME; None when git can't.
@@ -1682,9 +1766,15 @@ mod tests {
         let net = Fake::offline();
         let mut s = scan(&net, &d, Options::default());
         let (name, root) = repo(&d, "app");
+        // A script on open that opens a URL fails; one that only alerts warns, quoted.
         write(
             &root,
             "docs/a.pdf",
+            "%PDF-1.7\n1 0 obj << /Type /Catalog /OpenAction << /S /JavaScript /JS (app.launchURL(\"https://evil.example/x\", true)) >> >> endobj\n%%EOF",
+        );
+        write(
+            &root,
+            "docs/b.pdf",
             "%PDF-1.7\n1 0 obj << /Type /Catalog /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >> endobj\n%%EOF",
         );
         documents_pass(&mut s, &[]);
@@ -1697,7 +1787,12 @@ mod tests {
             (js[0].kind.as_str(), js[0].component.as_str(), js[0].status.as_str()),
             ("document", "app/docs/a.pdf", "fail")
         );
+        assert!(js[0].note.contains("opens a URL"), "{}", js[0].note);
         assert_eq!(js[0].fix_cmd, doc_fix("DOC-JS-ON-OPEN"));
+        let alert = by_id(&s, "DOC-JAVASCRIPT");
+        assert_eq!(alert.len(), 1, "{:?}", s.findings);
+        assert_eq!((alert[0].component.as_str(), alert[0].status.as_str()), ("app/docs/b.pdf", "warn"));
+        assert!(alert[0].note.contains("`app.alert(1)`"), "{}", alert[0].note);
         // What a ClamAV run found: hits fail, a run that couldn't happen is unchecked, none installed is nothing.
         let files = vec![root.join("docs/a.pdf")];
         let before = s.findings.len();

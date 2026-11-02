@@ -2,13 +2,17 @@
 
 `wpantry report` writes three logs from the history the cache keeps across scans. Nothing is sent anywhere; the report is a file you keep or hand to an auditor.
 
+![Every report comes from one cache: the SQLite file's tables (vulns and queries, findings, scans, exposures, fixes, events) feed wpantry check and its --json, export --csv and --jsonl, report's exposure, remediation and audit logs, search, and the HTML report](../images/reports.png)
+
+[Full size](../images/reports.png) · [SVG source](../images/reports.svg)
+
 | Log | What it answers | Rows |
 |---|---|---|
 | Exposure (`--exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`): severity, KEV, the fix version, first seen, last seen, resolved, days exposed. A finding is resolved by a scan of the same scope (machine or repos, the same `--path`s, `--licenses` and policy files) that no longer lists it and that had no source `unchecked`: a scan with a gap resolves nothing, so an outage leaves exposures open rather than closing them; a scan of one repo says nothing about the others |
 | Remediation (`--remediation`) | What was done about it | One per unattended fix `--update` ran: when, the command, whether it exited 0, the exposures it addressed, and the scan that verified it: a complete re-check (no source `unchecked`) in which none of those exposures were still listed. A failed fix, an incomplete re-check, or a finding still present leaves it blank |
 | Audit (`--audit`) | That the checks happened | One per scan (when, host, user, wpantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
 
-`--since DAYS` bounds all three (default 90). `--format md` (default) is Markdown with a summary line (open exposures, resolved, median days to resolve); `--format json` is one document with every section asked for; `--format csv` is the exposure log alone. `-o FILE` writes instead of printing.
+`--since DAYS` bounds all three (default 90). The HTML report of a scan (`wpantry check --html report.html`, [usage.md](usage.md)) carries the exposure and remediation logs of the last 90 days too, under its History section, when the cache has any. `--format md` (default) is Markdown with a summary line (open exposures, resolved, median days to resolve); `--format json` is one document with every section asked for; `--format csv` is the exposure log alone. `-o FILE` writes instead of printing.
 
 ## For SOC 2 and incident response
 

@@ -807,6 +807,7 @@ class Contract(unittest.TestCase):
         self.assertIn("keep checking", out)
         self.assertIn("1 advisories watched, 0 with a fix now", out)
 
+    @unittest.skipIf(os.name == "nt", "the editor settings are read from macOS and Linux homes only")
     def test_harden_sets_the_cooldown_in_each_editor(self):
         env = dict(self.env)
         env.pop("XDG_CONFIG_HOME", None)

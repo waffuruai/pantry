@@ -276,9 +276,18 @@ fn sh(argv: &[&OsStr]) -> String {
     run(argv, Duration::from_secs(30))
 }
 
+/// Runs the tools that say where their stores are (`openssl version -d`,
+/// a Python's certifi, Node's roots): the real ones, or recorded output in
+/// tests. Returns stdout and stderr together, "" when the command can't run.
+type Sh<'a> = &'a (dyn Fn(&[&OsStr]) -> String + Sync);
+
 /// Every trust store found and whether it trusts a distrusted CA.
 /// `Missing` without openssl.
 pub fn check() -> Result<Vec<Store>> {
+    check_with(&sh)
+}
+
+fn check_with(sh: Sh) -> Result<Vec<Store>> {
     let openssl = which("openssl").ok_or_else(|| Error::Missing("openssl".into()))?;
     let mut c = Checker::new(openssl.clone())?;
     let mut pending = Vec::new();
@@ -499,5 +508,146 @@ mod tests {
         let empty = c.dir.path().join("empty-store.pem");
         std::fs::write(&empty, "").unwrap();
         assert!(c.check_one("x", "empty", &empty, "").is_none(), "an empty file trusts nothing");
+    }
+
+    /// A store openssl can't run against, or a directory that can't be
+    /// read, is unknown; nothing is ever "clean" by default.
+    #[test]
+    fn an_openssl_that_cant_run_and_a_directory_that_cant_be_read_are_unknown() {
+        let c = Checker::new(PathBuf::from("/nonexistent/openssl")).unwrap();
+        let pem = c.dir.path().join("a.pem");
+        std::fs::write(&pem, ISSUERS).unwrap();
+        let v = c.verify(&pem);
+        assert!(matches!(&v, Verdict::Unknown(why) if why.contains("/nonexistent/openssl")), "{v:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = c.dir.path().join("locked");
+            std::fs::create_dir(&locked).unwrap();
+            std::fs::write(locked.join("00000000.0"), ISSUERS).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read_dir(&locked).is_err() {
+                let v = c.verify(&locked);
+                assert!(matches!(&v, Verdict::Unknown(why) if why.starts_with("can't read ")), "{v:?}");
+            }
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// A directory is a store when it holds hashed certificates; a file
+    /// that can't be read is unchecked; each real path is taken once.
+    #[test]
+    fn directories_and_unreadable_files_as_stores() {
+        let mut c = Checker::new(PathBuf::from("openssl")).unwrap();
+        let (hashed, plain) = (c.dir.path().join("hashed"), c.dir.path().join("plain"));
+        std::fs::create_dir(&hashed).unwrap();
+        std::fs::write(hashed.join("deadbeef.0"), ISSUERS).unwrap();
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::write(plain.join("README"), "no certificates here").unwrap();
+        assert!(c.store("x", "plain", &plain, "").is_none(), "a directory without hashed certificates trusts nothing");
+        assert!(c.store("x", "missing", &c.dir.path().join("missing"), "").is_none());
+        let p = c.store("x", "hashed", &hashed, "h").unwrap();
+        assert_eq!(
+            p.store,
+            Store { label: "x".into(), shown: "hashed".into(), trusts: false, unchecked: None, hint: "h".into() }
+        );
+        assert_eq!(p.bundle, hashed);
+        assert!(c.store("x", "hashed", &hashed, "").is_none(), "once");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let secret = c.dir.path().join("secret.pem");
+            std::fs::write(&secret, ISSUERS).unwrap();
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read(&secret).is_err() {
+                let p = c.store("x", "secret", &secret, "").unwrap();
+                assert!(
+                    p.store.unchecked.as_deref().is_some_and(|w| w.starts_with("can't read it: ")),
+                    "{:?}",
+                    p.store
+                );
+                let s = c.finish(vec![p]).pop().unwrap();
+                assert!(!s.trusts && s.unchecked.is_some());
+            }
+        }
+    }
+
+    /// The stores the tools point at: OPENSSLDIR's bundle and hashed
+    /// directory, each Python's certifi and pip bundles, each Node's
+    /// compiled-in roots; and on macOS the keychain's trust settings last.
+    #[test]
+    fn check_finds_the_stores_the_tools_name() {
+        let Some(_) = which("openssl") else { return };
+        let d = TempDir::new("stores").unwrap();
+        let roots = include_str!("../assets/distrusted-ca/roots.pem");
+        let ossl = d.path().join("ossl");
+        std::fs::create_dir_all(ossl.join("certs")).unwrap();
+        std::fs::write(ossl.join("cert.pem"), roots).unwrap();
+        for (i, cert) in certificates(ISSUERS).iter().enumerate() {
+            std::fs::write(ossl.join("certs").join(format!("{i:08x}.0")), cert).unwrap();
+        }
+        let (certifi, pipca) = (d.path().join("certifi.pem"), d.path().join("pipca.pem"));
+        std::fs::write(&certifi, ISSUERS).unwrap();
+        std::fs::write(&pipca, roots).unwrap();
+        let (certifi_s, pipca_s) = (certifi.display().to_string(), pipca.display().to_string());
+        let ossl_s = ossl.display().to_string();
+        let (certifi_r, pipca_r) = (certifi_s.clone(), pipca_s.clone());
+        let recorded = move |argv: &[&OsStr]| -> String {
+            let words: Vec<String> = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            let joined = words.join(" ");
+            if joined.ends_with("version -d") {
+                format!("OPENSSLDIR: \"{ossl_s}\"\n")
+            } else if joined.ends_with("xcode-select -p") {
+                "/Library/Developer/CommandLineTools\n".to_string()
+            } else if joined.contains("import certifi;") {
+                format!("{certifi_r}\n")
+            } else if joined.contains("pip._vendor.certifi") {
+                format!("{pipca_r}\n")
+            } else if joined.contains("rootCertificates") {
+                ISSUERS.to_string()
+            } else if joined.ends_with("--version") {
+                "v22.0.0\n".to_string()
+            } else {
+                String::new()
+            }
+        };
+        let stores = check_with(&recorded).unwrap();
+        let find = |label: &str, shown: &str| stores.iter().find(|s| s.label == label && s.shown == shown);
+        let bundle = find("openssl", &format!("{}/cert.pem", ossl.display())).expect("OPENSSLDIR's bundle");
+        assert!(bundle.trusts && bundle.unchecked.is_none(), "{bundle:?}");
+        assert!(bundle.hint.starts_with("Update the store "), "{}", bundle.hint);
+        let hashed = find("openssl", &format!("{}/certs", ossl.display())).expect("OPENSSLDIR's hashed directory");
+        assert!(!hashed.trusts && hashed.unchecked.is_none(), "{hashed:?}");
+        let pythons = system::on_path::<&str>("python3", &[]);
+        if !pythons.is_empty() {
+            let s = find("certifi", &certifi_s).expect("certifi's bundle");
+            assert!(!s.trusts && s.unchecked.is_none() && s.hint.contains("pip install -U certifi"), "{s:?}");
+            if std::env::var("PIP_CERT").ok().filter(|p| !p.is_empty()).is_none() {
+                let s = find("pip", &pipca_s).expect("pip's vendored bundle");
+                assert!(s.trusts && s.hint.contains("PIP_CERT"), "{s:?}");
+            }
+        }
+        for (i, (node, _)) in system::on_path::<&str>("node", &[]).iter().enumerate() {
+            let s = find("node", &format!("{node} (v22.0.0)")).expect("the node's roots");
+            assert!(!s.trusts && s.unchecked.is_none() && s.hint.starts_with("Upgrade Node"), "node {i}: {s:?}");
+        }
+        for s in &stores {
+            assert!(!s.trusts || s.unchecked.is_none(), "unchecked is never trusted: {s:?}");
+        }
+        if MACOS {
+            let last = stores.last().unwrap();
+            assert_eq!((last.label.as_str(), last.unchecked.as_deref()), ("keychain", None));
+        } else {
+            assert!(stores.iter().all(|s| s.label != "keychain"));
+        }
+    }
+
+    /// The stores on this machine, as the scan sees them.
+    #[test]
+    fn check_on_this_machine() {
+        let Some(_) = which("openssl") else { return };
+        let stores = check().unwrap();
+        assert!(stores.iter().all(|s| !s.label.is_empty() && !s.shown.is_empty() && !s.hint.is_empty()));
+        assert!(stores.iter().all(|s| !s.trusts || s.unchecked.is_none()));
     }
 }

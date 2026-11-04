@@ -2,7 +2,7 @@
 id: pantry/download-guard
 status: draft
 owner: Eric
-affected: [pantry, wsentinel]
+affected: [pantry]
 tracking: https://github.com/waffuruai/pantry/issues/126
 updated: 2026-11-04
 ---
@@ -40,7 +40,7 @@ flowchart LR
   WORKER -->|verdict| H
   T -.->|sha256 only| L -.-> H
   H --> C[("Cache events table (existing, new kind download)")]
-  C -.->|later phase| WD["wsentinel Watchdog (proposed)"]
+  C -.->|later phase| WD["A local watchdog service (proposed)"]
   H -.->|explicit, per file| D["Detonation: offline container for ELF and scripts, macOS VM for Mach-O (new, opt-in)"]
   GK["Gatekeeper and XProtect on first open (macOS, external)"]
   Q -.-> GK
@@ -93,7 +93,7 @@ All criteria track [#126](https://github.com/waffuruai/pantry/issues/126) until 
 - F11. False positives: a rule ships only after it matches nothing in the known-good corpus (macOS system apps, top Homebrew casks, a Linux distro's `/usr`); `wpantry guard report-fp ID` prints the rule, bundle version and SHA-256 and a prefilled issue link, and sends nothing itself. Evidence: not evidence yet. Issue: pending.
 - F12. Opt-in lookups ([design](design/download-guard.md#opt-in-hash-lookups)): YARAify and CIRCL hashlookup with no key, MalwareBazaar with the person's own key, each off until enabled, from the resident process only, answers cached. A known-good answer is shown but never clears a rule match. Evidence: not evidence yet. Issue: pending.
 - F13. `wpantry guard detonate ID` (opt-in, never automatic in v1) runs an ELF or script in an offline, non-root, read-only container with all capabilities dropped and reports process, file and connection attempts; a Mach-O or app runs only in a macOS VM through Virtualization.framework; anything else is refused. A detonation can raise a verdict, never lower one. Evidence: not evidence yet. Issue: pending.
-- F14. Events reach a local Watchdog through `wpantry report --events --after ID --format jsonl` ([design](design/download-guard.md#handing-events-to-watchdog)); pantry itself opens no socket. Evidence: not evidence yet. Issue: pending.
+- F14. Events reach a local watchdog service through `wpantry report --events --after ID --format jsonl` ([design](design/download-guard.md#handing-events-to-a-watchdog-service)); pantry itself opens no socket. Evidence: not evidence yet. Issue: pending.
 
 ### Performance
 
@@ -124,7 +124,7 @@ All criteria track [#126](https://github.com/waffuruai/pantry/issues/126) until 
 | 3 | Opt-in lookups | F12, S4 | pending |
 | 4 | Detonation in an offline container (ELF, scripts) | F13 for Linux samples, S8 | pending |
 | 5 | Detonation in a macOS VM through Virtualization.framework | F13 for Mach-O and apps | pending |
-| 6 | Events to Watchdog | F14, with wsentinel's Watchdog phase | pending |
+| 6 | Events to a watchdog service | F14 | pending |
 
 ## Blockers and decisions
 
@@ -137,7 +137,7 @@ All criteria track [#126](https://github.com/waffuruai/pantry/issues/126) until 
 - Release scope: an allow by SHA-256 only, or by Developer ID team as well? Recommend SHA-256 only in v1.
 - Clean files: recommend a daily count in the audit log, not a row per file.
 - Detonation trigger: explicit per file in v1; whether `unscanned` or `risky` files may detonate automatically is open.
-- Watchdog interface (F14): a cursor over the cache's events, as recommended, or a JSONL spool file; to settle with wsentinel's Watchdog design.
+- Watchdog interface (F14): a cursor over the cache's events, as recommended, or a JSONL spool file; to settle when a watchdog service consumes them.
 
 | Date | Decision | Why | Who |
 |---|---|---|---|

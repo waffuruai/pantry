@@ -119,6 +119,6 @@ One per non-clean verdict, as `--json` prints it and as the cache's `events` row
 
 `origin.from` is local metadata the browser wrote; it is recorded locally and, like every other field, never sent to a lookup.
 
-## Handing events to Watchdog
+## Handing events to a watchdog service
 
-The guard writes events to the cache and nowhere else. A later phase adds `wpantry report --events --after ID --format jsonl` so a local `watchdogd` ([wsentinel](https://github.com/waffuruai/wsentinel)'s Watchdog sidecar) running as a launchd or systemd service can read past a cursor and map each event to its `security_events` stream: `malware` and `gatekeeper-bypass` as `download_held`, `risky` as `download_risky`, `unscanned` as `download_unscanned`. The mapping drops `origin.from` and replaces `path` with its directory class (`Downloads`, `Desktop`, `repo`, `home`) unless the operator's policy keeps paths. pantry opens no socket and sends nothing.
+The guard writes events to the cache and nowhere else. A later phase adds `wpantry report --events --after ID --format jsonl` so a local watchdog service, running under launchd or systemd, can read past a cursor. Each event carries its kind (`malware`, `gatekeeper-bypass`, `risky`, `unscanned`) for the reader to map to its own alerts. A reader that forwards events off the machine should drop `origin.from` and replace `path` with its directory class (`Downloads`, `Desktop`, `repo`, `home`) unless the user's policy keeps paths. pantry opens no socket and sends nothing.

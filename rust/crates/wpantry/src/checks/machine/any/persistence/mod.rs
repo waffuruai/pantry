@@ -186,11 +186,11 @@ impl Roots<'_> {
     /// A path as the report shows it: `~/…`, or absolute on the machine.
     pub(crate) fn show(&self, p: &Path) -> String {
         if let Ok(rel) = p.strip_prefix(&self.home) {
-            return format!("~/{}", rel.display());
+            return format!("~/{}", rel.to_string_lossy().replace('\\', "/"));
         }
         match p.strip_prefix(&self.root) {
-            Ok(rel) => format!("/{}", rel.display()),
-            Err(_) => p.display().to_string(),
+            Ok(rel) => format!("/{}", rel.to_string_lossy().replace('\\', "/")),
+            Err(_) => p.to_string_lossy().replace('\\', "/"),
         }
     }
 }
@@ -276,4 +276,29 @@ pub fn programs(inv: &Inventory) -> Vec<PathBuf> {
 /// This machine's persisted programs.
 pub fn persisted_programs() -> Vec<PathBuf> {
     programs(&inventory())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn report_paths_use_forward_slashes_on_every_host() {
+        let d = crate::utils::temp::TempDir::new("persistence-paths").unwrap();
+        let root = d.path().join("root");
+        let home = root.join("home").join("person");
+        let roots = Roots {
+            home: home.clone(),
+            root: root.clone(),
+            macos: false,
+            runner: &crate::checks::machine::settings::real_runner,
+        };
+        assert_eq!(
+            roots.show(&home.join(".config").join("autostart").join("example.desktop")),
+            "~/.config/autostart/example.desktop"
+        );
+        assert_eq!(roots.show(&root.join("etc").join("cron.d").join("example")), "/etc/cron.d/example");
+        let outside = d.path().join("elsewhere").join("example");
+        assert_eq!(roots.show(&outside), outside.to_string_lossy().replace('\\', "/"));
+    }
 }

@@ -12,10 +12,10 @@
 //! knows the signatures it has.
 //!
 //! One file per format: [`pdf`], [`ooxml`] (over the [`zip`] reader and the
-//! [`deflate`] inflater), [`ole`], [`rtf`], [`image`], [`svg`] and the
-//! [`clamav`] call. This file is the index: what is read, the size limits,
-//! the walk, the dispatch by extension and first bytes, and the byte
-//! helpers the readers share.
+//! [`deflate`](crate::utils::archive::deflate) inflater), [`ole`], [`rtf`],
+//! [`image`], [`svg`] and the [`clamav`] call. This file is the index: what
+//! is read, the size limits, the walk, the dispatch by extension and first
+//! bytes, and the byte helpers the readers share.
 
 use std::path::{Path, PathBuf};
 

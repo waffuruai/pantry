@@ -146,7 +146,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let rec = record(cache, &f.vuln_id)?;
     let (aliases, url) = match &rec {
         Some(r) => {
-            let mut ids = crate::osv::ids_of(r);
+            let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
             (ids, format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")))
         }

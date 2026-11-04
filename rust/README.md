@@ -36,17 +36,18 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 
 | Folder | Holds |
 |---|---|
-| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `guard` (the clipboard guard), `external` (the tools wpantry uses). For now also `osv`, `distros` and `feeds` (moving to `sources/`), and `export` and `mitigate` (moving to `reporters/` and `remediation/`) |
+| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `guard` (the clipboard guard), `external` (the tools wpantry uses). For now also `export` and `mitigate` (moving to `reporters/` and `remediation/`) |
+| `sources/` | Where the data comes from, one file per remote API or list, each cached and `Offline` (never clean) when unreachable with nothing cached: `osv` (querybatch, record fetches, alias groups), `kev`, `endoflife`, `releases` (Homebrew casks, Chrome, Firefox, PostgreSQL, GitHub latest releases), `extensions` (VS Code's lists, the marketplace, Open VSX), `distros` (dnf advisories, the Arch tracker), `malicious_packages` (the OpenSSF index), `deps_dev` (licenses), `breaches` (Have I Been Pwned, XposedOrNot), `indicator_lists` (signature-base, Feodo), `hash_lookups` (YARAify, CIRCL, MalwareBazaar), `fetch` (the ETag refetch) |
 | `checks/` | The scan: `mod.rs` (options, findings, counts, "not checked", the policy files) and one folder per area |
 | `checks/machine/` | The machine: inventory (`tools`, `catalog`, `packages`, `apps`, `editors`, `harnesses`, `images`, `os_packages`), Homebrew (`cellar`, `brew_vulns`), the trust stores (`ca_trust`) and clipboard hijackers (`clipper`) |
-| `checks/supply_chain/` | Every repo: discovery (`repos`), `hooks`, `install_scripts`, `typosquat`, `malicious` (the OpenSSF index), `licenses` (deps.dev), `leaks` (gitleaks), `mptcp` (Go servers exposed to CVE-2026-98432) |
+| `checks/supply_chain/` | Every repo: discovery (`repos`), `hooks`, `install_scripts`, `typosquat`, `malicious` (known malicious packages), `licenses` (the SPDX allowlist), `leaks` (gitleaks), `mptcp` (Go servers exposed to CVE-2026-98432) |
 | `checks/lockfiles/` | One reader per lockfile format; `mod.rs` dispatches by name |
 | `checks/package_managers/` | Version order per ecosystem (semver, PyPI, Go, dpkg, apk, rpm, RubyGems, Maven, Packagist) and the generic order in `versions` |
 | `checks/posture/` | Security settings: `any/`, `macos/` and `linux/`, one file per behaviour, persistence included |
 | `checks/documents/`, `checks/suspect/`, `checks/hidden.rs` | Office, PDF, RTF, SVG and image readers; suspect code, one file per behaviour; hidden Unicode |
-| `checks/malware/` | The YARA pass (`mod.rs`), `indicators` (IOC lists and hash lookups), `rulegen` (the goodware database for `rules gen`) |
-| `checks/email.rs` | The opt-in breach check of the user's email address (Have I Been Pwned, XposedOrNot) |
-| `utils/` | What everything leans on: `files`, `process`, `os`, `parallel`, `temp`, `homebrew`, `net` (the `Net` trait and the host allowlist), `walk` (the bounded repo walk), and the in-tree readers: `json`, `toml`, `plist`, `re`, `sha256`, `archive/` (zip, deflate), `addresses` |
+| `checks/malware/` | The YARA pass (`mod.rs`), `indicators` (matching the indicator lists), `rulegen` (the goodware database for `rules gen`) |
+| `checks/email.rs` | The opt-in breach check of the user's email address: consent and which addresses |
+| `utils/` | What everything leans on: `files`, `dates`, `process`, `os`, `parallel`, `temp`, `homebrew`, `net` (the `Net` trait and the host allowlist), `walk` (the bounded repo walk), and the in-tree readers: `json`, `toml`, `plist`, `re`, `sha256`, `archive/` (zip, deflate), `addresses` |
 
 Tests sit beside the code they cover; golden lockfiles are in `crates/wpantry/tests/lockfiles/` (its README lists them), upstream comparator vectors in `crates/wpantry/tests/vectors/`, and `tests/scan.rs`, `tests/image.rs`, `tests/pins.rs` and `tests/assets.rs` are the end-to-end, real-image, dependency-pin and packaging checks.
 

@@ -125,7 +125,7 @@ impl Cache {
         conn.execute_batch(crate::history::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::rulegen::SCHEMA)?;
-        conn.execute_batch(crate::checks::malware::indicators::VERDICT_SCHEMA)?;
+        conn.execute_batch(crate::sources::hash_lookups::VERDICT_SCHEMA)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
              CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",

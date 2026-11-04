@@ -416,29 +416,28 @@ mod tests {
 
     #[test]
     fn every_source_is_on_the_host_list_and_nothing_else_is_asked() {
-        use crate::checks::supply_chain::licenses;
-        use crate::{feeds, osv};
+        use crate::sources::{deps_dev, distros, extensions, kev, osv, releases};
         let sources = [
-            feeds::KEV_URL,
-            feeds::ARCH_URL,
-            feeds::CASKS_URL,
-            feeds::CHROME_URL,
-            feeds::FIREFOX,
-            feeds::POSTGRES_URL,
-            feeds::VSCODE_LISTS,
-            feeds::MARKETPLACE,
-            feeds::OPENVSX,
-            feeds::GITHUB_LATEST,
-            licenses::API,
+            kev::KEV_URL,
+            distros::ARCH_URL,
+            releases::CASKS_URL,
+            releases::CHROME_URL,
+            releases::FIREFOX,
+            releases::POSTGRES_URL,
+            extensions::VSCODE_LISTS,
+            extensions::MARKETPLACE,
+            extensions::OPENVSX,
+            releases::GITHUB_LATEST,
+            deps_dev::API,
             osv::API,
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",
             crate::checks::malware::FORGE_RELEASE,
-            crate::checks::malware::indicators::SIGNATURE_BASE,
-            crate::checks::malware::indicators::FEODO,
-            crate::checks::malware::indicators::YARAIFY,
-            crate::checks::malware::indicators::CIRCL,
-            crate::checks::malware::indicators::MALWAREBAZAAR,
+            crate::sources::indicator_lists::SIGNATURE_BASE,
+            crate::sources::indicator_lists::FEODO,
+            crate::sources::hash_lookups::YARAIFY,
+            crate::sources::hash_lookups::CIRCL,
+            crate::sources::hash_lookups::MALWAREBAZAAR,
             "https://release-assets.githubusercontent.com/github-production-release-asset/x",
             "https://objects.githubusercontent.com/github-production-release-asset-2e65be/x",
         ];

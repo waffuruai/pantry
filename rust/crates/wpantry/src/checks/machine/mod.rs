@@ -19,11 +19,13 @@ use crate::checks::package_managers::versions;
 use crate::checks::{REMOVE, Scan, display_id, fill, is_kev, is_malicious};
 use crate::component::Component;
 use crate::db::severity_of;
-use crate::distros::{self, Advisories};
 use crate::error::{Error, Result};
-use crate::feeds;
 use crate::finding::Finding;
-use crate::osv::{self, Item};
+use crate::sources::distros::{self, Advisories};
+use crate::sources::endoflife;
+use crate::sources::osv::{self, Item};
+use crate::sources::releases;
+use crate::utils::dates;
 use crate::utils::os::MACOS;
 use crate::utils::os::now;
 use crate::utils::{files, homebrew, os, process};
@@ -194,7 +196,7 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
         .collect();
     let pg = if found.iter().any(|c| c.name == "postgres") {
         scan.status("Fetching PostgreSQL's security table");
-        let r = feeds::postgres(&scan.cache, scan.net, scan.opts.offline);
+        let r = releases::postgres(&scan.cache, scan.net, scan.opts.offline);
         scan.guard("PostgreSQL (postgresql.org security table)", r, Vec::new())?
     } else {
         Vec::new()
@@ -203,7 +205,7 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
     // by side before the loop asks for each.
     let products: Vec<String> = found.iter().filter_map(|c| c.eol.as_ref().map(|(p, _)| p.clone())).collect();
     scan.status("Fetching end-of-life dates");
-    feeds::eol_prefetch(&scan.cache, scan.net, &products, scan.opts.offline)?;
+    endoflife::eol_prefetch(&scan.cache, scan.net, &products, scan.opts.offline)?;
     for c in found {
         let recs = c.osv.as_ref().and_then(|o| answers.get(o)).cloned().unwrap_or_default();
         let mut failing = scan.advisories(c, &recs, c.osv.as_ref().and_then(|o| newer.get(o)), "fail", None);
@@ -350,7 +352,7 @@ pub fn clipper(scan: &mut Scan, self_test: Option<clipper_mod::SelfTest>) {
 /// A newer mise release only warns (OSV decides failures): a human bumps it
 /// in ops, so the fix is never unattended.
 pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
-    let r = feeds::github_latest(&scan.cache, scan.net, MISE_REPO, scan.opts.offline);
+    let r = releases::github_latest(&scan.cache, scan.net, MISE_REPO, scan.opts.offline);
     let latest = scan.guard("latest mise release (GitHub)", r, String::new())?;
     if !latest.is_empty() && !versions::same_or_newer(&c.version, &latest) {
         scan.add(Finding {
@@ -371,7 +373,7 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
 
 /// An advisory applies when the installed major is listed and the install
 /// is older than that major's fixed release.
-pub fn postgres(scan: &mut Scan, c: &Component, advisories: &[feeds::PgAdvisory]) -> Result<bool> {
+pub fn postgres(scan: &mut Scan, c: &Component, advisories: &[releases::PgAdvisory]) -> Result<bool> {
     let major = c.version.split('.').next().unwrap_or("").to_string();
     let mut failing = false;
     for a in advisories {
@@ -379,7 +381,7 @@ pub fn postgres(scan: &mut Scan, c: &Component, advisories: &[feeds::PgAdvisory]
         if !a.majors.contains(&major) || fixed.is_empty() || !versions::lt(&c.version, &fixed) {
             continue;
         }
-        let sev = feeds::severity_from_score(a.score);
+        let sev = releases::severity_from_score(a.score);
         if scan.cache.vuln(&a.cve)?.is_none() {
             scan.cache.put_vuln(&serde_json::json!({"id": a.cve, "summary": a.summary, "database_specific": {"severity": sev},
                                                     "affected": [{"package": {"ecosystem": "PostgreSQL", "name": "postgresql"}}]}))?;
@@ -420,7 +422,7 @@ fn apps_found(
     }
     scan.count("apps", found.len() as i64);
     scan.status("Fetching the Homebrew cask catalog");
-    let r = feeds::casks(&scan.cache, scan.net, scan.opts.offline);
+    let r = releases::casks(&scan.cache, scan.net, scan.opts.offline);
     let catalog = scan.guard("latest app versions (Homebrew cask catalog)", r, BTreeMap::new())?;
     let casks = casks();
     let items: Vec<Item> = found
@@ -505,7 +507,7 @@ fn browser(scan: &mut Scan, a: &Component, behind: bool, latest: &str) -> Result
     match a.extra.get("browser").map(String::as_str).unwrap_or("") {
         "chrome" => {
             scan.status("Fetching Chrome's release feed");
-            let r = feeds::chrome(&scan.cache, scan.net, "mac", scan.opts.offline);
+            let r = releases::chrome(&scan.cache, scan.net, "mac", scan.opts.offline);
             let releases = scan.guard("Chrome (Google's release feed)", r, Vec::new())?;
             let newest = releases
                 .into_iter()
@@ -516,7 +518,7 @@ fn browser(scan: &mut Scan, a: &Component, behind: bool, latest: &str) -> Result
         }
         "firefox" => {
             scan.status("Fetching Firefox's release feed");
-            let r = feeds::firefox(&scan.cache, scan.net, scan.opts.offline).map(Some);
+            let r = releases::firefox(&scan.cache, scan.net, scan.opts.offline).map(Some);
             if let Some(ff) = scan.guard("Firefox (Mozilla's release feed)", r, None)? {
                 let major = a.version.split('.').next().unwrap_or("");
                 let target =
@@ -578,7 +580,7 @@ fn linux_updates(scan: &mut Scan, rel: &BTreeMap<String, String>) -> Result<()> 
         }
         "arch" => {
             scan.status("Fetching the Arch security tracker");
-            let groups = feeds::arch(&scan.cache, scan.net, scan.opts.offline);
+            let groups = distros::arch(&scan.cache, scan.net, scan.opts.offline);
             let r = groups.and_then(|g| distros::arch_advisories(&scan.cache, &g));
             if let Some(res) = scan.guard("OS packages", r.map(Some), None)? {
                 distro(scan, rel, res);
@@ -613,7 +615,7 @@ fn macos(scan: &mut Scan, (updates, last): (Vec<(String, String)>, String)) {
         });
     }
     // "2026-10-20 08:15:32 +0000": stale after two weeks.
-    let age = feeds::parse_date(last.get(..10).unwrap_or("")).map(|d| now() - d as f64 * 86400.0).unwrap_or(0.0);
+    let age = dates::parse_date(last.get(..10).unwrap_or("")).map(|d| now() - d as f64 * 86400.0).unwrap_or(0.0);
     if age > 14.0 * 86400.0 {
         scan.add(Finding {
             kind: "os".into(),
@@ -872,7 +874,7 @@ mod tests {
         let mut s = scan(&net, &d);
         let mut c = Component::new("datastore", "postgres", "17.4", "/usr/bin/postgres");
         c.fix = "Upgrade postgres to {safe}".into();
-        let adv = feeds::PgAdvisory {
+        let adv = releases::PgAdvisory {
             cve: "CVE-2026-1".into(),
             majors: vec!["17".into(), "16".into()],
             fixed: vec!["17.6".into(), "16.10".into()],
@@ -960,7 +962,7 @@ mod tests {
     fn app_net(r: &crate::utils::net::Request) -> Result<crate::utils::net::Response> {
         use crate::utils::net::Response;
         let url = r.url.as_str();
-        if url == feeds::CASKS_URL {
+        if url == releases::CASKS_URL {
             return Ok(Response::ok(casks_body()));
         }
         if url.ends_with("/querybatch") {
@@ -1089,7 +1091,7 @@ mod tests {
     fn browser_feeds_down_are_unchecked_and_no_apps_is_nothing() {
         let d = crate::utils::temp::TempDir::new("browsers").unwrap();
         let net = Fake::new(|r| {
-            if r.url == feeds::CASKS_URL {
+            if r.url == releases::CASKS_URL {
                 return Ok(crate::utils::net::Response::ok(casks_body()));
             }
             Err(Error::Offline("down".into()))
@@ -1112,7 +1114,7 @@ mod tests {
     fn cask_catalog_down_still_checks_electron() {
         let d = crate::utils::temp::TempDir::new("casks").unwrap();
         let net = Fake::new(|r| {
-            if r.url == feeds::CASKS_URL {
+            if r.url == releases::CASKS_URL {
                 return Err(Error::Offline("down".into()));
             }
             app_net(r)
@@ -1216,7 +1218,7 @@ mod tests {
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         let c = Component::new("datastore", "postgres", "17.4", "/usr/bin/postgres");
-        let adv = |majors: &[&str], fixed: &[&str]| feeds::PgAdvisory {
+        let adv = |majors: &[&str], fixed: &[&str]| releases::PgAdvisory {
             cve: "CVE-2026-2".into(),
             majors: majors.iter().map(|m| m.to_string()).collect(),
             fixed: fixed.iter().map(|f| f.to_string()).collect(),
@@ -1338,7 +1340,7 @@ mod tests {
     fn distros_without_a_source_are_unchecked() {
         let d = crate::utils::temp::TempDir::new("distro").unwrap();
         let net = Fake::new(|r| {
-            assert_eq!(r.url, feeds::ARCH_URL);
+            assert_eq!(r.url, distros::ARCH_URL);
             Ok(crate::utils::net::Response::ok(r#"[{"name": "ASA-1", "packages": ["x"]}]"#))
         });
         let mut s = scan(&net, &d);

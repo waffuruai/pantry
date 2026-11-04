@@ -24,7 +24,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 | Catch code that behaves like an attack | Decoded-then-executed strings, payload arrays, decoders, `sudo` and persistence in install scripts, credential theft, crypto-wallet signing, drainers and account takeovers on Ethereum, Tempo, Solana, Stellar, XRP and Tron, clipboard clippers, unpinned third-party scripts, in the repos and in every editor, agent and browser extension installed; harsher where the pattern is out of place for its language, warn elsewhere, with a policy file that downgrades but never silences |
 | See text the way a parser sees it | Bidi overrides (Trojan Source), invisible tag and zero-width characters that hide instructions from you but not from an AI assistant, mixed-script identifiers, and weapon-vocabulary identifiers meant to make an AI reviewer refuse the file |
 | Don't get owned by opening a clone | Hooks a repo runs on open or install (Claude Code, Gemini, MCP servers in the repo, VS Code folder-open tasks, devcontainers, direnv, `postinstall`, gyp, native addons) and the indicators of known hijacked-repo campaigns |
-| Fix it, safely | `--fix` runs only unattended, user-level fixes and, after a yes, the stopgaps wpantry has for advisories with no fix yet (`wpantry mitigate`); everything else needing sudo or a code change is printed as a step |
+| Fix it, safely | `wpantry fix` runs only unattended, user-level fixes and, after a yes, the stopgaps wpantry has for advisories with no fix yet (`wpantry mitigate`); everything else needing sudo or a code change is printed as a step |
 
 Every check, every source it asks and exactly what is sent to each: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md).
 
@@ -42,14 +42,15 @@ Both verify the release before installing: mise against the release's signed pac
 ## Usage
 
 ```bash
-wpantry                                       # this computer: machine + every git repo under ~
-wpantry --path ~/code/myproject --no-machine  # one project, no machine inventory
-wpantry check --json --no-input               # findings for tools and agents
-wpantry search "tarfile" --applicable         # ranked search of cached advisories
-wpantry export --csv findings.csv             # id, url, component, affected and safe version
-wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
-wpantry --fix --dryrun                     # the update plan, change nothing
-wpantry --fix                              # apply the unattended fixes, then re-check
+wpantry scan                                       # this computer: machine + every git repo under ~
+wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
+wpantry scan --json --no-input                     # findings for tools and agents
+wpantry search "tarfile" --applicable              # ranked search of cached advisories
+wpantry export --csv findings.csv                  # id, url, component, affected and safe version
+wpantry watch                                      # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
+wpantry fix --dryrun                               # the update plan, change nothing
+wpantry fix                                        # apply the unattended fixes, then re-check
+wpantry help                                       # every command (wpantry help fix for one)
 ```
 
 Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).
@@ -77,7 +78,7 @@ mise bootstrap   # the pinned tools, then build wpantry and run `wpantry tools` 
 mise run test    # the Rust tests, the CA trust test and the install.sh test, offline
 ```
 
-`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run check` (`wpantry check` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md) maps the source; [docs/architecture.md](docs/architecture.md) is how it works); the standalone CA trust check and fix are in `ca-trust/`; the stopgaps for advisories that have no fix to install yet are in the binary (`wpantry mitigate <ID>`, [docs/public/usage.md](docs/public/usage.md#advisories-with-no-fix-yet)).
+`mise tasks ls` lists the rest: `mise run build`, `mise run test rust`, `mise run test ca-trust`, `mise run test install`, `mise run lint`, `mise run contract` (the CLI contract suite against `WPANTRY`, default the binary `build` makes), and `mise run scan` (`wpantry scan` with the pinned tools; flags after `--`). The code is in `rust/` ([rust/README.md](rust/README.md) maps the source; [docs/architecture.md](docs/architecture.md) is how it works); the standalone CA trust check and fix are in `ca-trust/`; the stopgaps for advisories that have no fix to install yet are in the binary (`wpantry mitigate <ID>`, [docs/public/usage.md](docs/public/usage.md#advisories-with-no-fix-yet)).
 
 The CLI contract wpantry keeps is [specs/cli-contract.md](specs/cli-contract.md); the specs, current and archived, are indexed in [specs/](specs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

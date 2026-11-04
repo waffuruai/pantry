@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
 <title id="title">Every Pantry report comes from one cache</title>
-<desc id="desc">A single SQLite file holds the OSV records for what is here, which versions were asked and when, the latest findings, every scan, the exposures with first-seen, last-seen and resolved scans, the fixes --fix ran and the events. From it come the terminal report and exit code, the --json envelope, export --csv and --jsonl, wpantry report&#x27;s exposure, remediation and audit logs in Markdown, JSON or CSV, search over the cached advisories, and the HTML report.</desc>
+<desc id="desc">A single SQLite file holds the OSV records for what is here, which versions were asked and when, the latest findings, every scan, the exposures with first-seen, last-seen and resolved scans, the fixes wpantry fix ran and the events. From it come the terminal report and exit code, the --json envelope, export --csv and --jsonl, wpantry report&#x27;s exposure, remediation and audit logs in Markdown, JSON or CSV, search over the cached advisories, and the HTML report.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d2ccc1"/></marker>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6cb4ee"/></marker>
@@ -28,13 +28,13 @@
 <text x="74" y="314" font-family="'Geist Mono', Menlo, monospace" font-size="12" fill="#ede8df">exposures</text>
 <text x="196" y="314" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">first seen, last seen, resolved</text>
 <text x="74" y="340" font-family="'Geist Mono', Menlo, monospace" font-size="12" fill="#ede8df">fixes</text>
-<text x="196" y="340" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">what --fix ran, verified by</text>
+<text x="196" y="340" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">what fix ran, verified by</text>
 <text x="74" y="366" font-family="'Geist Mono', Menlo, monospace" font-size="12" fill="#ede8df">events</text>
 <text x="196" y="366" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">scan, fix, sync, update</text>
 <text x="520" y="166" font-family="'Geist Mono', Menlo, monospace" font-size="12" letter-spacing="1.5" fill="#e8a33d">WHAT IS WRITTEN FROM IT</text>
 <rect x="520" y="180" width="624" height="62" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="520.5" y="180.5" width="623" height="61" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
-<text x="538" y="216" font-family="'Geist Mono', Menlo, monospace" font-size="13" font-weight="600" fill="#ede8df">wpantry check</text>
+<text x="538" y="216" font-family="'Geist Mono', Menlo, monospace" font-size="13" font-weight="600" fill="#ede8df">wpantry scan</text>
 <text x="688" y="207" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">The terminal report grouped by kind; exit 0 clean, 1 fails, 2 usage, 3 internal.</text>
 <text x="688" y="225" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">--json: the schema 1 envelope agents and W read.</text>
 <path d="M376,295 L440,295 L440,211 L520,211" fill="none" stroke="#d2ccc1" stroke-width="1.5" marker-end="url(#arrow)"/>

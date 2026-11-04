@@ -137,7 +137,7 @@ fn describe(kind: &Kind, exe: &Path) -> String {
     }
 }
 
-/// One line on stderr when a newer release is cached, for `check`; never
+/// One line on stderr when a newer release is cached, for `scan`; never
 /// a network call of its own beyond the daily memo, never under `--json`,
 /// `--offline` or `WPANTRY_NO_UPDATE_CHECK`.
 pub fn notice(net: &dyn wpantry::net::Net, offline: bool) -> Option<String> {

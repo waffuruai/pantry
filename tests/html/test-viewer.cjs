@@ -89,7 +89,7 @@ const history={since_days:90,open:3,
   fixes:[{at:2,when:'2026-10-22 19:00 UTC',command:'brew upgrade curl',mode:'auto',ok:true,scan_id:3,verified_scan:4,targets:['brew|curl||CVE-2025-9']},
     {at:2,when:'2026-10-22 19:01 UTC',command:'npm install -g x@2',mode:'auto',ok:false,scan_id:3,verified_scan:null,targets:[]}],
   scans:[{id:3,when:'2026-10-22 19:00 UTC',host:'mac',user:'me',version:'0.2.0',scope:'machine:~',fails:2,warns:1,unchecked:0},{id:4,when:'2026-10-22 20:00 UTC',host:'mac',user:'me',version:'0.2.0',scope:'machine:~',fails:1,warns:1,unchecked:0}]};
-const bundle={scan_id:42,runs:[{title:'Security scan',file:'wpantry check',report}],generated_at:1793000000000,phase:'scan',scope,host:'erics-mac',user:'eric',plan:planOf(every),history};
+const bundle={scan_id:42,runs:[{title:'Security scan',file:'wpantry scan',report}],generated_at:1793000000000,phase:'scan',scope,host:'erics-mac',user:'eric',plan:planOf(every),history};
 load(bundle);
 const page=main();
 assert.equal(wellFormed(page),null,'screen page');
@@ -206,7 +206,7 @@ assert(page.includes('2 sources not checked: coverage is incomplete.'));
 assert(page.includes('href="#risk"') && page.includes('href="#manual"') && page.includes('href="#history"'));
 
 // escaping: hostile text stays text
-load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,findings:[{...every[4],kind:'__proto__',component:'<img src=x onerror=alert(1)>',note:'unsafe <script>',fix_cmd:'update x'}]}}],plan:[{command:'update x',mode:'manual',findings:[0]}]});
+load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:[{...every[4],kind:'__proto__',component:'<img src=x onerror=alert(1)>',note:'unsafe <script>',fix_cmd:'update x'}]}}],plan:[{command:'update x',mode:'manual',findings:[0]}]});
 assert(main().includes('&lt;img src=x onerror=alert(1)&gt;') && !main().includes('<img src=x onerror=alert(1)>'));
 click({open:'0'});
 assert(main().includes('unsafe &lt;script&gt;') && !main().includes('<script>unsafe'));
@@ -291,11 +291,11 @@ assert(main().includes('<b>erics-mac</b>'));
 assert.equal(wellFormed(main()),null);
 
 // nothing found is said carefully; the all-clear state needs complete, scoped evidence
-load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,unfixed:0,unknown_licenses:0,findings:[]}}],plan:[],history:null,scope:{...scope,offline:true}});
+load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,unfixed:0,unknown_licenses:0,findings:[]}}],plan:[],history:null,scope:{...scope,offline:true}});
 assert(main().includes('No findings in this report') && !/clean result|no updates needed/i.test(main()));
 assert(section('risk').includes('Nothing failed or warned in what was checked'));
 assert(section('patching').includes('The local history could not be read'));
-const cleanBundle={...bundle,phase:'after updates',plan:[],history:null,runs:[{title:'Security scan',file:'wpantry check',report:{...report,checked:{'git repos':1},unfixed:0,unknown_licenses:0,findings:[]}}]};
+const cleanBundle={...bundle,phase:'after updates',plan:[],history:null,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,checked:{'git repos':1},unfixed:0,unknown_licenses:0,findings:[]}}]};
 load(cleanBundle);
 assert(main().includes('All clear. Nicely <em>done.</em>') && main().includes('The recheck found no findings'));
 assert(main().includes('<img src="data:image/png;base64,AAAA" alt="">'));
@@ -323,7 +323,7 @@ assert(!main().includes('All clear.'));
 
 // long lists are paged on screen (10 a page, 25/50/100 on request), complete in print
 const many=[]; for(let i=0;i<60;i++)many.push(finding('brew','formula-'+i,'CVE-2026-'+(100+i),'fail',{severity:'HIGH',fixed:'2',fix_cmd:'sudo fix formula-'+i}));
-load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,findings:many}}],plan:planOf(many),history:null});
+load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:many}}],plan:planOf(many),history:null});
 const comps=src=>(src.match(/<span class="comp">([^<]*)<\/span>/g)||[]).map(x=>x.replace(/<[^>]+>/g,''));
 let brew=areas()[0][1];
 assert.deepEqual(comps(brew),many.slice(0,10).map(f=>f.component));
@@ -362,7 +362,7 @@ assert.equal(comps(areas()[0][1]).length,60);
 assert.equal(wellFormed(main()),null);
 // counts read with thousands separators; the verdict names known exploits
 const big=[]; for(let i=0;i<1200;i++)big.push(finding('brew','pkg-'+i,'CVE-2026-'+(10000+i),'fail',{severity:'HIGH',kev:i<1001,fixed:'2',fix_cmd:'brew upgrade pkg-'+i,fix_auto:true}));
-load({...bundle,runs:[{title:'Security scan',file:'wpantry check',report:{...report,checked:{'project dependencies':203841},findings:big}}],plan:planOf(big),history:null});
+load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,checked:{'project dependencies':203841},findings:big}}],plan:planOf(big),history:null});
 assert(main().includes('<div class="v">203,841</div>') && main().includes('1,200 things to update') && main().includes('1,200 failing findings across 1,200 components, 0 warnings, 1,001 known exploits.'),main().split('class="verdict')[1].slice(0,300));
 assert(areas()[0][1].includes('1,200 components') && areas()[0][1].includes('1–10 of 1,200 components'));
 assert(section('patching').includes('<div class="big">1,200<small>commands</small></div>') && section('patching').includes('<ul class="long">') && !section('patching').includes('class="pager"'),'patching lists everything, scrolling, never paged');

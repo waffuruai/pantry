@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 /// A browser release younger than this only warns.
 pub const GRACE: f64 = 3.0 * 86400.0;
 
-/// Formulae `--fix` must not upgrade either: their catalog fix.
+/// Formulae `wpantry fix` must not upgrade either: their catalog fix.
 fn manual(formula: &str) -> Option<&'static str> {
     TOOLS.iter().find(|t| t.name == formula && !t.fix.is_empty()).map(|t| t.fix)
 }

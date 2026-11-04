@@ -9,6 +9,7 @@ its stdout, stderr, exit codes and cache file. Every implementation must pass
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import io
 import json
 import os
@@ -74,7 +75,7 @@ class Contract(unittest.TestCase):
 
     def run_bin(self, *argv, env=None, timeout=300):
         """(exit code, stdout, stderr)."""
-        p = subprocess.run([str(BIN), *argv], capture_output=True, text=True, env=env or self.env,
+        p = subprocess.run([str(BIN), *argv], capture_output=True, text=True, encoding="utf-8", env=env or self.env,
                            stdin=subprocess.DEVNULL, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
 
@@ -196,7 +197,7 @@ class Contract(unittest.TestCase):
         self.project_run("--json")
         rec = {"id": "MAL-TEST-1", "summary": "Synthetic malicious-package fixture",
                "affected": [{"package": {"ecosystem": "npm", "name": "example-package"}, "versions": ["1.0.0"]}]}
-        with sqlite3.connect(str(self.db)) as conn:
+        with closing(sqlite3.connect(str(self.db))) as conn, conn:
             conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)",
                          ("npm", "example-package", "1.0.0", time.time(), rec["id"]))
             conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -231,7 +232,7 @@ class Contract(unittest.TestCase):
         self.assertIn("Re-checking", out)
         bundle = self.html_bundle(path)
         self.assertEqual(bundle["phase"], "after updates")
-        with sqlite3.connect(str(self.db)) as conn:
+        with closing(sqlite3.connect(str(self.db))) as conn, conn:
             latest = conn.execute("SELECT MAX(id) FROM scans").fetchone()[0]
         self.assertEqual(bundle["scan_id"], latest, "HTML must identify the final history scan")
 
@@ -270,7 +271,9 @@ class Contract(unittest.TestCase):
         self.assertEqual(list(self.home.glob("*.html")), [])
         path = self.home / "report.html"
         path.write_text("previous report")
-        env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
+        blocked = Path(self.tmp.name, "cache-is-file")
+        blocked.write_text("not a directory")
+        env = dict(self.env, WPANTRY_DB=str(blocked / "w.db"))
         code, _, _ = self.run_bin("scan", "--no-machine", "--path", str(self.home), "--offline", "--html", str(path), env=env)
         self.assertEqual(code, 3)
         self.assertEqual(path.read_text(), "previous report")
@@ -500,7 +503,7 @@ class Contract(unittest.TestCase):
         self.assertAlmostEqual(e["seconds"], 0.5, places=2)
         self.assertIsInstance(e["at"], float)
         self.assertIn("If you copied two addresses yourself, ignore this", e["note"])
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             rows = c.execute("SELECT kind, detail FROM events WHERE kind = 'clipper'").fetchall()
         self.assertEqual(len(rows), 1, rows)
         detail = json.loads(rows[0][1])
@@ -617,6 +620,8 @@ class Contract(unittest.TestCase):
         """A finding with `fix_auto` true: --dry-run prints the command, a run
         runs it (here `true`) and records it in the remediation log; the
         advisory's alias finds it too, any case."""
+        success = "cmd /c exit 0" if platform.system() == "Windows" else "true"
+        failure = "cmd /c exit 1" if platform.system() == "Windows" else "false"
         self.project_run()
         conn = sqlite3.connect(str(self.db))
         conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -625,28 +630,28 @@ class Contract(unittest.TestCase):
         conn.execute("DELETE FROM findings")
         conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
-                      "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
+                      "demo bug (fixed in 1.0.1)", success, 1, "", None, ""))
         conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      ("app", "other", "2.0.0", "/opt/other", "GHSA-other", "fail", "2.0.1", 0, "HIGH",
-                      "another bug", "false", 1, "", None, ""))
+                      "another bug", failure, 1, "", None, ""))
         conn.commit()
         conn.close()
         code, out, err = self.run_bin("mitigate", "cve-2020-99999", "--dry-run")
         self.assertEqual(code, 0, out + err)
         self.assertIn("CVE-2020-99999: 1 finding in the last scan (demo 1.0.0)", out)
-        self.assertIn("would run: true", out)
-        self.assertNotIn("false", out, "only the advisory asked about")
+        self.assertIn(f"would run: {success}", out)
+        self.assertNotIn(failure, out, "only the advisory asked about")
         code, out, err = self.run_bin("mitigate", "GHSA-demo", "--yes")
         self.assertEqual(code, 0, out + err)
-        self.assertIn("→ true", out)
+        self.assertIn(f"→ {success}", out)
         conn = sqlite3.connect(str(self.db))
         rows = conn.execute("SELECT command, mode, ok FROM fixes").fetchall()
         conn.close()
-        self.assertEqual(rows, [("true", "mitigate", 1)])
+        self.assertEqual(rows, [(success, "mitigate", 1)])
         # a fix that fails: exit 1
         code, out, err = self.run_bin("mitigate", "GHSA-other", "--yes")
         self.assertEqual(code, 1, out + err)
-        self.assertIn("failed: false", out)
+        self.assertIn(f"failed: {failure}", out)
 
     def test_mitigate_has_a_stopgap_for_the_kernel_bug(self):
         """CVE-2026-98432's stopgap: on Linux --dry-run reports the kernel,
@@ -1011,7 +1016,8 @@ class Contract(unittest.TestCase):
         f = Path(self.tmp.name, "f.csv")
         code, out, _ = self.run_bin("export", "--csv", str(f))
         self.assertEqual(code, 0)
-        rows = list(csv.reader(f.open(newline="")))
+        with f.open(newline="", encoding="utf-8") as stream:
+            rows = list(csv.reader(stream))
         self.assertEqual(rows[0], ["id", "aliases", "url", "component", "kind", "affected_version", "safe_version",
                                    "severity", "kev", "status", "location"])
         self.assertEqual(rows[1], ["CVE-2026-1", "CVE-2026-1", "https://osv.dev/vulnerability/GHSA-b", "vite", "project",

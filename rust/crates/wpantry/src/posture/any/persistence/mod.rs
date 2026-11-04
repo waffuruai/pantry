@@ -38,7 +38,7 @@
 //! read.
 
 use crate::posture::Runner;
-use crate::system;
+use crate::utils::files;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -141,7 +141,9 @@ pub struct Item {
 impl Item {
     /// The baseline's key: a hash, so a startup file's line is never kept.
     pub fn key(&self) -> String {
-        crate::sha256::hex(format!("{}\u{1f}{}\u{1f}{}", self.source.name(), self.location, self.ident).as_bytes())
+        crate::utils::sha256::hex(
+            format!("{}\u{1f}{}\u{1f}{}", self.source.name(), self.location, self.ident).as_bytes(),
+        )
     }
 }
 
@@ -214,7 +216,7 @@ impl Roots<'static> {
 
 /// This machine's persistence items.
 pub fn inventory() -> Inventory {
-    inventory_in(&Roots::real(system::home()))
+    inventory_in(&Roots::real(files::home()))
 }
 
 /// The inventory and its programs' checks.

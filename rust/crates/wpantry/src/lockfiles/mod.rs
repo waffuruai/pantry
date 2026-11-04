@@ -174,7 +174,7 @@ pub fn extract_within(path: &Path, root: &Path) -> Result<Option<Vec<Package>>> 
         requirements::parse_file(path, root)?
     } else {
         let Some(parse) = parser(name) else { return Ok(None) };
-        let text = crate::system::read_capped(path, MAX_FILE)?;
+        let text = crate::utils::files::read_capped(path, MAX_FILE)?;
         if !looks_like(name, &text) {
             return Err(Error::Invalid(format!("{} isn't a {name} this can read", path.display())));
         }
@@ -254,7 +254,7 @@ mod tests {
     /// wrote with no packages still reads as empty.
     #[test]
     fn a_file_that_isnt_its_lockfile_is_an_error_not_empty() {
-        let d = crate::system::TempDir::new("notlock").unwrap();
+        let d = crate::utils::temp::TempDir::new("notlock").unwrap();
         for name in crate::repos::LOCKFILES.iter().filter(|n| !requirements::is_requirements(n)) {
             for (i, text) in ["this is not a valid lockfile\n", "", "{}\n"].iter().enumerate() {
                 let dir = d.path().join(format!("{i}-{name}"));
@@ -285,7 +285,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_lockfile_linking_outside_the_repo_is_not_read() {
-        let d = crate::system::TempDir::new("linkout").unwrap();
+        let d = crate::utils::temp::TempDir::new("linkout").unwrap();
         let (repo, outside) = (d.path().join("repo"), d.path().join("outside"));
         std::fs::create_dir_all(repo.join("sub")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();

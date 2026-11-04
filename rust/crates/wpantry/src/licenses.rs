@@ -8,11 +8,11 @@
 //! deps.dev covers npm, PyPI, crates.io, Go, Maven, NuGet and RubyGems; the
 //! rest count as unknown. Answers are cached for 30 days.
 
+use crate::component::Status;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
-use crate::json;
-use crate::net::{self, Net};
-use crate::system::Status;
+use crate::utils::json;
+use crate::utils::net::{self, Net};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
@@ -139,7 +139,7 @@ pub fn lookup(
     let mut todo = Vec::new();
     for (i, it) in items.iter().enumerate() {
         match cache.run(&key(it))? {
-            Some((_, at, v)) if offline || at > crate::system::now() - TTL => {
+            Some((_, at, v)) if offline || at > crate::utils::os::now() - TTL => {
                 out.push(Some(json::strs_at(&json!({"l": v}), "l")))
             }
             _ if system(&it.0).is_none() => out.push(Some(Vec::new())),
@@ -189,7 +189,7 @@ pub fn lookup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{Fake, Response};
+    use crate::utils::net::{Fake, Response};
 
     fn ids(xs: &[&str]) -> Vec<String> {
         xs.iter().map(|x| x.to_string()).collect()
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn lookup_caches_and_encodes_names() {
-        let d = crate::system::TempDir::new("lic").unwrap();
+        let d = crate::utils::temp::TempDir::new("lic").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let net = Fake::new(|r| {
             Ok(match r.url.as_str() {

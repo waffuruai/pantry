@@ -7,9 +7,9 @@
 //! we last asked, the latest scan's findings, and the small side feeds. A
 //! full-text index over the records lets agents search them.
 
-use crate::check::Finding;
 use crate::error::{Error, Result};
-use crate::system::now;
+use crate::finding::Finding;
+use crate::utils::os::now;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -197,16 +197,16 @@ impl Cache {
     }
 
     pub fn put_vuln(&self, rec: &Value) -> Result<()> {
-        let vid = crate::json::str_at(rec, "id");
-        let aliases = crate::json::strs_at(rec, "aliases").join(" ");
-        let mut packages: Vec<&str> = crate::json::arr_at(rec, "affected")
+        let vid = crate::utils::json::str_at(rec, "id");
+        let aliases = crate::utils::json::strs_at(rec, "aliases").join(" ");
+        let mut packages: Vec<&str> = crate::utils::json::arr_at(rec, "affected")
             .iter()
-            .map(|a| a.get("package").map(|p| crate::json::str_at(p, "name")).unwrap_or(""))
+            .map(|a| a.get("package").map(|p| crate::utils::json::str_at(p, "name")).unwrap_or(""))
             .collect();
         packages.sort_unstable();
         packages.dedup();
-        let summary = crate::json::str_at(rec, "summary");
-        let details = crate::json::str_at(rec, "details");
+        let summary = crate::utils::json::str_at(rec, "summary");
+        let details = crate::utils::json::str_at(rec, "details");
         self.conn.execute(
             "INSERT OR REPLACE INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -215,8 +215,8 @@ impl Cache {
                 summary,
                 details,
                 severity_of(rec),
-                crate::json::str_at(rec, "published"),
-                crate::json::str_at(rec, "modified"),
+                crate::utils::json::str_at(rec, "published"),
+                crate::utils::json::str_at(rec, "modified"),
                 format!("https://osv.dev/vulnerability/{vid}"),
                 rec.to_string(),
             ],
@@ -536,7 +536,7 @@ pub fn severity_of(rec: &Value) -> String {
     if let Some(v) = severity_label_of(rec) {
         return v;
     }
-    for s in crate::json::arr_at(rec, "severity") {
+    for s in crate::utils::json::arr_at(rec, "severity") {
         if let Some(score) = s.get("score").and_then(Value::as_str).and_then(cvss3_base_score) {
             return severity_label(score).to_string();
         }
@@ -550,7 +550,7 @@ fn severity_label_of(rec: &Value) -> Option<String> {
     {
         return Some(label.to_uppercase());
     }
-    for a in crate::json::arr_at(rec, "affected") {
+    for a in crate::utils::json::arr_at(rec, "affected") {
         if let Some(label) = a.get("ecosystem_specific").and_then(|d| d.get("severity")).and_then(Value::as_str)
             && !label.is_empty()
         {
@@ -569,7 +569,7 @@ mod tests {
     /// fresh forever.
     #[test]
     fn a_future_timestamp_is_not_fresh() {
-        let dir = crate::system::TempDir::new("db").unwrap();
+        let dir = crate::utils::temp::TempDir::new("db").unwrap();
         let c = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
         c.conn
             .execute(
@@ -591,7 +591,7 @@ mod tests {
     /// open, and keeps its rows.
     #[test]
     fn older_caches_gain_the_added_columns() {
-        let d = crate::system::TempDir::new("migrate").unwrap();
+        let d = crate::utils::temp::TempDir::new("migrate").unwrap();
         let file = d.path().join("old.db");
         let conn = Connection::open(&file).unwrap();
         conn.execute_batch(
@@ -640,8 +640,8 @@ mod tests {
         Cache::open(Some(&file)).unwrap().close().unwrap();
     }
 
-    pub fn temp_cache() -> (crate::system::TempDir, Cache) {
-        let dir = crate::system::TempDir::new("db").unwrap();
+    pub fn temp_cache() -> (crate::utils::temp::TempDir, Cache) {
+        let dir = crate::utils::temp::TempDir::new("db").unwrap();
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
         (dir, cache)
     }

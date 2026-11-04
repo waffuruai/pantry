@@ -12,9 +12,9 @@
 use crate::compare::Comparator;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
-use crate::json::{self, arr_at};
-use crate::net::{self, Net};
-use crate::system::exec;
+use crate::utils::json::{self, arr_at};
+use crate::utils::net::{self, Net};
+use crate::utils::process::exec;
 use rusqlite::params;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -297,12 +297,12 @@ pub(crate) fn seed_clone(db: &std::path::Path, files: &[&str]) -> std::path::Pat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::Fake;
+    use crate::utils::net::Fake;
     use serde_json::json;
 
     #[test]
     fn the_index_is_fetched_from_the_clone_beside_the_cache() {
-        let d = crate::system::TempDir::new("mal").unwrap();
+        let d = crate::utils::temp::TempDir::new("mal").unwrap();
         let db = d.path().join("w.db");
         let c = Cache::open(Some(&db)).unwrap();
         seed_clone(
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn every_ecosystem_has_a_directory_or_is_skipped() {
-        let d = crate::system::TempDir::new("mal").unwrap();
+        let d = crate::utils::temp::TempDir::new("mal").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let net = Fake::new(|_| panic!("an empty index asks nothing"));
         for eco in [
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn a_cache_or_bug_error_is_not_an_unknown_report() {
-        let d = crate::system::TempDir::new("mal").unwrap();
+        let d = crate::utils::temp::TempDir::new("mal").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         c.conn.execute("INSERT INTO malicious VALUES ('npm', 'evil', 'MAL-1')", []).unwrap();
         let net = Fake::new(|_| Err(Error::Missing("not a source failure".into())));
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn index_lookup_normalises_names() {
-        let d = crate::system::TempDir::new("mal").unwrap();
+        let d = crate::utils::temp::TempDir::new("mal").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         for (e, n, i) in [("pypi", "evil-pkg", "MAL-1"), ("npm", "@bad/scope", "MAL-2")] {
             c.conn.execute("INSERT INTO malicious VALUES (?, ?, ?)", params![e, n, i]).unwrap();
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn an_unread_report_is_unknown_never_assumed_and_never_cached() {
-        let d = crate::system::TempDir::new("mal").unwrap();
+        let d = crate::utils::temp::TempDir::new("mal").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         c.conn.execute("INSERT INTO malicious VALUES ('crates.io', 'evil', 'MAL-9')", []).unwrap();
         let unknown = Reports { matched: vec![], unknown: vec!["MAL-9".into()] };
@@ -452,14 +452,14 @@ mod tests {
         assert_eq!(reports(&c, &no_calls, "crates.io", "evil", "9.9.0", true).unwrap(), unknown);
         // Online, the fetch fails or OSV serves something that isn't the record.
         assert_eq!(reports(&c, &Fake::offline(), "crates.io", "evil", "9.9.0", false).unwrap(), unknown);
-        let wrong = Fake::new(|_| Ok(crate::net::Response::ok("{}")));
+        let wrong = Fake::new(|_| Ok(crate::utils::net::Response::ok("{}")));
         assert_eq!(reports(&c, &wrong, "crates.io", "evil", "9.9.0", false).unwrap(), unknown);
         assert_eq!(c.vuln("MAL-9").unwrap(), None, "nothing invented was cached");
         // Once OSV answers, the real ranges decide.
         let rec = json!({"id": "MAL-9", "affected": [{"package": {"ecosystem": "crates.io", "name": "evil"},
             "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.1.0"}]}]}]});
         let body = rec.to_string();
-        let good = Fake::new(move |_| Ok(crate::net::Response::ok(body.clone())));
+        let good = Fake::new(move |_| Ok(crate::utils::net::Response::ok(body.clone())));
         assert_eq!(reports(&c, &good, "crates.io", "evil", "9.9.0", false).unwrap(), Reports::default());
         assert_eq!(good.requests().len(), 1);
         assert_eq!(reports(&c, &no_calls, "crates.io", "evil", "1.0.5", true).unwrap().matched, [rec]);
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn offline_without_an_index_is_unchecked() {
-        let d = crate::system::TempDir::new("mal").unwrap();
+        let d = crate::utils::temp::TempDir::new("mal").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         assert!(matches!(sync(&c, true), Err(Error::Offline(_))));
     }

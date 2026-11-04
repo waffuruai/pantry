@@ -91,7 +91,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let d = crate::system::TempDir::new("path").unwrap();
+            let d = crate::utils::temp::TempDir::new("path").unwrap();
             let (safe, open) = (d.path().join("safe"), d.path().join("open"));
             std::fs::create_dir(&safe).unwrap();
             std::fs::create_dir(&open).unwrap();

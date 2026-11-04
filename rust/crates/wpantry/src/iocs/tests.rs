@@ -1,6 +1,6 @@
 use super::*;
-use crate::net::{Fake, Response};
-use crate::system::TempDir;
+use crate::utils::net::{Fake, Response};
+use crate::utils::temp::TempDir;
 
 fn cache_in(d: &TempDir) -> Cache {
     Cache::open(Some(&d.path().join("w.db"))).unwrap()
@@ -12,7 +12,7 @@ fn lists() -> Fake {
         Ok(Response::ok(match r.url.as_str() {
             u if u.ends_with("hash-iocs.txt") => {
                 assert_eq!(r.header("accept"), Some("application/vnd.github.raw"));
-                format!("# comment\n{};Test Malware\nnot-a-hash;x\n", crate::sha256::hex(b"evil bytes"))
+                format!("# comment\n{};Test Malware\nnot-a-hash;x\n", crate::utils::sha256::hex(b"evil bytes"))
             }
             u if u.ends_with("filename-iocs.txt") => {
                 "(?i)\\\\evilsvc\\.exe;90\n/\\.hidden-miner$;60\nbroken;nan\n[bad;70\n".into()

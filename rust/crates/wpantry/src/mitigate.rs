@@ -41,7 +41,7 @@ pub struct Real;
 impl Host for Real {
     fn read(&self, argv: &[&str]) -> String {
         let argv: Vec<&OsStr> = argv.iter().map(OsStr::new).collect();
-        crate::system::run(&argv, Duration::from_secs(15))
+        crate::utils::process::run(&argv, Duration::from_secs(15))
     }
 
     fn root(&self, argv: &[&str]) -> Result<()> {

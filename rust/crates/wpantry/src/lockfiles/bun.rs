@@ -6,7 +6,7 @@
 
 use super::{Package, plausible};
 use crate::error::Result;
-use crate::json;
+use crate::utils::json;
 use serde_json::Value;
 
 /// JSONC → JSON: `//` and `/* */` comments and commas before `}` or `]`

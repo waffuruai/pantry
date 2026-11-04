@@ -3,7 +3,7 @@
 
 use super::{Inventory, Roots, programs};
 use crate::clipper::odd_place;
-use crate::system;
+use crate::utils::parallel;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -112,7 +112,7 @@ pub fn vet(r: &Roots, program: &Path) -> Vetted {
 /// Check every persisted program (four at a time).
 pub fn vet_all(r: &Roots, inv: &Inventory) -> BTreeMap<PathBuf, Vetted> {
     let progs: Vec<PathBuf> = programs(inv).into_iter().filter(|p| p.exists()).collect();
-    let results = system::par_map(&progs, 4, |p| vet(r, p));
+    let results = parallel::par_map(&progs, 4, |p| vet(r, p));
     progs.into_iter().zip(results).collect()
 }
 
@@ -120,6 +120,7 @@ pub fn vet_all(r: &Roots, inv: &Inventory) -> BTreeMap<PathBuf, Vetted> {
 mod tests {
     use super::*;
     use crate::posture::testing::{roots, write};
+    use crate::utils::temp;
 
     #[test]
     fn signatures_and_quarantine() {
@@ -146,7 +147,7 @@ mod tests {
         );
         assert_eq!(signature_of(""), Signature::Unknown);
 
-        let d = system::TempDir::new("persist").unwrap();
+        let d = temp::TempDir::new("persist").unwrap();
         let prog = d.path().join("home/.hidden/agent");
         write(&prog, "x");
         let broken = |argv: &[&str]| match argv[..2] {

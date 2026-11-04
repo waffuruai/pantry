@@ -10,7 +10,7 @@
 //! Ledger and Tron.
 
 use super::{Context, Kind, Suspect, has_any, line_of, push, test_path};
-use crate::addresses;
+use crate::utils::addresses;
 
 pub(super) const ID: &str = "SUSPECT-WALLET-SIGNING";
 

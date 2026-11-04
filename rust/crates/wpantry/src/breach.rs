@@ -9,10 +9,12 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::json;
-use crate::net::{self, Net};
-use crate::sha256;
-use crate::system::{now, run, which};
+use crate::utils::json;
+use crate::utils::net::{self, Net};
+use crate::utils::os::now;
+use crate::utils::process::run;
+use crate::utils::process::which;
+use crate::utils::sha256;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -58,7 +60,7 @@ pub fn emails_to_check() -> Vec<String> {
         ));
     }
     if let Some(gh) = which("gh") {
-        let out = crate::system::exec(
+        let out = crate::utils::process::exec(
             &[
                 gh.as_os_str(),
                 OsStr::new("api"),
@@ -71,7 +73,7 @@ pub fn emails_to_check() -> Vec<String> {
         );
         let emails = match out {
             Ok(o) if o.code == Some(0) => o.stdout,
-            _ => crate::system::exec(
+            _ => crate::utils::process::exec(
                 &[
                     gh.as_os_str(),
                     OsStr::new("api"),
@@ -189,13 +191,13 @@ fn lookup_with(net: &dyn Net, email: &str, key: Option<String>) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{Fake, Response};
+    use crate::utils::net::{Fake, Response};
     use serde_json::json;
 
     #[test]
     fn quoting_and_consent() {
         assert_eq!(quote("a.b+c@example.com"), "a.b%2Bc%40example.com");
-        let d = crate::system::TempDir::new("breach").unwrap();
+        let d = crate::utils::temp::TempDir::new("breach").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         assert_eq!(consent(&c, None).unwrap(), None, "undecided, and nobody to ask");
         assert_eq!(consent(&c, Some(&|_| None)).unwrap(), None);
@@ -205,7 +207,7 @@ mod tests {
 
     #[test]
     fn a_no_is_remembered_too() {
-        let d = crate::system::TempDir::new("breach").unwrap();
+        let d = crate::utils::temp::TempDir::new("breach").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         c.set("breach_consent", "no").unwrap();
         assert_eq!(consent(&c, Some(&|_| panic!("decided"))).unwrap(), Some(false));
@@ -260,7 +262,7 @@ mod tests {
 
     #[test]
     fn answers_are_cached_a_week_and_stale_beats_nothing() {
-        let d = crate::system::TempDir::new("breach").unwrap();
+        let d = crate::utils::temp::TempDir::new("breach").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let emails = |s: &[&str]| s.iter().map(|e| e.to_string()).collect::<Vec<_>>();
         let net = fake();

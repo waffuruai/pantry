@@ -12,10 +12,11 @@
 //! is not a fix. A fix is verified only by a complete scan after it ran
 //! that no longer lists what it addressed; a failed fix never is.
 
-use crate::check::{Finding, Options};
+use crate::check::Options;
 use crate::db::Cache;
 use crate::error::Result;
-use crate::system::now;
+use crate::finding::Finding;
+use crate::utils::os::now;
 use rusqlite::params;
 use serde_json::{Value, json};
 
@@ -228,7 +229,7 @@ pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
 }
 
 fn host() -> String {
-    crate::system::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string()
+    crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string()
 }
 
 fn user() -> String {
@@ -491,7 +492,7 @@ mod tests {
 
     #[test]
     fn exposures_open_touch_and_resolve_within_a_scope() {
-        let d = crate::system::TempDir::new("history").unwrap();
+        let d = crate::utils::temp::TempDir::new("history").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
         let t0 = now() - 3.0 * 86400.0;
@@ -545,7 +546,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_recheck_resolves_nothing() {
-        let d = crate::system::TempDir::new("history-gap").unwrap();
+        let d = crate::utils::temp::TempDir::new("history-gap").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
         record_scan(&c, 1.0, &[finding("CVE-1", "fail")], &[], &opts).unwrap();
@@ -583,7 +584,7 @@ mod tests {
         };
         assert_eq!(scope_of(&hooks), "repos:/r;policy:hooks=/p/hooks.txt");
         // A scan without --licenses never resolves what a licenses scan found.
-        let d = crate::system::TempDir::new("history-scope").unwrap();
+        let d = crate::utils::temp::TempDir::new("history-scope").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let license = Finding { kind: "license".into(), vuln_id: "LICENSE".into(), ..finding("LICENSE", "warn") };
         record_scan(&c, 1.0, &[license], &[], &licenses).unwrap();
@@ -596,7 +597,7 @@ mod tests {
 
     #[test]
     fn a_fix_is_verified_only_by_complete_negative_evidence() {
-        let d = crate::system::TempDir::new("history-fix").unwrap();
+        let d = crate::utils::temp::TempDir::new("history-fix").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
         let target = key_of(&finding("CVE-1", "fail"));

@@ -12,7 +12,7 @@ fn terminal_secure_input(r: Runner) -> Outcome {
 }
 
 fn safari_safe_files(r: Runner) -> Outcome {
-    let home = crate::system::home();
+    let home = crate::utils::files::home();
     let container = home.join("Library/Containers/com.apple.Safari/Data/Library/Preferences/com.apple.Safari");
     let out = read(r, &container.to_string_lossy(), "AutoOpenSafeDownloads");
     match flag(&out) {

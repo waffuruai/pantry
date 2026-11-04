@@ -18,7 +18,7 @@ pub(super) fn login_items(r: &Roots, inv: &mut Inventory) {
             let lib = app.join("Contents/Library");
             for sub in ["LaunchAgents", "LaunchDaemons"] {
                 for plist in entries(&lib.join(sub), |n| n.ends_with(".plist")) {
-                    let v = crate::plist::read(&plist);
+                    let v = crate::utils::plist::read(&plist);
                     let program = match v.get("BundleProgram").and_then(|p| p.as_str()) {
                         Some(rel) => Some(app.join(rel)),
                         None => program_file(&command_of(&plist)),

@@ -10,86 +10,21 @@
 //! isn't installed is reported.
 
 use crate::compare::Comparator;
+use crate::component::Component;
+use crate::component::Status;
 use crate::db::{Cache, severity_of};
 use crate::error::{Error, Result};
-use crate::json::{J, obj, str_at};
-use crate::net::Net;
+use crate::finding::Finding;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
-use crate::system::{Component, Status};
+use crate::utils::json::str_at;
+use crate::utils::net::Net;
 use crate::{check_machine, check_supply, feeds, versions};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const REMOVE: &str = "Remove {} now, then rotate any credentials this machine holds";
-
-/// One thing that applies (`specs/cli-contract.md#finding`).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Finding {
-    pub kind: String,
-    pub component: String,
-    pub version: String,
-    pub location: String,
-    pub vuln_id: String,
-    /// fail | warn
-    pub status: String,
-    pub fixed: String,
-    pub kev: bool,
-    pub severity: String,
-    pub note: String,
-    pub fix_cmd: String,
-    pub fix_auto: bool,
-    /// How the vulnerable dependency is depended on: `runtime`, `dev`,
-    /// `optional`, or "" (reported `unknown`) where the lockfile doesn't say.
-    pub dep_scope: String,
-    /// The project's own dependency (true) or one another pulled in
-    /// (false); None where unknown.
-    pub dep_direct: Option<bool>,
-    /// The advisory's range the installed version fell in (`>=7.2.0, <9.0.0`),
-    /// so a reader sees why it applies; "" for findings without one.
-    pub affected_range: String,
-}
-
-impl Finding {
-    /// A finding about a component: its kind, name, version and path.
-    pub fn of(c: &Component) -> Finding {
-        Finding {
-            kind: c.kind.clone(),
-            component: c.name.clone(),
-            version: c.version.clone(),
-            location: c.path.clone(),
-            dep_scope: c.scope.clone(),
-            dep_direct: c.direct,
-            ..Default::default()
-        }
-    }
-
-    /// `dep_scope` as the contract spells it: `unknown` for "".
-    pub fn dep_scope_name(&self) -> &str {
-        if self.dep_scope.is_empty() { "unknown" } else { &self.dep_scope }
-    }
-
-    pub fn to_json(&self) -> J {
-        obj([
-            ("kind", self.kind.as_str().into()),
-            ("component", self.component.as_str().into()),
-            ("version", self.version.as_str().into()),
-            ("location", self.location.as_str().into()),
-            ("vuln_id", self.vuln_id.as_str().into()),
-            ("status", self.status.as_str().into()),
-            ("fixed", self.fixed.as_str().into()),
-            ("kev", self.kev.into()),
-            ("severity", self.severity.as_str().into()),
-            ("note", self.note.as_str().into()),
-            ("fix_cmd", self.fix_cmd.as_str().into()),
-            ("fix_auto", self.fix_auto.into()),
-            ("dep_scope", self.dep_scope_name().into()),
-            ("dep_direct", self.dep_direct.map(J::Bool).unwrap_or(J::Null)),
-            ("affected_range", self.affected_range.as_str().into()),
-        ])
-    }
-}
 
 /// The policy files a scan reads; the bundled defaults unless the caller
 /// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`,
@@ -178,7 +113,7 @@ pub fn listed(path: Option<&Path>, bundled: &str) -> Vec<String> {
 pub fn display_id(rec: &Value) -> String {
     let id = str_at(rec, "id");
     std::iter::once(id.to_string())
-        .chain(crate::json::strs_at(rec, "aliases"))
+        .chain(crate::utils::json::strs_at(rec, "aliases"))
         .find(|a| a.starts_with("CVE-"))
         .unwrap_or_else(|| id.to_string())
 }
@@ -306,9 +241,9 @@ impl<'a> Scan<'a> {
             net,
             log,
             note,
-            status: &crate::system::quiet,
+            status: &crate::component::quiet,
             asker: None,
-            home: crate::system::home(),
+            home: crate::utils::files::home(),
             repos: Vec::new(),
             findings: Vec::new(),
             counts: Vec::new(),
@@ -405,7 +340,7 @@ impl<'a> Scan<'a> {
     // the scan --------------------------------------------------------------
 
     pub fn run(mut self) -> Result<Outcome> {
-        let started_at = crate::system::now();
+        let started_at = crate::utils::os::now();
         repos::forget_walks();
         self.status("Fetching CISA's known-exploited list");
         let kev = feeds::kev(&self.cache, self.net, self.opts.offline);
@@ -585,10 +520,10 @@ pub fn as_source(e: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::Fake;
+    use crate::utils::net::Fake;
     use serde_json::json;
 
-    fn scan<'a>(net: &'a Fake, dir: &crate::system::TempDir) -> Scan<'a> {
+    fn scan<'a>(net: &'a Fake, dir: &crate::utils::temp::TempDir) -> Scan<'a> {
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
         Scan::new(Options::default(), cache, net, &|_| {}, &|_| {})
     }
@@ -607,7 +542,7 @@ mod tests {
             assert!(!cmd.contains("npm install"), "{cmd}");
         }
         let net = Fake::offline();
-        let dir = crate::system::TempDir::new("check").unwrap();
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
         let mut s = scan(&net, &dir);
         c.osv = Some(("npm".into(), "lodash".into(), "4.17.20".into()));
         let rec = json!({"id": "GHSA-h", "affected": [{"package": {"ecosystem": "npm", "name": "lodash"},
@@ -628,7 +563,7 @@ mod tests {
     #[test]
     fn advisories_pick_the_closest_fix_and_dedupe_cves() {
         let net = Fake::offline();
-        let dir = crate::system::TempDir::new("check").unwrap();
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
         let mut s = scan(&net, &dir);
         s.kev.insert("CVE-2026-9".into());
         let mut c = Component::new("project", "rustls", "0.23.10", "/w/Cargo.lock");
@@ -668,7 +603,7 @@ mod tests {
     #[test]
     fn a_group_is_fixed_by_the_version_that_fixes_every_record() {
         let net = Fake::offline();
-        let dir = crate::system::TempDir::new("check").unwrap();
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
         let mut s = scan(&net, &dir);
         let (eco, installed) = ("Ubuntu:24.04:LTS", "1.35+dfsg-3build1");
         let mut c = Component::new("os", "tar", installed, "/var/lib/dpkg/status");
@@ -693,7 +628,7 @@ mod tests {
     #[test]
     fn a_reintroduced_interval_with_no_fix_is_unfixed() {
         let net = Fake::offline();
-        let dir = crate::system::TempDir::new("check").unwrap();
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
         let mut s = scan(&net, &dir);
         let mut c = Component::new("project", "x", "2.0.0", "/w/Cargo.lock");
         c.osv = Some(("crates.io".into(), "x".into(), "2.0.0".into()));
@@ -709,7 +644,7 @@ mod tests {
     #[test]
     fn unfixed_high_impact_advisories_warn_with_a_mitigation() {
         let net = Fake::offline();
-        let dir = crate::system::TempDir::new("check").unwrap();
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
         let mut s = scan(&net, &dir);
         let mut c = Component::new("os", "linux-image", "6.8.0-45.45", "/var/lib/dpkg/status");
         c.osv = Some(("Ubuntu:24.04:LTS".into(), "linux-image".into(), "6.8.0-45.45".into()));
@@ -746,7 +681,7 @@ mod tests {
     #[test]
     fn unchecked_is_reported_once() {
         let net = Fake::offline();
-        let dir = crate::system::TempDir::new("check").unwrap();
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
         let mut s = scan(&net, &dir);
         let r: Result<i32> = Err(Error::Offline("a: down\nmore".into()));
         assert_eq!(s.guard("feed", r, 7).unwrap(), 7);

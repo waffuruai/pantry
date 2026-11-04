@@ -4,7 +4,8 @@
 //! when installed. The walk rules are the contract's
 //! (`specs/cli-contract.md#scope-walk`).
 
-use crate::system::{Status, short};
+use crate::component::Status;
+use crate::utils::files::short;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -68,7 +69,7 @@ fn skip(parent: &str, name: &str) -> bool {
 /// is `root` itself. Symlinks are not followed, and only directory entries
 /// are looked at.
 pub fn discover(root: &Path) -> Vec<PathBuf> {
-    discover_with(root, &crate::system::quiet)
+    discover_with(root, &crate::component::quiet)
 }
 
 /// [`discover`], saying which directory it is looking in.
@@ -112,9 +113,9 @@ pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
         tops.sort();
         status(&format!("Looking for git repos in {} ({} folders)", short(&root.to_string_lossy()), tops.len()));
         let seen = std::sync::atomic::AtomicUsize::new(0);
-        let per_top = crate::system::par_map(&tops, crate::system::PROBES, |top| {
+        let per_top = crate::utils::parallel::par_map(&tops, crate::utils::parallel::PROBES, |top| {
             let mut mine = Vec::new();
-            visit(top, 1, &mut mine, &crate::system::quiet);
+            visit(top, 1, &mut mine, &crate::component::quiet);
             let n = seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             status(&format!(
                 "Looking for git repos in {} ({}/{} folders)",
@@ -303,7 +304,7 @@ pub fn repo_images(repos: &[Repo]) -> Vec<(String, PathBuf)> {
 }
 
 fn text(path: &Path) -> String {
-    crate::system::read_capped(path, 16 << 20).unwrap_or_default()
+    crate::utils::files::read_capped(path, 16 << 20).unwrap_or_default()
 }
 
 /// The images a Dockerfile builds FROM, without build stages, `scratch` or
@@ -369,8 +370,11 @@ pub fn install_scripts(files: &[PathBuf]) -> Vec<InstallScript> {
     for f in files {
         match f.file_name().and_then(|n| n.to_str()) {
             Some("package-lock.json" | "npm-shrinkwrap.json") => {
-                let Ok(bytes) = crate::system::read_capped_bytes(f, crate::json::MAX_DOCUMENT as u64) else { continue };
-                let Ok(data) = crate::json::parse(&bytes, crate::json::MAX_DOCUMENT) else { continue };
+                let Ok(bytes) = crate::utils::files::read_capped_bytes(f, crate::utils::json::MAX_DOCUMENT as u64)
+                else {
+                    continue;
+                };
+                let Ok(data) = crate::utils::json::parse(&bytes, crate::utils::json::MAX_DOCUMENT) else { continue };
                 if let Some(pkgs) = data.get("packages").and_then(|p| p.as_object()) {
                     for (k, v) in pkgs {
                         let truthy = v
@@ -433,7 +437,7 @@ pub fn pnpm_allowed_builds(ws: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::TempDir;
+    use crate::utils::temp::TempDir;
     use std::cell::RefCell;
 
     fn git_repo(path: &Path, worktree: bool) -> PathBuf {

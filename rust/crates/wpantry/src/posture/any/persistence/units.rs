@@ -2,7 +2,7 @@
 
 use super::{INJECT, Inventory, Item, Roots, Source, entries, injects_in};
 use crate::clipper::{command_of, item_dirs_for, program_file};
-use crate::system;
+use crate::utils::files;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
@@ -36,11 +36,11 @@ pub(super) fn units(r: &Roots, inv: &mut Inventory) {
             let argv = command_of(&path);
             let mut injects = injects_in(&argv.join(" "));
             if source == Source::Launchd {
-                let plist = crate::plist::read(&path);
+                let plist = crate::utils::plist::read(&path);
                 if let Some(env) = plist.get("EnvironmentVariables").and_then(|e| e.as_object()) {
                     injects.extend(env.keys().filter(|k| INJECT.contains(&k.as_str())).cloned());
                 }
-            } else if let Ok(text) = system::read_capped(&path, 1 << 20) {
+            } else if let Ok(text) = files::read_capped(&path, 1 << 20) {
                 injects.extend(injects_in(&text));
             }
             injects.sort();

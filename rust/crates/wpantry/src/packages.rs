@@ -3,9 +3,17 @@
 //! every Node, `cargo install`s, pipx-installed tools and global Ruby gems.
 
 use crate::catalog::{Cycle, PYTHON_DIRS};
-use crate::re::Regex;
-use crate::system::{self, Component, expand, github, on_path, owner, read_json, run, which};
+use crate::component::Component;
 use crate::tools::updater;
+use crate::utils::files::expand;
+use crate::utils::files::owner;
+use crate::utils::files::read_json;
+use crate::utils::net::github;
+use crate::utils::process::on_path;
+use crate::utils::process::run;
+use crate::utils::process::which;
+use crate::utils::re::Regex;
+use crate::utils::{files, parallel};
 use serde_json::Value;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -71,7 +79,7 @@ fn find_pythons() -> Vec<(String, String)> {
     let minor = Regex::new(r"python3\.\d+");
     let mut names: Vec<String> = dirs
         .iter()
-        .flat_map(|d| system::glob(&format!("{d}/python3.*")))
+        .flat_map(|d| files::glob(&format!("{d}/python3.*")))
         .filter_map(|p| Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()))
         .filter(|n| minor.fullmatch(n).is_some())
         .collect();
@@ -86,14 +94,14 @@ fn pythons_from(
     found: Vec<(String, String)>,
     probe: &(dyn Fn(&str) -> String + Sync),
 ) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    let probed = system::par_map(&found, system::PROBES, |(shown, _)| probe(shown));
+    let probed = parallel::par_map(&found, parallel::PROBES, |(shown, _)| probe(shown));
     let mut out = Vec::new();
     let mut unread = Vec::new();
     let mut seen = Vec::new();
     for ((shown, real), raw) in found.into_iter().zip(probed) {
         let last = raw.trim().lines().last().unwrap_or("");
         let Some(info) = json_in(last, '{', '}') else { continue };
-        let exe = system::realpath(&str_of(&info, "exe"));
+        let exe = files::realpath(&str_of(&info, "exe"));
         if seen.contains(&exe) {
             continue;
         }
@@ -106,7 +114,7 @@ fn pythons_from(
         c.fix = fix.clone();
         c.auto = auto;
         out.push(c);
-        let sites: Vec<String> = crate::json::strs_at(&info, "sites");
+        let sites: Vec<String> = crate::utils::json::strs_at(&info, "sites");
         let (pkgs, gaps) = pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto));
         out.extend(pkgs);
         if !gaps.is_empty() {
@@ -147,7 +155,7 @@ pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
             } else {
                 continue;
             };
-            let text = match system::read_capped(&meta, 1 << 20) {
+            let text = match files::read_capped(&meta, 1 << 20) {
                 Ok(text) => text,
                 Err(e) => {
                     gaps.push(format!("{}: {e}", meta.display()));
@@ -178,7 +186,7 @@ pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
 
 /// pip and the packages installed for one Python, and what couldn't be read.
 fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> (Vec<Component>, Vec<String>) {
-    let real = system::realpath(py);
+    let real = files::realpath(py);
     let mut out = Vec::new();
     let (found, gaps) = installed(sites);
     for (name, ver) in found {
@@ -203,14 +211,14 @@ fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -
 /// npm itself and the global npm packages of each Node in `found`.
 pub fn node_packages(found: &[Component]) -> Vec<Component> {
     let nodes: Vec<&Component> = found.iter().filter(|c| c.name == "node").collect();
-    system::par_map(&nodes, system::PROBES, |node| npm_globals(node)).concat()
+    parallel::par_map(&nodes, parallel::PROBES, |node| npm_globals(node)).concat()
 }
 
 /// npm and the global packages of one node install.
 fn npm_globals(node: &Component) -> Vec<Component> {
     let mut out = Vec::new();
     let version = Regex::new(r"(\d+\.\d+\.\d+)$");
-    let real = system::realpath(&node.path);
+    let real = files::realpath(&node.path);
     let npm = Path::new(&real).with_file_name("npm").display().to_string();
     if !Path::new(&npm).exists() {
         return out;
@@ -285,7 +293,7 @@ pub fn cargo_installs() -> Vec<Component> {
     let home = std::env::var("CARGO_HOME")
         .ok()
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| format!("{}/.cargo", system::home().display()));
+        .unwrap_or_else(|| format!("{}/.cargo", files::home().display()));
     cargo_installs_in(Path::new(&home))
 }
 
@@ -346,7 +354,7 @@ pub fn gems(found: &[Component]) -> Vec<Component> {
     let re = Regex::new(r"^(\S+) \((?:default: )?([^,)\s]+)");
     let mut out = Vec::new();
     for ruby in found.iter().filter(|c| c.name == "ruby") {
-        let gem = Path::new(&system::realpath(&ruby.path)).with_file_name("gem").display().to_string();
+        let gem = Path::new(&files::realpath(&ruby.path)).with_file_name("gem").display().to_string();
         if !Path::new(&gem).exists() {
             continue;
         }
@@ -367,10 +375,11 @@ pub fn gems(found: &[Component]) -> Vec<Component> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::temp;
 
     #[test]
     fn global_packages_reads_npm_root() {
-        let d = crate::system::TempDir::new("npmroot").unwrap();
+        let d = crate::utils::temp::TempDir::new("npmroot").unwrap();
         let pkg = |dir: &str, json: &str| {
             std::fs::create_dir_all(d.path().join(dir)).unwrap();
             std::fs::write(d.path().join(dir).join("package.json"), json).unwrap();
@@ -381,7 +390,7 @@ mod tests {
         std::fs::create_dir_all(d.path().join(".bin")).unwrap();
         std::fs::create_dir_all(d.path().join("half-installed")).unwrap();
         // `npm link` leaves a symlink to the package's own folder.
-        let linked = crate::system::TempDir::new("linked").unwrap();
+        let linked = crate::utils::temp::TempDir::new("linked").unwrap();
         std::fs::write(linked.path().join("package.json"), r#"{"name": "mine", "version": "1.0.0"}"#).unwrap();
         std::os::unix::fs::symlink(linked.path(), d.path().join("mine")).unwrap();
         let got = global_packages(d.path()).unwrap();
@@ -399,7 +408,7 @@ mod tests {
 
     #[test]
     fn installed_distributions_from_metadata() {
-        let d = system::TempDir::new("sites").unwrap();
+        let d = temp::TempDir::new("sites").unwrap();
         let (venv, user) = (d.path().join("venv"), d.path().join("user"));
         let put = |p: std::path::PathBuf, text: &str| {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -438,7 +447,7 @@ mod tests {
     /// here (from 3.14 a venv is `sys.prefix` even under `-S`).
     #[test]
     fn the_probe_lists_the_sites_a_venv_inherits() {
-        let d = system::TempDir::new("venvs").unwrap();
+        let d = temp::TempDir::new("venvs").unwrap();
         let mut pythons: Vec<String> = which("python3").into_iter().map(|p| p.display().to_string()).collect();
         pythons.extend(
             ["python3.12", "python3.13", "python3.14", "python3.15"]
@@ -449,7 +458,7 @@ mod tests {
         let sites_of = |py: &str| -> Vec<String> {
             let raw = sh(&[py, "-I", "-S", "-c", PY_INFO], 30);
             let info = json_in(raw.trim().lines().last().unwrap_or(""), '{', '}').unwrap_or(Value::Null);
-            crate::json::strs_at(&info, "sites")
+            crate::utils::json::strs_at(&info, "sites")
         };
         for (i, py) in pythons.iter().enumerate() {
             // The user site first, then the interpreter's own.
@@ -499,7 +508,7 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        system::realpath(&p.display().to_string()) // the probes resolve symlinks (/var on macOS)
+        files::realpath(&p.display().to_string()) // the probes resolve symlinks (/var on macOS)
     }
 
     /// The probe's JSON for each interpreter becomes a runtime and its
@@ -507,8 +516,8 @@ mod tests {
     /// probe that fails is skipped; what couldn't be read is reported.
     #[test]
     fn pythons_from_probe_answers() {
-        let home = system::test_home();
-        let d = system::TempDir::new("pyprobe").unwrap();
+        let home = files::test_home();
+        let d = temp::TempDir::new("pyprobe").unwrap();
         let site = d.path().join("site-packages");
         std::fs::create_dir_all(site.join("requests-2.32.0.dist-info")).unwrap();
         std::fs::write(site.join("requests-2.32.0.dist-info/METADATA"), "Name: requests\nVersion: 2.32.0\n").unwrap();
@@ -596,8 +605,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn npm_globals_from_the_root_or_npm_ls() {
-        let bin = system::TempDir::new("nodebin").unwrap();
-        let root = system::TempDir::new("npmroot2").unwrap();
+        let bin = temp::TempDir::new("nodebin").unwrap();
+        let root = temp::TempDir::new("npmroot2").unwrap();
         for (dir, json) in [
             ("npm", r#"{"name": "npm", "version": "11.1.0"}"#),
             ("corepack", r#"{"version": "0.30.0"}"#),
@@ -646,8 +655,8 @@ mod tests {
 
     #[test]
     fn cargo_installs_from_crates2_json() {
-        let home = system::test_home();
-        let cargo = system::home().join(".cargo");
+        let home = files::test_home();
+        let cargo = files::home().join(".cargo");
         assert!(cargo_installs_in(&cargo).is_empty(), "no .crates2.json yet");
         std::fs::create_dir_all(&cargo).unwrap();
         std::fs::write(
@@ -705,7 +714,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gems_of_each_ruby() {
-        let bin = system::TempDir::new("rubybin").unwrap();
+        let bin = temp::TempDir::new("rubybin").unwrap();
         let ruby = script(bin.path(), "ruby", "echo ruby 3.3.0\n");
         let r = Component::new("runtime", "ruby", "3.3.0", &ruby);
         let not_ruby = Component::new("runtime", "node", "22", &ruby);

@@ -5,7 +5,7 @@
 
 use super::{Package, Scope, plausible};
 use crate::error::Result;
-use crate::json::{self, arr_at, str_at};
+use crate::utils::json::{self, arr_at, str_at};
 
 pub fn parse(text: &str) -> Result<Vec<Package>> {
     let data = json::parse(text.as_bytes(), json::MAX_DOCUMENT)?;

@@ -5,10 +5,10 @@
 //! product on record, and OSV's answers for every package version that
 //! has been asked about before. A scheduled run does this, then a check.
 
+use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::net::Net;
-use crate::system::Status;
+use crate::utils::net::Net;
 use crate::{feeds, malicious, osv};
 
 /// What a sync refreshed and what it couldn't.
@@ -76,11 +76,11 @@ pub fn run(cache: &Cache, net: &dyn Net, refresh: bool, status: Status) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{Fake, Request, Response};
+    use crate::utils::net::{Fake, Request, Response};
     use serde_json::json;
 
-    fn cache() -> (crate::system::TempDir, Cache) {
-        let d = crate::system::TempDir::new("sync").unwrap();
+    fn cache() -> (crate::utils::temp::TempDir, Cache) {
+        let d = crate::utils::temp::TempDir::new("sync").unwrap();
         let db = d.path().join("w.db");
         let c = Cache::open(Some(&db)).unwrap();
         // The malicious index fetches from a clone beside the cache: a local one here.

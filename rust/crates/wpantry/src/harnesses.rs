@@ -7,10 +7,10 @@
 //! project-level MCP files the scanned repos carry. The harness binaries
 //! themselves are in the catalog (or the npm and pipx listings).
 
-use crate::json::{self, str_at};
 use crate::lockfiles::toml;
 use crate::repos::Repo;
-use crate::system::expand;
+use crate::utils::files::expand;
+use crate::utils::json::{self, str_at};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -142,10 +142,10 @@ fn load(path: &Path, fmt: &str) -> Value {
         _ => {
             let v = read_json(path);
             if v.is_null() && path.to_string_lossy().ends_with(".jsonc") {
-                let text = crate::system::read_capped(path, 16 << 20).unwrap_or_default();
+                let text = crate::utils::files::read_capped(path, 16 << 20).unwrap_or_default();
                 // A line comment ends at its line: `.` must not cross newlines
                 // here, or the first `//` would swallow the rest of the file.
-                let text = crate::re::Regex::with_flags(r"^\s*//[^\n]*$|/\*.*?\*/", "ms").replace_all(&text, "");
+                let text = crate::utils::re::Regex::with_flags(r"^\s*//[^\n]*$|/\*.*?\*/", "ms").replace_all(&text, "");
                 return if text.trim().is_empty() {
                     Value::Object(Map::new())
                 } else {
@@ -177,7 +177,7 @@ fn servers(data: &Value, keys: &[&str]) -> Vec<(String, Value)> {
 }
 
 fn read_json(path: &Path) -> Value {
-    crate::system::read_capped_bytes(path, 16 << 20)
+    crate::utils::files::read_capped_bytes(path, 16 << 20)
         .ok()
         .and_then(|b| json::parse(&b, 16 << 20).ok())
         .unwrap_or(Value::Null)
@@ -330,7 +330,7 @@ fn toml_strings(raw: &str) -> Vec<Value> {
 /// {name: {command, args}}}; nested tables (`.env`) are ignored.
 fn toml_servers(path: &Path) -> Value {
     let mut servers = Map::new();
-    let text = crate::system::read_capped(path, 16 << 20).unwrap_or_default();
+    let text = crate::utils::files::read_capped(path, 16 << 20).unwrap_or_default();
     for t in toml::parse(&text).unwrap_or_default() {
         let keys = dotted(&t.name);
         if keys.len() != 2 || keys[0] != "mcp_servers" || t.array {
@@ -359,7 +359,7 @@ fn unquote(s: &str) -> String {
 /// `mcp_servers:` in a YAML config: name → {command, args}, where args is a
 /// flow list ([a, b]) or a block list (- a).
 fn yaml_servers(path: &Path) -> Value {
-    let text = crate::system::read_capped(path, 16 << 20).unwrap_or_default();
+    let text = crate::utils::files::read_capped(path, 16 << 20).unwrap_or_default();
     let mut servers: Vec<(String, Map<String, Value>)> = Vec::new();
     let (mut block, mut key) = (false, String::new());
     for raw in text.lines() {
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn jsonc_line_comments_end_at_their_line() {
-        let d = crate::system::TempDir::new("jsonc").unwrap();
+        let d = crate::utils::temp::TempDir::new("jsonc").unwrap();
         let f = d.path().join("opencode.jsonc");
         std::fs::write(&f, "// header\n{\n  // the servers\n  \"mcp\": {\"db\": {\"command\": \"bunx\"}} /* c */\n}\n")
             .unwrap();
@@ -449,8 +449,8 @@ mod tests {
     // The test vectors the Python implementation had (`Harnesses`).
     #[test]
     fn configs_across_harnesses() {
-        let _home = crate::system::test_home();
-        let home = crate::system::home();
+        let _home = crate::utils::files::test_home();
+        let home = crate::utils::files::home();
         for (f, text) in [
             (
                 ".cursor/mcp.json",
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn toml_quoted_tables() {
-        let d = crate::system::TempDir::new("toml").unwrap();
+        let d = crate::utils::temp::TempDir::new("toml").unwrap();
         let f = d.path().join("c.toml");
         std::fs::write(
             &f,
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn project_mcp_files() {
-        let d = crate::system::TempDir::new("mcp").unwrap();
+        let d = crate::utils::temp::TempDir::new("mcp").unwrap();
         let repo = d.path().join("repo");
         std::fs::create_dir_all(repo.join(".vscode")).unwrap();
         std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers": {"db": {"command": "bunx", "args": ["db-mcp"]}, "remote": {"url": "https://example.com/mcp"}}}"#).unwrap();
@@ -521,8 +521,8 @@ mod tests {
 
     #[test]
     fn plugin_and_skill_dirs_are_the_installed_ones() {
-        let _home = crate::system::test_home();
-        let home = crate::system::home();
+        let _home = crate::utils::files::test_home();
+        let home = crate::utils::files::home();
         for d in [".claude/skills/review", ".codex/skills/x", ".pi/agent", ".claude/plugins/cache/mk/p1"] {
             std::fs::create_dir_all(home.join(d)).unwrap();
         }
@@ -551,8 +551,8 @@ mod tests {
 
     #[test]
     fn claude_code_projects_fan_out_and_later_projects_win() {
-        let _home = crate::system::test_home();
-        let home = crate::system::home();
+        let _home = crate::utils::files::test_home();
+        let home = crate::utils::files::home();
         std::fs::write(
             home.join(".claude.json"),
             r#"{"mcpServers": {"top": {"command": "npx", "args": ["top-mcp"]}},
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn jsonc_with_only_comments_is_empty() {
-        let d = crate::system::TempDir::new("jsonc").unwrap();
+        let d = crate::utils::temp::TempDir::new("jsonc").unwrap();
         let f = d.path().join("opencode.jsonc");
         std::fs::write(&f, "// nothing here\n/* or here */\n").unwrap();
         assert_eq!(load(&f, "json"), serde_json::json!({}));
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn codex_toml_values_and_comments() {
-        let d = crate::system::TempDir::new("toml").unwrap();
+        let d = crate::utils::temp::TempDir::new("toml").unwrap();
         let f = d.path().join("c.toml");
         std::fs::write(
             &f,
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn hermes_yaml_flow_lists_and_scalars() {
-        let d = crate::system::TempDir::new("yaml").unwrap();
+        let d = crate::utils::temp::TempDir::new("yaml").unwrap();
         let f = d.path().join("config.yaml");
         std::fs::write(
             &f,

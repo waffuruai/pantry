@@ -2,7 +2,7 @@
 //! `cargo run --example osdb`.
 
 fn main() {
-    let rel = wpantry::system::os_release();
+    let rel = wpantry::utils::os::os_release();
     println!("# ecosystem: {:?}", wpantry::osdb::ecosystem(&rel));
     match wpantry::osdb::installed(&rel) {
         Ok(Some((from, pkgs))) => {

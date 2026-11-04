@@ -12,8 +12,9 @@
 //! reported unchecked, never clean.
 
 use crate::catalog::{TOOLS, Tool};
-use crate::system::{Component, home};
+use crate::component::Component;
 use crate::tools::tag;
+use crate::utils::files::home;
 use crate::versions;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -178,7 +179,7 @@ mod tests {
 
     #[test]
     fn reads_a_cellar_highest_version_first() {
-        let d = crate::system::TempDir::new("cellar").unwrap();
+        let d = crate::utils::temp::TempDir::new("cellar").unwrap();
         let cellar = d.path().join("Cellar");
         for v in ["openssl@3/3.6.0", "openssl@3/3.5.4", "node@22/22.1.0_1", "jq/1.8.1", "oniguruma/6.9.10", "empty"] {
             std::fs::create_dir_all(cellar.join(v)).unwrap();
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn the_cellar_is_the_variables_then_the_standard_prefixes() {
-        let d = crate::system::TempDir::new("cellar").unwrap();
+        let d = crate::utils::temp::TempDir::new("cellar").unwrap();
         let here = d.path().join("Cellar");
         std::fs::create_dir_all(&here).unwrap();
         let os = |p: &Path| Some(OsString::from(p));
@@ -221,7 +222,7 @@ mod tests {
         );
         assert_eq!(find_cellar_from(None, Some(OsString::new()), &standard), Some(here.clone()));
         assert_eq!(find_cellar_from(None, None, &["/nonexistent/Cellar"]), None);
-        let _home = crate::system::test_home();
+        let _home = crate::utils::files::test_home();
         assert_eq!(mise_installs_from(os(Path::new("/m"))), PathBuf::from("/m/installs"));
         assert_eq!(mise_installs_from(Some(OsString::new())), home().join(".local/share/mise/installs"));
         assert_eq!(mise_installs(), mise_installs_from(std::env::var_os("MISE_DATA_DIR")));

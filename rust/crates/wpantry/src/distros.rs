@@ -5,9 +5,10 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
-use crate::json::{self, str_at};
-use crate::sha256;
-use crate::system::{exec, which};
+use crate::utils::json::{self, str_at};
+use crate::utils::process::exec;
+use crate::utils::process::which;
+use crate::utils::sha256;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -59,7 +60,7 @@ pub fn dnf4_line(line: &str) -> Option<(String, String, String)> {
     }
 }
 
-fn run(argv: &[&OsStr], timeout: u64) -> Result<crate::system::Output> {
+fn run(argv: &[&OsStr], timeout: u64) -> Result<crate::utils::process::Output> {
     exec(argv, &[], Duration::from_secs(timeout))
 }
 
@@ -301,7 +302,7 @@ mod tests {
 
     #[test]
     fn dnf5_answers_in_json_dnf4_and_yum_in_text() {
-        let d = crate::system::TempDir::new("dnf").unwrap();
+        let d = crate::utils::temp::TempDir::new("dnf").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let rpm = tool(d.path(), "rpm", RPM);
         let dnf5 = tool(
@@ -349,7 +350,7 @@ mod tests {
 
     #[test]
     fn dnf_failures_are_never_cached_as_clean() {
-        let d = crate::system::TempDir::new("dnf").unwrap();
+        let d = crate::utils::temp::TempDir::new("dnf").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let rpm = tool(d.path(), "rpm", RPM);
         assert!(matches!(dnf_advisories_with(&c, false, false, None, None, None), Err(Error::Offline(_))));
@@ -364,7 +365,7 @@ mod tests {
 
     #[test]
     fn arch_groups_apply_to_installed_packages() {
-        let d = crate::system::TempDir::new("arch").unwrap();
+        let d = crate::utils::temp::TempDir::new("arch").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let groups = json!([
             {"name": "ASA-1", "packages": ["openssl", "ghost"], "fixed": "3.6.0-1", "affected": "3.5.9-1", "status": "Fixed",

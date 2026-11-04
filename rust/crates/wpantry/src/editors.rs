@@ -4,7 +4,12 @@
 //! disk never run, so they don't apply.
 
 use crate::check_supply::quote;
-use crate::system::{self, Component, app_cli, expand, read_json, which};
+use crate::component::Component;
+use crate::utils::files;
+use crate::utils::files::expand;
+use crate::utils::files::read_json;
+use crate::utils::process::app_cli;
+use crate::utils::process::which;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -50,7 +55,7 @@ pub fn extensions() -> Vec<Component> {
 /// `extensions`, with `cli_of(cli name, app names, CLI path in the app)`
 /// finding an editor's CLI ("" when the editor isn't installed).
 fn extensions_with(cli_of: &dyn Fn(&str, &[&str], &str) -> String) -> Vec<Component> {
-    let home = system::home().display().to_string();
+    let home = files::home().display().to_string();
     let mut out = Vec::new();
     for (editor, root, market, cli_name, apps, cli_rel) in EDITORS {
         let root = root.replacen('~', &home, 1);
@@ -126,11 +131,12 @@ pub fn bundled_npm(root: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::temp;
 
     // The test vector the Python implementation had (`SupplyChain.test_bundled_npm`).
     #[test]
     fn bundled_npm_packages() {
-        let d = system::TempDir::new("bundled").unwrap();
+        let d = temp::TempDir::new("bundled").unwrap();
         for (rel, name, ver) in [
             ("node_modules/a", "a", "1.0.0"),
             ("node_modules/@s/b", "@s/b", "2.0.0"),
@@ -154,7 +160,7 @@ mod tests {
 
     #[test]
     fn node_modules_nested_too_deep_are_left_alone() {
-        let d = system::TempDir::new("deep").unwrap();
+        let d = temp::TempDir::new("deep").unwrap();
         let deep = "node_modules/a/".repeat(7) + "node_modules/z";
         std::fs::create_dir_all(d.path().join(&deep)).unwrap();
         std::fs::write(d.path().join(&deep).join("package.json"), r#"{"name": "z", "version": "1"}"#).unwrap();
@@ -171,8 +177,8 @@ mod tests {
     /// `.obsolete` list (what the editor will remove) is skipped.
     #[test]
     fn extensions_of_installed_editors() {
-        let home = system::test_home();
-        let root = system::home().join(".vscode/extensions");
+        let home = files::test_home();
+        let root = files::home().join(".vscode/extensions");
         let put = |dir: &str, json: &str| {
             std::fs::create_dir_all(root.join(dir)).unwrap();
             std::fs::write(root.join(dir).join("package.json"), json).unwrap();
@@ -183,7 +189,7 @@ mod tests {
         put("nojson", "not json");
         std::fs::write(root.join(".obsolete"), r#"{"gone.ext-1.0.0": true}"#).unwrap();
         // Cursor's extensions exist, but Cursor itself is gone.
-        let cursor = system::home().join(".cursor/extensions");
+        let cursor = files::home().join(".cursor/extensions");
         std::fs::create_dir_all(cursor.join("x.y-1.0.0")).unwrap();
         std::fs::write(cursor.join("x.y-1.0.0/package.json"), r#"{"publisher": "x", "name": "y", "version": "1"}"#)
             .unwrap();
@@ -204,8 +210,8 @@ mod tests {
         assert_eq!(c.extra["cli"], "/opt/code");
         assert_eq!(c.extra["dir"], root.join("ms-python.python-2026.1.0").display().to_string());
         // No extension directories at all in a fresh home: nothing, whatever is on PATH.
-        std::fs::remove_dir_all(system::home().join(".vscode")).unwrap();
-        std::fs::remove_dir_all(system::home().join(".cursor")).unwrap();
+        std::fs::remove_dir_all(files::home().join(".vscode")).unwrap();
+        std::fs::remove_dir_all(files::home().join(".cursor")).unwrap();
         assert!(extensions().is_empty());
         drop(home);
     }

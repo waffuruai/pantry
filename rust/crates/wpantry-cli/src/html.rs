@@ -8,7 +8,7 @@ use wpantry::check::{Options, Outcome};
 use wpantry::db::Cache;
 use wpantry::error::Result;
 use wpantry::history;
-use wpantry::json::{J, obj};
+use wpantry::utils::json::{J, obj};
 
 const TEMPLATE: &str = include_str!("../assets/report.html");
 const TOKEN: &str = "{{PANTRY_BUNDLE}}";
@@ -104,7 +104,7 @@ fn history_json(report: &Outcome) -> (J, String, String) {
     // another scope. A machine scan can list tens of thousands.
     let listed: std::collections::HashSet<String> = report.findings.iter().map(history::key_of).collect();
     let key = |e: &history::Exposure| format!("{}|{}|{}|{}", e.kind, e.component, e.location, e.vuln_id);
-    let since = wpantry::system::now() - HISTORY_DAYS * wpantry::db::DAY;
+    let since = wpantry::utils::os::now() - HISTORY_DAYS * wpantry::db::DAY;
     let out = match (history::exposures(&cache, since), history::fixes(&cache, since), history::scans(&cache, since)) {
         (Ok(exposures), Ok(fixes), Ok(scans)) => {
             let this = scans.iter().find(|s| s.id == scan_id);
@@ -165,7 +165,7 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
                 ("report", super::envelope(report)),
             ])]),
         ),
-        ("generated_at", J::Int((wpantry::system::now() * 1000.0) as i64)),
+        ("generated_at", J::Int((wpantry::utils::os::now() * 1000.0) as i64)),
         ("phase", phase.into()),
         ("scan_id", J::Int(report.scan_id)),
         ("host", host.into()),
@@ -201,7 +201,7 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wpantry::check::Finding;
+    use wpantry::finding::Finding;
 
     #[test]
     fn hostile_text_stays_json_data() {
@@ -216,7 +216,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(!payload.contains(['<', '>', '&']));
-        let parsed = wpantry::json::parse(payload.as_bytes(), usize::MAX).unwrap();
+        let parsed = wpantry::utils::json::parse(payload.as_bytes(), usize::MAX).unwrap();
         assert_eq!(parsed["note"], hostile);
         assert!(!html.contains(TOKEN));
     }
@@ -346,7 +346,7 @@ mod tests {
         let scan = fixture();
         let b = bundle(&scan, &Options::default(), "scan", J::Null, "mac", "eric");
         let text = b.dumps();
-        let v = wpantry::json::parse(text.as_bytes(), usize::MAX).unwrap();
+        let v = wpantry::utils::json::parse(text.as_bytes(), usize::MAX).unwrap();
         assert_eq!(v["runs"][0]["report"]["findings"].as_array().unwrap().len(), scan.findings.len());
         assert_eq!(
             (v["host"].as_str(), v["user"].as_str(), v["scan_id"].as_i64()),

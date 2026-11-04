@@ -8,8 +8,8 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
-use crate::json::{self, str_at};
-use crate::net::{self, Net};
+use crate::utils::json::{self, str_at};
+use crate::utils::net::{self, Net};
 use rusqlite::params;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -99,8 +99,9 @@ pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: 
             stale.push(p.clone());
         }
     }
-    let fetched =
-        crate::system::par_map(&stale, 8, |p| net::get_json(net, &format!("https://endoflife.date/api/{p}.json"), &[]));
+    let fetched = crate::utils::parallel::par_map(&stale, 8, |p| {
+        net::get_json(net, &format!("https://endoflife.date/api/{p}.json"), &[])
+    });
     for (p, r) in stale.iter().zip(fetched) {
         match r {
             Ok(data) => eol_store(cache, p, data.as_ref())?,
@@ -205,7 +206,7 @@ pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 /// Today (UTC), in days since 1970-01-01.
 pub fn today() -> i64 {
-    (crate::system::now() / 86400.0).floor() as i64
+    (crate::utils::os::now() / 86400.0).floor() as i64
 }
 
 /// The Arch Linux security tracker's advisory groups.
@@ -373,7 +374,7 @@ pub struct PgAdvisory {
 
 /// HTML entities as `html.unescape` reads the common ones.
 pub fn unescape_html(s: &str) -> String {
-    let re = crate::re::Regex::new(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);");
+    let re = crate::utils::re::Regex::new(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);");
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
     let mut last = 0;
@@ -407,7 +408,7 @@ pub fn unescape_html(s: &str) -> String {
 
 /// The rows of the table at postgresql.org/support/security/.
 pub fn parse_postgres(page: &str) -> Vec<PgAdvisory> {
-    use crate::re::Regex;
+    use crate::utils::re::Regex;
     let (row_re, cell_re) = (Regex::with_flags("<tr>(.*?)</tr>", "s"), Regex::with_flags("<td[^>]*>(.*?)</td>", "s"));
     let (tags, spaces) = (Regex::new("<[^>]+>"), Regex::new(r"\s+"));
     let (cve, meta, more) =
@@ -578,11 +579,11 @@ pub fn latest_extensions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{Fake, Response};
+    use crate::utils::net::{Fake, Response};
     use serde_json::json;
 
-    fn cache() -> (crate::system::TempDir, Cache) {
-        let d = crate::system::TempDir::new("feeds").unwrap();
+    fn cache() -> (crate::utils::temp::TempDir, Cache) {
+        let d = crate::utils::temp::TempDir::new("feeds").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         (d, c)
     }

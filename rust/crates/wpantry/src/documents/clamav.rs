@@ -22,7 +22,7 @@ pub fn clamav(files: &[PathBuf]) -> Option<Result<Vec<(PathBuf, String)>, String
 
 /// The installed scanner: `clamdscan` (daemon: true), else `clamscan`.
 fn scanner() -> Option<(PathBuf, bool)> {
-    match (crate::system::which("clamdscan"), crate::system::which("clamscan")) {
+    match (crate::utils::process::which("clamdscan"), crate::utils::process::which("clamscan")) {
         (Some(d), _) => Some((d, true)),
         (None, Some(s)) => Some((s, false)),
         (None, None) => None,
@@ -35,7 +35,7 @@ fn clamav_with(bin: &Path, daemon: bool, files: &[PathBuf]) -> Result<Vec<(PathB
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    let list = match crate::system::TempDir::new("clamav") {
+    let list = match crate::utils::temp::TempDir::new("clamav") {
         Ok(d) => d,
         Err(e) => return Err(e.to_string()),
     };
@@ -52,7 +52,7 @@ fn clamav_with(bin: &Path, daemon: bool, files: &[PathBuf]) -> Result<Vec<(PathB
     }
     argv.push(OsStr::new("--file-list"));
     argv.push(list_file.as_os_str());
-    let out = match crate::system::exec(&argv, &[], TIMEOUT) {
+    let out = match crate::utils::process::exec(&argv, &[], TIMEOUT) {
         Ok(o) => o,
         Err(e) => return Err(e.to_string()),
     };
@@ -124,7 +124,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_recorded_scan_reports_its_hits() {
-        let d = crate::system::TempDir::new("clamav-run").unwrap();
+        let d = crate::utils::temp::TempDir::new("clamav-run").unwrap();
         let argv = d.path().join("argv.txt");
         let body = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}\"\nfor a in \"$@\"; do list=\"$a\"; done\n\
@@ -164,7 +164,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_scanner_that_fails_or_cannot_start_is_an_error() {
-        let d = crate::system::TempDir::new("clamav-err").unwrap();
+        let d = crate::utils::temp::TempDir::new("clamav-err").unwrap();
         let bin =
             script(d.path(), "clamscan", "#!/bin/sh\necho \"ERROR: Can't open database\" >&2\necho more >&2\nexit 2\n");
         let files = [PathBuf::from("/tmp/a.pdf")];

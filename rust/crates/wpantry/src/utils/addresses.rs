@@ -9,7 +9,7 @@
 //! code rules look for addresses hardcoded beside clipboard or signing
 //! calls.
 
-use crate::sha256;
+use crate::utils::sha256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Chain {

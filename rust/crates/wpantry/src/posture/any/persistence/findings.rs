@@ -2,9 +2,9 @@
 //! warns every scan.
 
 use super::{Inventory, Item, Signature, Source, Vetted};
-use crate::check::Finding;
 use crate::db::Cache;
 use crate::error::Result;
+use crate::finding::Finding;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -153,11 +153,11 @@ pub fn findings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system;
+    use crate::utils::temp;
 
     #[test]
     fn the_baseline_is_quiet_first_then_warns_on_new_items() {
-        let d = system::TempDir::new("persist").unwrap();
+        let d = temp::TempDir::new("persist").unwrap();
         let cache = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         let item = |loc: &str, ident: &str| Item {
             source: Source::Launchd,

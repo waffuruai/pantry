@@ -4,7 +4,7 @@
 
 use super::{Package, plausible};
 use crate::error::Result;
-use crate::json::{self, str_at};
+use crate::utils::json::{self, str_at};
 use serde_json::Value;
 
 pub fn parse(text: &str) -> Result<Vec<Package>> {

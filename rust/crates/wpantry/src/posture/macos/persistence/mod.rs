@@ -43,7 +43,7 @@ mod tests {
     use super::*;
     use crate::posture::any::persistence::{inventory_in, programs};
     use crate::posture::testing::{roots, write};
-    use crate::system;
+    use crate::utils::temp;
     use std::path::PathBuf;
 
     const AGENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn a_mac_inventory_reads_every_source() {
-        let d = system::TempDir::new("persist").unwrap();
+        let d = temp::TempDir::new("persist").unwrap();
         let r = roots(d.path(), true, &mac_runner);
         write(&r.home.join("Library/LaunchAgents/com.example.helper.plist"), AGENT);
         write(
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_source_is_unread_not_empty() {
-        let d = system::TempDir::new("persist").unwrap();
+        let d = temp::TempDir::new("persist").unwrap();
         let none = |_: &[&str]| String::new();
         let inv = inventory_in(&roots(d.path(), true, &none));
         assert_eq!(inv.unread, [(Source::SystemExtension, "systemextensionsctl list gave no answer".into())]);

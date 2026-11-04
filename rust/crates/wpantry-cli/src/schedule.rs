@@ -10,7 +10,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use wpantry::error::{Error, Result};
-use wpantry::system::{Output, exec, home, which};
+use wpantry::utils::files::home;
+use wpantry::utils::process::Output;
+use wpantry::utils::process::exec;
+use wpantry::utils::process::which;
 
 pub const LABEL: &str = "ai.waffuru.wpantry";
 /// The resident clipboard guard's launch agent (`schedule install --clipboard-guard`).
@@ -404,7 +407,7 @@ fn status_with(backend: Backend, run: Run) -> Result<i32> {
         Ok(m) => {
             let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
             let text = std::fs::read_to_string(&p.last).unwrap_or_default();
-            let (fails, warns) = wpantry::json::parse(text.as_bytes(), wpantry::json::MAX_DOCUMENT)
+            let (fails, warns) = wpantry::utils::json::parse(text.as_bytes(), wpantry::utils::json::MAX_DOCUMENT)
                 .ok()
                 .map(|v| {
                     let fs = v.get("findings").and_then(|f| f.as_array()).cloned().unwrap_or_default();
@@ -669,7 +672,7 @@ fn crontab(run: Run) -> String {
 }
 
 fn set_crontab(text: &str, run: Run) -> Result<()> {
-    let dir = wpantry::system::TempDir::new("cron")?;
+    let dir = wpantry::utils::temp::TempDir::new("cron")?;
     let f = dir.path().join("crontab");
     std::fs::write(&f, text)?;
     let out = run(&[OsStr::new("crontab"), f.as_os_str()], Duration::from_secs(10))?;
@@ -683,7 +686,8 @@ fn set_crontab(text: &str, run: Run) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use wpantry::system::{TempDir, test_home};
+    use wpantry::utils::files::test_home;
+    use wpantry::utils::temp::TempDir;
 
     fn p() -> Paths {
         let state = PathBuf::from("/s/wpantry");
@@ -752,7 +756,7 @@ mod tests {
 
     #[test]
     fn the_lock_is_exclusive_and_stale_locks_are_taken() {
-        let d = wpantry::system::TempDir::new("lock").unwrap();
+        let d = wpantry::utils::temp::TempDir::new("lock").unwrap();
         let path = d.path().join("schedule.lock");
         let held = Lock::take(&path).unwrap();
         assert!(Lock::take(&path).is_err(), "our own live pid holds it");

@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn fixture_pairs_are_checked_with_or_without_the_zlib_header() {
-        let d = crate::system::TempDir::new("inflate").unwrap();
+        let d = crate::utils::temp::TempDir::new("inflate").unwrap();
         let wrapped: Vec<u8> = [0x78, 0x9c].iter().chain(DYNAMIC).copied().collect();
         std::fs::write(d.path().join("a.raw"), wrapped).unwrap();
         std::fs::write(d.path().join("a.out"), DYNAMIC_TEXT).unwrap();

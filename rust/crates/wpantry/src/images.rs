@@ -11,10 +11,13 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
-use crate::json::{self, str_at};
 use crate::lockfiles::{self, Package};
 use crate::osdb;
-use crate::system::{TempDir, exec, parse_os_release, which};
+use crate::utils::json::{self, str_at};
+use crate::utils::os::parse_os_release;
+use crate::utils::process::exec;
+use crate::utils::process::which;
+use crate::utils::temp::TempDir;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -265,14 +268,14 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
     let mut gaps = Vec::new();
     let rel = ["etc/os-release", "usr/lib/os-release"]
         .iter()
-        .find_map(|f| crate::system::read_capped(&root.join(f), 1 << 20).ok())
+        .find_map(|f| crate::utils::files::read_capped(&root.join(f), 1 << 20).ok())
         .map(|t| parse_os_release(&t))
         .unwrap_or_default();
     let dbs = [("var/lib/dpkg/status", "/var/lib/dpkg/status"), ("lib/apk/db/installed", "/lib/apk/db/installed")];
     let present: Vec<&(&str, &str)> = dbs.iter().filter(|(f, _)| root.join(f).is_file()).collect();
     match (present.first(), osdb::ecosystem(&rel)) {
         (Some((file, shown)), Ok(eco)) => {
-            let text = crate::system::read_capped(&root.join(file), 64 << 20).unwrap_or_default();
+            let text = crate::utils::files::read_capped(&root.join(file), 64 << 20).unwrap_or_default();
             let found = if file.contains("dpkg") { osdb::dpkg(&text) } else { osdb::apk(&text) };
             pkgs.extend(found.into_iter().map(|p| ImagePackage {
                 ecosystem: eco.clone(),

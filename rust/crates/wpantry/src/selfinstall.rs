@@ -11,8 +11,10 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::net::{self, Net};
-use crate::system::{TempDir, exec, which};
+use crate::utils::net::{self, Net};
+use crate::utils::process::exec;
+use crate::utils::process::which;
+use crate::utils::temp::TempDir;
 use crate::{feeds, versions};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -138,7 +140,7 @@ fn fetch_verified_with(which: Which, net: &dyn Net, version: &str, dir: &Path) -
     let expected = sum_for(&sums, asset)
         .ok_or_else(|| Error::Invalid(format!("the release's SHA256SUMS has no entry for {asset}")))?;
     let bytes = download(net, version, asset)?;
-    let actual = crate::sha256::hex(&bytes);
+    let actual = crate::utils::sha256::hex(&bytes);
     if actual != expected {
         return Err(Error::Invalid(format!("{asset}: checksum mismatch (expected {expected}, got {actual})")));
     }
@@ -434,7 +436,7 @@ exit {code}
         let d = TempDir::new("fetch").unwrap();
         let asset = asset().unwrap();
         let body: &[u8] = b"a release binary\n";
-        let sum = crate::sha256::hex(body);
+        let sum = crate::utils::sha256::hex(body);
         let sums: &'static str = Box::leak(format!("{sum}  {asset}\n").into_boxed_str());
         let none = |_: &str| -> Option<PathBuf> { None };
         let err = |r: Result<(PathBuf, Verified)>| match r {

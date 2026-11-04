@@ -9,7 +9,7 @@
 //! validates what was pasted); a write alone is a "copy address" button.
 
 use super::{Context, Kind, Suspect, has_any, line_of, push, test_path};
-use crate::addresses;
+use crate::utils::addresses;
 
 pub(super) const ID: &str = "SUSPECT-CLIPBOARD-SWAP";
 

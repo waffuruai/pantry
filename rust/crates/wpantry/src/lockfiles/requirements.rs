@@ -152,7 +152,7 @@ pub fn parse_file(path: &Path, root: &Path) -> Result<Vec<Package>> {
         if seen.len() > MAX_INCLUDES {
             return Err(Error::Invalid(format!("more than {MAX_INCLUDES} included requirements files")));
         }
-        let (pkgs, includes) = parse(&crate::system::read_capped(&real, MAX_FILE)?)?;
+        let (pkgs, includes) = parse(&crate::utils::files::read_capped(&real, MAX_FILE)?)?;
         let scope = scope_of_file(real.file_name().and_then(|n| n.to_str()).unwrap_or(""));
         out.extend(pkgs.into_iter().map(|p| p.scoped(scope)));
         let dir = p.parent().unwrap_or(Path::new("."));
@@ -222,7 +222,7 @@ Pillow (==10.0.0)
 
     #[test]
     fn includes_stay_in_the_repo_and_cycles_end() {
-        let tmp = crate::system::TempDir::new("requirements").unwrap();
+        let tmp = crate::utils::temp::TempDir::new("requirements").unwrap();
         let root = tmp.path().join("repo");
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(tmp.path().join("outside.txt"), "evil==6.6.6\n").unwrap();

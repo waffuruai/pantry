@@ -9,12 +9,12 @@
 //! indexes, and the hook fires when the clone is opened in an agent.
 //!
 //! Everything here is read-only and bounded: no hook is run, no target is
-//! executed, files are read through [`crate::system::read_capped`].
+//! executed, files are read through [`crate::utils::files::read_capped`].
 
 use crate::harnesses;
-use crate::json::str_at;
 use crate::repos::{self, Repo};
-use crate::system::read_capped;
+use crate::utils::files::read_capped;
+use crate::utils::json::str_at;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -119,7 +119,7 @@ impl Accepted {
 fn under(root: &Path, prefix: &str) -> bool {
     let prefix = match prefix.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-            format!("{}{rest}", crate::system::home().to_string_lossy())
+            format!("{}{rest}", crate::utils::files::home().to_string_lossy())
         }
         _ => prefix.to_string(),
     };
@@ -549,8 +549,8 @@ fn sniff(root: &Path, file: &str, target: &Path, iocs: &Indicators, out: &mut Ve
             ),
         });
     }
-    let Ok(bytes) = crate::system::read_capped(target, SNIFF) else { return };
-    let digest = crate::sha256::hex(bytes.as_bytes());
+    let Ok(bytes) = crate::utils::files::read_capped(target, SNIFF) else { return };
+    let digest = crate::utils::sha256::hex(bytes.as_bytes());
     if iocs.sha256.contains(&digest) {
         out.push(Hook {
             file: file.into(),
@@ -587,7 +587,7 @@ pub fn campaign_markers(root: &Path) -> Vec<Hook> {
     use std::ffi::OsStr;
     use std::time::Duration;
     let mut out = Vec::new();
-    let refs = crate::system::run(
+    let refs = crate::utils::process::run(
         &[
             OsStr::new("git"),
             OsStr::new("-C"),
@@ -612,7 +612,7 @@ pub fn campaign_markers(root: &Path) -> Vec<Hook> {
             });
         }
     }
-    let log = crate::system::run(
+    let log = crate::utils::process::run(
         &[
             OsStr::new("git"),
             OsStr::new("-C"),
@@ -645,7 +645,7 @@ fn load_json(path: &Path) -> Value {
     let Ok(text) = read_capped(path, 16 << 20) else { return Value::Null };
     serde_json::from_str(&text).unwrap_or_else(|_| {
         // tasks.json and settings files are often JSON with comments and trailing commas.
-        let stripped = crate::re::Regex::with_flags(r"^\s*//[^\n]*$|/\*.*?\*/", "ms").replace_all(&text, "");
+        let stripped = crate::utils::re::Regex::with_flags(r"^\s*//[^\n]*$|/\*.*?\*/", "ms").replace_all(&text, "");
         serde_json::from_str(&without_trailing_commas(&stripped)).unwrap_or(Value::Null)
     })
 }
@@ -681,7 +681,7 @@ fn first_line(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::TempDir;
+    use crate::utils::temp::TempDir;
 
     fn repo() -> TempDir {
         let d = TempDir::new("hooks").unwrap();
@@ -949,7 +949,7 @@ mod tests {
             id: "INSTALL-HOOK",
             note: String::new(),
         };
-        let home = crate::system::home();
+        let home = crate::utils::files::home();
         assert!(p.accepts(&home.join("Development/mine"), &hook));
         assert!(p.accepts(&home.join("Development/mine/deep/er"), &hook));
         assert!(!p.accepts(&home.join("Development/mine-fork"), &hook), "a prefix is a path, not a string");

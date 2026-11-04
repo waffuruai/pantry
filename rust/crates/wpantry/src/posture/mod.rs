@@ -91,7 +91,7 @@ pub type Runner<'a> = &'a (dyn Fn(&[&str]) -> String + Sync);
 
 pub fn real_runner(argv: &[&str]) -> String {
     let argv: Vec<&OsStr> = argv.iter().map(OsStr::new).collect();
-    crate::system::run(&argv, Duration::from_secs(15))
+    crate::utils::process::run(&argv, Duration::from_secs(15))
 }
 
 /// A fix that needs an administrator: printed as a step, never run.
@@ -136,7 +136,7 @@ pub fn run(skip: &[String], runner: Runner) -> Vec<(&'static Check, Outcome)> {
         skip.iter().any(|s| s.eq_ignore_ascii_case(id) || s.eq_ignore_ascii_case(id.trim_start_matches("POSTURE-")))
     };
     let todo: Vec<&'static Check> = checks().into_iter().filter(|c| !skipped(c.id)).collect();
-    let outcomes = crate::system::par_map(&todo, 4, |c| (c.probe)(runner));
+    let outcomes = crate::utils::parallel::par_map(&todo, 4, |c| (c.probe)(runner));
     todo.into_iter().zip(outcomes).collect()
 }
 

@@ -5,14 +5,19 @@
 //! dependency licenses (deps.dev) with `--licenses`; on a machine scan also
 //! the editor extensions, harness plugins and the breach check.
 
-use crate::check::{Finding, REMOVE, Scan, as_source};
+use crate::check::{REMOVE, Scan, as_source};
+use crate::component::Component;
 use crate::error::{Error, Result};
+use crate::finding::Finding;
 use crate::install_scripts::{self, Verdict};
-use crate::json::str_at;
 use crate::lockfiles;
 use crate::osv::{self, Item};
 use crate::repos::{self, Repo};
-use crate::system::{self, Component, run as sh, short, which};
+use crate::utils::files::short;
+use crate::utils::json::str_at;
+use crate::utils::process::run as sh;
+use crate::utils::process::which;
+use crate::utils::{files, os, parallel};
 use crate::{documents, harnesses, hidden, hooks, leaks, malicious, mptcp, suspect};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -52,7 +57,7 @@ pub fn run_with(
     let ran = std::thread::scope(|s| -> Result<Vec<Option<Result<Value>>>> {
         let at_once = gitleaks_at_once(scan);
         let todo = &todo;
-        let running = s.spawn(move || system::par_map(todo, at_once, |(_, job)| leaks::run_job(job)));
+        let running = s.spawn(move || parallel::par_map(todo, at_once, |(_, job)| leaks::run_job(job)));
         projects(scan, &repos)?;
         if !todo.is_empty() {
             scan.status(&format!("Scanning {} repos' git history for secrets (gitleaks)", todo.len()));
@@ -286,7 +291,7 @@ fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Res
 /// gitleaks scans run at once on a first run (`--jobs`): each is CPU-bound,
 /// so together they get the machine's cores, not each of them all of them.
 fn gitleaks_at_once(scan: &Scan) -> usize {
-    scan.opts.jobs.unwrap_or_else(|| (system::cores() / 2).clamp(1, 4))
+    scan.opts.jobs.unwrap_or_else(|| (parallel::cores() / 2).clamp(1, 4))
 }
 
 /// Each repo's gitleaks job (with the `gitleaks` binary; None: not
@@ -297,7 +302,7 @@ fn secret_jobs(scan: &Scan, repos: &[Repo], gitleaks: Option<PathBuf>) -> Result
         return Ok(Vec::new());
     }
     let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
-    let threads = (system::cores() / gitleaks_at_once(scan)).max(1);
+    let threads = (parallel::cores() / gitleaks_at_once(scan)).max(1);
     repos
         .iter()
         .map(|(_, root)| {
@@ -395,7 +400,7 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     scan.status("Looking for code the repos run on open or install");
     let iocs = hooks::Indicators::parse(&scan.opts.policy.repo_hooks());
     let accepted = scan.opts.policy.hooks_policy();
-    let found: Vec<Vec<hooks::Hook>> = system::par_map(repos, system::PROBES, |(_, root)| {
+    let found: Vec<Vec<hooks::Hook>> = parallel::par_map(repos, parallel::PROBES, |(_, root)| {
         let mut h = hooks::scan_repo(root, &iocs);
         h.extend(hooks::campaign_markers(root));
         h
@@ -470,7 +475,7 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for code that behaves like an attack");
-    let found: Vec<Vec<suspect::Suspect>> = system::par_map(&targets, system::PROBES, |(_, root, kind)| {
+    let found: Vec<Vec<suspect::Suspect>> = parallel::par_map(&targets, parallel::PROBES, |(_, root, kind)| {
         let mut s = suspect::scan_dir(root, *kind, &policy);
         if *kind == suspect::Kind::Repo {
             s.extend(suspect::dependency_blobs(root, &policy));
@@ -524,7 +529,8 @@ pub fn mptcp_listeners(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for programs that listen with Multipath TCP on");
-    let found: Vec<Vec<mptcp::Exposure>> = system::par_map(repos, system::PROBES, |(_, root)| mptcp::scan_repo(root));
+    let found: Vec<Vec<mptcp::Exposure>> =
+        parallel::par_map(repos, parallel::PROBES, |(_, root)| mptcp::scan_repo(root));
     let kev = scan.kev.contains(mptcp::ID);
     for ((name, _), hits) in repos.iter().zip(found) {
         scan.count("repos checked for programs listening with MPTCP on", 1);
@@ -561,7 +567,7 @@ fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspect:
     scan.add(Finding {
         kind: "clipper".into(),
         component: shown,
-        location: system::short(&dir.to_string_lossy()),
+        location: files::short(&dir.to_string_lossy()),
         vuln_id: "CLIPPER-EXTENSION".into(),
         status: if swaps { "fail" } else { "warn" }.into(),
         severity: if swaps { "CRITICAL" } else { "" }.into(),
@@ -583,7 +589,7 @@ fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspect:
 /// Code on this machine that came from somewhere else and runs with the
 /// user's rights: editor extensions, agent plugins and browser extensions.
 fn installed_code() -> Vec<(String, PathBuf)> {
-    let home = system::home();
+    let home = files::home();
     let mut out = Vec::new();
     let mut add_children = |label: &str, dir: PathBuf| {
         let Ok(rd) = std::fs::read_dir(&dir) else { return };
@@ -603,7 +609,7 @@ fn installed_code() -> Vec<(String, PathBuf)> {
     for (harness, dir) in crate::harnesses::plugin_dirs() {
         add_children(&harness, PathBuf::from(dir));
     }
-    let browsers: &[(&str, &str)] = if system::MACOS {
+    let browsers: &[(&str, &str)] = if os::MACOS {
         &[
             ("Chrome", "Library/Application Support/Google/Chrome/Default/Extensions"),
             ("Brave", "Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"),
@@ -633,7 +639,8 @@ pub fn hidden_text(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for hidden or misleading text in the repos");
-    let found: Vec<Vec<hidden::Hidden>> = system::par_map(repos, system::PROBES, |(_, root)| hidden::scan_repo(root));
+    let found: Vec<Vec<hidden::Hidden>> =
+        parallel::par_map(repos, parallel::PROBES, |(_, root)| hidden::scan_repo(root));
     for ((name, _), hits) in repos.iter().zip(found) {
         scan.count("repos checked for hidden text", 1);
         for h in hits {
@@ -671,7 +678,7 @@ pub fn documents_pass(scan: &mut Scan, repos: &[Repo]) {
     }
     scan.status("Reading documents and images for the shapes malware takes");
     let found: Vec<Vec<documents::Doc>> =
-        system::par_map(repos, system::PROBES, |(_, root)| documents::scan_dir(root, 6));
+        parallel::par_map(repos, parallel::PROBES, |(_, root)| documents::scan_dir(root, 6));
     let mut files: Vec<PathBuf> = Vec::new();
     for ((name, root), docs) in repos.iter().zip(found) {
         scan.count("repos checked for documents and images", 1);
@@ -1170,8 +1177,9 @@ mod tests {
     use super::*;
     use crate::check::{Options, Policy};
     use crate::db::Cache;
-    use crate::net::{Fake, Request, Response};
-    use crate::system::TempDir;
+    use crate::utils::net::{Fake, Request, Response};
+    use crate::utils::process;
+    use crate::utils::temp::TempDir;
     use serde_json::json;
 
     fn scan<'a>(net: &'a Fake, d: &TempDir, opts: Options) -> Scan<'a> {
@@ -1501,7 +1509,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_scans_the_repos_with_gitleaks_ahead() {
-        let _home = crate::system::test_home();
+        let _home = crate::utils::files::test_home();
         let d = TempDir::new("run").unwrap();
         seed_index(&d, &[("npm", "evil", "MAL-0001")]);
         let net = osv_net(&[("crates.io", "serde")]);
@@ -1634,7 +1642,7 @@ mod tests {
             full.extend(["-c", "user.name=w", "-c", "user.email=w@example.invalid"].map(OsStr::new));
             full.extend(a.iter().map(OsStr::new));
             let env = [("HOME", home.to_str().unwrap()), ("GIT_CONFIG_NOSYSTEM", "1")];
-            if !system::exec(&full, &env, Duration::from_secs(30)).is_ok_and(|o| o.code == Some(0)) {
+            if !process::exec(&full, &env, Duration::from_secs(30)).is_ok_and(|o| o.code == Some(0)) {
                 return None;
             }
         }
@@ -1666,8 +1674,8 @@ mod tests {
     /// the extensions and plugins installed under the home are read too.
     #[test]
     fn suspect_code_in_repos_and_installed_code() {
-        let _home = crate::system::test_home();
-        let home = system::home();
+        let _home = crate::utils::files::test_home();
+        let home = files::home();
         let d = TempDir::new("suspect").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d, Options { machine: true, ..Default::default() });
@@ -1689,7 +1697,7 @@ mod tests {
         );
         write(&home, ".vscode/extensions/.obsolete-1/x.py", "import base64\nexec(base64.b64decode('aGk='))\n");
         write(&home, ".claude/plugins/cache/mk/p1/hooks/index.js", "const s = atob(k);\nfetch('ws://1.2.3.4/x')\n");
-        let browser = if system::MACOS {
+        let browser = if os::MACOS {
             "Library/Application Support/Google/Chrome/Default/Extensions"
         } else {
             ".config/google-chrome/Default/Extensions"
@@ -2128,8 +2136,8 @@ mod tests {
     /// fixes it).
     #[test]
     fn bundles_read_node_modules_and_shipped_lockfiles() {
-        let _home = crate::system::test_home();
-        let home = system::home();
+        let _home = crate::utils::files::test_home();
+        let home = files::home();
         let d = TempDir::new("bundles").unwrap();
         let net = osv_net(&[("npm", "lodash"), ("crates.io", "serde")]);
         let mut s = scan(&net, &d, Options::default());
@@ -2203,8 +2211,8 @@ mod tests {
     /// package to check, an unpinned one warns, a local script is nothing.
     #[test]
     fn mcp_servers_pinned_and_unpinned() {
-        let _home = crate::system::test_home();
-        let home = system::home();
+        let _home = crate::utils::files::test_home();
+        let home = files::home();
         let d = TempDir::new("mcp").unwrap();
         let net = osv_net(&[("npm", "@mcp/fs")]);
         let mut s = scan(&net, &d, Options { machine: true, ..Default::default() });
@@ -2357,7 +2365,7 @@ mod tests {
             fix("/w/x/Gemfile.lock", "RubyGems", "evil;rm", "1"),
             "cd /w/x && bundle update --conservative 'evil;rm'"
         );
-        let tmp = crate::system::TempDir::new("yarn-fix").unwrap();
+        let tmp = crate::utils::temp::TempDir::new("yarn-fix").unwrap();
         std::fs::write(tmp.path().join("yarn.lock"), "# comment\n\n__metadata:\n  version: 8\n").unwrap();
         assert_eq!(
             project_fix(&tmp.path().join("yarn.lock"), "npm", "@scope/x", "1.0.1"),

@@ -11,8 +11,12 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::json::{self, str_at};
-use crate::system::{TempDir, exec, fingerprint, run, which};
+use crate::utils::files::fingerprint;
+use crate::utils::json::{self, str_at};
+use crate::utils::process::exec;
+use crate::utils::process::run;
+use crate::utils::process::which;
+use crate::utils::temp::TempDir;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -120,7 +124,7 @@ pub fn tips(repo: &Path) -> BTreeSet<String> {
         (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
     }
     fn read(p: &Path) -> String {
-        crate::system::read_capped(p, 1 << 20).unwrap_or_default()
+        crate::utils::files::read_capped(p, 1 << 20).unwrap_or_default()
     }
     fn walk(dir: &Path, out: &mut BTreeSet<String>, depth: usize) {
         if depth > 8 {
@@ -314,7 +318,7 @@ fn tips_exist(repo: &Path, tips: &BTreeSet<String>) -> bool {
 
 /// The fingerprints the repo's .gitleaksignore lists.
 fn ignored(repo: &Path) -> BTreeSet<String> {
-    crate::system::read_capped(&repo.join(".gitleaksignore"), 1 << 20)
+    crate::utils::files::read_capped(&repo.join(".gitleaksignore"), 1 << 20)
         .unwrap_or_default()
         .lines()
         .map(str::trim)

@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn dependencies_that_ship_binaries_without_sources() {
-        let d = crate::system::TempDir::new("blobs").unwrap();
+        let d = crate::utils::temp::TempDir::new("blobs").unwrap();
         let root = d.path();
         std::fs::create_dir_all(root.join("node_modules/lodahs/build")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/@esbuild/darwin-arm64/bin")).unwrap();
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn many_blobs_are_counted_and_the_first_three_named() {
-        let d = crate::system::TempDir::new("blobs-many").unwrap();
+        let d = crate::utils::temp::TempDir::new("blobs-many").unwrap();
         let root = d.path();
         let dir = root.join("node_modules/prebuilt/prebuilds");
         std::fs::create_dir_all(&dir).unwrap();
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn the_repos_own_tree() {
-        let d = crate::system::TempDir::new("blobs-tree").unwrap();
+        let d = crate::utils::temp::TempDir::new("blobs-tree").unwrap();
         let root = d.path();
         std::fs::write(root.join("engine.wasm"), b"\0asm\x01\x00\x00\x00").unwrap();
         crate::repos::forget_walks();

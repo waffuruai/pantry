@@ -13,7 +13,7 @@ fn check(image: &str, eco: &str, package: &str, source: &str) {
     assert!(pulled.success(), "pull {image}");
     let id = images::image_id(&engine, image);
     assert!(!id.is_empty(), "{image} has an id");
-    let d = wpantry::system::TempDir::new("image-it").unwrap();
+    let d = wpantry::utils::temp::TempDir::new("image-it").unwrap();
     let cache = Cache::open(Some(&d.path().join("w.db"))).unwrap();
     let (pkgs, gaps) = images::packages(&cache, &engine, image, &id, false, false).unwrap();
     assert!(gaps.is_empty(), "{gaps:?}");

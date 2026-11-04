@@ -7,6 +7,7 @@ PRDs and design docs for wpantry: a PRD states the problem, the functional, secu
 | [cli-contract.md](cli-contract.md) | The CLI, exit codes, JSON and cache every implementation keeps | frozen (schema 1) |
 | [02-html-report.md](02-html-report.md) | Optional offline HTML scan reports | in review |
 | [04-layout-and-sources.md](04-layout-and-sources.md) | Code grouped by what it does (`sources/`, `checks/`, `reporters/`, `remediation/`, `utils/`), one walk per scan, and every data source in a TOML sources file | draft |
+| [03-download-guard.md](03-download-guard.md) | `wpantry guard downloads`: a resident guard that scans new downloads, clones and executables in a sandbox and holds malware; detail in [design/download-guard.md](design/download-guard.md) | draft |
 
 ## Archived
 

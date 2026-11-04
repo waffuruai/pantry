@@ -17,6 +17,7 @@ wpantry [-h]
 wpantry scan [--path DIR]... [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
              [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
              [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard] [--no-malware] [--deep]
+             [--no-online-hash]
 wpantry check ...                (the same as scan)
 wpantry fix [--dryrun] [--yes] [the scan's options]
 wpantry search QUERY [--applicable] [--limit N] [--json]
@@ -65,6 +66,7 @@ Deprecated, kept for scripts written before 2026-11-02 and left out of `--help`:
 | `--no-clipboard` | Skip the clipboard self-test of the machine inventory (kind `clipper`, `CLIPPER-ACTIVE`): it writes a canary address to the clipboard and restores the clipboard after. The persistence check (`CLIPPER-PERSISTENCE`) runs regardless. Added 2026-11-01 |
 | `--no-malware` | Skip the malware scan (kind `malware`): YARA rules over the top two levels of Downloads, Desktop and the temp directories, the programs launch items start, and the executables in the repos. Added 2026-11-04 |
 | `--deep` | The malware scan reads everything under `$HOME` (twelve levels, the repo walk's pruned directories skipped) with every system's rules, not only this system's and any system's. Added 2026-11-04 |
+| `--no-online-hash` | Never look up a flagged file's SHA-256 online. Otherwise, after one yes (asked once on a terminal, kept in the cache as `online_hash_consent`), the SHA-256 of each file the malware scan flagged (at most 50 a scan), and nothing else about it, goes to YARAify and CIRCL hashlookup, and to MalwareBazaar when `ABUSECH_AUTH_KEY` is set. A malware verdict makes the finding `fail`, Critical, and its note names the source and family; a known-good answer is noted on a heuristic `warn`. A source that can't be reached is `unchecked`. Added 2026-11-04 |
 | `rules` | The YARA rule sources the malware scan uses (ours, built in; YARA Forge's `full` package, fetched into `rules/` beside the cache at most daily; any `.yar` you put there), how many compile and how many are for this system; `--update` fetches YARA Forge now (exit 1 when it can't); `--json` as `{directory, sources: [{source, rules}], rules, this_system, rejected, update_failed}`. Added 2026-11-04 |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `export --csv` | Latest findings as CSV: `id, aliases, url, component, kind, affected_version, safe_version, severity, kev, status, location` |
@@ -210,6 +212,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL, `dep_scope` TEXT, `dep_direct` INTEGER, `affected_range` TEXT, `fix_cmd` TEXT: a finding across scans; resolved by a scan of the same scope that no longer lists it |
 | `fixes` | `id` INTEGER PK, `scan_id` INTEGER, `at` REAL, `command` TEXT, `mode` TEXT, `ok` INTEGER, `verified_scan` INTEGER (the complete scan after a fix that exited 0 in which none of its `targets` were listed; NULL otherwise), `targets` TEXT (JSON array of `exposures.key`): the unattended fixes `--fix` ran |
 | `events` | `id` INTEGER PK, `at` REAL, `kind` TEXT (`scan`, `fix`, `clipper`, …), `detail` TEXT (JSON) |
+| `hash_verdict` | `sha256`, `source` TEXT (PK together), `verdict` TEXT (`malware`, `good`, `unknown`), `family` TEXT, `checked_at` REAL: online answers about flagged files, reused for a day. Added 2026-11-04 |
 | `malware_files` | `path` TEXT PK, `dev`, `ino`, `size` INTEGER, `mtime` REAL, `rules` TEXT (the rule set's digest), `hits` TEXT (JSON: `[namespace, rule, category, description]` per hit), `scanned_at` REAL: the malware scan's result per file, reused while the file's identity and the rule set are unchanged. Added 2026-11-04 |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |
 

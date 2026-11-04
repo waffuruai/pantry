@@ -62,6 +62,8 @@ pub struct Check {
     pub no_malware: bool,
     /// `--deep`: the malware scan reads all of `~` with every system's rules.
     pub deep: bool,
+    /// `--no-online-hash`: never look up a flagged file's hash online.
+    pub no_online_hash: bool,
 }
 
 /// What `mitigate` acts on.
@@ -187,14 +189,15 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breac
 
 /// The scan's options in its usage line, shared by `scan`, `check` and
 /// `fix` (`fix` adds `--dryrun` and `--yes` in front).
-const SCAN_USAGE: [&str; 3] = [
+const SCAN_USAGE: [&str; 4] = [
     "[--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]",
     "[--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]",
     "[--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard] [--no-malware] [--deep]",
+    "[--no-online-hash]",
 ];
 
 /// The scan's options in its help, shared by `scan`, `check` and `fix`.
-const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)";
+const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)\n  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)";
 
 pub fn usage(cmd: &str) -> String {
     let line: &str = match cmd {
@@ -202,8 +205,8 @@ pub fn usage(cmd: &str) -> String {
             let pad = " ".repeat(format!("usage: wpantry {cmd} ").len());
             let fix = if cmd == "fix" { " [--dryrun] [--yes]" } else { "" };
             return format!(
-                "usage: wpantry {cmd} [-h]{fix} {}\n{pad}{}\n{pad}{}",
-                SCAN_USAGE[0], SCAN_USAGE[1], SCAN_USAGE[2]
+                "usage: wpantry {cmd} [-h]{fix} {}\n{pad}{}\n{pad}{}\n{pad}{}",
+                SCAN_USAGE[0], SCAN_USAGE[1], SCAN_USAGE[2], SCAN_USAGE[3]
             );
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
@@ -342,6 +345,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-clipboard", false),
             ("--no-malware", false),
             ("--deep", false),
+            ("--no-online-hash", false),
         ],
         "fix" => &[
             ("--help", false),
@@ -366,6 +370,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-clipboard", false),
             ("--no-malware", false),
             ("--deep", false),
+            ("--no-online-hash", false),
         ],
         "rules" => &[
             ("--help", false),
@@ -552,6 +557,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 no_clipboard: flag("--no-clipboard"),
                 no_malware: flag("--no-malware"),
                 deep: flag("--deep"),
+                no_online_hash: flag("--no-online-hash"),
                 ..Default::default()
             };
             if let Some(v) = value("--html") {
@@ -841,8 +847,8 @@ mod tests {
         assert!(c.no_malware && !c.deep);
         let Parsed::Run(Command::Scan(c)) = p(&["check", "--deep"]) else { panic!() };
         assert!(c.deep && !c.no_malware);
-        let Parsed::Run(Command::Scan(c)) = p(&["fix", "--deep", "--no-malware"]) else { panic!() };
-        assert!(c.fix && c.deep && c.no_malware);
+        let Parsed::Run(Command::Scan(c)) = p(&["fix", "--deep", "--no-malware", "--no-online-hash"]) else { panic!() };
+        assert!(c.fix && c.deep && c.no_malware && c.no_online_hash);
         assert!(matches!(p(&["scan", "--no-m"]), Parsed::Usage(_)), "--no-m is now ambiguous");
         let rules = |action: &str, samples: Vec<PathBuf>, update: bool, json: bool| Command::Rules {
             action: action.into(),

@@ -254,6 +254,8 @@ pub struct Options {
     pub no_malware: bool,
     /// The malware scan reads all of `~` with every system's rules (`--deep`).
     pub deep: bool,
+    /// Never look up a flagged file's hash online (`--no-online-hash`).
+    pub no_online_hash: bool,
 }
 
 /// What a finished scan found.

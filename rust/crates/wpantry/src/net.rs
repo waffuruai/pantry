@@ -40,6 +40,11 @@ pub const HOSTS: &[&str] = &[
     // GitHub serves release assets (YARA rule bundles) from these, by redirect.
     "release-assets.githubusercontent.com",
     "objects.githubusercontent.com",
+    // The malware scan's indicator lists and, with consent, hash lookups.
+    "feodotracker.abuse.ch",
+    "yaraify-api.abuse.ch",
+    "hashlookup.circl.lu",
+    "mb-api.abuse.ch",
 ];
 
 /// Redirects followed per request; every hop must be in [`HOSTS`] too.
@@ -418,6 +423,11 @@ mod tests {
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",
             crate::malware::FORGE_RELEASE,
+            crate::iocs::SIGNATURE_BASE,
+            crate::iocs::FEODO,
+            crate::iocs::YARAIFY,
+            crate::iocs::CIRCL,
+            crate::iocs::MALWAREBAZAAR,
             "https://release-assets.githubusercontent.com/github-production-release-asset/x",
             "https://objects.githubusercontent.com/github-production-release-asset-2e65be/x",
         ];

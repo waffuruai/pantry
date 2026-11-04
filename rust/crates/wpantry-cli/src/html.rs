@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use wpantry::check::{Options, Outcome};
+use wpantry::checks::{Options, Outcome};
 use wpantry::db::Cache;
 use wpantry::error::Result;
 use wpantry::history;

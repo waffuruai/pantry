@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 use std::sync::Mutex;
-use wpantry::check::{Options, Scan};
+use wpantry::checks::{Options, Scan};
 use wpantry::db::Cache;
 use wpantry::utils::net::{Fake, Response};
 

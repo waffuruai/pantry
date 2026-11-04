@@ -5,11 +5,12 @@
 //! product on record, and OSV's answers for every package version that
 //! has been asked about before. A scheduled run does this, then a check.
 
+use crate::checks::supply_chain::malicious;
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};
 use crate::utils::net::Net;
-use crate::{feeds, malicious, osv};
+use crate::{feeds, osv};
 
 /// What a sync refreshed and what it couldn't.
 #[derive(Debug, Default)]
@@ -84,7 +85,7 @@ mod tests {
         let db = d.path().join("w.db");
         let c = Cache::open(Some(&db)).unwrap();
         // The malicious index fetches from a clone beside the cache: a local one here.
-        crate::malicious::seed_clone(&db, &["osv/malicious/npm/evil/MAL-1.json"]);
+        crate::checks::supply_chain::malicious::seed_clone(&db, &["osv/malicious/npm/evil/MAL-1.json"]);
         (d, c)
     }
 

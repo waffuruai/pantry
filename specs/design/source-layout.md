@@ -30,12 +30,12 @@ wpantry/src/
   checks/
     mod.rs  files.rs
     machine/  mod.rs  tools.rs  catalog.rs  packages.rs  apps.rs  os_packages.rs
-              homebrew.rs  editors.rs  harnesses.rs  images.rs  ca_trust.rs  clipper.rs
+              cellar.rs  brew_vulns.rs  editors.rs  harnesses.rs  images.rs  ca_trust.rs  clipper.rs
     supply_chain/  mod.rs  repos.rs  hooks.rs  install_scripts.rs  typosquat.rs
                    malicious.rs  licenses.rs  leaks.rs  mptcp.rs
     lockfiles/  (as today)
     package_managers/  mod.rs  apk.rs  dpkg.rs  go.rs  maven.rs  packagist.rs
-                       pypi.rs  rpm.rs  rubygems.rs  semver.rs
+                       pypi.rs  rpm.rs  rubygems.rs  semver.rs  versions.rs
     posture/  (as in #132: any/, macos/, linux/)
     documents/  (as today, less zip and deflate)
     suspect/  (as today)
@@ -49,7 +49,7 @@ wpantry/src/
   utils/
     json.rs  toml.rs  plist.rs  re.rs  sha256.rs  net.rs  walk.rs  addresses.rs
     files.rs  process.rs  os.rs  parallel.rs  temp.rs  homebrew.rs
-    archive/  zip.rs  deflate.rs
+    archive/  mod.rs  zip.rs  deflate.rs
 
 wpantry-cli/src/
   main.rs  args.rs  progress.rs  style.rs  schedule.rs  update.rs
@@ -67,25 +67,25 @@ wpantry-cli/src/
 | `check_machine.rs` | `checks/machine/mod.rs` | The machine area's index |
 | `tools.rs`, `catalog.rs`, `packages.rs`, `apps.rs`, `editors.rs`, `harnesses.rs`, `images.rs` | `checks/machine/` | `images.rs` reads container images |
 | `osdb.rs` | `checks/machine/os_packages.rs` | |
-| `cellar.rs`, `scanners.rs` | `checks/machine/homebrew.rs` | Both are Homebrew: bottles poured without `brew`, and `brew vulns`. The prefix and cask readers they share with other checks are `utils/homebrew.rs` |
+| `cellar.rs`, `scanners.rs` | `checks/machine/cellar.rs` and `checks/machine/brew_vulns.rs` | Bottles poured without `brew`, and `brew vulns`: two jobs, so two files. The prefix and cask readers they share with other checks are `utils/homebrew.rs` |
 | `catrust.rs` | `checks/machine/ca_trust.rs`, with `wpantry harden` going to `remediation/harden.rs` | |
 | `clipper.rs` | `checks/machine/clipper.rs`; `item_dirs_for` and `command_of` go to `checks/posture/any/persistence/units.rs` | Persistence uses them more than the clipper does |
 | `check_supply.rs` | `checks/supply_chain/mod.rs` | |
-| `repos.rs` | `checks/supply_chain/repos.rs`; `PRUNE`, `DISCOVER_PRUNE` and the bounded walk go to `utils/walk.rs` | One walker and one prune list for every check |
+| `repos.rs` | `checks/supply_chain/repos.rs`; `PRUNE`, `DISCOVER_PRUNE`, `skip` and the bounded, memoised walk go to `utils/walk.rs` | One walker and one prune list for every check |
 | `hooks.rs`, `install_scripts.rs`, `typosquat.rs`, `leaks.rs` | `checks/supply_chain/` | `leaks.rs`'s own walk is replaced by `utils/walk.rs` |
-| `malicious.rs` | `sources/malicious_packages.rs` (the OpenSSF index) and `checks/supply_chain/malicious.rs` (matching) | |
-| `licenses.rs` | `sources/deps_dev.rs` and `checks/supply_chain/licenses.rs` | |
+| `malicious.rs` | `checks/supply_chain/malicious.rs` whole (1b); then `sources/malicious_packages.rs` (the OpenSSF index) comes out of it (1c) | |
+| `licenses.rs` | `checks/supply_chain/licenses.rs` whole (1b); then `sources/deps_dev.rs` comes out of it (1c) | |
 | `mptcp.rs` | `checks/supply_chain/mptcp.rs` | Go servers in repos that listen with MPTCP; the kernel side is `checks/posture/linux/mptcp.rs` |
-| `lockfiles/` | `checks/lockfiles/`; `lockfiles/toml.rs` goes to `utils/toml.rs` | The TOML reader gains integers, booleans and arrays for `sources.toml` |
-| `compare/`, `versions.rs` | `checks/package_managers/`; `versions.rs` becomes its `mod.rs`; `gover.rs` becomes `go.rs` and `pep440.rs` becomes `pypi.rs` | Named for the package manager, not the algorithm |
+| `lockfiles/` | `checks/lockfiles/`; `lockfiles/toml.rs` goes to `utils/toml.rs` | The TOML reader gains integers, booleans and arrays for `sources.toml` (phase 3), and its own line cap in place of `lockfiles::lines` |
+| `compare/`, `versions.rs` | `checks/package_managers/`, with `versions.rs` beside the others (the generic order); `gover.rs` becomes `go.rs` and `pep440.rs` becomes `pypi.rs` | Named for the package manager, not the algorithm. `mod.rs` keeps `Comparator` |
 | `posture/` | `checks/posture/` | Unchanged inside |
-| `documents/` | `checks/documents/`; `zip.rs` and `deflate.rs` go to `utils/archive/` | The malware scan reads zips too |
+| `documents/` | `checks/documents/`; `zip.rs` and `deflate.rs` go to `utils/archive/`, with the byte helpers they share (`rfind`, `u16le`, `u32le`, `MAX_MEMBER`) in its `mod.rs` | The malware scan reads zips too |
 | `suspect/` | `checks/suspect/` | Each rule's `scan` becomes one `Rule` in a table (phase 2) |
 | `hidden.rs` | `checks/hidden.rs` | |
-| `malware.rs`, `malware/tests.rs` | `checks/malware/`: `mod.rs` (the pass), `targets.rs`, `yara.rs` (the analyzer), `verdict.rs` (severity and lookups) | The per-file cache moves to `checks/files.rs` (phase 2) |
-| `iocs.rs` | `sources/formats/signature_base.rs`, `sources/formats/abusech.rs`, `sources/hash_lookups.rs` (YARAify, CIRCL, MalwareBazaar), `checks/malware/indicators.rs` (matching) | |
+| `malware.rs`, `malware/tests.rs` | `checks/malware/mod.rs` and `tests.rs` (1b); split into `targets.rs`, `yara.rs` (the analyzer) and `verdict.rs` (severity and lookups) in phase 2 | Phase 2 rewrites the walk and the cache, so the split lands with it. The per-file cache moves to `checks/files.rs` |
+| `iocs.rs` | `checks/malware/indicators.rs` whole (1b); then `sources/formats/signature_base.rs`, `sources/formats/abusech.rs` and `sources/hash_lookups.rs` (YARAify, CIRCL, MalwareBazaar) come out of it (1c) | |
 | `rulegen.rs` | `checks/malware/rulegen.rs` (the goodware database), with its output in `reporters/yara.rs` | Open decision 3 |
-| `breach.rs` | `sources/breaches.rs` (HIBP, XposedOrNot) and `checks/email.rs` | Renamed: it checks the user's email address |
+| `breach.rs` | `checks/email.rs` whole (1b); then `sources/breaches.rs` (HIBP, XposedOrNot) comes out of it (1c) | Renamed: it checks the user's email address |
 | `feeds.rs` | `sources/kev.rs`, `sources/endoflife.rs`, `sources/releases.rs` (Homebrew casks, Chrome, Firefox, PostgreSQL, Arch) | One file per source family |
 | `osv.rs`, `distros.rs` | `sources/` | |
 | `net.rs` | `utils/net.rs`; `HOSTS` is built from the sources file (phase 3) | |
@@ -104,8 +104,9 @@ Each phase-1 PR moves code without changing it: `git mv` where a file moves whol
 | PR | Moves |
 |---|---|
 | 1a | `utils/` from the root-level helpers (`json`, `plist`, `re`, `sha256`, `net`, `addresses`) and `system.rs`; `component.rs` and `finding.rs` |
-| 1b | `checks/`, with the helpers that come out of its folders: `utils/toml.rs` (from `lockfiles/`), `utils/archive/` (from `documents/`), `utils/walk.rs` (from `repos.rs`) |
-| 1c | `reporters/` and `remediation/` |
+| 1b | `checks/`, every file whole (a file that is both a source and a check moves with the check), and the helpers that come out of its folders: `utils/toml.rs` (from `lockfiles/`), `utils/archive/` (from `documents/`), `utils/walk.rs` (from `repos.rs`), and `item_dirs_for` and `command_of` (from `clipper.rs`) |
+| 1c | `sources/`: `osv.rs`, `distros.rs`, `feeds.rs` split by family, and the source halves of `email.rs`, `malicious.rs`, `licenses.rs` and `indicators.rs` |
+| 1d | `reporters/` and `remediation/` |
 
 **Each PR is checked by:**
 - the contract suite;

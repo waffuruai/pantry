@@ -416,7 +416,8 @@ mod tests {
 
     #[test]
     fn every_source_is_on_the_host_list_and_nothing_else_is_asked() {
-        use crate::{feeds, licenses, osv};
+        use crate::checks::supply_chain::licenses;
+        use crate::{feeds, osv};
         let sources = [
             feeds::KEV_URL,
             feeds::ARCH_URL,
@@ -432,12 +433,12 @@ mod tests {
             osv::API,
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",
-            crate::malware::FORGE_RELEASE,
-            crate::iocs::SIGNATURE_BASE,
-            crate::iocs::FEODO,
-            crate::iocs::YARAIFY,
-            crate::iocs::CIRCL,
-            crate::iocs::MALWAREBAZAAR,
+            crate::checks::malware::FORGE_RELEASE,
+            crate::checks::malware::indicators::SIGNATURE_BASE,
+            crate::checks::malware::indicators::FEODO,
+            crate::checks::malware::indicators::YARAIFY,
+            crate::checks::malware::indicators::CIRCL,
+            crate::checks::malware::indicators::MALWAREBAZAAR,
             "https://release-assets.githubusercontent.com/github-production-release-asset/x",
             "https://objects.githubusercontent.com/github-production-release-asset-2e65be/x",
         ];

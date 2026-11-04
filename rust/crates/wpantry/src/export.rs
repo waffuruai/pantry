@@ -211,7 +211,7 @@ pub fn jsonl(cache: &Cache, all: bool) -> Result<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::Options;
+    use crate::checks::Options;
 
     fn finding(id: &str, fix_cmd: &str) -> Finding {
         Finding {

@@ -1,5 +1,5 @@
 //! The resident clipboard guard, `wpantry clipboard --watch`. The scan's
-//! self-test ([`crate::clipper`]) catches a clipper that rewrites a canary
+//! self-test ([`crate::checks::machine::clipper`]) catches a clipper that rewrites a canary
 //! while the scan runs; one that only wakes for a wallet with money in it,
 //! or a browser extension that swaps the address as it is pasted, shows
 //! itself while the person works. The guard polls the clipboard a few

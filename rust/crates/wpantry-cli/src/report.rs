@@ -35,6 +35,7 @@ pub fn covering<'a>(fs: &[&'a Finding]) -> &'a Finding {
 /// what the repos lock, then what the harnesses run, then everything else.
 const KIND_ORDER: &[&str] = &[
     "posture",
+    "persistence",
     "os",
     "runtime",
     "compiler",

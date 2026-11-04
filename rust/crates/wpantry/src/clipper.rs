@@ -293,9 +293,14 @@ const INTERPRETERS: &[&str] =
 /// How much of a program is read for its strings.
 const MAX_PROGRAM: u64 = 16 << 20;
 
-/// (what to show, the directories) of the persistence items on this OS.
-fn item_dirs(home: &Path) -> Vec<PathBuf> {
-    if cfg!(target_os = "macos") {
+/// The directories of the persistence items on this OS.
+pub(crate) fn item_dirs(home: &Path) -> Vec<PathBuf> {
+    item_dirs_for(home, cfg!(target_os = "macos"))
+}
+
+/// The directories of the persistence items on macOS, or on Linux.
+pub(crate) fn item_dirs_for(home: &Path, macos: bool) -> Vec<PathBuf> {
+    if macos {
         vec![
             home.join("Library/LaunchAgents"),
             PathBuf::from("/Library/LaunchAgents"),
@@ -307,7 +312,7 @@ fn item_dirs(home: &Path) -> Vec<PathBuf> {
 }
 
 /// The command line a persistence item runs.
-fn command_of(path: &Path) -> Vec<String> {
+pub(crate) fn command_of(path: &Path) -> Vec<String> {
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or("");
     if name.ends_with(".plist") {
         let v = crate::plist::read(path);
@@ -334,7 +339,7 @@ fn command_of(path: &Path) -> Vec<String> {
 
 /// The file whose contents say what the item does: the script an
 /// interpreter is given, else the program itself.
-fn program_file(argv: &[String]) -> Option<PathBuf> {
+pub(crate) fn program_file(argv: &[String]) -> Option<PathBuf> {
     let first = argv.first()?;
     let base = Path::new(first).file_name().and_then(OsStr::to_str).unwrap_or(first);
     let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
@@ -346,7 +351,7 @@ fn program_file(argv: &[String]) -> Option<PathBuf> {
     Some(p)
 }
 
-fn odd_place(home: &Path, program: &Path) -> bool {
+pub(crate) fn odd_place(home: &Path, program: &Path) -> bool {
     // Under $HOME: a dot-directory straight under it other than the tool
     // managers' (whatever $HOME itself is under).
     if let Ok(rel) = program.strip_prefix(home) {

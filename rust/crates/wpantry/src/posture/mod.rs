@@ -16,6 +16,7 @@ use std::time::Duration;
 pub mod dns;
 pub mod linux;
 pub mod macos;
+pub mod persistence;
 pub mod tools;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

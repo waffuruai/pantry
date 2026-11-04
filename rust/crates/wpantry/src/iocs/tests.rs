@@ -102,10 +102,15 @@ fn lookups_ask_once_cache_a_day_and_read_each_source() {
     let net = Fake::new(|r| {
         if r.url == YARAIFY {
             let body: serde_json::Value = serde_json::from_slice(r.body.as_ref().unwrap()).unwrap();
-            return Ok(Response::ok(if body["search_term"] == "aa" {
-                r#"{"query_status": "ok", "data": {"tasks": [{"static_results": [{"rule_name": "MAL_XMRig"}, {"rule_name": "MAL_XMRig"}]}]}}"#
-            } else {
-                r#"{"query_status": "no_results"}"#
+            return Ok(Response::ok(match body["search_term"].as_str() {
+                Some("aa") => {
+                    r#"{"query_status": "ok", "data": {"tasks": [{"clamav_results": ["Win.Coinminer.Generic-1", "Win.Coinminer.Generic-1"], "static_results": [{"rule_name": "DebuggerCheck"}]}]}}"#
+                }
+                // Known to YARAify, but only as a vulnerable driver: no verdict.
+                Some("dd") => {
+                    r#"{"query_status": "ok", "data": {"tasks": [{"clamav_results": ["SecuriteInfo.com.HackTool.VulnDriver.x64"]}, {"clamav_results": []}]}}"#
+                }
+                _ => r#"{"query_status": "no_results"}"#,
             }));
         }
         if r.url == format!("{CIRCL}bb") {
@@ -115,7 +120,12 @@ fn lookups_ask_once_cache_a_day_and_read_each_source() {
     });
     let (v, failed) = verify(&cache, &net, "aa");
     assert!(failed.is_empty());
-    assert_eq!(v, [("YARAify", Verdict::Malware("MAL_XMRig".into())), ("CIRCL hashlookup", Verdict::Unknown)]);
+    assert_eq!(
+        v,
+        [("YARAify", Verdict::Malware("Win.Coinminer.Generic-1".into())), ("CIRCL hashlookup", Verdict::Unknown)]
+    );
+    let (v, _) = verify(&cache, &net, "dd");
+    assert_eq!(v[0], ("YARAify", Verdict::Unknown), "a hacking tool's signature isn't a malware verdict");
     let (v, _) = verify(&cache, &net, "bb");
     assert_eq!(v, [("YARAify", Verdict::Unknown), ("CIRCL hashlookup", Verdict::KnownGood)]);
     let asked = net.requests().len();

@@ -293,31 +293,39 @@ fn cached(cache: &Cache, sha256: &str, source: &str) -> Option<Verdict> {
     })
 }
 
-/// Rule names under any `rule_name` key, as YARAify reports its matches.
-fn rule_names(v: &serde_json::Value, out: &mut Vec<String>) {
-    match v {
-        serde_json::Value::Object(m) => {
-            for (k, x) in m {
-                match (k.as_str(), x.as_str()) {
-                    ("rule_name", Some(name)) if !out.iter().any(|o| o == name) => out.push(name.to_string()),
-                    _ => rule_names(x, out),
-                }
+/// The ClamAV signatures YARAify's analyses of a file found, in order.
+fn clamav_names(v: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let tasks = v.get("data").and_then(|d| d.get("tasks")).and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    for t in &tasks {
+        for name in t.get("clamav_results").and_then(|c| c.as_array()).into_iter().flatten().filter_map(|n| n.as_str())
+        {
+            if !out.iter().any(|o| o == name) {
+                out.push(name.to_string());
             }
         }
-        serde_json::Value::Array(a) => a.iter().for_each(|x| rule_names(x, out)),
-        _ => {}
     }
+    out
 }
 
+/// Whether a ClamAV signature names malware, not a hacking tool, an
+/// unwanted program or a vulnerable (but legitimate) driver.
+fn names_malware(sig: &str) -> bool {
+    let s = sig.to_ascii_lowercase();
+    !["pua", "hacktool", "vulndriver", "riskware", "adware", "tool.", "heuristics.", "unofficial"]
+        .iter()
+        .any(|w| s.contains(w))
+}
+
+/// YARAify knows a file once anyone submitted it, so being known says
+/// nothing; the ClamAV signatures its analysis found are the verdict.
 fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
     let resp = net::post_json(net, YARAIFY, &serde_json::json!({"query": "lookup_hash", "search_term": sha256}))?;
     match resp.get("query_status").and_then(|s| s.as_str()) {
-        Some("ok") => {
-            let mut names = Vec::new();
-            rule_names(&resp, &mut names);
-            names.truncate(3);
-            Ok(Verdict::Malware(names.join(", ")))
-        }
+        Some("ok") => Ok(match clamav_names(&resp).into_iter().find(|n| names_malware(n)) {
+            Some(sig) => Verdict::Malware(sig),
+            None => Verdict::Unknown,
+        }),
         Some("no_results") | Some("hash_not_found") => Ok(Verdict::Unknown),
         other => Err(Error::Invalid(format!("YARAify: {}", other.unwrap_or("no status")))),
     }

@@ -1082,6 +1082,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_remaining_branches() {
         assert_eq!(disk_encryption(&machine(&[])).status, Status::Unknown);

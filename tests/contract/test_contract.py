@@ -25,8 +25,9 @@ ROOT = Path(__file__).resolve().parents[2]
 BIN = Path(os.environ.get("WPANTRY") or ROOT / "rust" / "target" / "release" / "wpantry")
 if not BIN.is_absolute():
     BIN = (ROOT / BIN).resolve()
-# The name the binary goes by, which its skill and errors carry.
-NAME = BIN.name
+# The name the binary goes by, which its skill and errors carry (without
+# Windows' .exe).
+NAME = BIN.stem if BIN.suffix.lower() == ".exe" else BIN.name
 
 ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
 FINDING = {"kind": str, "component": str, "version": str, "location": str, "vuln_id": str, "status": str,
@@ -147,7 +148,10 @@ class Contract(unittest.TestCase):
         self.assertFalse(self.db.exists(), "no scan ran")
 
     def test_exit_3_when_the_cache_cant_be_opened(self):
-        env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
+        # A path under a regular file can't be created on any platform.
+        blocker = Path(self.tmp.name, "not-a-dir")
+        blocker.write_text("")
+        env = dict(self.env, WPANTRY_DB=str(blocker / "w.db"))
         code, _, err = self.run_bin("search", "x", env=env)
         self.assertEqual(code, 3)
         self.assertIn(f"{NAME}:", err)
@@ -1235,6 +1239,7 @@ class Contract(unittest.TestCase):
         self.assertIn("keep checking", out)
         self.assertIn("1 advisories watched, 0 with a fix now", out)
 
+    @unittest.skipIf(os.name == "nt", "the editor settings are read from macOS and Linux homes only")
     def test_harden_sets_the_cooldown_in_each_editor(self):
         env = dict(self.env)
         env.pop("XDG_CONFIG_HOME", None)

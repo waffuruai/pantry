@@ -169,6 +169,7 @@ mod tests {
 
     /// Extensions on disk count only for an installed editor, and the
     /// `.obsolete` list (what the editor will remove) is skipped.
+    #[cfg(unix)]
     #[test]
     fn extensions_of_installed_editors() {
         let home = system::test_home();

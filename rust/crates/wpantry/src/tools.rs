@@ -294,6 +294,7 @@ mod tests {
         assert!(c.fix.contains("nvm-sh/nvm#upgrading"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn nvm_under_home_unless_nvm_dir_says_otherwise() {
         let home = crate::system::test_home();
@@ -308,6 +309,7 @@ mod tests {
         drop(home);
     }
 
+    #[cfg(unix)]
     #[test]
     fn dedupe_counts_one_install_once() {
         let d = crate::system::TempDir::new("dedupe").unwrap();

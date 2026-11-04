@@ -199,7 +199,8 @@ pub fn scan_dir(root: &Path, kind: Kind, policy: &Policy) -> Vec<Suspect> {
     for (dir, files) in repos::walk(root, WALK_DEPTH) {
         for name in files {
             let rel_path = dir.join(&name);
-            let rel = rel_path.strip_prefix(root).unwrap_or(&rel_path).to_string_lossy().into_owned();
+            // Shown and matched with slashes on every host (`/dist/`, `path:` policy entries).
+            let rel = rel_path.strip_prefix(root).unwrap_or(&rel_path).to_string_lossy().replace('\\', "/");
             if kind == Kind::Repo {
                 if blobs::is_blob_name(&name) && !generated_path(&rel) && !test_path(&rel) {
                     tree_blobs.push((rel.clone(), rel_path.clone()));

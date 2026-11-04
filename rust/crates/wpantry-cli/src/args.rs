@@ -71,6 +71,9 @@ pub enum Target {
 }
 
 #[derive(Debug, PartialEq)]
+// `Check` carries every check option; the other commands take a few fields.
+// One value is built per process, so the size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// `scan`, `check` or `fix` (`fix` is set).
     Scan(Check),
@@ -154,7 +157,9 @@ pub enum Command {
 }
 
 /// What parsing decided: run a command, or exit now (help printed, or a
-/// usage error).
+/// usage error). `Check` carries every option, so `Run` is far larger than
+/// the two strings; one value exists for one call, so boxing it would buy
+/// nothing.
 #[derive(Debug, PartialEq)]
 // `Run` carries the whole parsed command; the other two are one string each.
 // One value is built per process, so the size gap costs nothing.

@@ -35,7 +35,12 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 | TERMINAL-SECURE-INPUT | 6.4.1 | Terminal Secure Keyboard Entry | Medium | user: `defaults write com.apple.Terminal SecureKeyboardEntry -bool true` |
 | SAFARI-SAFE-FILES | 6.3.1 | Safari doesn't open downloads | Medium | user: Safari → Settings → General |
 | BLUETOOTH-SHARING | 2.3.3.10 | Bluetooth Sharing off | Low | user: `defaults -currentHost write com.apple.Bluetooth PrefKeyServicesEnabled -bool false` |
-| XPROTECT | 5.10 | XProtect data under 45 days old | Medium | admin: `softwareupdate --background-critical` |
+| XPROTECT | 5.10 | XProtect data under 45 days old, and XProtect Remediator present; the evidence names both versions (`xprotect version` on macOS 15 and later, else the bundles' `CFBundleShortVersionString`) | Medium | admin: `softwareupdate --background-critical` |
+| SECURE-BOOT | | Secure Boot at Full Security: `bputil -d` as root, else `system_profiler SPiBridgeDataType` (Apple silicon and T2). Reduced or Medium Security warns (a third-party kext may need it), Permissive or none fails; an Intel Mac without a T2 has no policy and says so | High | admin: Startup Security Utility in Recovery |
+| NOT-ADMIN | | The everyday account is a standard user (`id -Gn` without `admin`), so what it runs can't install system-wide or change settings without another account's password | Medium | admin: a separate administrator account, then take admin away from the everyday one |
+| TIME-SYNC | 2.3.2.1 | Time and date set automatically (`systemsetup -getusingnetworktime`, directly or through `sudo -n`; without admin, manual with the time server `/etc/ntp.conf` names) | Medium | admin: `systemsetup -setusingnetworktime on` |
+| AIRDROP | 2.3.1.1 | AirDrop disabled, off, or contacts only (`com.apple.sharingd DiscoverableMode`); Everyone warns | Medium | user: `defaults write com.apple.sharingd DiscoverableMode -string "Contacts Only"` |
+| FIREWALL-LOGGING | 3.6 | Firewall logging on: `socketfilterfw --getloggingmode` before macOS 15, a configuration profile's `com.apple.security.firewall EnableLogging` since (manual when there is none, as there is no other switch) | Low | admin: a configuration profile (or `socketfilterfw --setloggingmode on` before macOS 15) |
 | DNS-ENCRYPTED | | DNS leaves the Mac encrypted: a DoH or DoT configuration profile or a DNS proxy extension (NextDNS, AdGuard, Cloudflare) in the network-extension settings, or a local stub that forwards encrypted (dnscrypt-proxy, stubby, cloudflared, unbound with `forward-tls-upstream`) as the resolver `scutil --dns` names. A VPN tunnel or Tailscale's resolver is "couldn't tell"; plain addresses on UDP 53 warn | Medium | admin: a DoH/DoT profile (NextDNS, Cloudflare, Quad9, AdGuard, Control D publish them) or the provider's app, or a local stub |
 | LOCKDOWN | 2.6.7 | Lockdown Mode (advisory) | Low | for people at risk of targeted attacks |
 
@@ -71,3 +76,21 @@ The DNS check is Medium on purpose: an internal resolver (Kubernetes, Docker, a 
 The kernel check is the pattern for a vulnerability with no fix to install yet: the check knows the affected versions and the stopgap, passes on either, and tells you which one you are relying on. [usage.md](usage.md#exposed-with-no-fix-yet) covers `wpantry watch`, which asks OSV again about such advisories.
 
 Not covered yet: Windows (#11), Time Machine encryption, sudo timeouts (need root to read), audit logging.
+
+## Persistence
+
+With the machine inventory, and whatever `--no-posture` says, wpantry lists every place a program can arrange to run again and compares the list with the last scan's (kind `persistence`). An infostealer or a backdoor has to survive a reboot, and the places it can do that from are few:
+
+- **macOS:** launch agents and daemons (`~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`, every program, with the `EnvironmentVariables` they set), the login items and launch agents and daemons apps carry in their bundles for ServiceManagement to register (`Contents/Library/LoginItems`, `LaunchAgents` and `LaunchDaemons` of every app in `/Applications` and `~/Applications`; whether each is enabled lives in Background Task Management, whose only reader, `sfltool dumpbtm`, asks for an administrator's password, so wpantry doesn't run it), the user's crontab and `/etc/crontab`, pending `at` jobs, periodic scripts and local files, emond rules and clients, authorization plugins (`/Library/Security/SecurityAgentPlugins`), third-party kernel extensions (`/Library/Extensions`), system extensions (`systemextensionsctl list`), Quick Look generators and Spotlight importers (yours and the system's), the shells' startup files (`~/.zshrc`, `~/.bash_profile`, `/etc/zshrc` and the rest), and `launchctl getenv DYLD_INSERT_LIBRARIES`.
+- **Linux:** systemd units (yours in `~/.config/systemd/user`, the system's in `/etc/systemd` and `/usr/local/lib/systemd`; the distribution's own in `/lib/systemd` are packaged and left out), crontabs, `/etc/cron.d` and the `cron.hourly` to `cron.monthly` scripts, `at` jobs, XDG autostart entries, the startup files with `/etc/profile.d` and `/etc/environment`, and `/etc/ld.so.preload`.
+
+Each persisted program is put to `codesign -dv` and `codesign --verify --strict` on macOS (Apple, a developer identity, the App Store, ad hoc, unsigned, or a signature that no longer verifies) and asked for its `com.apple.quarantine` attribute (still there: downloaded and not yet cleared by Gatekeeper; missing from a downloaded program: someone stripped it). Both go in the finding's note.
+
+| Id | When | Status |
+|---|---|---|
+| PERSISTENCE-NEW | An item the last scan that read its source didn't see: a new plist, a login item, a cron line, a plugin, an existing launch agent that now runs something else. The startup files are compared by line; the note gives the line numbers, never the text (a line can hold a token) | warn |
+| PERSISTENCE-INJECTION | An item that sets `DYLD_INSERT_LIBRARIES`, `LD_PRELOAD` or `LD_AUDIT`, or a library in `/etc/ld.so.preload`: every program it starts loads that library first | warn, every scan |
+| PERSISTENCE-SIGNATURE | A persisted program whose code signature doesn't verify: it changed after it was signed | warn, every scan |
+| PERSISTENCE-HIDDEN | A persisted program in a temporary or hidden place (`/tmp`, `/var/folders`, `/Users/Shared`, a dot-directory in your home that isn't a known tool's) | warn, every scan |
+
+The first scan records the list (the cache's `persistence` table, as hashes and locations; the counts say how many were recorded) and reports nothing new. Each source keeps its own record, so one that couldn't be read once (reported as not checked) doesn't make everything in it new the next time; an item that goes and comes back is new again. Anything you add yourself warns once and is in the record from then on. The list of persisted programs is also what the malware scan reads.

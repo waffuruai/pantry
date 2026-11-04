@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
   source TEXT PRIMARY KEY, fingerprint TEXT, ran_at REAL, result TEXT);
 CREATE TABLE IF NOT EXISTS malicious (ecosystem TEXT, name TEXT, id TEXT);
 CREATE INDEX IF NOT EXISTS malicious_name ON malicious (ecosystem, name);
+CREATE TABLE IF NOT EXISTS persistence (
+  key TEXT PRIMARY KEY, source TEXT, location TEXT, program TEXT, first_at REAL, last_at REAL);
 ";
 
 /// Columns added since a table was first created, as (table, column,
@@ -318,6 +320,34 @@ impl Cache {
             params![eco, pkg, ver, now(), ids.join(" ")],
         )?;
         Ok(())
+    }
+
+    // persistence baseline -------------------------------------------------
+
+    /// The keys a source's persistence items had at the last scan that read
+    /// it; None before the first.
+    pub fn persistence_baseline(&self, source: &str) -> Result<Option<HashSet<String>>> {
+        if self.get(&format!("persistence_at:{source}"))?.is_none() {
+            return Ok(None);
+        }
+        let mut stmt = self.conn.prepare("SELECT key FROM persistence WHERE source = ?")?;
+        let keys =
+            stmt.query_map([source], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(keys.into_iter().flatten().collect()))
+    }
+
+    /// Record what a source holds now, as (key, location, program): items
+    /// seen again keep when they were first seen, items gone are dropped.
+    pub fn persistence_record(&self, source: &str, items: &[(String, String, String)], at: f64) -> Result<()> {
+        for (key, location, program) in items {
+            self.conn.execute(
+                "INSERT INTO persistence VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(key) DO UPDATE SET location = excluded.location, program = excluded.program, last_at = excluded.last_at",
+                params![key, source, location, program, at, at],
+            )?;
+        }
+        self.conn.execute("DELETE FROM persistence WHERE source = ? AND last_at < ?", params![source, at])?;
+        self.set(&format!("persistence_at:{source}"), &at.to_string())
     }
 
     // cached source runs (gitleaks, feeds, tags) ----------------------------

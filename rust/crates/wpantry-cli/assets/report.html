@@ -358,15 +358,15 @@ var state = {run:0, q:'', show:{fail:true,warn:true}, kevOnly:false, open:{}, pa
 var MARKERS = Object.create(null);
 ['UNPINNED','UNCHECKED','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA','REPO-POLICY'].forEach(function(id){MARKERS[id]=1});
 // Kinds whose ids are the scanner's own rules, never public advisories.
-var RULE_KINDS = ['secret','repo-hook','posture','hidden-text','suspect-code','document','clipper'];
+var RULE_KINDS = ['secret','repo-hook','posture','persistence','hidden-text','suspect-code','document','clipper'];
 var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'Not checked', secret:'Committed secrets', runtime:'Runtimes',
   os:'Operating system', compiler:'Compilers', manager:'Version managers', pkgmgr:'Package managers', tool:'Tools', datastore:'Datastores',
   harness:'Agent harnesses', package:'Global packages', brew:'Homebrew', app:'Apps', browser:'Browsers', extension:'Editor extensions',
   image:'Container images', bundled:'Bundled packages', 'repo-hook':'Repo hooks', posture:'Security settings', 'hidden-text':'Hidden text',
-  'suspect-code':'Suspicious code', document:'Documents and images', clipper:'Clipboard hijackers', 'install-script':'Install scripts',
+  'suspect-code':'Suspicious code', document:'Documents and images', clipper:'Clipboard hijackers', persistence:'Persistence', 'install-script':'Install scripts',
   license:'Licenses', config:'Configuration', account:'Accounts'};
 // The terminal report's order: what is on the machine, what the repos lock, what the harnesses run, then the rest.
-var KIND_ORDER = ['clipper','posture','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
+var KIND_ORDER = ['clipper','posture','persistence','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
   'project','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
 var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, IMPORTANT:2, MODERATE:3, MEDIUM:3, LOW:4};
 

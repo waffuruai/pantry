@@ -35,6 +35,10 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         let trust = s.spawn(catrust::check);
         let updates = s.spawn(apps_mod::macos_updates);
         let clip = (!scan.opts.no_clipboard).then(|| s.spawn(clipper_mod::run_self_test));
+        let home = scan.home.clone();
+        let persist = s.spawn(move || {
+            crate::posture::any::persistence::gather(&crate::posture::any::persistence::Roots::real(home))
+        });
         let brew_ran = brew_job.as_ref().filter(|j| j.stale).map(|j| s.spawn(move || scanners::brew_scan(j)));
         let found = inventory(scan);
         components(scan, &found)?;
@@ -46,6 +50,7 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         if !scan.opts.no_posture {
             posture(scan);
         }
+        persistence(scan, joined(persist));
         clipper(scan, clip.map(joined));
         Ok(found)
     })
@@ -233,6 +238,32 @@ fn posture_with(scan: &mut Scan, runner: crate::posture::Runner) {
             fix_auto,
             ..Default::default()
         });
+    }
+}
+
+/// Persistence: every place a program can arrange to run again (listed
+/// and checked beside the other probes), diffed against the last scan's
+/// list in the cache's `persistence` table. Runs with the machine inventory
+/// whatever `--no-posture` says, as the clipper's persistence check does:
+/// it is malware's footing, not a setting.
+pub fn persistence(scan: &mut Scan, (inv, vetted): crate::posture::any::persistence::Gathered) {
+    use crate::posture::any::persistence as p;
+    scan.status("Comparing launch agents, login items and the other persistence places with the last scan");
+    scan.count("persistence items listed", inv.items.len() as i64);
+    for (source, why) in &inv.unread {
+        scan.unchecked(&format!("persistence: {}s", source.what()), why);
+    }
+    let (new, first) = match p::diff(&scan.cache, &inv, now()) {
+        Ok(d) => d,
+        Err(e) => {
+            scan.unchecked("persistence baseline", &e.to_string());
+            (Vec::new(), Vec::new())
+        }
+    };
+    let baselined = inv.items.iter().filter(|i| first.contains(&i.source)).count();
+    scan.count("persistence items recorded as the baseline (first scan)", baselined as i64);
+    for f in p::findings(&inv, &new, &vetted, &|path| system::short(&path.to_string_lossy())) {
+        scan.add(f);
     }
 }
 
@@ -1184,6 +1215,40 @@ mod tests {
         // Known to the cache already: not stored again.
         assert!(postgres(&mut s, &c, &[adv(&["17"], &["17.6"])]).unwrap());
         assert_eq!(s.findings.len(), 2);
+    }
+
+    #[test]
+    fn persistence_baselines_first_then_warns_on_what_is_new() {
+        use crate::posture::any::persistence::{Inventory, Item, Source};
+        let d = crate::system::TempDir::new("persistence").unwrap();
+        let net = Fake::offline();
+        let mut s = scan(&net, &d);
+        let item = |loc: &str| Item {
+            source: Source::Launchd,
+            location: loc.into(),
+            ident: String::new(),
+            program: None,
+            injects: Vec::new(),
+            line: 0,
+        };
+        let mut inv = Inventory {
+            items: vec![item("a.plist")],
+            read: vec![Source::Launchd],
+            unread: vec![(Source::SystemExtension, "systemextensionsctl list gave no answer".into())],
+        };
+        persistence(&mut s, (inv.clone(), Default::default()));
+        assert_eq!(
+            kinds(&s),
+            [("persistence: system extensions".to_string(), "UNCHECKED".to_string(), "warn".to_string())],
+            "the first scan records, and says what it couldn't read"
+        );
+        assert!(s.counts.iter().any(|(k, n)| k.starts_with("persistence items recorded") && *n == 1));
+        let mut s2 = Scan::new(Default::default(), s.cache, &net, &|_| {}, &|_| {});
+        inv.items.push(item("b.plist"));
+        inv.unread.clear();
+        persistence(&mut s2, (inv, Default::default()));
+        assert_eq!(kinds(&s2), [("b.plist".to_string(), "PERSISTENCE-NEW".to_string(), "warn".to_string())]);
+        assert_eq!(s2.findings[0].kind, "persistence");
     }
 
     #[test]

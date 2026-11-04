@@ -94,7 +94,7 @@ A reader should be able to tell what wpantry does from its tree. Today that take
 
 | Phase | Scope | Done when | Issue |
 |---|---|---|---|
-| 1 | Moves and renames, no behaviour change: `utils/` and core types, then `checks/`, then `reporters/` and `remediation/` (three PRs) | F1, F2 | pending |
+| 1 | Moves and renames, no behaviour change: `utils/` and core types, then `checks/`, then `sources/`, then `reporters/` and `remediation/` (four PRs) | F1, F2 | pending |
 | 2 | One walk, FileView, the shared per-file cache, analyzer tables (`suspect/` rules as one `Rule` table) | F3, F4, P1 | pending |
 | 3 | `sources.toml`, the fetcher, HOSTS from the file, `wpantry sources`, user sources with consent; every current source declared | F5, F6, S1–S3 | pending |
 | 4 | Indicator store and lookup matching; trails and the tiers | F7, P2 | pending |

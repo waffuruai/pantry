@@ -17,8 +17,8 @@
 //! Every read and every root write goes through [`Host`], so the tests
 //! run the whole thing against a recorded machine.
 
+use crate::checks::posture::linux;
 use crate::error::{Error, Result};
-use crate::posture::linux;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;

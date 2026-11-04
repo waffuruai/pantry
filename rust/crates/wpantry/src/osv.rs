@@ -5,13 +5,13 @@
 //! second run the same day makes no OSV calls at all. Failures are never
 //! cached.
 
+use crate::checks::package_managers::versions;
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};
 use crate::utils::json::{self, arr_at, str_at};
 use crate::utils::net::{self, Net};
 use crate::utils::os::now;
-use crate::versions;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;

@@ -18,7 +18,7 @@ use args::{Check, Command, Parsed, Target};
 use rusqlite::types::ValueRef;
 use std::io::{IsTerminal, Write};
 use style::Style;
-use wpantry::check::{Options, Outcome, Policy, Scan};
+use wpantry::checks::{Options, Outcome, Policy, Scan};
 use wpantry::db::{self, Cache};
 use wpantry::error::Result;
 use wpantry::utils::json::{J, obj};
@@ -630,7 +630,7 @@ fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, clipboard_gu
 /// clipboard from a script instead (one line per read; the contract
 /// tests' hook) and sends no notification.
 fn cmd_clipboard(watch: bool, once: bool, window: f64, json: bool) -> Result<i32> {
-    use wpantry::clipper::{self, Clipboard, SelfTest};
+    use wpantry::checks::machine::clipper::{self, Clipboard, SelfTest};
     use wpantry::guard;
     if !watch {
         let result = clipper::run_self_test();
@@ -807,7 +807,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 /// (the shell script it replaced did the same), asking for sudo only to install
 /// the result.
 fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
-    wpantry::catrust::fix(bundle, &|line| show(line))?;
+    wpantry::checks::machine::ca_trust::fix(bundle, &|line| show(line))?;
     if bundle.is_none() {
         show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
     }
@@ -816,9 +816,9 @@ fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
 
 /// `harden extension-cooldown`: the one posture fix that edits files.
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::posture::any::tools::set_extension_cooldown(hours)?;
+    let changed = wpantry::checks::posture::any::tools::set_extension_cooldown(hours)?;
     if changed.is_empty() {
-        let editors = wpantry::posture::any::tools::editor_settings();
+        let editors = wpantry::checks::posture::any::tools::editor_settings();
         if editors.is_empty() {
             show("  no VS Code-family editor is installed");
         } else {
@@ -863,7 +863,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
         .collect();
     let stopgap = mitigate::stopgap(id);
     let interactive = !no_input && std::io::stdin().is_terminal();
-    let bundled = wpantry::check::mitigation(id);
+    let bundled = wpantry::checks::mitigation(id);
     show(&format!(
         "==> {id}: {}{}",
         match findings.len() {
@@ -1022,7 +1022,7 @@ fn cmd_mitigate_list() -> Result<i32> {
 /// `rules`: where the malware scan's rules come from and what compiled;
 /// `--update` fetches YARA Forge's package first.
 fn cmd_rules(update: bool, json: bool) -> Result<i32> {
-    use wpantry::malware;
+    use wpantry::checks::malware;
     let cache = Cache::open(None)?;
     let mut failed = None;
     if update {
@@ -1077,8 +1077,8 @@ fn cmd_rules_goodware() -> Result<usize> {
     let cache = Cache::open(None)?;
     let progress = progress::Progress::start();
     let status = |m: &str| progress.set(m);
-    let files = wpantry::rulegen::goodware_files(&wpantry::rulegen::goodware_dirs());
-    let read = wpantry::rulegen::build(&cache, &files, &status);
+    let files = wpantry::checks::malware::rulegen::goodware_files(&wpantry::checks::malware::rulegen::goodware_dirs());
+    let read = wpantry::checks::malware::rulegen::build(&cache, &files, &status);
     progress.finish();
     let read = read?;
     cache.close()?;
@@ -1094,7 +1094,7 @@ fn cmd_rules_gen(
     name: Option<&str>,
     out: Option<&std::path::Path>,
 ) -> Result<i32> {
-    use wpantry::rulegen;
+    use wpantry::checks::malware::rulegen;
     if !rulegen::built(&Cache::open(None)?)? {
         cmd_rules_goodware()?;
     }

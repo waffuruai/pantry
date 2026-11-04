@@ -32,16 +32,21 @@ CI runs all of it on Linux and macOS (`.github/workflows/ci.yml`: `rust`, `rust-
 
 ## The library, `crates/wpantry/src`
 
-| Role | Modules |
+Grouped by what the code does ([specs/design/source-layout.md](../specs/design/source-layout.md) has the rules and the target tree):
+
+| Folder | Holds |
 |---|---|
-| The scan | `check` (findings, counts, status, "not checked"; the policy files), `check_supply` (every repo: lockfiles, secrets, malicious packages, install scripts, MCP servers, licenses, images, programs listening with MPTCP on), `mptcp` (Go modules and sources exposed to CVE-2026-98432 through the listener), `mitigate` (`wpantry mitigate <ID>`: the stopgaps a host can install while a fix is pending; CVE-2026-98432's nftables rule, MPTCP off and the services to restart), `check_machine` (the machine: inventory, updates, trust stores, posture, the breach check) |
-| Scope and inventory | `repos` (the bounded walk, repo discovery), `tools` (PATH and version managers), `catalog` (the tool catalog: names, version commands, EOL products), `packages` (Pythons with their site-packages, npm, cargo, pipx, gem globals), `apps` (apps, browsers, Electron, pending OS updates, Docker), `editors` (extensions), `harnesses` (coding agents' MCP servers, plugins, skills), `images` (container create/export and a bounded tar reader), `posture/` (security settings, one file per OS, `dns` shared by both) |
-| Readers | `lockfiles/` (one file per format, `mod.rs` dispatches by name), `osdb` (dpkg, apk, rpm; `os-release` → OSV ecosystem), `distros` (dnf advisories, the Arch tracker), `plist`, `json` (bounded parse, `json.dumps`-exact output), `re` (the regex subset the feeds need), `sha256` |
-| Sources | `net` (the `Net` trait, the `ureq` client, the recording fake), `osv` (querybatch, record fetches, alias groups, upstream release tags), `feeds` (KEV, end-of-life, the cask catalog, browser and PostgreSQL feeds, extension lists, GitHub latest releases), `malicious` (the OpenSSF index), `licenses` (deps.dev), `breach` (Have I Been Pwned, XposedOrNot) |
-| Judgement | `versions` (fixed versions, the safe one, the generic order), `compare/` (semver, PEP 440, Go, dpkg, apk, rpm, RubyGems, Maven, Packagist) |
-| External tools | `external` (the tools wpantry uses and `tools`' answer), `leaks` (gitleaks), `scanners` (`brew vulns`), `catrust` (the trust stores through `openssl`), `system` (`exec` with a timeout, `par_map`, `which`, globbing, temp directories) |
-| Cache | `db` (the SQLite file: tables, memo with fingerprints, FTS5 search, export) |
-| Plumbing | `lib` (the public surface and defaults), `error` |
+| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `guard` (the clipboard guard), `external` (the tools wpantry uses). For now also `osv`, `distros` and `feeds` (moving to `sources/`), and `export` and `mitigate` (moving to `reporters/` and `remediation/`) |
+| `checks/` | The scan: `mod.rs` (options, findings, counts, "not checked", the policy files) and one folder per area |
+| `checks/machine/` | The machine: inventory (`tools`, `catalog`, `packages`, `apps`, `editors`, `harnesses`, `images`, `os_packages`), Homebrew (`cellar`, `brew_vulns`), the trust stores (`ca_trust`) and clipboard hijackers (`clipper`) |
+| `checks/supply_chain/` | Every repo: discovery (`repos`), `hooks`, `install_scripts`, `typosquat`, `malicious` (the OpenSSF index), `licenses` (deps.dev), `leaks` (gitleaks), `mptcp` (Go servers exposed to CVE-2026-98432) |
+| `checks/lockfiles/` | One reader per lockfile format; `mod.rs` dispatches by name |
+| `checks/package_managers/` | Version order per ecosystem (semver, PyPI, Go, dpkg, apk, rpm, RubyGems, Maven, Packagist) and the generic order in `versions` |
+| `checks/posture/` | Security settings: `any/`, `macos/` and `linux/`, one file per behaviour, persistence included |
+| `checks/documents/`, `checks/suspect/`, `checks/hidden.rs` | Office, PDF, RTF, SVG and image readers; suspect code, one file per behaviour; hidden Unicode |
+| `checks/malware/` | The YARA pass (`mod.rs`), `indicators` (IOC lists and hash lookups), `rulegen` (the goodware database for `rules gen`) |
+| `checks/email.rs` | The opt-in breach check of the user's email address (Have I Been Pwned, XposedOrNot) |
+| `utils/` | What everything leans on: `files`, `process`, `os`, `parallel`, `temp`, `homebrew`, `net` (the `Net` trait and the host allowlist), `walk` (the bounded repo walk), and the in-tree readers: `json`, `toml`, `plist`, `re`, `sha256`, `archive/` (zip, deflate), `addresses` |
 
 Tests sit beside the code they cover; golden lockfiles are in `crates/wpantry/tests/lockfiles/` (its README lists them), upstream comparator vectors in `crates/wpantry/tests/vectors/`, and `tests/scan.rs`, `tests/image.rs`, `tests/pins.rs` and `tests/assets.rs` are the end-to-end, real-image, dependency-pin and packaging checks.
 

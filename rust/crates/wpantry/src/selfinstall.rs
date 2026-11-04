@@ -9,13 +9,14 @@
 //! which keeps its own record and verification; a source build is left to
 //! whoever built it.
 
+use crate::checks::package_managers::versions;
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::feeds;
 use crate::utils::net::{self, Net};
 use crate::utils::process::exec;
 use crate::utils::process::which;
 use crate::utils::temp::TempDir;
-use crate::{feeds, versions};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

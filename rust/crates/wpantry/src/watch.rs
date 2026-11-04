@@ -4,13 +4,14 @@
 //! record of what was asked (`queries`): every package version whose
 //! answer named the advisory is asked again and the record is re-read.
 
-use crate::check::{display_id, mitigation};
-use crate::compare::Comparator;
+use crate::checks::package_managers::Comparator;
+use crate::checks::package_managers::versions;
+use crate::checks::{display_id, mitigation};
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::Result;
+use crate::osv;
 use crate::utils::net::Net;
-use crate::{osv, versions};
 use serde_json::Value;
 use std::collections::BTreeMap;
 

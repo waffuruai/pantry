@@ -4,8 +4,8 @@
 //! is ignored by default; CI's Linux job runs it with `-- --ignored`.
 
 use std::process::Command;
+use wpantry::checks::machine::images;
 use wpantry::db::Cache;
-use wpantry::images;
 
 fn check(image: &str, eco: &str, package: &str, source: &str) {
     let engine = images::engine().expect("docker or podman");

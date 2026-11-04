@@ -12,7 +12,7 @@
 //! is not a fix. A fix is verified only by a complete scan after it ran
 //! that no longer lists what it addressed; a failed fix never is.
 
-use crate::check::Options;
+use crate::checks::Options;
 use crate::db::Cache;
 use crate::error::Result;
 use crate::finding::Finding;
@@ -574,12 +574,12 @@ mod tests {
         let licenses = Options { licenses: true, ..repos.clone() };
         assert_eq!(scope_of(&licenses), "repos:/r+licenses");
         let policy = Options {
-            policy: crate::check::Policy { install_scripts: Some("/p/allow.txt".into()), ..Default::default() },
+            policy: crate::checks::Policy { install_scripts: Some("/p/allow.txt".into()), ..Default::default() },
             ..repos.clone()
         };
         assert_eq!(scope_of(&policy), "repos:/r;policy:install-scripts=/p/allow.txt");
         let hooks = Options {
-            policy: crate::check::Policy { hooks: Some("/p/hooks.txt".into()), ..Default::default() },
+            policy: crate::checks::Policy { hooks: Some("/p/hooks.txt".into()), ..Default::default() },
             ..repos.clone()
         };
         assert_eq!(scope_of(&hooks), "repos:/r;policy:hooks=/p/hooks.txt");

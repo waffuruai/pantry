@@ -123,9 +123,9 @@ impl Cache {
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::history::SCHEMA)?;
-        conn.execute_batch(crate::malware::SCHEMA)?;
-        conn.execute_batch(crate::rulegen::SCHEMA)?;
-        conn.execute_batch(crate::iocs::VERDICT_SCHEMA)?;
+        conn.execute_batch(crate::checks::malware::SCHEMA)?;
+        conn.execute_batch(crate::checks::malware::rulegen::SCHEMA)?;
+        conn.execute_batch(crate::checks::malware::indicators::VERDICT_SCHEMA)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
              CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
@@ -620,7 +620,7 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert!(scan_cols.iter().any(|c| c == "unchecked"), "{scan_cols:?}");
-        crate::history::record_scan(&c, 1.0, &[], &[], &crate::check::Options::default())
+        crate::history::record_scan(&c, 1.0, &[], &[], &crate::checks::Options::default())
             .expect("a scan records on the migrated table");
         let cols: Vec<String> = c
             .conn

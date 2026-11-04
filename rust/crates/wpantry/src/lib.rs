@@ -4,59 +4,26 @@
 //! fixes.
 //!
 //! The library has no global state and never prints: progress goes through
-//! the `log` callback a [`check::Scan`] is given, and the CLI owns stdout,
+//! the `log` callback a [`checks::Scan`] is given, and the CLI owns stdout,
 //! stderr and exit codes. The stable surface is the CLI
 //! contract (`specs/cli-contract.md`), not this crate's API.
 
-pub mod apps;
-pub mod breach;
-pub mod catalog;
-pub mod catrust;
-pub mod cellar;
-pub mod check;
-pub mod check_machine;
-pub mod check_supply;
-pub mod clipper;
-pub mod compare;
+pub mod checks;
 pub mod component;
 pub mod db;
 pub mod distros;
-pub mod documents;
-pub mod editors;
 pub mod error;
 pub mod export;
 pub mod external;
 pub mod feeds;
 pub mod finding;
 pub mod guard;
-pub mod harnesses;
-pub mod hidden;
 pub mod history;
-pub mod hooks;
-pub mod images;
-pub mod install_scripts;
-pub mod iocs;
-pub mod leaks;
-pub mod licenses;
-pub mod lockfiles;
-pub mod malicious;
-pub mod malware;
 pub mod mitigate;
-pub mod mptcp;
-pub mod osdb;
 pub mod osv;
-pub mod packages;
-pub mod posture;
-pub mod repos;
-pub mod rulegen;
-pub mod scanners;
 pub mod selfinstall;
-pub mod suspect;
 pub mod sync;
-pub mod tools;
-pub mod typosquat;
 pub mod utils;
-pub mod versions;
 pub mod watch;
 
 pub use error::Error;

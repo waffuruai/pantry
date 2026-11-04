@@ -7,6 +7,7 @@
 //! [`addresses`].
 
 pub mod addresses;
+pub mod archive;
 pub mod files;
 pub mod homebrew;
 pub mod json;
@@ -18,3 +19,5 @@ pub mod process;
 pub mod re;
 pub mod sha256;
 pub mod temp;
+pub mod toml;
+pub mod walk;

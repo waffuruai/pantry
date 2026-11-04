@@ -3,8 +3,8 @@
 
 fn main() {
     let rel = wpantry::utils::os::os_release();
-    println!("# ecosystem: {:?}", wpantry::osdb::ecosystem(&rel));
-    match wpantry::osdb::installed(&rel) {
+    println!("# ecosystem: {:?}", wpantry::checks::machine::os_packages::ecosystem(&rel));
+    match wpantry::checks::machine::os_packages::installed(&rel) {
         Ok(Some((from, pkgs))) => {
             println!("# from {from}");
             for p in pkgs {

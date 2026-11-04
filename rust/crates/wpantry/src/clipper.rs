@@ -447,8 +447,6 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
     (out, read)
 }
 
-/// This machine's launch agents and daemons, autostart entries and user
-/// services.
 /// Every file a launch item names or runs, with the items themselves: what
 /// the malware scan reads among the programs that start at login.
 pub fn persisted_files() -> Vec<PathBuf> {

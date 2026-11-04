@@ -66,8 +66,8 @@ A reader should be able to tell what wpantry does from its tree. Today that take
 
 ### Functionality
 
-- F1. The tree is the one in [design/source-layout.md](design/source-layout.md): `sources/`, `checks/`, `reporters/`, `remediation/`, `utils/`, and core files at `src/`; `breach` is `email`, `compare` is `checks/package_managers`. A test lists `src/` and fails on a file outside them. Evidence: not evidence yet. Issue: pending.
-- F2. The moves change no behaviour: the contract suite passes unchanged, and a scan of the test fixtures gives byte-identical `--json` before and after. Evidence: not evidence yet. Issue: pending.
+- F1. The tree is the one in [design/source-layout.md](design/source-layout.md): `sources/`, `checks/`, `reporters/`, `remediation/`, `utils/`, and core files at `src/`; `breach` is `email`, `compare` is `checks/package_managers`. A test lists `src/` and fails on a file outside them. Evidence: `rust/crates/wpantry/tests/layout.rs`. Issue: #138.
+- F2. The moves change no behaviour: the contract suite passes unchanged, and a scan of the test fixtures gives byte-identical `--json` before and after. Evidence: each phase-1 PR (#146, #147, #148 and 1d) compares the previous build's scan with its own, from copies of one warm cache. Issue: #138.
 - F3. Every check that reads file contents (malware, suspect code, hidden text, documents) runs on one walk and one FileView per file; a counting test shows each file opened once per scan. Evidence: not evidence yet. Issue: pending.
 - F4. One per-file cache, keyed by (device, inode, size, mtime) and each analyzer's version, serves every analyzer, so an unchanged file is not re-read by any of them. Evidence: not evidence yet. Issue: pending.
 - F5. Every source is an entry in the bundled `sources.toml`, the CVE sources included: OSV, CISA KEV, endoflife.date, the release feeds, the distro advisories, deps.dev, OpenSSF malicious packages, the breach lookups, YARA Forge, signature-base, Feodo, YARAify, CIRCL and MalwareBazaar. No URL is a constant in the code. Evidence: not evidence yet. Issue: pending.

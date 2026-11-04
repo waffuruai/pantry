@@ -3,7 +3,7 @@
 //! check whether the version here is affected. This is what catches packages
 //! known only by name (an unpinned `npx some-mcp-server`).
 
-use crate::checks::package_managers::Comparator;
+use crate::checks::ecosystems::Comparator;
 use crate::db::Cache;
 use crate::error::Result;
 use crate::sources::malicious_packages::{dir_for, norm};

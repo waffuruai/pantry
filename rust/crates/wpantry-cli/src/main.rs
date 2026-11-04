@@ -806,7 +806,7 @@ fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
     let changed = wpantry::remediation::editors::set_extension_cooldown(hours)?;
     if changed.is_empty() {
-        let editors = wpantry::checks::posture::any::tools::editor_settings();
+        let editors = wpantry::checks::machine::any::dev_settings::editor_settings();
         if editors.is_empty() {
             show("  no VS Code-family editor is installed");
         } else {

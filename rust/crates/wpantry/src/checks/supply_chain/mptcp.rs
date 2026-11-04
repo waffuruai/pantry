@@ -11,7 +11,7 @@
 //! `.env`), and for any language that asks for MPTCP by name
 //! (`IPPROTO_MPTCP`, socket2's `Protocol::MPTCP`, `SetMultipathTCP(true)`).
 //! Each is a warning with the opt-out as its step, as an unfixed Critical
-//! advisory is; [`crate::checks::posture::linux`] judges the kernel itself and
+//! advisory is; [`crate::checks::machine::linux`] judges the kernel itself and
 //! `wpantry mitigate CVE-2026-98432` is the host's stopgap. Nothing is ever
 //! changed.
 //!

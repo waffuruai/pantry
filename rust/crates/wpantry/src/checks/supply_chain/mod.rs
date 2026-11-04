@@ -17,7 +17,7 @@ pub mod typosquat;
 use crate::checks::lockfiles;
 use crate::checks::machine::harnesses;
 use crate::checks::{REMOVE, Scan, as_source};
-use crate::checks::{documents, hidden, suspect};
+use crate::checks::{documents, hidden, suspects};
 use crate::component::Component;
 use crate::error::{Error, Result};
 use crate::finding::Finding;
@@ -224,7 +224,7 @@ fn typosquats(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) {
     for (f, pkgs) in read {
         let file = short(&f.to_string_lossy());
         for s in crate::checks::supply_chain::typosquat::find(pkgs) {
-            let mut probe = vec![suspect::Suspect {
+            let mut probe = vec![suspects::Suspect {
                 file: file.clone(),
                 id: "SUSPECT-TYPOSQUAT",
                 line: 0,
@@ -240,7 +240,7 @@ fn typosquats(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) {
                 ),
                 hard: s.both,
             }];
-            suspect::apply_policy(&mut probe, &policy);
+            suspects::apply_policy(&mut probe, &policy);
             let p = probe.remove(0);
             scan.add(Finding {
                 kind: "suspect-code".into(),
@@ -266,7 +266,8 @@ fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Res
         .collect();
     scan.status(&format!("Checking {} dependencies' licenses", items.len()));
     let status = scan.status;
-    let found = match crate::sources::deps_dev::lookup(&scan.cache, scan.net, &items, scan.opts.offline, status) {
+    let found = match crate::sources::package_licenses::lookup(&scan.cache, scan.net, &items, scan.opts.offline, status)
+    {
         Ok(f) => f,
         Err(e) if e.is_source() => {
             scan.unchecked("dependency licenses (deps.dev)", &e.to_string());
@@ -475,34 +476,34 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
 /// a machine scan the extensions and plugins installed from elsewhere.
 pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
     let policy = scan.opts.policy.suspect_policy();
-    let mut targets: Vec<(String, PathBuf, suspect::Kind)> =
-        repos.iter().map(|(name, root)| (name.clone(), root.clone(), suspect::Kind::Repo)).collect();
+    let mut targets: Vec<(String, PathBuf, suspects::Kind)> =
+        repos.iter().map(|(name, root)| (name.clone(), root.clone(), suspects::Kind::Repo)).collect();
     if scan.opts.machine {
         for (name, dir) in installed_code() {
-            targets.push((name, dir, suspect::Kind::Installed));
+            targets.push((name, dir, suspects::Kind::Installed));
         }
     }
     if targets.is_empty() {
         return;
     }
     scan.status("Looking for code that behaves like an attack");
-    let found: Vec<Vec<suspect::Suspect>> = parallel::par_map(&targets, parallel::PROBES, |(_, root, kind)| {
-        let mut s = suspect::scan_dir(root, *kind, &policy);
-        if *kind == suspect::Kind::Repo {
-            s.extend(suspect::dependency_blobs(root, &policy));
+    let found: Vec<Vec<suspects::Suspect>> = parallel::par_map(&targets, parallel::PROBES, |(_, root, kind)| {
+        let mut s = suspects::scan_dir(root, *kind, &policy);
+        if *kind == suspects::Kind::Repo {
+            s.extend(suspects::dependency_blobs(root, &policy));
         }
         s
     });
     for ((name, dir, kind), hits) in targets.iter().zip(found) {
         scan.count(
-            if *kind == suspect::Kind::Repo {
+            if *kind == suspects::Kind::Repo {
                 "repos checked for suspicious code"
             } else {
                 "installed extensions and plugins checked"
             },
             1,
         );
-        if *kind == suspect::Kind::Installed {
+        if *kind == suspects::Kind::Installed {
             extension_clipboard(scan, name, dir, &hits);
         }
         for h in hits {
@@ -568,7 +569,7 @@ pub fn mptcp_listeners(scan: &mut Scan, repos: &[Repo]) {
 /// can clip; one whose code has the clipper shape does. The manifest alone
 /// warns (a clipboard manager, a password manager); with the code shape
 /// beside it, it fails (kind `clipper`, `CLIPPER-EXTENSION`).
-fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspect::Suspect]) {
+fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspects::Suspect]) {
     let Some(p) = crate::checks::machine::clipper::extension_permissions(dir) else { return };
     if !(p.read && p.write) {
         return;
@@ -996,7 +997,7 @@ pub fn extensions_with(scan: &mut Scan, mut exts: Vec<Component>) -> Result<Vec<
             });
         }
         if let Some(newest) = latest.get(&lower)
-            && !crate::checks::package_managers::versions::same_or_newer(&e.version, newest)
+            && !crate::checks::ecosystems::versions::same_or_newer(&e.version, newest)
         {
             scan.add(Finding {
                 vuln_id: "OUTDATED".into(),

@@ -2,6 +2,7 @@
 //! browsers, OS updates and OS packages, Homebrew formulae, and the
 //! certificate authorities it trusts.
 
+pub mod any;
 pub mod apps;
 pub mod brew_vulns;
 pub mod ca_trust;
@@ -11,11 +12,16 @@ pub mod clipper;
 pub mod editors;
 pub mod harnesses;
 pub mod images;
+pub mod linux;
+pub mod macos;
 pub mod os_packages;
 pub mod packages;
+pub mod settings;
+#[cfg(test)]
+mod testing;
 pub mod tools;
 
-use crate::checks::package_managers::versions;
+use crate::checks::ecosystems::versions;
 use crate::checks::{REMOVE, Scan, display_id, fill, is_kev, is_malicious};
 use crate::component::Component;
 use crate::db::severity_of;
@@ -56,7 +62,7 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         let clip = (!scan.opts.no_clipboard).then(|| s.spawn(clipper_mod::run_self_test));
         let home = scan.home.clone();
         let persist = s.spawn(move || {
-            crate::checks::posture::any::persistence::gather(&crate::checks::posture::any::persistence::Roots::real(
+            crate::checks::machine::any::persistence::gather(&crate::checks::machine::any::persistence::Roots::real(
                 home,
             ))
         });
@@ -225,15 +231,15 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
 /// The machine's own security settings (`posture`): a failing Critical or
 /// High check fails, the rest warn, a check that can't tell says so.
 pub fn posture(scan: &mut Scan) {
-    posture_with(scan, &crate::checks::posture::real_runner)
+    posture_with(scan, &crate::checks::machine::settings::real_runner)
 }
 
 /// The posture checks over `runner` (the real machine, or a recording).
-fn posture_with(scan: &mut Scan, runner: crate::checks::posture::Runner) {
-    use crate::checks::posture::{self, Severity, Status};
+fn posture_with(scan: &mut Scan, runner: crate::checks::machine::settings::Runner) {
+    use crate::checks::machine::settings::{self, Severity, Status};
     scan.status("Checking the machine's security settings");
     let skip = scan.opts.policy.posture_skip();
-    let results = posture::run(&skip, runner);
+    let results = settings::run(&skip, runner);
     scan.count("security settings checked", results.len() as i64);
     for (c, o) in results {
         let (status, note) = match o.status {
@@ -267,8 +273,8 @@ fn posture_with(scan: &mut Scan, runner: crate::checks::posture::Runner) {
 /// list in the cache's `persistence` table. Runs with the machine inventory
 /// whatever `--no-posture` says, as the clipper's persistence check does:
 /// it is malware's footing, not a setting.
-pub fn persistence(scan: &mut Scan, (inv, vetted): crate::checks::posture::any::persistence::Gathered) {
-    use crate::checks::posture::any::persistence as p;
+pub fn persistence(scan: &mut Scan, (inv, vetted): crate::checks::machine::any::persistence::Gathered) {
+    use crate::checks::machine::any::persistence as p;
     scan.status("Comparing launch agents, login items and the other persistence places with the last scan");
     scan.count("persistence items listed", inv.items.len() as i64);
     for (source, why) in &inv.unread {
@@ -1241,7 +1247,7 @@ mod tests {
 
     #[test]
     fn persistence_baselines_first_then_warns_on_what_is_new() {
-        use crate::checks::posture::any::persistence::{Inventory, Item, Source};
+        use crate::checks::machine::any::persistence::{Inventory, Item, Source};
         let d = crate::utils::temp::TempDir::new("persistence").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);

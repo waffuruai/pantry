@@ -9,7 +9,7 @@
 //! which keeps its own record and verification; a source build is left to
 //! whoever built it.
 
-use crate::checks::package_managers::versions;
+use crate::checks::ecosystems::versions;
 use crate::db::Cache;
 use crate::error::{Error, Result};
 use crate::sources::releases;

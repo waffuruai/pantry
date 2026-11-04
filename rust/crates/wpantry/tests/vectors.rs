@@ -1,7 +1,7 @@
 //! Comparator vectors too long to keep inline (F10).
 
 use std::cmp::Ordering;
-use wpantry::checks::package_managers::Comparator;
+use wpantry::checks::ecosystems::Comparator;
 
 fn check(file: &str, c: Comparator) -> usize {
     let mut n = 0;

@@ -5,7 +5,6 @@
 //! [`crate::checks`].
 
 pub mod breaches;
-pub mod deps_dev;
 pub mod distros;
 pub mod endoflife;
 pub mod extensions;
@@ -15,6 +14,7 @@ pub mod indicator_lists;
 pub mod kev;
 pub mod malicious_packages;
 pub mod osv;
+pub mod package_licenses;
 pub mod releases;
 #[cfg(test)]
 pub(crate) mod testing;

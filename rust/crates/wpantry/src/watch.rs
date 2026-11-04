@@ -4,8 +4,8 @@
 //! record of what was asked (`queries`): every package version whose
 //! answer named the advisory is asked again and the record is re-read.
 
-use crate::checks::package_managers::Comparator;
-use crate::checks::package_managers::versions;
+use crate::checks::ecosystems::Comparator;
+use crate::checks::ecosystems::versions;
 use crate::checks::{display_id, mitigation};
 use crate::component::Status;
 use crate::db::Cache;

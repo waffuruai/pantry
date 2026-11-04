@@ -11,9 +11,9 @@
 //! formula is never reported twice. Formulae with no catalog mapping are
 //! reported unchecked, never clean.
 
+use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{TOOLS, Tool};
 use crate::checks::machine::tools::tag;
-use crate::checks::package_managers::versions;
 use crate::component::Component;
 use crate::utils::files::home;
 use std::ffi::OsString;

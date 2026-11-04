@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn every_source_is_on_the_host_list_and_nothing_else_is_asked() {
-        use crate::sources::{deps_dev, distros, extensions, kev, osv, releases};
+        use crate::sources::{distros, extensions, kev, osv, package_licenses, releases};
         let sources = [
             kev::KEV_URL,
             distros::ARCH_URL,
@@ -428,7 +428,7 @@ mod tests {
             extensions::MARKETPLACE,
             extensions::OPENVSX,
             releases::GITHUB_LATEST,
-            deps_dev::API,
+            package_licenses::API,
             osv::API,
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",

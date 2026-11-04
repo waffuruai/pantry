@@ -808,9 +808,9 @@ fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
 
 /// `harden extension-cooldown`: the one posture fix that edits files.
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::posture::tools::set_extension_cooldown(hours)?;
+    let changed = wpantry::posture::any::tools::set_extension_cooldown(hours)?;
     if changed.is_empty() {
-        let editors = wpantry::posture::tools::editor_settings();
+        let editors = wpantry::posture::any::tools::editor_settings();
         if editors.is_empty() {
             show("  no VS Code-family editor is installed");
         } else {

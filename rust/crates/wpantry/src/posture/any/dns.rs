@@ -5,7 +5,7 @@
 //! Docker, corporate split DNS) is legitimate, which is why the check is
 //! Medium: it warns, never fails.
 
-use super::{Outcome, Runner};
+use crate::posture::{Outcome, Runner};
 
 /// Local resolvers that forward over TLS or HTTPS, by process name.
 pub const ENCRYPTING_STUBS: &[&str] =
@@ -95,15 +95,9 @@ pub fn local_stub(r: Runner, resolvers: &[String]) -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Status;
     use super::*;
-
-    fn machine(answers: &'static [(&'static str, &'static str)]) -> impl Fn(&[&str]) -> String {
-        move |argv: &[&str]| {
-            let joined = argv.join(" ");
-            answers.iter().find(|(k, _)| joined.contains(k)).map(|(_, v)| v.to_string()).unwrap_or_default()
-        }
-    }
+    use crate::posture::Status;
+    use crate::posture::testing::machine;
 
     #[test]
     fn resolv_conf_and_address_classes() {

@@ -36,8 +36,9 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         let updates = s.spawn(apps_mod::macos_updates);
         let clip = (!scan.opts.no_clipboard).then(|| s.spawn(clipper_mod::run_self_test));
         let home = scan.home.clone();
-        let persist =
-            s.spawn(move || crate::posture::persistence::gather(&crate::posture::persistence::Roots::real(home)));
+        let persist = s.spawn(move || {
+            crate::posture::any::persistence::gather(&crate::posture::any::persistence::Roots::real(home))
+        });
         let brew_ran = brew_job.as_ref().filter(|j| j.stale).map(|j| s.spawn(move || scanners::brew_scan(j)));
         let found = inventory(scan);
         components(scan, &found)?;
@@ -245,8 +246,8 @@ fn posture_with(scan: &mut Scan, runner: crate::posture::Runner) {
 /// list in the cache's `persistence` table. Runs with the machine inventory
 /// whatever `--no-posture` says, as the clipper's persistence check does:
 /// it is malware's footing, not a setting.
-pub fn persistence(scan: &mut Scan, (inv, vetted): crate::posture::persistence::Gathered) {
-    use crate::posture::persistence as p;
+pub fn persistence(scan: &mut Scan, (inv, vetted): crate::posture::any::persistence::Gathered) {
+    use crate::posture::any::persistence as p;
     scan.status("Comparing launch agents, login items and the other persistence places with the last scan");
     scan.count("persistence items listed", inv.items.len() as i64);
     for (source, why) in &inv.unread {
@@ -1218,7 +1219,7 @@ mod tests {
 
     #[test]
     fn persistence_baselines_first_then_warns_on_what_is_new() {
-        use crate::posture::persistence::{Inventory, Item, Source};
+        use crate::posture::any::persistence::{Inventory, Item, Source};
         let d = crate::system::TempDir::new("persistence").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);

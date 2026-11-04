@@ -3,7 +3,7 @@
 //! marketplace within hours; a cooldown means it is never installed here)
 //! and git hooks that run at commit time.
 
-use super::{Check, Fix, Outcome, Runner, Severity};
+use crate::posture::{Check, Outcome, Runner, Severity, user};
 use std::path::PathBuf;
 
 /// The VS Code family: (name, settings dir under the per-OS user config
@@ -199,10 +199,6 @@ fn git_hooks(r: Runner) -> Outcome {
     Outcome::fail("no global git hooks: nothing checks a commit for secrets before it leaves")
 }
 
-const fn user(cmd: &'static str) -> Option<Fix> {
-    Some(Fix { cmd, admin: false })
-}
-
 pub static CHECKS: &[Check] = &[
     Check {
         id: "POSTURE-EXTENSION-COOLDOWN",
@@ -265,13 +261,13 @@ mod tests {
         let dir = d.path().to_string_lossy().into_owned();
         let with =
             move |argv: &[&str]| if argv.contains(&"core.hooksPath") { format!("{dir}\n") } else { String::new() };
-        assert_eq!(git_hooks(&with).status, super::super::Status::Pass);
+        assert_eq!(git_hooks(&with).status, crate::posture::Status::Pass);
         let none = |_: &[&str]| String::new();
-        assert_eq!(git_hooks(&none).status, super::super::Status::Fail);
+        assert_eq!(git_hooks(&none).status, crate::posture::Status::Fail);
         let tmpl = |argv: &[&str]| {
             if argv.contains(&"init.templateDir") { "~/.git-template\n".to_string() } else { String::new() }
         };
-        assert_eq!(git_hooks(&tmpl).status, super::super::Status::Manual);
+        assert_eq!(git_hooks(&tmpl).status, crate::posture::Status::Manual);
     }
 
     /// Where an editor's `User` directory sits under a test home, on this
@@ -293,7 +289,10 @@ mod tests {
         let home = crate::system::test_home();
         assert!(editor_settings().is_empty());
         let o = extension_cooldown(&|_: &[&str]| String::new());
-        assert_eq!((o.status, o.evidence.as_str()), (super::super::Status::Pass, "no VS Code-family editor installed"));
+        assert_eq!(
+            (o.status, o.evidence.as_str()),
+            (crate::posture::Status::Pass, "no VS Code-family editor installed")
+        );
         let Some(code) = user_dir("Code") else { return };
         let settings = |dir: &str, text: Option<&str>| {
             let user = user_dir(dir).unwrap();
@@ -309,16 +308,16 @@ mod tests {
         let o = extension_cooldown(&probe);
         assert_eq!(
             (o.status.clone(), o.evidence.as_str()),
-            (super::super::Status::Pass, "extension updates wait before installing: VS Code 72h")
+            (crate::posture::Status::Pass, "extension updates wait before installing: VS Code 72h")
         );
         settings("Cursor", Some("{\"extensions.autoUpdate\": false}"));
         let o = extension_cooldown(&probe);
-        assert_eq!(o.status, super::super::Status::Manual);
+        assert_eq!(o.status, crate::posture::Status::Manual);
         assert!(o.evidence.starts_with("Cursor (updates by hand, no cooldown); set a cooldown too"), "{}", o.evidence);
         settings("Windsurf", Some("{\"extensions.installCooldownHours\": 1}"));
         settings("VSCodium", None);
         let o = extension_cooldown(&probe);
-        assert_eq!(o.status, super::super::Status::Fail);
+        assert_eq!(o.status, crate::posture::Status::Fail);
         assert_eq!(
             o.evidence,
             "Windsurf 1h, VSCodium (no cooldown: new versions install at once); Cursor (updates by hand, no cooldown)"
@@ -334,7 +333,7 @@ mod tests {
         let codium = std::fs::read_to_string(user_dir("VSCodium").unwrap().join("settings.json")).unwrap();
         assert_eq!(codium, "{\n    \"extensions.installCooldownHours\": 72\n}\n");
         assert!(set_extension_cooldown(72).unwrap().is_empty(), "nothing left to change");
-        assert_eq!(extension_cooldown(&probe).status, super::super::Status::Pass, "a cooldown is what counts");
+        assert_eq!(extension_cooldown(&probe).status, crate::posture::Status::Pass, "a cooldown is what counts");
         drop(home);
     }
 
@@ -346,15 +345,14 @@ mod tests {
         let tilde =
             |argv: &[&str]| if argv.contains(&"core.hooksPath") { "~/hooks\n".to_string() } else { String::new() };
         let o = git_hooks(&tilde);
-        assert_eq!(o.status, super::super::Status::Fail);
+        assert_eq!(o.status, crate::posture::Status::Fail);
         assert_eq!(o.evidence, "core.hooksPath is ~/hooks but it has no pre-commit hook");
         std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\n").unwrap();
         let o = git_hooks(&tilde);
         assert_eq!(
             (o.status, o.evidence.as_str()),
-            (super::super::Status::Pass, "global hooks in ~/hooks (pre-commit present)")
+            (crate::posture::Status::Pass, "global hooks in ~/hooks (pre-commit present)")
         );
-        assert_eq!(user("x"), Some(Fix { cmd: "x", admin: false }));
         assert!(CHECKS.iter().all(|c| c.id.starts_with("POSTURE-")));
         drop(home);
     }

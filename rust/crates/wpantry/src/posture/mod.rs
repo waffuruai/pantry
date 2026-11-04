@@ -13,11 +13,11 @@
 use std::ffi::OsStr;
 use std::time::Duration;
 
-pub mod dns;
+pub mod any;
 pub mod linux;
 pub mod macos;
-pub mod persistence;
-pub mod tools;
+#[cfg(test)]
+mod testing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -94,6 +94,16 @@ pub fn real_runner(argv: &[&str]) -> String {
     crate::system::run(&argv, Duration::from_secs(15))
 }
 
+/// A fix that needs an administrator: printed as a step, never run.
+pub(crate) const fn admin(cmd: &'static str) -> Option<Fix> {
+    Some(Fix { cmd, admin: true })
+}
+
+/// A fix the user's own account can apply.
+pub(crate) const fn user(cmd: &'static str) -> Option<Fix> {
+    Some(Fix { cmd, admin: false })
+}
+
 /// One check.
 pub struct Check {
     /// Stable id (the finding's `vuln_id`): `POSTURE-FILEVAULT`.
@@ -117,7 +127,7 @@ pub fn checks() -> Vec<&'static Check> {
     } else {
         &[]
     };
-    os.iter().chain(tools::CHECKS.iter()).collect()
+    os.iter().chain(any::tools::CHECKS.iter()).collect()
 }
 
 /// Run every check not in `skip` (ids, case-insensitive).
@@ -186,6 +196,12 @@ mod tests {
     }
 
     #[test]
+    fn fixes_say_who_applies_them() {
+        assert_eq!(admin("x"), Some(Fix { cmd: "x", admin: true }));
+        assert_eq!(user("x"), Some(Fix { cmd: "x", admin: false }));
+    }
+
+    #[test]
     fn severities_and_odd_flags() {
         assert_eq!(Severity::Critical.as_str(), "CRITICAL");
         assert_eq!(Severity::High.as_str(), "HIGH");
@@ -196,9 +212,9 @@ mod tests {
         // Every check has an id, a title and an explanation, and the tool checks come last.
         let all = checks();
         assert!(all.iter().all(|c| c.id.starts_with("POSTURE-") && !c.title.is_empty() && !c.explain.is_empty()));
-        assert!(all.len() >= tools::CHECKS.len());
-        let tail: Vec<&str> = all[all.len() - tools::CHECKS.len()..].iter().map(|c| c.id).collect();
-        assert_eq!(tail, tools::CHECKS.iter().map(|c| c.id).collect::<Vec<_>>());
+        assert!(all.len() >= any::tools::CHECKS.len());
+        let tail: Vec<&str> = all[all.len() - any::tools::CHECKS.len()..].iter().map(|c| c.id).collect();
+        assert_eq!(tail, any::tools::CHECKS.iter().map(|c| c.id).collect::<Vec<_>>());
     }
 
     #[cfg(unix)]

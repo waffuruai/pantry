@@ -10,10 +10,12 @@
 use crate::value::{StructType, Value};
 use std::sync::Arc;
 
+pub mod dotnet;
 pub mod elf;
 pub mod hash;
 pub mod math;
 pub mod pe;
+pub mod small;
 
 pub trait Module: Send + Sync {
     /// The name rules import it by.
@@ -26,7 +28,16 @@ pub trait Module: Send + Sync {
 
 /// The modules every compiler starts with.
 pub fn builtin() -> Vec<Arc<dyn Module>> {
-    vec![Arc::new(math::Math::new()), Arc::new(hash::Hash::new()), Arc::new(pe::Pe::new()), Arc::new(elf::Elf::new())]
+    vec![
+        Arc::new(math::Math::new()),
+        Arc::new(hash::Hash::new()),
+        Arc::new(pe::Pe::new()),
+        Arc::new(elf::Elf::new()),
+        Arc::new(dotnet::Dotnet::new()),
+        Arc::new(small::Console::new()),
+        Arc::new(small::Strings::new()),
+        Arc::new(small::Time::new()),
+    ]
 }
 
 /// The file offset execution starts at (`entrypoint`): a PE's or an ELF's.
@@ -102,6 +113,9 @@ mod tests {
         assert_eq!(window(b"abcd", &Value::Int(-1), &Value::Int(2)), None);
         assert_eq!(window(b"abcd", &Value::Undef, &Value::Int(2)), None);
         assert!(entry_point(b"plain text").is_undef());
-        assert_eq!(builtin().iter().map(|m| m.name()).collect::<Vec<_>>(), ["math", "hash", "pe", "elf"]);
+        assert_eq!(
+            builtin().iter().map(|m| m.name()).collect::<Vec<_>>(),
+            ["math", "hash", "pe", "elf", "dotnet", "console", "string", "time"]
+        );
     }
 }

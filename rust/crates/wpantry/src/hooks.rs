@@ -123,9 +123,10 @@ fn under(root: &Path, prefix: &str) -> bool {
         }
         _ => prefix.to_string(),
     };
-    let root = root.to_string_lossy();
+    let root = crate::system::command_path(root);
+    let prefix = crate::system::command_path(Path::new(&prefix));
     let starts = |p: &str| root == p || root.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'));
-    starts(&prefix) || std::fs::canonicalize(&prefix).is_ok_and(|real| starts(&real.to_string_lossy()))
+    starts(&prefix) || std::fs::canonicalize(&prefix).is_ok_and(|real| starts(&crate::system::command_path(&real)))
 }
 
 /// The first token of `s` (a bare word, or a `"…"` string with `\"` and
@@ -303,8 +304,11 @@ fn mcp_servers(root: &Path, out: &mut Vec<Hook>) {
     for s in harnesses::mcp_servers(std::slice::from_ref(&repo), false) {
         let command = std::iter::once(s.command.clone()).chain(s.args.iter().cloned()).collect::<Vec<_>>().join(" ");
         if repo_target(root, &command).is_some() {
-            let file =
-                Path::new(&s.file).strip_prefix(root).unwrap_or(Path::new(&s.file)).to_string_lossy().into_owned();
+            let file = Path::new(&s.file)
+                .strip_prefix(root)
+                .unwrap_or(Path::new(&s.file))
+                .to_string_lossy()
+                .replace('\\', "/");
             out.push(Hook {
                 file,
                 when: format!("MCP server {} (started by the agent)", s.name),
@@ -355,7 +359,7 @@ fn devcontainers(root: &Path, out: &mut Vec<Hook>) {
     }
     for path in files.into_iter().filter(|p| p.is_file()) {
         let data = load_json(&path);
-        let file = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+        let file = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
         for key in [
             "initializeCommand",
             "onCreateCommand",
@@ -395,7 +399,7 @@ fn devcontainers(root: &Path, out: &mut Vec<Hook>) {
 fn git_hooks(root: &Path, out: &mut Vec<Hook>) {
     let Ok(rd) = std::fs::read_dir(root.join(".git/hooks")) else { return };
     for e in rd.filter_map(|e| e.ok()) {
-        let name = e.file_name().to_string_lossy().into_owned();
+        let name = e.file_name().to_string_lossy().replace('\\', "/");
         if name.ends_with(".sample") {
             continue;
         }
@@ -422,8 +426,9 @@ fn git_hooks(root: &Path, out: &mut Vec<Hook>) {
 /// command expansions, composer scripts, and native addons by name.
 fn install_hooks(root: &Path, iocs: &Indicators, out: &mut Vec<Hook>) {
     for (dir, files) in repos::walk(root, 4) {
-        let rel =
-            |name: &str| dir.join(name).strip_prefix(root).unwrap_or(&dir.join(name)).to_string_lossy().into_owned();
+        let rel = |name: &str| {
+            dir.join(name).strip_prefix(root).unwrap_or(&dir.join(name)).to_string_lossy().replace('\\', "/")
+        };
         for name in &files {
             if iocs.files.contains(name) {
                 out.push(Hook {
@@ -531,7 +536,7 @@ pub fn repo_target(root: &Path, command: &str) -> Option<PathBuf> {
 /// What the file a hook runs looks like: oversized, a known hash, naming a
 /// known host, or carrying the marks of a dropper.
 fn sniff(root: &Path, file: &str, target: &Path, iocs: &Indicators, out: &mut Vec<Hook>) {
-    let rel = target.strip_prefix(root).unwrap_or(target).to_string_lossy().into_owned();
+    let rel = target.strip_prefix(root).unwrap_or(target).to_string_lossy().replace('\\', "/");
     let Ok(meta) = std::fs::metadata(target) else { return };
     let script = matches!(
         target.extension().and_then(|e| e.to_str()),

@@ -36,7 +36,7 @@ pub struct Component {
     pub eol: Option<(String, String)>,
     /// The command (or step) that updates it; "{safe}" is the fixed version.
     pub fix: String,
-    /// `wpantry --fix` may run `fix` unattended.
+    /// `wpantry fix` may run `fix` unattended.
     pub auto: bool,
     pub extra: BTreeMap<String, String>,
     /// How a locked dependency is depended on: `runtime`, `dev`, `optional`,

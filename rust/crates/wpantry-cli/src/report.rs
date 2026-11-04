@@ -1,4 +1,4 @@
-//! Print the findings, and plan or apply the fixes (`wpantry --fix`).
+//! Print the findings, and plan or apply the fixes (`wpantry fix`).
 
 use wpantry::check::{Finding, Outcome};
 use wpantry::system::short;
@@ -273,7 +273,7 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
     if fails > 0 {
         let advisories = scan.findings.iter().filter(|f| f.status == "fail").count();
         out(&format!(
-            "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry --fix --dryrun{incomplete}"
+            "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry fix --dryrun{incomplete}"
         ));
     } else if !gaps.is_empty() {
         out(&format!("⚠ nothing with a released fix found in what could be checked.{incomplete}"));
@@ -286,7 +286,7 @@ pub fn report(scan: &Outcome, db: &str, out: &mut dyn FnMut(&str)) -> i32 {
 }
 
 /// One step of the update plan: a command (or an instruction), whether
-/// `--fix` runs it unattended, whether it clears a failing finding, and
+/// `wpantry fix` runs it unattended, whether it clears a failing finding, and
 /// the findings (indices into the slice `steps` was given) it covers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {
@@ -382,7 +382,7 @@ fn secrets_fix(fs: &[&Finding]) -> String {
     let listed = if fps.len() <= 3 {
         fps.join(", ")
     } else {
-        format!("the {} fingerprints (each hit's `fix_cmd` in `wpantry check --json` names one)", fps.len())
+        format!("the {} fingerprints (each hit's `fix_cmd` in `wpantry scan --json` names one)", fps.len())
     };
     format!(
         "{} hits in {file}{}: if any is real, rotate it, then purge it from history; if none are, add {listed} to {ignore}",
@@ -781,7 +781,7 @@ mod tests {
                 "  ⚠ CISA KEV - down",
                 "",
                 "  · 1 applicable advisories have no released fix yet (wpantry search --applicable)",
-                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wpantry --fix --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
+                "✗ 2 thing(s) to update (3 advisories), 2 warning(s). See the plan: wpantry fix --dryrun Incomplete: 1 source(s) couldn't be checked (offline?); re-run when they're reachable.",
             ]
         );
     }

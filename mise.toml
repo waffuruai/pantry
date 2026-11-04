@@ -101,11 +101,12 @@ run = [
   "actionlint",
 ]
 
-[tasks.check]
-description = "Run wpantry check, built first, with the pinned tools; more flags after --, such as -- --json --no-input"
-usage = 'arg "[args]" var=#true help="wpantry check flags"'
+[tasks.scan]
+description = "Run wpantry scan, built first, with the pinned tools; more flags after --, such as -- --json --no-input"
+alias = "check"
+usage = 'arg "[args]" var=#true help="wpantry scan flags"'
 depends = ["build"]
 run = '''
 eval "set -- ${usage_args:-}"
-exec rust/target/release/wpantry check "$@"
+exec rust/target/release/wpantry scan "$@"
 '''

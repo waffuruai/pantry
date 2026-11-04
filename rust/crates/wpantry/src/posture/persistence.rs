@@ -12,7 +12,7 @@
 //! `persistence` table) and says nothing about it; every later scan warns
 //! about an item it hasn't seen before (`PERSISTENCE-NEW`), and records it.
 //! Each source keeps its own baseline, so a source that couldn't be read
-//! once (`sfltool` refusing, say) doesn't make everything in it new the
+//! once (`systemextensionsctl` failing, say) doesn't make everything in it new the
 //! next time. Three things warn on every scan, new or not: library
 //! injection through the environment (`PERSISTENCE-INJECTION`), a program
 //! whose code signature no longer verifies (`PERSISTENCE-SIGNATURE`), and
@@ -65,7 +65,7 @@ impl Source {
     pub fn name(self) -> &'static str {
         match self {
             Source::Launchd => "launchd",
-            Source::LoginItem => "btm",
+            Source::LoginItem => "app-login",
             Source::Cron => "cron",
             Source::At => "at",
             Source::Periodic => "periodic",
@@ -87,7 +87,7 @@ impl Source {
     pub fn what(self) -> &'static str {
         match self {
             Source::Launchd => "launch agent or daemon",
-            Source::LoginItem => "login item",
+            Source::LoginItem => "login item or agent an app carries",
             Source::Cron => "cron job",
             Source::At => "at job",
             Source::Periodic => "periodic script",
@@ -192,17 +192,10 @@ fn entries(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     out
 }
 
-/// The posture runner, with a minute for `sfltool dumpbtm`: it takes
-/// seconds on an idle Mac and more beside a scan's other probes.
-fn real_runner(argv: &[&str]) -> String {
-    let secs = if argv.first() == Some(&"sfltool") { 60 } else { 15 };
-    system::run(argv, std::time::Duration::from_secs(secs))
-}
-
 impl Roots<'static> {
     /// This machine, for the user whose home is `home`.
     pub fn real(home: PathBuf) -> Roots<'static> {
-        Roots { home, root: PathBuf::from("/"), macos: cfg!(target_os = "macos"), runner: &real_runner }
+        Roots { home, root: PathBuf::from("/"), macos: cfg!(target_os = "macos"), runner: &super::real_runner }
     }
 }
 
@@ -214,8 +207,8 @@ pub fn inventory() -> Inventory {
 /// The inventory and its programs' checks.
 pub type Gathered = (Inventory, BTreeMap<PathBuf, Vetted>);
 
-/// List the items and check their programs: the slow half (`sfltool` takes
-/// seconds), run beside the scan's other probes.
+/// List the items and check their programs (a `codesign` per program),
+/// run beside the scan's other probes.
 pub fn gather(r: &Roots) -> Gathered {
     let inv = inventory_in(r);
     let vetted = vet_all(r, &inv);
@@ -442,114 +435,46 @@ fn shell(r: &Roots, inv: &mut Inventory) {
     inv.read.push(Source::Shell);
 }
 
-/// One block of `sfltool dumpbtm`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Btm {
-    kind: String,
-    identifier: String,
-    url: String,
-    exec: String,
-    parent: String,
-    enabled: bool,
-}
-
-fn btm_blocks(out: &str) -> Vec<Btm> {
-    let mut blocks: Vec<Btm> = Vec::new();
-    for raw in out.lines() {
-        let l = raw.trim();
-        // A block opens with "#N:" alone; "#N: id" lines list embedded items.
-        if l.starts_with('#') && l.ends_with(':') && l[1..l.len() - 1].chars().all(|c| c.is_ascii_digit()) {
-            blocks.push(Btm::default());
-            continue;
-        }
-        let (Some(b), Some((k, v))) = (blocks.last_mut(), l.split_once(": ")) else { continue };
-        let v = v.trim().to_string();
-        match k.trim() {
-            "Type" => b.kind = v.split(" (").next().unwrap_or("").to_string(),
-            "Identifier" => b.identifier = v,
-            "URL" => b.url = v,
-            "Executable Path" => b.exec = v,
-            "Parent Identifier" => b.parent = v,
-            "Disposition" => b.enabled = v.starts_with("[enabled"),
-            _ => {}
-        }
-    }
-    blocks
-}
-
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && i + 2 < b.len()
-            && let Some(byte) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(byte);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// A BTM URL or path as a path: `file:///A%20B.app/` → `/A B.app`.
-fn btm_path(s: &str) -> Option<PathBuf> {
-    if s.is_empty() || s == "(null)" {
-        return None;
-    }
-    let s = s.strip_prefix("file://").unwrap_or(s);
-    let s = percent_decode(s);
-    let s = s.trim_end_matches('/');
-    (!s.is_empty()).then(|| PathBuf::from(s))
-}
-
-/// Login items, apps opened at login and the agents and daemons apps
-/// register through ServiceManagement, from the Background Task Management
-/// database (`sfltool dumpbtm`, which runs unprivileged on macOS 13 and
-/// later). Legacy agents and daemons are the plists `units` reads already;
-/// developer groups, Quick Look, Spotlight and dock-tile entries run
-/// nothing of their own.
+/// The login items and launch agents and daemons apps carry inside
+/// their bundles, which `SMAppService` and `SMLoginItemSetEnabled`
+/// register: `Contents/Library/LaunchAgents`, `LaunchDaemons` and
+/// `LoginItems` of every app in `/Applications` (and `Utilities`) and
+/// `~/Applications`. Background Task Management records which of them are
+/// enabled, but `sfltool dumpbtm`, the only reader, asks for an
+/// administrator's password every time; so these are what apps can start,
+/// enabled or not. A new one is still a new way back in.
 fn login_items(r: &Roots, inv: &mut Inventory) {
-    let out = (r.runner)(&["sfltool", "dumpbtm"]);
-    if !out.contains("Records for UID") {
-        let why = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("sfltool dumpbtm gave no answer");
-        inv.unread.push((Source::LoginItem, why.to_string()));
-        return;
-    }
-    let blocks = btm_blocks(&out);
-    let urls: BTreeMap<&str, &str> = blocks.iter().map(|b| (b.identifier.as_str(), b.url.as_str())).collect();
-    let mut seen = HashSet::new();
-    for b in &blocks {
-        let wanted = matches!(b.kind.as_str(), "login item" | "agent" | "daemon") || (b.kind == "app" && b.enabled);
-        if !wanted || !b.enabled {
-            continue;
+    let dirs = [r.sys("/Applications"), r.sys("/Applications/Utilities"), r.home.join("Applications")];
+    for dir in dirs {
+        for app in entries(&dir, |n| n.ends_with(".app")) {
+            let lib = app.join("Contents/Library");
+            for sub in ["LaunchAgents", "LaunchDaemons"] {
+                for plist in entries(&lib.join(sub), |n| n.ends_with(".plist")) {
+                    let v = crate::plist::read(&plist);
+                    let program = match v.get("BundleProgram").and_then(|p| p.as_str()) {
+                        Some(rel) => Some(app.join(rel)),
+                        None => program_file(&command_of(&plist)),
+                    };
+                    let mut injects: Vec<String> = v
+                        .get("EnvironmentVariables")
+                        .and_then(|e| e.as_object())
+                        .map(|e| e.keys().filter(|k| INJECT.contains(&k.as_str())).cloned().collect())
+                        .unwrap_or_default();
+                    injects.sort();
+                    inv.items.push(Item {
+                        source: Source::LoginItem,
+                        location: r.show(&plist),
+                        ident: program.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                        program,
+                        injects,
+                        line: 0,
+                    });
+                }
+            }
+            for helper in entries(&lib.join("LoginItems"), |n| n.ends_with(".app")) {
+                inv.items.push(file_item(r, Source::LoginItem, &helper));
+            }
         }
-        // Relative paths are inside the parent app.
-        let parent = urls.get(b.parent.as_str()).and_then(|u| btm_path(u));
-        let resolve = |s: &str| -> Option<PathBuf> {
-            let p = btm_path(s)?;
-            if p.is_absolute() { Some(p) } else { parent.as_ref().map(|base| base.join(p)) }
-        };
-        let program = resolve(&b.exec).or_else(|| resolve(&b.url)).map(|p| r.rebase(&p));
-        let location = b.identifier.split_once('.').map_or(b.identifier.as_str(), |(n, rest)| {
-            if n.chars().all(|c| c.is_ascii_digit()) { rest } else { b.identifier.as_str() }
-        });
-        let ident = format!("{}\u{1f}{}\u{1f}{}", b.kind, b.url, b.exec);
-        if !seen.insert((location.to_string(), ident.clone())) {
-            continue;
-        }
-        inv.items.push(Item {
-            source: Source::LoginItem,
-            location: location.to_string(),
-            ident,
-            program,
-            injects: Vec::new(),
-            line: 0,
-        });
     }
     inv.read.push(Source::LoginItem);
 }
@@ -963,7 +888,11 @@ mod tests {
 <key>EnvironmentVariables</key><dict><key>DYLD_INSERT_LIBRARIES</key><string>/tmp/x.dylib</string></dict>
 </dict></plist>"#;
 
-    const BTM: &str = "========================\n Records for UID 501 : X\n========================\n\n Items:\n\n #1:\n                 UUID: A\n                 Name: Example\n                 Type: app (0x2)\n          Disposition: [disabled, allowed, not notified] (0x2)\n           Identifier: 2.com.example.app\n                  URL: file:///Applications/Example%20App.app/\n\n #2:\n                 UUID: B\n                 Name: Helper\n                 Type: login item (0x4)\n          Disposition: [enabled, allowed, notified] (0xb)\n           Identifier: 4.TEAM.com.example.helper\n                  URL: Contents/Library/LoginItems/Helper.app\n    Parent Identifier: 2.com.example.app\n\n #3:\n                 Type: developer (0x20)\n          Disposition: [enabled, allowed, notified] (0xb)\n           Identifier: Unknown Developer\n  Embedded Item Identifiers:\n    #1: 16.dev.x\n\n #4:\n                 Type: legacy agent (0x10008)\n          Disposition: [enabled, allowed, notified] (0xb)\n           Identifier: 8.com.example.legacy\n                  URL: /Library/LaunchAgents/com.example.legacy.plist\n      Executable Path: /usr/local/bin/legacy\n\n #5:\n                 Type: agent (0x8)\n          Disposition: [enabled, allowed, notified] (0xb)\n           Identifier: 8.com.example.agent\n                  URL: Contents/Library/LaunchAgents/a.plist\n      Executable Path: Contents/Resources/agent\n    Parent Identifier: 2.com.example.app\n";
+    const SM_AGENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>com.example.agent</string>
+<key>BundleProgram</key><string>Contents/Resources/agent</string>
+</dict></plist>"#;
 
     const SYSEXT: &str = "1 extension(s)\n--- com.apple.system_extension.network_extension\nenabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n*\t*\tTEAM123\tcom.example.vpn.ext (1.0/1)\tExample VPN\t[activated enabled]\n";
 
@@ -973,7 +902,6 @@ mod tests {
                 "# m h dom mon dow cmd\n*/5 * * * * /bin/sh /tmp/x.sh\nMAILTO=\"\"\n@reboot /usr/bin/true\n".into()
             }
             "atq" => "3\tWed Nov  4 10:00:00 2026\n".into(),
-            "sfltool dumpbtm" => BTM.into(),
             "systemextensionsctl list" => SYSEXT.into(),
             "launchctl getenv DYLD_INSERT_LIBRARIES" => String::new(),
             _ => String::new(),
@@ -995,6 +923,10 @@ mod tests {
         write(&r.sys("/Library/Spotlight/S.mdimporter/x"), "");
         write(&r.sys("/etc/periodic/daily/999.local"), "#!/bin/sh\n");
         write(&r.sys("/etc/emond.d/rules/r.plist"), "<plist/>");
+        let app = r.sys("/Applications/Example App.app/Contents/Library");
+        write(&app.join("LaunchAgents/com.example.agent.plist"), SM_AGENT);
+        write(&app.join("LoginItems/Helper.app/Contents/Info.plist"), "<plist/>");
+        write(&r.sys("/Applications/Plain.app/Contents/Info.plist"), "<plist/>");
         let inv = inventory_in(&r);
         let by = |s: Source| inv.items.iter().filter(|i| i.source == s).collect::<Vec<_>>();
         let launchd = by(Source::Launchd);
@@ -1004,15 +936,21 @@ mod tests {
         assert_eq!(launchd[0].injects, ["DYLD_INSERT_LIBRARIES"]);
         let logins = by(Source::LoginItem);
         let names: Vec<&str> = logins.iter().map(|i| i.location.as_str()).collect();
-        assert_eq!(names, ["TEAM.com.example.helper", "com.example.agent"], "enabled, not legacy or developer");
+        assert_eq!(
+            names,
+            [
+                "/Applications/Example App.app/Contents/Library/LaunchAgents/com.example.agent.plist",
+                "/Applications/Example App.app/Contents/Library/LoginItems/Helper.app"
+            ]
+        );
         assert_eq!(
             logins[0].program.as_deref(),
-            Some(r.sys("/Applications/Example App.app/Contents/Library/LoginItems/Helper.app").as_path()),
-            "a relative URL resolves inside the parent app"
+            Some(r.sys("/Applications/Example App.app/Contents/Resources/agent").as_path()),
+            "BundleProgram is inside the app"
         );
         assert_eq!(
             logins[1].program.as_deref(),
-            Some(r.sys("/Applications/Example App.app/Contents/Resources/agent").as_path())
+            Some(r.sys("/Applications/Example App.app/Contents/Library/LoginItems/Helper.app").as_path())
         );
         let cron = by(Source::Cron);
         assert_eq!(cron.len(), 2, "the environment line and the comment run nothing");
@@ -1076,16 +1014,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_btm_is_unread_not_empty() {
+    fn an_unreadable_source_is_unread_not_empty() {
         let d = system::TempDir::new("persist").unwrap();
-        let refuse = |argv: &[&str]| {
-            if argv[0] == "sfltool" { "sfltool: Operation not permitted\n".into() } else { String::new() }
-        };
-        let inv = inventory_in(&roots(d.path(), true, &refuse));
-        assert_eq!(inv.unread.len(), 2, "{:?}", inv.unread);
-        assert_eq!(inv.unread[0], (Source::LoginItem, "sfltool: Operation not permitted".into()));
-        assert!(!inv.read.contains(&Source::LoginItem));
+        let none = |_: &[&str]| String::new();
+        let inv = inventory_in(&roots(d.path(), true, &none));
+        assert_eq!(inv.unread, [(Source::SystemExtension, "systemextensionsctl list gave no answer".into())]);
         assert!(!inv.read.contains(&Source::SystemExtension));
+        assert!(inv.read.contains(&Source::LoginItem), "the app bundles are read from disk");
     }
 
     #[test]
@@ -1141,8 +1076,6 @@ mod tests {
         assert_eq!(vet(&r, &bin), Vetted { signature: Signature::AdHoc, quarantined: Some(false), hidden: false });
         let linux = roots(d.path(), false, &clean);
         assert_eq!(vet(&linux, &bin).signature, Signature::Unknown, "codesign is macOS only");
-        assert_eq!(percent_decode("A%20B%zz%2"), "A B%zz%2");
-        assert_eq!(btm_path("(null)"), None);
     }
 
     #[test]

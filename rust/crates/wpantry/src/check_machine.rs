@@ -1233,12 +1233,12 @@ mod tests {
         let mut inv = Inventory {
             items: vec![item("a.plist")],
             read: vec![Source::Launchd],
-            unread: vec![(Source::LoginItem, "sfltool: Operation not permitted".into())],
+            unread: vec![(Source::SystemExtension, "systemextensionsctl list gave no answer".into())],
         };
         persistence(&mut s, (inv.clone(), Default::default()));
         assert_eq!(
             kinds(&s),
-            [("persistence: login items".to_string(), "UNCHECKED".to_string(), "warn".to_string())],
+            [("persistence: system extensions".to_string(), "UNCHECKED".to_string(), "warn".to_string())],
             "the first scan records, and says what it couldn't read"
         );
         assert!(s.counts.iter().any(|(k, n)| k.starts_with("persistence items recorded") && *n == 1));

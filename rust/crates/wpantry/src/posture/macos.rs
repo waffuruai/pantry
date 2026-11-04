@@ -243,14 +243,157 @@ fn bluetooth_sharing(r: Runner) -> Outcome {
     }
 }
 
-fn xprotect(_: Runner) -> Outcome {
-    let meta = std::path::Path::new(
-        "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Resources/XProtect.meta.plist",
-    );
-    let Ok(m) = std::fs::metadata(meta) else { return Outcome::unknown("XProtect's data isn't where macOS keeps it") };
-    let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
-    let days = age / 86400;
-    Outcome::of(days <= 45, format!("XProtect's data was updated {days} days ago"))
+/// Where XProtect's definitions live: `/var/protected/xprotect` since
+/// macOS 15 (`xprotect update` writes there), the CoreServices bundle before.
+const XPROTECT_DATA: &[&str] =
+    &["/var/protected/xprotect/XProtect.bundle", "/Library/Apple/System/Library/CoreServices/XProtect.bundle"];
+/// XProtect Remediator, the scanner that removes what XProtect knows.
+const XPROTECT_REMEDIATOR: &str = "/Library/Apple/System/Library/CoreServices/XProtect.app";
+
+fn bundle_version(r: Runner, bundle: &str) -> Option<String> {
+    let out = read(r, &format!("{bundle}/Contents/Info"), "CFBundleShortVersionString");
+    let v = out.trim();
+    (!v.is_empty() && !v.contains("does not exist") && !v.contains(' ')).then(|| v.to_string())
+}
+
+/// Days since XProtect's data last changed: the newest of its copies.
+fn xprotect_age() -> Option<u64> {
+    XPROTECT_DATA
+        .iter()
+        .filter_map(|b| std::fs::metadata(format!("{b}/Contents/Info.plist")).ok()?.modified().ok()?.elapsed().ok())
+        .map(|d| d.as_secs() / 86400)
+        .min()
+}
+
+/// XProtect's definitions version (`xprotect version` on macOS 15 and
+/// later, else the bundle's), XProtect Remediator's, and the data's age.
+fn xprotect(r: Runner) -> Outcome {
+    let cli = r(&["xprotect", "version"]);
+    let data = cli
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Version:"))
+        .and_then(|v| v.split_whitespace().next())
+        .map(str::to_string)
+        .or_else(|| XPROTECT_DATA.iter().find_map(|b| bundle_version(r, b)));
+    xprotect_verdict(data, bundle_version(r, XPROTECT_REMEDIATOR), xprotect_age())
+}
+
+fn xprotect_verdict(data: Option<String>, remediator: Option<String>, days: Option<u64>) -> Outcome {
+    let (Some(data), Some(days)) = (data, days) else {
+        return Outcome::unknown("XProtect's data isn't where macOS keeps it");
+    };
+    let Some(remediator) = remediator else {
+        return Outcome::fail(format!(
+            "XProtect {data} (updated {days} days ago), but XProtect Remediator is missing: nothing removes what XProtect finds"
+        ));
+    };
+    Outcome::of(days <= 45, format!("XProtect {data}, updated {days} days ago; XProtect Remediator {remediator}"))
+}
+
+/// The logged-in user isn't an administrator: what they run can't install
+/// system-wide persistence or change security settings without a prompt
+/// for another account's password.
+fn not_admin(r: Runner) -> Outcome {
+    let out = r(&["id", "-Gn"]);
+    if out.trim().is_empty() {
+        return Outcome::unknown("id -Gn gave no answer");
+    }
+    let admin = out.split_whitespace().any(|g| g == "admin");
+    Outcome::of(
+        !admin,
+        if admin {
+            "the everyday account is an administrator: anything it runs is one password prompt from root"
+        } else {
+            "the everyday account is a standard user"
+        },
+    )
+}
+
+/// "Set time and date automatically": certificates, Kerberos and logs need
+/// a right clock. systemsetup needs admin; without it (or `sudo -n`) the
+/// time server is all that can be read.
+fn time_sync(r: Runner) -> Outcome {
+    for argv in [&["systemsetup", "-getusingnetworktime"][..], &["sudo", "-n", "systemsetup", "-getusingnetworktime"]] {
+        let out = r(argv);
+        if let Some(line) = out.lines().find(|l| l.contains("Network Time:")) {
+            let line = line.trim();
+            return if line.ends_with("On") { Outcome::pass(line) } else { Outcome::fail(line) };
+        }
+    }
+    let ntp = std::fs::read_to_string("/etc/ntp.conf").unwrap_or_default();
+    match ntp.lines().find_map(|l| l.trim().strip_prefix("server ")) {
+        Some(server) => Outcome::manual(format!(
+            "the time server is {}; whether \"Set time and date automatically\" is on needs admin to read (sudo systemsetup -getusingnetworktime)",
+            server.trim().trim_end_matches('.')
+        )),
+        None => Outcome::unknown("systemsetup needs admin, and /etc/ntp.conf names no server"),
+    }
+}
+
+/// AirDrop off, or receiving from contacts only: "Everyone" lets anyone
+/// nearby push files (and their names) at the Mac.
+fn airdrop(r: Runner) -> Outcome {
+    if flag(&read(r, "com.apple.NetworkBrowser", "DisableAirDrop")) == Some(true) {
+        return Outcome::pass("AirDrop is disabled");
+    }
+    let out = read(r, "com.apple.sharingd", "DiscoverableMode");
+    let mode = out.trim();
+    match mode {
+        "Everyone" => Outcome::fail("AirDrop receives from everyone"),
+        "Off" => Outcome::pass("AirDrop receiving is off"),
+        "Contacts Only" => Outcome::pass("AirDrop receives from contacts only"),
+        m if m.is_empty() || m.contains("does not exist") => {
+            Outcome::pass("AirDrop receives from contacts only (default)")
+        }
+        m => Outcome::unknown(format!("AirDrop's mode reads {m}")),
+    }
+}
+
+/// The application firewall logs what it blocks. `--getloggingmode` went
+/// away in macOS 15; since then only a configuration profile
+/// (`com.apple.security.firewall` `EnableLogging`) sets it.
+fn firewall_logging(r: Runner) -> Outcome {
+    let out = r(&["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getloggingmode"]);
+    if let Some(line) = out.lines().find(|l| l.contains("Log mode")) {
+        return on_off(line.trim(), "socketfilterfw");
+    }
+    let managed = read(r, "/Library/Managed Preferences/com.apple.security.firewall", "EnableLogging");
+    match flag(&managed) {
+        Some(true) => Outcome::pass("firewall logging is on (configuration profile)"),
+        Some(false) => Outcome::fail("firewall logging is off (configuration profile)"),
+        None => Outcome::manual(
+            "no configuration profile turns firewall logging on (com.apple.security.firewall EnableLogging); this macOS has no other switch for it",
+        ),
+    }
+}
+
+/// The boot security policy: Full Security boots only the current, signed
+/// macOS. `bputil -d` reads it as root; `system_profiler` shows it to
+/// anyone on Apple silicon and T2 Macs.
+fn secure_boot(r: Runner) -> Outcome {
+    let policy = r(&["bputil", "-d"]);
+    let mode = policy
+        .lines()
+        .find(|l| l.trim_start().starts_with("Security Mode"))
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, v)| v.split_whitespace().next().unwrap_or("").to_string())
+        .or_else(|| {
+            r(&["system_profiler", "SPiBridgeDataType"])
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("Secure Boot:"))
+                .map(|v| v.trim().trim_end_matches(" Security").to_string())
+        });
+    match mode.as_deref() {
+        Some("Full") => Outcome::pass("Secure Boot: Full Security"),
+        Some(m @ ("Reduced" | "Medium")) => Outcome::manual(format!(
+            "Secure Boot: {m} Security, which allows third-party kernel extensions or older macOS; keep it only for a kext you need"
+        )),
+        Some(m @ ("Permissive" | "No")) => Outcome::fail(format!("Secure Boot: {m} Security")),
+        Some(m) if !m.is_empty() => Outcome::unknown(format!("Secure Boot reads {m}")),
+        _ => Outcome::unknown(
+            "neither bputil -d (root) nor system_profiler shows a boot policy (an Intel Mac without a T2 has none)",
+        ),
+    }
 }
 
 fn lockdown(r: Runner) -> Outcome {
@@ -589,11 +732,64 @@ pub static CHECKS: &[Check] = &[
     Check {
         id: "POSTURE-XPROTECT",
         cis: "5.10",
-        title: "XProtect data current",
+        title: "XProtect data current and XProtect Remediator present",
         severity: Severity::Medium,
         probe: xprotect,
         fix: admin("softwareupdate --background-critical  (and check that Software Update installs system data files)"),
         explain: "The built-in malware definitions are fresh",
+    },
+    Check {
+        id: "POSTURE-SECURE-BOOT",
+        cis: "",
+        title: "Secure Boot at Full Security",
+        severity: Severity::High,
+        probe: secure_boot,
+        fix: admin("Restart into Recovery, open Startup Security Utility and choose Full Security"),
+        explain: "Only the current, Apple-signed macOS boots, without third-party kernel extensions",
+    },
+    Check {
+        id: "POSTURE-NOT-ADMIN",
+        cis: "",
+        title: "Everyday account is a standard user",
+        severity: Severity::Medium,
+        probe: not_admin,
+        fix: admin(
+            "Create a separate administrator account (System Settings → Users & Groups → Add User), log in to it, then turn off \"Allow this user to administer this computer\" for your everyday account",
+        ),
+        explain: "Malware run by the everyday account can't install system-wide or change security settings without another account's password",
+    },
+    Check {
+        id: "POSTURE-TIME-SYNC",
+        cis: "2.3.2.1",
+        title: "Time and date set automatically",
+        severity: Severity::Medium,
+        probe: time_sync,
+        fix: admin(
+            "sudo systemsetup -setusingnetworktime on  (System Settings → General → Date & Time → Set time and date automatically)",
+        ),
+        explain: "Certificate checks, logins and logs rely on a right clock",
+    },
+    Check {
+        id: "POSTURE-AIRDROP",
+        cis: "2.3.1.1",
+        title: "AirDrop off or contacts only",
+        severity: Severity::Medium,
+        probe: airdrop,
+        fix: user(
+            "defaults write com.apple.sharingd DiscoverableMode -string \"Contacts Only\"  (Control Center → AirDrop → Contacts Only)",
+        ),
+        explain: "Strangers nearby can't push files at the Mac",
+    },
+    Check {
+        id: "POSTURE-FIREWALL-LOGGING",
+        cis: "3.6",
+        title: "Firewall logging",
+        severity: Severity::Low,
+        probe: firewall_logging,
+        fix: admin(
+            "Install a configuration profile with a com.apple.security.firewall payload setting EnableLogging true and LoggingOption detail (or, before macOS 15: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setloggingmode on)",
+        ),
+        explain: "What the firewall blocks is on record when something tries to get in",
     },
     Check {
         id: "POSTURE-DNS-ENCRYPTED",
@@ -661,6 +857,15 @@ mod tests {
             ("PrefKeyServicesEnabled", "0\n"),
             ("LDMGlobalEnabled", "1\n"),
             ("plutil -p", NE_DOH),
+            (
+                "bputil -d",
+                "Current local policy:\nOS Type                 : macOS\nSecurity Mode           : Full (smb0: absent)\n",
+            ),
+            ("id -Gn", "staff everyone localaccounts _appserverusr\n"),
+            ("getusingnetworktime", "Network Time: On\n"),
+            ("DisableAirDrop", "The domain/default pair of (…) does not exist"),
+            ("DiscoverableMode", "Contacts Only\n"),
+            ("--getloggingmode", "Log mode is on\n"),
         ]);
         for c in CHECKS {
             if c.id == "POSTURE-XPROTECT" {
@@ -699,6 +904,12 @@ mod tests {
             ("AutoOpenSafeDownloads", "1\n"),
             ("PrefKeyServicesEnabled", "1\n"),
             ("scutil --dns", SCUTIL_PLAIN),
+            ("bputil -d", "The tool requires running as root\n"),
+            ("SPiBridgeDataType", "Controller:\n      Boot Policy:\n        Secure Boot: Permissive Security\n"),
+            ("id -Gn", "staff everyone admin\n"),
+            ("getusingnetworktime", "Network Time: Off\n"),
+            ("DiscoverableMode", "Everyone\n"),
+            ("--getloggingmode", "Log mode is off\n"),
         ]);
         let fails: Vec<&str> = CHECKS
             .iter()
@@ -729,6 +940,11 @@ mod tests {
             "POSTURE-SAFARI-SAFE-FILES",
             "POSTURE-BLUETOOTH-SHARING",
             "POSTURE-DNS-ENCRYPTED",
+            "POSTURE-SECURE-BOOT",
+            "POSTURE-NOT-ADMIN",
+            "POSTURE-TIME-SYNC",
+            "POSTURE-AIRDROP",
+            "POSTURE-FIREWALL-LOGGING",
         ] {
             assert!(fails.contains(&id), "{id} should fail: {fails:?}");
         }
@@ -806,6 +1022,47 @@ mod tests {
     }
 
     #[test]
+    fn xprotect_versions_and_the_newer_checks_middle_answers() {
+        let v = xprotect_verdict(Some("5371".into()), Some("170".into()), Some(3));
+        assert_eq!(v, Outcome::pass("XProtect 5371, updated 3 days ago; XProtect Remediator 170"));
+        assert_eq!(xprotect_verdict(Some("5371".into()), Some("170".into()), Some(90)).status, Status::Fail);
+        let missing = xprotect_verdict(Some("5371".into()), None, Some(3));
+        assert_eq!(missing.status, Status::Fail);
+        assert!(missing.evidence.contains("Remediator is missing"), "{}", missing.evidence);
+        assert_eq!(xprotect_verdict(None, Some("170".into()), Some(3)).status, Status::Unknown);
+        assert_eq!(
+            bundle_version(&machine(&[("CFBundleShortVersionString", "170\n")]), XPROTECT_REMEDIATOR).as_deref(),
+            Some("170")
+        );
+        assert_eq!(
+            bundle_version(
+                &machine(&[("CFBundleShortVersionString", "The domain/default pair of (x) does not exist")]),
+                XPROTECT_REMEDIATOR
+            ),
+            None
+        );
+        // Reduced Security is a choice some kexts need: a warning, not a failure.
+        let reduced = secure_boot(&machine(&[("SPiBridgeDataType", "        Secure Boot: Reduced Security\n")]));
+        assert_eq!(reduced.status, Status::Manual);
+        // AirDrop: disabled outright, off, or never set.
+        assert_eq!(
+            airdrop(&machine(&[("DisableAirDrop", "1\n"), ("DiscoverableMode", "Everyone\n")])).status,
+            Status::Pass
+        );
+        assert_eq!(airdrop(&machine(&[("DiscoverableMode", "Off\n")])).status, Status::Pass);
+        assert_eq!(airdrop(&machine(&[])).evidence, "AirDrop receives from contacts only (default)");
+        // Firewall logging after macOS 15: a profile, or nothing to read.
+        let profile = machine(&[("--getloggingmode", "usage: socketfilterfw [-h]\n"), ("EnableLogging", "1\n")]);
+        assert_eq!(firewall_logging(&profile).status, Status::Pass);
+        let none = machine(&[("--getloggingmode", "usage: socketfilterfw [-h]\n")]);
+        assert_eq!(firewall_logging(&none).status, Status::Manual);
+        // Time sync without admin: systemsetup refuses, sudo -n has no ticket.
+        let refused =
+            machine(&[("getusingnetworktime", "You need administrator access to run this tool... exiting!\n")]);
+        assert!(matches!(time_sync(&refused).status, Status::Manual | Status::Unknown));
+    }
+
+    #[test]
     fn no_answer_is_unknown_not_a_pass() {
         let r = |_: &[&str]| String::new();
         for id in [
@@ -817,6 +1074,8 @@ mod tests {
             "POSTURE-REMOTE-LOGIN",
             "POSTURE-PRINTER-SHARING",
             "POSTURE-DNS-ENCRYPTED",
+            "POSTURE-SECURE-BOOT",
+            "POSTURE-NOT-ADMIN",
         ] {
             let c = CHECKS.iter().find(|c| c.id == id).unwrap();
             assert_eq!((c.probe)(&r).status, Status::Unknown, "{id}");

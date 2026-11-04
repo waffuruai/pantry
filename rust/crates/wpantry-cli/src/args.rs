@@ -25,6 +25,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "harden",
     "clipboard",
     "mitigate",
+    "rules",
     "help",
 ];
 
@@ -57,6 +58,12 @@ pub struct Check {
     pub posture_policy: Option<PathBuf>,
     pub suspect_policy: Option<PathBuf>,
     pub hooks_policy: Option<PathBuf>,
+    /// `--no-malware`: skip the YARA malware scan.
+    pub no_malware: bool,
+    /// `--deep`: the malware scan reads all of `~` with every system's rules.
+    pub deep: bool,
+    /// `--no-online-hash`: never look up a flagged file's hash online.
+    pub no_online_hash: bool,
 }
 
 /// What `mitigate` acts on.
@@ -151,6 +158,19 @@ pub enum Command {
         path: Option<Vec<PathBuf>>,
     },
     Skill,
+    /// `rules`: the YARA rule sources and what compiled (`--update` fetches);
+    /// `rules gen SAMPLE...` writes a rule; `rules goodware` rebuilds the goodware database.
+    Rules {
+        /// "" (list), "gen" or "goodware".
+        action: String,
+        samples: Vec<PathBuf>,
+        update: bool,
+        json: bool,
+        category: String,
+        family: Option<String>,
+        name: Option<String>,
+        out: Option<PathBuf>,
+    },
 }
 
 /// What parsing decided: run a command, or exit now (help printed, or a
@@ -165,18 +185,19 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,help} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,rules,help} ...";
 
 /// The scan's options in its usage line, shared by `scan`, `check` and
 /// `fix` (`fix` adds `--dryrun` and `--yes` in front).
-const SCAN_USAGE: [&str; 3] = [
+const SCAN_USAGE: [&str; 4] = [
     "[--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]",
     "[--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]",
-    "[--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard]",
+    "[--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard] [--no-malware] [--deep]",
+    "[--no-online-hash]",
 ];
 
 /// The scan's options in its help, shared by `scan`, `check` and `fix`.
-const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)";
+const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)\n  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)";
 
 pub fn usage(cmd: &str) -> String {
     let line: &str = match cmd {
@@ -184,8 +205,8 @@ pub fn usage(cmd: &str) -> String {
             let pad = " ".repeat(format!("usage: wpantry {cmd} ").len());
             let fix = if cmd == "fix" { " [--dryrun] [--yes]" } else { "" };
             return format!(
-                "usage: wpantry {cmd} [-h]{fix} {}\n{pad}{}\n{pad}{}",
-                SCAN_USAGE[0], SCAN_USAGE[1], SCAN_USAGE[2]
+                "usage: wpantry {cmd} [-h]{fix} {}\n{pad}{}\n{pad}{}\n{pad}{}",
+                SCAN_USAGE[0], SCAN_USAGE[1], SCAN_USAGE[2], SCAN_USAGE[3]
             );
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
@@ -195,6 +216,9 @@ pub fn usage(cmd: &str) -> String {
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
+        "rules" => {
+            "usage: wpantry rules [-h] [--update] [--json]\n       wpantry rules gen [--category CAT] [--family NAME] [--name RULE] [--out FILE] SAMPLE [SAMPLE ...]\n       wpantry rules goodware"
+        }
         "schedule" => {
             "usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] [--clipboard-guard] {install,status,uninstall,run}"
         }
@@ -253,6 +277,9 @@ fn help(cmd: &str) -> String {
             "list the external tools this implementation uses\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
+        "rules" => {
+            "the YARA rules the malware scan uses: ours, built in, and YARA Forge's, fetched into the cache directory; gen writes a rule from samples\n\npositional arguments:\n  gen SAMPLE ...   write a YARA rule matching what the samples share and this machine's programs don't (unreviewed: category suspicious, score 60)\n  goodware         rebuild the goodware database from this machine's system programs (gen builds it the first time)\n\noptions:\n  -h, --help       show this help message and exit\n  --update         fetch YARA Forge's latest package now\n  --json           the sources and counts as JSON\n  --category CAT   gen: the category you propose (default malware)\n  --family NAME    gen: the family's name (default: the first sample's file name)\n  --name RULE      gen: the rule's name (default Gen_<category>_<family>)\n  --out FILE       gen: write the rule there, and its test file beside it (default: stdout)"
+        }
         "sync" => {
             "refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan --offline has fresh answers\n\noptions:\n  -h, --help  show this help message and exit\n  --refresh   ask every source again, even when its answer is fresh\n  --json      print what was refreshed as JSON"
         }
@@ -278,7 +305,7 @@ fn help(cmd: &str) -> String {
             "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for scan\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,rules,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -316,6 +343,9 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--suspect-policy", true),
             ("--hooks-policy", true),
             ("--no-clipboard", false),
+            ("--no-malware", false),
+            ("--deep", false),
+            ("--no-online-hash", false),
         ],
         "fix" => &[
             ("--help", false),
@@ -338,6 +368,18 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--suspect-policy", true),
             ("--hooks-policy", true),
             ("--no-clipboard", false),
+            ("--no-malware", false),
+            ("--deep", false),
+            ("--no-online-hash", false),
+        ],
+        "rules" => &[
+            ("--help", false),
+            ("--update", false),
+            ("--json", false),
+            ("--category", true),
+            ("--family", true),
+            ("--name", true),
+            ("--out", true),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
         "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
@@ -446,8 +488,14 @@ pub fn parse(argv: &[String]) -> Parsed {
             Some((n, v)) if n.starts_with("--") => (n, Some(v.to_string())),
             _ => (a.as_str(), None),
         };
-        let name = ALIASES.iter().find(|(alias, _)| *alias == name).map_or(name, |(_, opt)| *opt);
         let opts = options(&cmd);
+        // An alias applies only where the command has no option of that name
+        // (`rules --update` is its own; `scan --update` is the old `--fix`).
+        let name = if opts.iter().any(|(o, _)| *o == name) {
+            name
+        } else {
+            ALIASES.iter().find(|(alias, _)| *alias == name).map_or(name, |(_, opt)| *opt)
+        };
         let matched: Vec<&(&str, bool)> = match opts.iter().find(|(o, _)| *o == name) {
             Some(exact) => vec![exact],
             None if name.starts_with("--") && name.len() > 2 => {
@@ -507,6 +555,9 @@ pub fn parse(argv: &[String]) -> Parsed {
                 check_licenses: flag("--licenses"),
                 no_posture: flag("--no-posture"),
                 no_clipboard: flag("--no-clipboard"),
+                no_malware: flag("--no-malware"),
+                deep: flag("--deep"),
+                no_online_hash: flag("--no-online-hash"),
                 ..Default::default()
             };
             if let Some(v) = value("--html") {
@@ -745,6 +796,27 @@ pub fn parse(argv: &[String]) -> Parsed {
                 path: (!paths.is_empty()).then_some(paths),
             }
         }
+        "rules" => {
+            let action = positional.first().cloned().unwrap_or_default();
+            let samples: Vec<PathBuf> = positional.iter().skip(1).map(|p| expand(p)).collect();
+            match action.as_str() {
+                "" => {}
+                "gen" if samples.is_empty() => return fail("rules gen: at least one SAMPLE".into()),
+                "gen" => {}
+                "goodware" if samples.is_empty() => {}
+                _ => return fail(format!("unrecognized arguments: {}", positional.join(" "))),
+            }
+            Command::Rules {
+                action,
+                samples,
+                update: flag("--update"),
+                json: flag("--json"),
+                category: value("--category").unwrap_or_else(|| "malware".into()),
+                family: value("--family"),
+                name: value("--name"),
+                out: value("--out").map(|o| expand(&o)),
+            }
+        }
         "version" | "tools" | "skill" | "watch" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
@@ -770,10 +842,52 @@ mod tests {
     }
 
     #[test]
+    fn malware_options_and_the_rules_command() {
+        let Parsed::Run(Command::Scan(c)) = p(&["scan", "--no-malware"]) else { panic!() };
+        assert!(c.no_malware && !c.deep);
+        let Parsed::Run(Command::Scan(c)) = p(&["check", "--deep"]) else { panic!() };
+        assert!(c.deep && !c.no_malware);
+        let Parsed::Run(Command::Scan(c)) = p(&["fix", "--deep", "--no-malware", "--no-online-hash"]) else { panic!() };
+        assert!(c.fix && c.deep && c.no_malware && c.no_online_hash);
+        assert!(matches!(p(&["scan", "--no-m"]), Parsed::Usage(_)), "--no-m is now ambiguous");
+        let rules = |action: &str, samples: Vec<PathBuf>, update: bool, json: bool| Command::Rules {
+            action: action.into(),
+            samples,
+            update,
+            json,
+            category: "malware".into(),
+            family: None,
+            name: None,
+            out: None,
+        };
+        assert_eq!(p(&["rules"]), Parsed::Run(rules("", vec![], false, false)));
+        assert_eq!(p(&["rules", "--update", "--json"]), Parsed::Run(rules("", vec![], true, true)));
+        assert_eq!(p(&["rules", "goodware"]), Parsed::Run(rules("goodware", vec![], false, false)));
+        assert_eq!(
+            p(&["rules", "gen", "/a", "/b"]),
+            Parsed::Run(rules("gen", vec!["/a".into(), "/b".into()], false, false))
+        );
+        let Parsed::Run(Command::Rules { category, family, name, out, .. }) =
+            p(&["rules", "gen", "--category", "miner", "--family", "Kit", "--name", "R", "--out", "/o.yar", "/a"])
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (category.as_str(), family.as_deref(), name.as_deref(), out),
+            ("miner", Some("Kit"), Some("R"), Some("/o.yar".into()))
+        );
+        assert!(matches!(p(&["rules", "gen"]), Parsed::Usage(_)));
+        assert!(matches!(p(&["rules", "extra"]), Parsed::Usage(_)));
+        assert!(matches!(p(&["rules", "goodware", "x"]), Parsed::Usage(_)));
+        assert!(usage("scan").contains("[--no-malware] [--deep]"));
+        assert!(help("rules").contains("--update"));
+    }
+
+    #[test]
     fn no_arguments_print_the_help_and_options_alone_scan() {
         assert_eq!(p(&[]), Parsed::Help(help("")));
         assert_eq!(p(&["--json"]), Parsed::Run(Command::Scan(Check { json: true, ..Default::default() })));
-        let Parsed::Run(Command::Scan(c)) = p(&["--path", "/a", "--path=/b", "--no-m", "--json"]) else { panic!() };
+        let Parsed::Run(Command::Scan(c)) = p(&["--path", "/a", "--path=/b", "--no-mac", "--json"]) else { panic!() };
         assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
         assert!(c.no_machine && c.json && !c.offline && !c.check_licenses);
         let Parsed::Run(Command::Scan(c)) = p(&["--licenses", "--json"]) else { panic!() };

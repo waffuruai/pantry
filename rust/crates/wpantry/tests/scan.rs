@@ -89,7 +89,8 @@ fn repo_scan_end_to_end() {
         }
         panic!("unexpected request to {}", r.url);
     });
-    let opts = Options { paths: Some(vec![project.clone()]), machine: false, ..Default::default() };
+    // The malware pass has its own tests (src/malware/tests.rs); this one is the repo checks.
+    let opts = Options { paths: Some(vec![project.clone()]), machine: false, no_malware: true, ..Default::default() };
     let cache = Cache::open(Some(&db)).unwrap();
     let out = Scan::new(opts, cache, &net, &|_| {}, &|_| {}).run().unwrap();
 
@@ -126,7 +127,7 @@ fn repo_scan_end_to_end() {
         cache.conn.query_row("SELECT COUNT(*) FROM findings WHERE kind = 'project'", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 1);
     let quiet = Fake::new(|r| panic!("cached answers are fresh, but asked {}", r.url));
-    let opts = Options { paths: Some(vec![project]), machine: false, ..Default::default() };
+    let opts = Options { paths: Some(vec![project]), machine: false, no_malware: true, ..Default::default() };
     let again = Scan::new(opts, cache, &quiet, &|_| {}, &|_| {}).run().unwrap();
     assert_eq!(again.findings.iter().filter(|f| f.kind == "project").count(), 1);
 }

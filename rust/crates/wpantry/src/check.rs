@@ -250,6 +250,12 @@ pub struct Options {
     /// Whether the scan may ask the user something (the breach consent);
     /// the question goes to [`Scan::with_ask`]'s answerer.
     pub ask: bool,
+    /// Skip the malware scan (`--no-malware`).
+    pub no_malware: bool,
+    /// The malware scan reads all of `~` with every system's rules (`--deep`).
+    pub deep: bool,
+    /// Never look up a flagged file's hash online (`--no-online-hash`).
+    pub no_online_hash: bool,
 }
 
 /// What a finished scan found.
@@ -410,6 +416,9 @@ impl<'a> Scan<'a> {
         self.count("git repos", git);
         let found: Vec<Component> = if self.opts.machine { check_machine::run(&mut self)? } else { Vec::new() };
         check_supply::run(&mut self, &found)?;
+        if !self.opts.no_malware {
+            crate::malware::run(&mut self);
+        }
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
         let scan_id = crate::history::record_scan(&self.cache, started_at, &self.findings, &self.counts, &self.opts)?;

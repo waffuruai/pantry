@@ -67,6 +67,14 @@ if [ "${usage_html:-false}" = true ]; then cargo llvm-cov report --html; fi
 cargo llvm-cov report --fail-under-lines 90
 '''
 
+[tasks.yara-diff]
+description = "Scan a corpus with wpantry-yara and the reference yara 4.5.7 in one offline container, and fail on any match only one reports (needs docker)"
+usage = '''
+arg "<rules>" help="A YARA rules file"
+arg "<corpus>" help="A directory, or volume:NAME for a Docker volume"
+'''
+run = 'scripts/yara-diff.sh "${usage_rules}" "${usage_corpus}"'
+
 [tasks.vet]
 description = "Dependency audits; `all` (the default) is the actions record check (scripts/vet_actions.py) and cargo vet with cargo deny in rust/"
 usage = '''

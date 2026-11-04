@@ -1,0 +1,15 @@
+[package]
+name = "wpantry-yara"
+description = "A YARA rule engine with no dependencies: parser, compiler and scanner (pantry's malware rules)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["security", "yara", "malware", "scanner"]
+categories = ["command-line-utilities", "parsing"]
+
+[dependencies]
+
+[lints]
+workspace = true

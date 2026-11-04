@@ -12,7 +12,7 @@ Pantry finds the vulnerabilities that actually apply to your computer. It invent
 |---|---|
 | Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--fix` never updates it) |
 | Catch vulnerable dependencies before they ship | Lockfiles in every git repo: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer, Maven, Gradle, NuGet and more |
-| Catch malware, not just CVEs | Every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
+| Catch malware, not just CVEs | YARA rules (ours and YARA Forge's 12,000) over Downloads, Desktop, temp directories, login items and repo programs (`--deep`: all of `~`); every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | Find leaked credentials in history | Secrets committed anywhere in each repo's git history (`gitleaks`) |
 | See what your AI coding tools actually run | Claude Code, Codex, Cursor, Gemini CLI and other harnesses: their MCP servers (unpinned ones warn), plugins, skills and bundled npm packages |
 | Keep the OS, browsers and apps current | macOS Software Update, Debian/Ubuntu/Alpine/openSUSE packages, dnf distros, Arch; Chrome, Firefox; Electron apps; other apps against the Homebrew cask catalog |
@@ -89,6 +89,7 @@ Pantry stands on open source code and open data. The code we read and wrote agai
 - [osv-scanner](https://github.com/google/osv-scanner) and [osv-scalibr](https://github.com/google/osv-scalibr) (Google, Apache-2.0): how lockfiles and Linux package databases map to OSV ecosystems. wpantry's readers were written against their test fixtures, and the Python implementation ran osv-scanner itself before the Rust port.
 - [Mergen](https://github.com/sametsazak/mergen) (MIT): which macOS security settings an unprivileged process can read and fix, behind the posture checks.
 - [gitleaks](https://github.com/gitleaks/gitleaks) (MIT): the secret scan, run as an external tool with our bundled rules.
+- [YARA](https://github.com/VirusTotal/yara) and [YARA-X](https://github.com/VirusTotal/yara-x) (VirusTotal, BSD-3-Clause): the rule language the malware scan reads. Our engine, [wpantry-yara](rust/crates/wpantry-yara), is written here; it follows YARA's semantics and adopts YARA-X's stricter rules for our own rules, and was tested match-for-match against YARA 4.5.7. Ideas for the scanner came from Florian Roth's [Loki-RS](https://github.com/Neo23x0/Loki-RS), [yarGen](https://github.com/Neo23x0/yarGen-Go) and [signature-base](https://github.com/Neo23x0/signature-base); no code was copied.
 
 The data it asks, each under its publisher's terms:
 
@@ -97,9 +98,11 @@ The data it asks, each under its publisher's terms:
 - [endoflife.date](https://endoflife.date) (MIT): end-of-life dates.
 - [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages) (Apache-2.0): known malicious package names.
 - [deps.dev](https://deps.dev), the [Homebrew](https://brew.sh) formulae API and `brew vulns`, the [Arch Linux security tracker](https://security.archlinux.org), the Chrome and Firefox release feeds, the PostgreSQL security page, the VS Code Marketplace and [Open VSX](https://open-vsx.org), [Have I Been Pwned](https://haveibeenpwned.com) and [XposedOrNot](https://xposedornot.com).
+- [signature-base](https://github.com/Neo23x0/signature-base)'s IOC lists (Florian Roth, Detection Rule License 1.1): known-bad hashes, malware file names and C2 hosts; [abuse.ch](https://abuse.ch)'s Feodo Tracker (CC0), YARAify (CC0) and MalwareBazaar, and [CIRCL hashlookup](https://hashlookup.circl.lu): the lists and the opt-in hash lookups for flagged files.
+- [YARA Forge](https://github.com/YARAHQ/yara-forge) (Florian Roth and Arnim Rupp): the community YARA rules the malware scan fetches to your machine, collected from 40+ projects under each rule's own license (signature-base's under the [Detection Rule License](https://github.com/Neo23x0/signature-base/blob/master/LICENSE), ReversingLabs' under MIT, and more; each rule's `author`, `reference` and `license` meta say whose it is). Pantry downloads them; it doesn't redistribute them.
 - The [CIS Benchmarks](https://www.cisecurity.org/cis-benchmarks) for macOS and Linux, which the posture checks follow, and the [eMudhra advisory](https://emudhra.we-have-a-problem.com/), which the certificate-authority check follows.
 
-And the Rust crates it is built from, pinned in [rust/Cargo.toml](rust/Cargo.toml) under their own permissive licenses: serde and serde_json, rusqlite (SQLite), ureq and rustls.
+And the Rust crates it is built from, pinned in [rust/Cargo.toml](rust/Cargo.toml) under their own permissive licenses: serde and serde_json, rusqlite (SQLite), ureq and rustls. The YARA engine adds none.
 
 ## License
 

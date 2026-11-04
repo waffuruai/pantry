@@ -36,7 +36,7 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 
 | Folder | Holds |
 |---|---|
-| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `guard` (the clipboard guard), `external` (the tools wpantry uses). For now also `export` and `mitigate` (moving to `reporters/` and `remediation/`) |
+| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `guard` (the clipboard guard), `external` (the tools wpantry uses). |
 | `sources/` | Where the data comes from, one file per remote API or list, each cached and `Offline` (never clean) when unreachable with nothing cached: `osv` (querybatch, record fetches, alias groups), `kev`, `endoflife`, `releases` (Homebrew casks, Chrome, Firefox, PostgreSQL, GitHub latest releases), `extensions` (VS Code's lists, the marketplace, Open VSX), `distros` (dnf advisories, the Arch tracker), `malicious_packages` (the OpenSSF index), `deps_dev` (licenses), `breaches` (Have I Been Pwned, XposedOrNot), `indicator_lists` (signature-base, Feodo), `hash_lookups` (YARAify, CIRCL, MalwareBazaar), `fetch` (the ETag refetch) |
 | `checks/` | The scan: `mod.rs` (options, findings, counts, "not checked", the policy files) and one folder per area |
 | `checks/machine/` | The machine: inventory (`tools`, `catalog`, `packages`, `apps`, `editors`, `harnesses`, `images`, `os_packages`), Homebrew (`cellar`, `brew_vulns`), the trust stores (`ca_trust`) and clipboard hijackers (`clipper`) |
@@ -47,6 +47,8 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 | `checks/documents/`, `checks/suspect/`, `checks/hidden.rs` | Office, PDF, RTF, SVG and image readers; suspect code, one file per behaviour; hidden Unicode |
 | `checks/malware/` | The YARA pass (`mod.rs`), `indicators` (matching the indicator lists), `rulegen` (the goodware database for `rules gen`) |
 | `checks/email.rs` | The opt-in breach check of the user's email address: consent and which addresses |
+| `reporters/` | How a scan is shown: `text` (the grouped terminal report), `json` (the `--json` envelope), `jsonl` (`export`), `html` (the standalone report; its template and fonts are `assets/report/`) |
+| `remediation/` | Fixing: `mod.rs` (the update plan, its steps and shell quoting, `wpantry fix` applying it), `mitigate` (stopgaps while a fix is pending), `ca_trust` and `editors` (the `wpantry harden` fixes) |
 | `utils/` | What everything leans on: `files`, `dates`, `process`, `os`, `parallel`, `temp`, `homebrew`, `net` (the `Net` trait and the host allowlist), `walk` (the bounded repo walk), and the in-tree readers: `json`, `toml`, `plist`, `re`, `sha256`, `archive/` (zip, deflate), `addresses` |
 
 Tests sit beside the code they cover; golden lockfiles are in `crates/wpantry/tests/lockfiles/` (its README lists them), upstream comparator vectors in `crates/wpantry/tests/vectors/`, and `tests/scan.rs`, `tests/image.rs`, `tests/pins.rs` and `tests/assets.rs` are the end-to-end, real-image, dependency-pin and packaging checks.
@@ -61,6 +63,5 @@ The default policy files, the distrusted CA certificates and the agent skill liv
 |---|---|
 | `main` | The subcommands (`scan` and its alias `check`, `fix`, `search`, `export`, `breach`, `tools`, `skill`, `version`, …), the exit codes, the `fix` flow |
 | `args` | Argument parsing, by hand |
-| `report` | The grouped report, the fix plan and its shell quoting, the JSON envelope |
 | `progress` | The live progress line, drawn only on a terminal |
 | `style` | Colour, off for pipes, files, `--json` and `NO_COLOR` |

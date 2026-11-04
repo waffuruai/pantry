@@ -7,9 +7,7 @@
 //! error.
 
 mod args;
-mod html;
 mod progress;
-mod report;
 mod schedule;
 mod style;
 mod update;
@@ -21,6 +19,9 @@ use style::Style;
 use wpantry::checks::{Options, Outcome, Policy, Scan};
 use wpantry::db::{self, Cache};
 use wpantry::error::Result;
+use wpantry::remediation;
+use wpantry::reporters::json::envelope;
+use wpantry::reporters::{html, text};
 use wpantry::utils::json::{J, obj};
 use wpantry::{IMPL, SCHEMA, VERSION};
 
@@ -52,19 +53,6 @@ fn note(line: &str) {
 /// A line of the report on stdout, coloured by its mark on a terminal.
 fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
-}
-
-/// `scan --json`: the findings plus what was checked (schema 1).
-fn envelope(scan: &Outcome) -> J {
-    obj([
-        ("schema", J::Int(SCHEMA)),
-        ("impl", IMPL.into()),
-        ("version", VERSION.into()),
-        ("checked", J::Obj(scan.counts.iter().map(|(k, n)| (k.clone(), J::Int(*n))).collect())),
-        ("unfixed", J::Int(scan.unfixed)),
-        ("unknown_licenses", J::Int(scan.unknown_licenses)),
-        ("findings", J::Arr(scan.findings.iter().map(|f| f.to_json()).collect())),
-    ])
 }
 
 /// One scan with a live progress line; the line is gone before this returns.
@@ -134,7 +122,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
     }
     let db = db::path().to_string_lossy().into_owned();
-    let status = report::report(&first, &db, &mut |l| show(l));
+    let status = text::report(&first, &db, &mut |l| show(l));
     if let Some(n) = update::notice(&net, a.offline) {
         eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
     }
@@ -154,7 +142,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         let what = if cmds.len() == 1 { "this update".to_string() } else { format!("these {} updates", cmds.len()) };
         progress::Progress::new(false).ask(&format!("Run {what} now?"), true).unwrap_or(false)
     };
-    let applied = report::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
+    let applied = remediation::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
     // then the stopgaps wpantry has, for the hosts they are for
     let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dryrun, a.yes, interactive)?;
     if a.dryrun {
@@ -186,7 +174,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         cache.close()?;
     }
     // A fix that failed fails the run even when the re-check comes back clean.
-    let rechecked = report::report(&again, &db, &mut |l| show(l));
+    let rechecked = text::report(&again, &db, &mut |l| show(l));
     let phase = if applied.status == 0 { "after updates" } else { "after updates (an update command failed)" };
     html::finish(html, &again, &opts, phase)?;
     Ok(if rechecked != 0 { rechecked } else { applied.status.max(stopgap_status) })
@@ -207,7 +195,7 @@ fn stopgaps(
     yes: bool,
     interactive: bool,
 ) -> Result<(i32, Vec<StopgapRun>)> {
-    use wpantry::mitigate::{self, Done, Mode};
+    use wpantry::remediation::mitigate::{self, Done, Mode};
     let mut status = EXIT_OK;
     let mut ran = Vec::new();
     for s in mitigate::STOPGAPS {
@@ -328,7 +316,7 @@ fn csv_field(s: &str) -> String {
 fn cmd_export(csv: Option<&str>, jsonl: Option<&str>, all: bool) -> Result<i32> {
     if let Some(path) = jsonl {
         let cache = Cache::open(None)?;
-        let (text, n) = wpantry::export::jsonl(&cache, all)?;
+        let (text, n) = wpantry::reporters::jsonl::jsonl(&cache, all)?;
         std::fs::write(path, text)?;
         let what = if all { "findings and resolved exposures" } else { "findings" };
         show(&format!("✓ wrote {n} {what} to {path}"));
@@ -807,7 +795,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 /// (the shell script it replaced did the same), asking for sudo only to install
 /// the result.
 fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
-    wpantry::checks::machine::ca_trust::fix(bundle, &|line| show(line))?;
+    wpantry::remediation::ca_trust::fix(bundle, &|line| show(line))?;
     if bundle.is_none() {
         show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
     }
@@ -816,7 +804,7 @@ fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
 
 /// `harden extension-cooldown`: the one posture fix that edits files.
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::checks::posture::any::tools::set_extension_cooldown(hours)?;
+    let changed = wpantry::remediation::editors::set_extension_cooldown(hours)?;
     if changed.is_empty() {
         let editors = wpantry::checks::posture::any::tools::editor_settings();
         if editors.is_empty() {
@@ -837,7 +825,7 @@ fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
 /// one exists, and the steps that need a person printed. Exit 1 when a
 /// step is left, a fix failed, or nothing is known for the id here.
 fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) -> Result<i32> {
-    use wpantry::mitigate::{self, Done, Mode};
+    use wpantry::remediation::mitigate::{self, Done, Mode};
     let cache = Cache::open(None)?;
     // the id, its aliases, and the records that list it as one
     let mut ids: Vec<String> = vec![id.to_string()];
@@ -857,7 +845,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
         }
     }
-    let findings: Vec<wpantry::finding::Finding> = wpantry::export::findings(&cache)?
+    let findings: Vec<wpantry::finding::Finding> = wpantry::reporters::jsonl::findings(&cache)?
         .into_iter()
         .filter(|f| ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id)))
         .collect();
@@ -898,7 +886,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             progress::Progress::new(false).ask("Run these now?", true).unwrap_or(false)
         };
         let auto: Vec<wpantry::finding::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
-        let applied = report::apply(&auto, dry_run, &confirm, &mut |l| show(l));
+        let applied = remediation::apply(&auto, dry_run, &confirm, &mut |l| show(l));
         for (cmd, ok) in &applied.ran {
             let targets: Vec<String> =
                 auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
@@ -984,7 +972,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
 /// here (a dry run with the output dropped), and the advisories in the last
 /// scan with an unattended fix.
 fn cmd_mitigate_list() -> Result<i32> {
-    use wpantry::mitigate::{self, Done, Mode};
+    use wpantry::remediation::mitigate::{self, Done, Mode};
     show("==> Stopgaps wpantry can install (wpantry mitigate ID, or all):");
     for s in mitigate::STOPGAPS {
         let state = match (s.run)(&mitigate::Real, Mode::DryRun, &|_| false, &mut |_| {}) {
@@ -996,7 +984,7 @@ fn cmd_mitigate_list() -> Result<i32> {
         show(&format!("  {}  {}\n      {state}", s.id, s.what));
     }
     let cache = Cache::open(None)?;
-    let findings = wpantry::export::findings(&cache)?;
+    let findings = wpantry::reporters::jsonl::findings(&cache)?;
     cache.close()?;
     let mut auto: Vec<&wpantry::finding::Finding> =
         findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();

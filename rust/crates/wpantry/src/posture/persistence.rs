@@ -192,10 +192,17 @@ fn entries(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     out
 }
 
+/// The posture runner, with a minute for `sfltool dumpbtm`: it takes
+/// seconds on an idle Mac and more beside a scan's other probes.
+fn real_runner(argv: &[&str]) -> String {
+    let secs = if argv.first() == Some(&"sfltool") { 60 } else { 15 };
+    system::run(argv, std::time::Duration::from_secs(secs))
+}
+
 impl Roots<'static> {
     /// This machine, for the user whose home is `home`.
     pub fn real(home: PathBuf) -> Roots<'static> {
-        Roots { home, root: PathBuf::from("/"), macos: cfg!(target_os = "macos"), runner: &super::real_runner }
+        Roots { home, root: PathBuf::from("/"), macos: cfg!(target_os = "macos"), runner: &real_runner }
     }
 }
 

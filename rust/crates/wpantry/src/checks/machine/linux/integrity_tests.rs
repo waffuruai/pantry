@@ -32,5 +32,11 @@ fn world_writable_path_dirs() {
         assert!(o.evidence.contains("open"), "{}", o.evidence);
     }
     // This process's PATH, read for real.
-    assert!(matches!(path_dirs(&machine(&[])).status, Status::Pass | Status::Fail));
+    let actual = path_dirs(&machine(&[]));
+    if cfg!(unix) {
+        assert!(matches!(actual.status, Status::Pass | Status::Fail));
+    } else {
+        assert_eq!(actual.status, Status::Manual);
+        assert_eq!(actual.evidence, "not checked on this platform");
+    }
 }

@@ -12,7 +12,7 @@
 use crate::checks::package_managers::versions;
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::feeds;
+use crate::sources::releases;
 use crate::utils::net::{self, Net};
 use crate::utils::process::exec;
 use crate::utils::process::which;
@@ -78,7 +78,7 @@ fn asset_for(os: &str, arch: &str) -> Result<&'static str> {
 
 /// The newest release version (without a leading v), refreshed daily.
 pub fn latest(cache: &Cache, net: &dyn Net, offline: bool) -> Result<String> {
-    feeds::github_latest(cache, net, REPO, offline)
+    releases::github_latest(cache, net, REPO, offline)
 }
 
 /// A release version as the tags name them: `X.Y.Z`, with an optional

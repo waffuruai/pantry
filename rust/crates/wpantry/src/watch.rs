@@ -10,7 +10,7 @@ use crate::checks::{display_id, mitigation};
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::Result;
-use crate::osv;
+use crate::sources::osv;
 use crate::utils::net::Net;
 use serde_json::Value;
 use std::collections::BTreeMap;

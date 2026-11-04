@@ -24,8 +24,8 @@ wpantry/src/
   selfinstall.rs  sync.rs  watch.rs  guard.rs  external.rs
   sources/
     mod.rs  file.rs  fetch.rs  store.rs
-    osv.rs  kev.rs  endoflife.rs  releases.rs  distros.rs
-    deps_dev.rs  malicious_packages.rs  breaches.rs  hash_lookups.rs
+    osv.rs  kev.rs  endoflife.rs  releases.rs  extensions.rs  distros.rs
+    deps_dev.rs  malicious_packages.rs  breaches.rs  indicator_lists.rs  hash_lookups.rs
     formats/  yara.rs  signature_base.rs  maltrail.rs  abusech.rs  lists.rs
   checks/
     mod.rs  files.rs
@@ -47,7 +47,7 @@ wpantry/src/
   remediation/
     mod.rs  mitigate.rs  harden.rs  editors.rs
   utils/
-    json.rs  toml.rs  plist.rs  re.rs  sha256.rs  net.rs  walk.rs  addresses.rs
+    json.rs  toml.rs  dates.rs  plist.rs  re.rs  sha256.rs  net.rs  walk.rs  addresses.rs
     files.rs  process.rs  os.rs  parallel.rs  temp.rs  homebrew.rs
     archive/  mod.rs  zip.rs  deflate.rs
 
@@ -73,8 +73,8 @@ wpantry-cli/src/
 | `check_supply.rs` | `checks/supply_chain/mod.rs` | |
 | `repos.rs` | `checks/supply_chain/repos.rs`; `PRUNE`, `DISCOVER_PRUNE`, `skip` and the bounded, memoised walk go to `utils/walk.rs` | One walker and one prune list for every check |
 | `hooks.rs`, `install_scripts.rs`, `typosquat.rs`, `leaks.rs` | `checks/supply_chain/` | `leaks.rs`'s own walk is replaced by `utils/walk.rs` |
-| `malicious.rs` | `checks/supply_chain/malicious.rs` whole (1b); then `sources/malicious_packages.rs` (the OpenSSF index) comes out of it (1c) | |
-| `licenses.rs` | `checks/supply_chain/licenses.rs` whole (1b); then `sources/deps_dev.rs` comes out of it (1c) | |
+| `malicious.rs` | `checks/supply_chain/malicious.rs` whole (1b); then `sources/malicious_packages.rs` (the OpenSSF index: the clone, `sync`, name keys) comes out of it (1c) | The check keeps `reports` and `applies`: a name match and its version ranges |
+| `licenses.rs` | `checks/supply_chain/licenses.rs` whole (1b); then `sources/deps_dev.rs` (fetching and caching) comes out of it (1c) | The check keeps the SPDX expressions and the allowlist |
 | `mptcp.rs` | `checks/supply_chain/mptcp.rs` | Go servers in repos that listen with MPTCP; the kernel side is `checks/posture/linux/mptcp.rs` |
 | `lockfiles/` | `checks/lockfiles/`; `lockfiles/toml.rs` goes to `utils/toml.rs` | The TOML reader gains integers, booleans and arrays for `sources.toml` (phase 3), and its own line cap in place of `lockfiles::lines` |
 | `compare/`, `versions.rs` | `checks/package_managers/`, with `versions.rs` beside the others (the generic order); `gover.rs` becomes `go.rs` and `pep440.rs` becomes `pypi.rs` | Named for the package manager, not the algorithm. `mod.rs` keeps `Comparator` |
@@ -83,10 +83,10 @@ wpantry-cli/src/
 | `suspect/` | `checks/suspect/` | Each rule's `scan` becomes one `Rule` in a table (phase 2) |
 | `hidden.rs` | `checks/hidden.rs` | |
 | `malware.rs`, `malware/tests.rs` | `checks/malware/mod.rs` and `tests.rs` (1b); split into `targets.rs`, `yara.rs` (the analyzer) and `verdict.rs` (severity and lookups) in phase 2 | Phase 2 rewrites the walk and the cache, so the split lands with it. The per-file cache moves to `checks/files.rs` |
-| `iocs.rs` | `checks/malware/indicators.rs` whole (1b); then `sources/formats/signature_base.rs`, `sources/formats/abusech.rs` and `sources/hash_lookups.rs` (YARAify, CIRCL, MalwareBazaar) come out of it (1c) | |
+| `iocs.rs` | `checks/malware/indicators.rs` whole (1b); then `sources/indicator_lists.rs` (fetching and reading signature-base and Feodo) and `sources/hash_lookups.rs` (YARAify, CIRCL, MalwareBazaar, and the consent to ask them) come out of it (1c) | `indicator_lists.rs` fetches and reads both lists in one function each; it splits into `sources/formats/signature_base.rs` and `abusech.rs` when phase 4 gives every list its own entry and reader |
 | `rulegen.rs` | `checks/malware/rulegen.rs` (the goodware database), with its output in `reporters/yara.rs` | Open decision 3 |
-| `breach.rs` | `checks/email.rs` whole (1b); then `sources/breaches.rs` (HIBP, XposedOrNot) comes out of it (1c) | Renamed: it checks the user's email address |
-| `feeds.rs` | `sources/kev.rs`, `sources/endoflife.rs`, `sources/releases.rs` (Homebrew casks, Chrome, Firefox, PostgreSQL, Arch) | One file per source family |
+| `breach.rs` | `checks/email.rs` whole (1b); then `sources/breaches.rs` (HIBP, XposedOrNot, and their week-long cache) comes out of it (1c) | Renamed: it checks the user's email address |
+| `feeds.rs` | `sources/kev.rs`, `sources/endoflife.rs`, `sources/releases.rs` (Homebrew casks, Chrome, Firefox, PostgreSQL, GitHub latest releases), `sources/extensions.rs` (VS Code's lists, the marketplace, Open VSX), the Arch tracker into `sources/distros.rs`, the ETag refetch into `sources/fetch.rs`, and the calendar helpers into `utils/dates.rs` | One file per source family; their tests share helpers through `sources/testing.rs` |
 | `osv.rs`, `distros.rs` | `sources/` | |
 | `net.rs` | `utils/net.rs`; `HOSTS` is built from the sources file (phase 3) | |
 | `json.rs`, `plist.rs`, `re.rs`, `sha256.rs`, `addresses.rs` | `utils/` | `addresses.rs` is shared by the suspect, clipper and malware checks |

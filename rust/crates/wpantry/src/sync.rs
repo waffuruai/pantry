@@ -5,12 +5,16 @@
 //! product on record, and OSV's answers for every package version that
 //! has been asked about before. A scheduled run does this, then a check.
 
-use crate::checks::supply_chain::malicious;
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::endoflife;
+use crate::sources::extensions;
+use crate::sources::kev;
+use crate::sources::malicious_packages;
+use crate::sources::osv;
+use crate::sources::releases;
 use crate::utils::net::Net;
-use crate::{feeds, osv};
 
 /// What a sync refreshed and what it couldn't.
 #[derive(Debug, Default)]
@@ -29,27 +33,27 @@ pub fn run(cache: &Cache, net: &dyn Net, refresh: bool, status: Status) -> Resul
         Err(e) => out.failed.push((name.to_string(), format!("internal: {e}"))),
     };
     status("Fetching CISA's known-exploited list");
-    note("CISA KEV", feeds::kev(cache, net, false).map(|_| ()), &mut out);
+    note("CISA KEV", kev::kev(cache, net, false).map(|_| ()), &mut out);
     status("Fetching the malicious-package index");
-    note("OpenSSF malicious packages", malicious::sync(cache, false).map(|_| ()), &mut out);
+    note("OpenSSF malicious packages", malicious_packages::sync(cache, false).map(|_| ()), &mut out);
     if cfg!(target_os = "macos") {
         status("Fetching the Homebrew cask catalog");
-        note("Homebrew casks", feeds::casks(cache, net, false).map(|_| ()), &mut out);
+        note("Homebrew casks", releases::casks(cache, net, false).map(|_| ()), &mut out);
         status("Fetching Chrome's release list");
-        note("Chrome releases", feeds::chrome(cache, net, "mac", false).map(|_| ()), &mut out);
+        note("Chrome releases", releases::chrome(cache, net, "mac", false).map(|_| ()), &mut out);
     }
     status("Fetching Firefox's release list");
-    note("Firefox releases", feeds::firefox(cache, net, false).map(|_| ()), &mut out);
+    note("Firefox releases", releases::firefox(cache, net, false).map(|_| ()), &mut out);
     status("Fetching VS Code's extension lists");
-    note("VS Code extension lists", feeds::vscode_lists(cache, net, false).map(|_| ()), &mut out);
+    note("VS Code extension lists", extensions::vscode_lists(cache, net, false).map(|_| ()), &mut out);
     status("Checking the latest wpantry release");
-    note("wpantry releases", feeds::github_latest(cache, net, "waffuruai/pantry", false).map(|_| ()), &mut out);
+    note("wpantry releases", releases::github_latest(cache, net, "waffuruai/pantry", false).map(|_| ()), &mut out);
     let products = cache.eol_products()?;
     if !products.is_empty() {
         status(&format!("Fetching end-of-life dates for {} products", products.len()));
         let mut missed = Vec::new();
         for p in &products {
-            match feeds::eol(cache, net, p, "", false) {
+            match endoflife::eol(cache, net, p, "", false) {
                 Ok(_) => {}
                 Err(e) if e.is_source() => missed.push(format!("{p}: {e}")),
                 Err(e) => return Err(e),
@@ -85,7 +89,7 @@ mod tests {
         let db = d.path().join("w.db");
         let c = Cache::open(Some(&db)).unwrap();
         // The malicious index fetches from a clone beside the cache: a local one here.
-        crate::checks::supply_chain::malicious::seed_clone(&db, &["osv/malicious/npm/evil/MAL-1.json"]);
+        crate::sources::malicious_packages::seed_clone(&db, &["osv/malicious/npm/evil/MAL-1.json"]);
         (d, c)
     }
 
@@ -94,10 +98,10 @@ mod tests {
     fn feeds(r: &Request) -> Result<Response> {
         let u = r.url.as_str();
         let ok = |v: serde_json::Value| Ok(Response::ok(v.to_string()));
-        if u == feeds::KEV_URL {
+        if u == kev::KEV_URL {
             return ok(json!({"vulnerabilities": [{"cveID": "CVE-2026-1"}]}));
         }
-        if u == feeds::CASKS_URL {
+        if u == releases::CASKS_URL {
             return ok(json!([{"token": "firefox", "version": "145.0", "artifacts": [{"app": ["Firefox.app"]}]}]));
         }
         if u.starts_with("https://versionhistory.googleapis.com/") {
@@ -106,10 +110,10 @@ mod tests {
         if u.ends_with("firefox_versions.json") {
             return ok(json!({"LATEST_FIREFOX_VERSION": "145.0"}));
         }
-        if u.starts_with(feeds::FIREFOX) {
+        if u.starts_with(releases::FIREFOX) {
             return ok(json!({}));
         }
-        if u == feeds::VSCODE_LISTS {
+        if u == extensions::VSCODE_LISTS {
             return ok(json!({"malicious": []}));
         }
         if u.starts_with("https://api.github.com/") {
@@ -134,7 +138,7 @@ mod tests {
     fn a_sync_refreshes_every_feed_and_names_what_failed() {
         let (_d, c) = cache();
         let net = Fake::new(feeds);
-        feeds::eol(&c, &net, "nodejs", "24", false).unwrap();
+        endoflife::eol(&c, &net, "nodejs", "24", false).unwrap();
         c.conn.execute("INSERT INTO eol VALUES ('python', '3.9', 'true', '3.9.9')", []).unwrap();
         c.put_query("npm", "left-pad", "1.0.0", &[]).unwrap();
         let seen = std::sync::Mutex::new(Vec::new());
@@ -167,7 +171,7 @@ mod tests {
     fn a_bug_in_a_feed_is_internal_and_one_in_end_of_life_stops_the_sync() {
         let (_d, c) = cache();
         let bug = Fake::new(|r| {
-            if r.url == feeds::KEV_URL {
+            if r.url == kev::KEV_URL {
                 return Err(Error::Missing("not a source failure".into()));
             }
             feeds(r)

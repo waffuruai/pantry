@@ -24,9 +24,10 @@ use crate::component::Component;
 use crate::component::Status;
 use crate::db::{Cache, severity_of};
 use crate::error::{Error, Result};
-use crate::feeds;
 use crate::finding::Finding;
-use crate::osv::{self, Item};
+use crate::sources::endoflife;
+use crate::sources::kev;
+use crate::sources::osv::{self, Item};
 use crate::utils::json::str_at;
 use crate::utils::net::Net;
 use package_managers::Comparator;
@@ -355,7 +356,7 @@ impl<'a> Scan<'a> {
         let started_at = crate::utils::os::now();
         crate::utils::walk::forget_walks();
         self.status("Fetching CISA's known-exploited list");
-        let kev = feeds::kev(&self.cache, self.net, self.opts.offline);
+        let kev = kev::kev(&self.cache, self.net, self.opts.offline);
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
         let (log, note, status) = (self.log, self.note, self.status);
         self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
@@ -491,7 +492,7 @@ impl<'a> Scan<'a> {
     /// for a component endoflife.date knows.
     pub fn eol(&mut self, c: &Component, failing: bool) -> Result<()> {
         let Some((product, cycle)) = c.eol.clone() else { return Ok(()) };
-        let r = feeds::eol(&self.cache, self.net, &product, &cycle, self.opts.offline);
+        let r = endoflife::eol(&self.cache, self.net, &product, &cycle, self.opts.offline);
         let Some(res) = self.guard(&format!("end of life for {product}"), r, None)? else { return Ok(()) };
         if let Some(ended) = &res.ended {
             let first = res.supported.first().cloned().unwrap_or_default();

@@ -6,6 +6,7 @@
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
 use crate::utils::json::{self, str_at};
+use crate::utils::net::{self, Net};
 use crate::utils::process::exec;
 use crate::utils::process::which;
 use crate::utils::sha256;
@@ -242,9 +243,22 @@ fn arch_advisories_with(
     Ok(out)
 }
 
+pub const ARCH_URL: &str = "https://security.archlinux.org/issues/all.json";
+
+/// The Arch Linux security tracker's advisory groups.
+pub fn arch(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Value> {
+    let fetch = || match net::get_json(net, ARCH_URL, &[])? {
+        Some(Value::Array(groups)) if !groups.is_empty() => Ok(Value::Array(groups)),
+        _ => Err(Error::Offline("the Arch security tracker returned nothing".into())),
+    };
+    cache.memo("arch-tracker", fetch, DAY, "", false, offline)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sources::testing::cache;
+    use crate::utils::net::{Fake, Response};
 
     // The test vectors the Python implementation had (`Parsers.test_dnf_parsing`).
     #[test]
@@ -393,5 +407,15 @@ mod tests {
         let garbage = tool(d.path(), "vercmp-garbage", "echo nope");
         assert_eq!(arch_advisories_with(&c, &groups, Some(pacman), Some(garbage)).unwrap().unfixed, 2);
         assert!(arch_advisories_with(&c, &json!({}), Some(d.path().join("missing")), None).is_err());
+    }
+
+    #[test]
+    fn arch_tracker_must_answer_with_groups() {
+        let (_d, c) = cache();
+        assert!(matches!(arch(&c, &Fake::new(|_| Ok(Response::ok("[]"))), false), Err(Error::Offline(_))));
+        assert!(matches!(arch(&c, &Fake::new(|_| Ok(Response::ok("{}"))), false), Err(Error::Offline(_))));
+        let net = Fake::new(|_| Ok(Response::ok(json!([{"name": "ASA-1"}]).to_string())));
+        assert_eq!(arch(&c, &net, false).unwrap()[0]["name"], "ASA-1");
+        assert_eq!(arch(&c, &Fake::offline(), true).unwrap()[0]["name"], "ASA-1");
     }
 }

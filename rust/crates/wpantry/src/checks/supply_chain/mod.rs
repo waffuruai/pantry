@@ -21,7 +21,8 @@ use crate::checks::{documents, hidden, suspect};
 use crate::component::Component;
 use crate::error::{Error, Result};
 use crate::finding::Finding;
-use crate::osv::{self, Item};
+use crate::sources::malicious_packages;
+use crate::sources::osv::{self, Item};
 use crate::utils::files::short;
 use crate::utils::json::str_at;
 use crate::utils::process::run as sh;
@@ -265,15 +266,14 @@ fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Res
         .collect();
     scan.status(&format!("Checking {} dependencies' licenses", items.len()));
     let status = scan.status;
-    let found =
-        match crate::checks::supply_chain::licenses::lookup(&scan.cache, scan.net, &items, scan.opts.offline, status) {
-            Ok(f) => f,
-            Err(e) if e.is_source() => {
-                scan.unchecked("dependency licenses (deps.dev)", &e.to_string());
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
+    let found = match crate::sources::deps_dev::lookup(&scan.cache, scan.net, &items, scan.opts.offline, status) {
+        Ok(f) => f,
+        Err(e) if e.is_source() => {
+            scan.unchecked("dependency licenses (deps.dev)", &e.to_string());
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
     let mut i = 0;
     for (f, ps) in read {
         for p in ps {
@@ -937,7 +937,7 @@ pub fn extensions_with(scan: &mut Scan, mut exts: Vec<Component>) -> Result<Vec<
     }
     scan.count("editor extensions", exts.len() as i64);
     scan.status("Fetching VS Code's malicious-extension list");
-    let r = crate::feeds::vscode_lists(&scan.cache, scan.net, scan.opts.offline).map(Some);
+    let r = crate::sources::extensions::vscode_lists(&scan.cache, scan.net, scan.opts.offline).map(Some);
     let lists = scan.guard("VS Code's malicious-extension list", r, None)?;
     let items: Vec<Item> = exts.iter().filter_map(|e| e.osv.clone()).collect();
     let answers = scan.lookup(&items, "editor extensions against OSV")?;
@@ -950,8 +950,13 @@ pub fn extensions_with(scan: &mut Scan, mut exts: Vec<Component>) -> Result<Vec<
             .collect();
         if !ids.is_empty() {
             scan.status(&format!("Fetching the latest extension versions ({market})"));
-            let r =
-                crate::feeds::latest_extensions(&scan.cache, scan.net, &ids, market == "openvsx", scan.opts.offline);
+            let r = crate::sources::extensions::latest_extensions(
+                &scan.cache,
+                scan.net,
+                &ids,
+                market == "openvsx",
+                scan.opts.offline,
+            );
             latest.extend(scan.guard(&format!("latest extension versions ({market})"), r, Default::default())?);
         }
     }
@@ -1146,7 +1151,7 @@ pub fn mcp(scan: &mut Scan, repos: &[Repo]) -> Result<Vec<Component>> {
 /// which also covers what OSV couldn't be asked about (offline, unpinned).
 pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result<()> {
     scan.status("Updating the malicious-package index (OpenSSF)");
-    let synced = malicious::sync(&scan.cache, scan.opts.offline);
+    let synced = malicious_packages::sync(&scan.cache, scan.opts.offline);
     if scan.guard("malicious-package index (OpenSSF)", synced.map(Some), None)?.is_none() {
         return Ok(());
     }
@@ -2055,10 +2060,10 @@ mod tests {
     fn extensions_against_the_lists_osv_and_the_marketplaces() {
         let d = TempDir::new("extensions").unwrap();
         let net = Fake::new(|r| {
-            if r.url == crate::feeds::VSCODE_LISTS {
+            if r.url == crate::sources::extensions::VSCODE_LISTS {
                 return Ok(Response::ok(json!({"malicious": ["Evil.One"], "deprecated": {"Old.Two": {"extension": {"id": "New.Two"}}, "Plain.X": true}}).to_string()));
             }
-            if r.url == crate::feeds::MARKETPLACE {
+            if r.url == crate::sources::extensions::MARKETPLACE {
                 return Ok(Response::ok(json!({"results": [{"extensions": [
                     {"publisher": {"publisherName": "Old"}, "extensionName": "Two", "versions": [{"version": "2.0.0"}]},
                     {"publisher": {"publisherName": "Vuln"}, "extensionName": "Three", "versions": [{"version": "1.0.0"}]}]}]}).to_string()));

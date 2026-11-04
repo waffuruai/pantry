@@ -825,6 +825,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+ "wpantry-yara",
 ]
 
 [[package]]
@@ -834,6 +835,10 @@ dependencies = [
  "rusqlite",
  "wpantry",
 ]
+
+[[package]]
+name = "wpantry-yara"
+version = "0.3.0"
 
 [[package]]
 name = "zeroize"

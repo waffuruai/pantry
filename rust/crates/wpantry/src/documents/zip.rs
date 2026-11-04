@@ -61,8 +61,13 @@ impl Zip {
     /// One member's bytes (stored or deflated), or `None` when it is
     /// missing, encrypted, too large or uses another method.
     pub(super) fn read(&self, bytes: &[u8], name: &str) -> Option<Vec<u8>> {
+        self.read_capped(bytes, name, MAX_MEMBER)
+    }
+
+    /// [`Zip::read`] with another cap on the inflated size.
+    pub(super) fn read_capped(&self, bytes: &[u8], name: &str, max: usize) -> Option<Vec<u8>> {
         let e = self.entries.iter().find(|e| e.name == name)?;
-        if e.uncompressed > MAX_MEMBER {
+        if e.uncompressed > max {
             return None;
         }
         let at = e.offset;
@@ -79,7 +84,7 @@ impl Zip {
         let data = bytes.get(start..start + e.compressed)?;
         match e.method {
             STORED => Some(data.to_vec()),
-            DEFLATED => inflate(data, MAX_MEMBER),
+            DEFLATED => inflate(data, max),
             _ => None,
         }
     }

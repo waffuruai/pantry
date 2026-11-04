@@ -449,6 +449,27 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
 
 /// This machine's launch agents and daemons, autostart entries and user
 /// services.
+/// Every file a launch item names or runs, with the items themselves: what
+/// the malware scan reads among the programs that start at login.
+pub fn persisted_files() -> Vec<PathBuf> {
+    let home = system::home();
+    let mut out = Vec::new();
+    for dir in item_dirs(&home) {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let item = e.path();
+            if !item.is_file() {
+                continue;
+            }
+            if let Some(program) = program_file(&command_of(&item)).filter(|p| p.is_file()) {
+                out.push(program);
+            }
+            out.push(item);
+        }
+    }
+    out
+}
+
 pub fn persistence() -> (Vec<Persisted>, usize) {
     let home = system::home();
     persistence_in(&home, &item_dirs(&home))

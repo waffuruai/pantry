@@ -37,7 +37,18 @@ pub const HOSTS: &[&str] = &[
     "api.deps.dev",
     "haveibeenpwned.com",
     "api.xposedornot.com",
+    // GitHub serves release assets (YARA rule bundles) from these, by redirect.
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+    // The malware scan's indicator lists and, with consent, hash lookups.
+    "feodotracker.abuse.ch",
+    "yaraify-api.abuse.ch",
+    "hashlookup.circl.lu",
+    "mb-api.abuse.ch",
 ];
+
+/// Redirects followed per request; every hop must be in [`HOSTS`] too.
+const MAX_REDIRECTS: usize = 5;
 
 /// The host of an `https://` URL, lowercased and without a port; `None` for
 /// any other scheme, a missing host, or userinfo (`https://a@b/`).
@@ -177,6 +188,9 @@ impl Http {
             .https_only(true)
             .max_idle_connections(32)
             .max_idle_connections_per_host(16)
+            // Redirects are followed here, not by ureq, so each hop is
+            // checked against HOSTS before a connection is made.
+            .max_redirects(0)
             .build();
         Http { agent: config.into() }
     }
@@ -189,9 +203,48 @@ const TRIES: u32 = 3;
 
 impl Net for Http {
     fn send(&self, req: &Request) -> Result<Response> {
-        allowed(&req.url)?;
-        with_retries(|| self.send_once(req))
+        follow_redirects(req, |r| {
+            allowed(&r.url)?;
+            let mut location = None;
+            let resp = with_retries(|| {
+                let (resp, retry, loc) = self.send_once(r)?;
+                location = loc;
+                Ok((resp, retry))
+            })?;
+            Ok((resp, location))
+        })
     }
+}
+
+/// Send `req`, then follow a 301/302/303/307/308 to its `Location` (a GET,
+/// headers kept except `Authorization`, which never leaves the first host),
+/// at most [`MAX_REDIRECTS`] times. `send` checks each URL against [`HOSTS`].
+fn follow_redirects(req: &Request, send: impl Fn(&Request) -> Result<(Response, Option<String>)>) -> Result<Response> {
+    let mut current = req.clone();
+    for _ in 0..=MAX_REDIRECTS {
+        let (resp, location) = send(&current)?;
+        let Some(next) = location.filter(|_| matches!(resp.status, 301 | 302 | 303 | 307 | 308)) else {
+            return Ok(resp);
+        };
+        let next = if next.starts_with('/') {
+            let host = host_of(&current.url).unwrap_or_default();
+            format!("https://{host}{next}")
+        } else {
+            next
+        };
+        let first_host = host_of(&req.url);
+        current = Request {
+            method: "GET",
+            headers: current
+                .headers
+                .into_iter()
+                .filter(|(k, _)| !k.eq_ignore_ascii_case("authorization") || host_of(&next) == first_host)
+                .collect(),
+            url: next,
+            body: None,
+        };
+    }
+    Err(Error::Invalid(format!("{}: more than {MAX_REDIRECTS} redirects", req.url)))
 }
 
 /// `once` up to [`TRIES`] times: the response and the server's Retry-After.
@@ -225,8 +278,9 @@ fn backoff(attempt: u32) -> std::time::Duration {
 }
 
 impl Http {
-    /// One try: the response and the server's Retry-After (capped), if any.
-    fn send_once(&self, req: &Request) -> Result<(Response, Option<std::time::Duration>)> {
+    /// One try: the response, the server's Retry-After (capped) and its
+    /// redirect `Location`, if any.
+    fn send_once(&self, req: &Request) -> Result<(Response, Option<std::time::Duration>, Option<String>)> {
         let offline = |e: ureq::Error| Error::Offline(format!("{}: {e}", req.url));
         let mut resp = match &req.body {
             Some(body) => {
@@ -247,8 +301,9 @@ impl Http {
         let status = resp.status().as_u16();
         let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
         let retry_after = retry_after(resp.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+        let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string);
         let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(|e| body_error(&req.url, e))?;
-        Ok((Response { status, body, etag }, retry_after))
+        Ok((Response { status, body, etag }, retry_after, location))
     }
 }
 
@@ -301,6 +356,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redirects_are_followed_only_to_listed_hosts() {
+        let req = Request {
+            method: "GET",
+            url: "https://api.github.com/a".into(),
+            headers: vec![("Authorization".into(), "Bearer t".into()), ("Accept".into(), "x".into())],
+            body: None,
+        };
+        let seen = Mutex::new(Vec::new());
+        let send = |r: &Request| {
+            allowed(&r.url)?;
+            seen.lock().unwrap().push((r.url.clone(), r.header("authorization").is_some()));
+            Ok(match r.url.as_str() {
+                "https://api.github.com/a" => {
+                    (Response { status: 302, body: vec![], etag: None }, Some("/b".to_string()))
+                }
+                "https://api.github.com/b" => (
+                    Response { status: 302, body: vec![], etag: None },
+                    Some("https://release-assets.githubusercontent.com/c".to_string()),
+                ),
+                _ => (Response::ok("done"), None),
+            })
+        };
+        assert_eq!(follow_redirects(&req, send).unwrap().body, b"done");
+        assert_eq!(
+            seen.into_inner().unwrap(),
+            [
+                ("https://api.github.com/a".to_string(), true),
+                ("https://api.github.com/b".to_string(), true),
+                ("https://release-assets.githubusercontent.com/c".to_string(), false),
+            ],
+            "the token stays with the first host"
+        );
+        let elsewhere = |r: &Request| {
+            allowed(&r.url)?;
+            Ok((Response { status: 301, body: vec![], etag: None }, Some("https://evil.example/".to_string())))
+        };
+        assert!(follow_redirects(&req, elsewhere).is_err(), "a hop to an unlisted host is refused");
+        let looping = |_: &Request| Ok((Response { status: 302, body: vec![], etag: None }, Some("/a".to_string())));
+        assert!(follow_redirects(&req, looping).unwrap_err().to_string().contains("redirects"));
+        let not_a_redirect = |_: &Request| Ok((Response::ok("x"), Some("/ignored".to_string())));
+        assert_eq!(follow_redirects(&req, not_a_redirect).unwrap().status, 200);
+    }
+
+    #[test]
     fn user_agent_names_the_project() {
         assert_eq!(USER_AGENT, format!("wpantry/{} (+https://github.com/waffuruai/pantry)", crate::VERSION));
     }
@@ -323,6 +422,14 @@ mod tests {
             osv::API,
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",
+            crate::malware::FORGE_RELEASE,
+            crate::iocs::SIGNATURE_BASE,
+            crate::iocs::FEODO,
+            crate::iocs::YARAIFY,
+            crate::iocs::CIRCL,
+            crate::iocs::MALWAREBAZAAR,
+            "https://release-assets.githubusercontent.com/github-production-release-asset/x",
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/x",
         ];
         for url in sources {
             assert!(allowed(url).is_ok(), "{url}");

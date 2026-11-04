@@ -55,6 +55,7 @@ const KIND_ORDER: &[&str] = &[
     "mcp",
     "repo-hook",
     "hidden-text",
+    "malware",
     "suspect-code",
     "document",
     "secret",

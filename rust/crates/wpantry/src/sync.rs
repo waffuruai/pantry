@@ -1,5 +1,5 @@
 //! `wpantry sync`: refresh what the cache already knows, so a later
-//! `check --offline` answers from it. Nothing is inventoried here: the
+//! `scan --offline` answers from it. Nothing is inventoried here: the
 //! feeds (CISA KEV, the cask catalog, browser versions, the malicious
 //! package index, the latest wpantry), the end-of-life pages of every
 //! product on record, and OSV's answers for every package version that

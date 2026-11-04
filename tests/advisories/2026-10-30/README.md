@@ -1,6 +1,6 @@
 # Advisory boundaries, 2026-10-30
 
-Offline regression fixtures for the affected/fixed boundaries checked on 2026-10-30 (pantry issue #57). `tests/contract/test_advisories.py` replays them through the cache and runs `wpantry check --no-machine --offline --no-input --json` on the two synthetic checkouts here, so CI never asks OSV and the expectations cannot drift with the live records.
+Offline regression fixtures for the affected/fixed boundaries checked on 2026-10-30 (pantry issue #57). `tests/contract/test_advisories.py` replays them through the cache and runs `wpantry scan --no-machine --offline --no-input --json` on the two synthetic checkouts here, so CI never asks OSV and the expectations cannot drift with the live records.
 
 Nothing here is a real project: the lockfiles hold package names and versions only, and no package is installed or run.
 

@@ -47,13 +47,13 @@ Tests sit beside the code they cover; golden lockfiles are in `crates/wpantry/te
 
 The default policy files, the distrusted CA certificates and the agent skill live in `crates/wpantry/assets/` so the crate packages on its own; `ca-trust/` reads the certificates from there. Each crate carries a copy of the repository's `LICENSE`, checked by `tests/assets.rs`.
 
-**HTML reports.** `wpantry check --html report.html` writes an optional standalone browser report, alongside normal terminal output or `--json`. See [the HTML spec](../specs/02-html-report.md).
+**HTML reports.** `wpantry scan --html report.html` writes an optional standalone browser report, alongside normal terminal output or `--json`. See [the HTML spec](../specs/02-html-report.md).
 
 ## The binary, `crates/wpantry-cli/src`
 
 | Module | Does |
 |---|---|
-| `main` | The subcommands (`check`, `search`, `export`, `breach`, `tools`, `skill`, `version`), the exit codes, the `--fix` flow |
+| `main` | The subcommands (`scan` and its alias `check`, `fix`, `search`, `export`, `breach`, `tools`, `skill`, `version`, …), the exit codes, the `fix` flow |
 | `args` | Argument parsing, by hand |
 | `report` | The grouped report, the fix plan and its shell quoting, the JSON envelope |
 | `progress` | The live progress line, drawn only on a terminal |

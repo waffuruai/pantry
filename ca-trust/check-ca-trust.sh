@@ -2,7 +2,7 @@
 #
 # Fail when a trust store on this machine still trusts an intermediate CA in
 # the crate's assets/distrusted-ca/ (today: the eMudhra intermediates whose
-# private keys leaked, https://emudhra.we-have-a-problem.com/). `wpantry check`
+# private keys leaked, https://emudhra.we-have-a-problem.com/). `wpantry scan`
 # makes the same check on every machine scan (catrust.rs); this is the check
 # on its own, for a host without wpantry. `wpantry harden ca-trust` repairs
 # what it finds.

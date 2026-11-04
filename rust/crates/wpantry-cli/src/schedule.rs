@@ -1,8 +1,8 @@
-//! `wpantry schedule`: a daily (hourly, weekly) `sync` and `check` run by
+//! `wpantry schedule`: a daily (hourly, weekly) `sync` and `scan` run by
 //! the user's own scheduler, launchd on macOS, a systemd user timer on
-//! Linux, cron where there is no systemd. Never `--fix`: a scheduled run
+//! Linux, cron where there is no systemd. Never `fix`: a scheduled run
 //! only refreshes the cache and records what it found
-//! (`$XDG_STATE_HOME/wpantry/last.json`, `schedule.log`), so `check
+//! (`$XDG_STATE_HOME/wpantry/last.json`, `schedule.log`), so `scan
 //! --offline` and the next interactive run have fresh answers.
 
 use crate::{EXIT_FAIL, EXIT_OK, say};
@@ -190,11 +190,11 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
         }
     }
     say(&format!(
-        "  It runs `wpantry sync`, then `wpantry check`, and writes {} and {}.",
+        "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
         p.last.display(),
         p.log.display()
     ));
-    say("  It never updates anything: run `wpantry --fix` yourself.");
+    say("  It never fixes anything: run `wpantry fix` yourself.");
     Ok(EXIT_OK)
 }
 
@@ -426,7 +426,7 @@ fn status_with(backend: Backend, run: Run) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-/// What the scheduler runs: a sync, then a check whose JSON goes to
+/// What the scheduler runs: a sync, then a scan whose JSON goes to
 /// last.json and whose outcome goes to the log. One at a time.
 pub fn run() -> Result<i32> {
     let p = paths();
@@ -449,7 +449,7 @@ fn run_with(p: &Paths, program: &Path) -> Result<i32> {
         Duration::from_secs(60 * 60),
     )?;
     let check = exec(
-        &[program.as_os_str(), OsStr::new("check"), OsStr::new("--json"), OsStr::new("--no-input")],
+        &[program.as_os_str(), OsStr::new("scan"), OsStr::new("--json"), OsStr::new("--no-input")],
         &[("WPANTRY_NO_UPDATE_CHECK", "1")],
         Duration::from_secs(3 * 60 * 60),
     )?;
@@ -990,13 +990,13 @@ mod tests {
             std::fs::write(&prog, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o700)).unwrap();
         };
-        script("case \"$1\" in check) printf '{\"findings\": []}'; echo 'done: 0 failing' >&2;; esac\nexit 0");
+        script("case \"$1\" in scan) printf '{\"findings\": []}'; echo 'done: 0 failing' >&2;; esac\nexit 0");
         assert_eq!(run_with(&p, &prog).unwrap(), EXIT_OK);
         assert_eq!(std::fs::read_to_string(&p.last).unwrap(), "{\"findings\": []}");
         let log = std::fs::read_to_string(&p.log).unwrap();
         assert!(log.contains(" sync=0 check=0 ") && log.trim_end().ends_with("done: 0 failing"), "{log}");
         // Findings (exit 1) are a normal run; a crash (exit 3) fails it.
-        script("[ \"$1\" = check ] && exit 1\nexit 0");
+        script("[ \"$1\" = scan ] && exit 1\nexit 0");
         assert_eq!(run_with(&p, &prog).unwrap(), EXIT_OK);
         script("exit 3");
         assert_eq!(run_with(&p, &prog).unwrap(), EXIT_FAIL);

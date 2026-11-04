@@ -737,9 +737,9 @@ function stepLine(s,print){return '<li><div class="l1"><code>'+esc(s.cmd)+'</cod
 function patchingHTML(r,print){
   var auto=stepsOf(r,'auto'), h=r.history;
   var out='<section class="sec" id="patching">'+label(3,'Patching')+'<h2>What can be <em>patched</em></h2>';
-  out+='<p class="intro">What <code>wpantry --fix</code> runs unattended, what the local history says has already been fixed, and what has no released fix yet.</p><div class="cols">';
+  out+='<p class="intro">What <code>wpantry fix</code> runs unattended, what the local history says has already been fixed, and what has no released fix yet.</p><div class="cols">';
   // runs for you
-  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry --fix runs these, then re-checks. --dryrun lists them without changing anything.</p>':
+  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry fix runs these, then re-checks. wpantry fix --dryrun lists them without changing anything.</p>':
     '<p>'+(r.partial?'CSV exports leave out suggested actions.':'Nothing in this scan runs unattended. The steps that need you are under By hand.')+'</p>';
   out+=col('Runs for you',auto.length,plural(auto.length,'command').replace(/^[\d,]+ /,''),body);
   // patched
@@ -881,7 +881,7 @@ function pageHTML(r,print){
 function render(){
   var r=cur(), main=$('main');
   if(!r){
-    main.innerHTML='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>No <em>scan</em> loaded</h1><p class="lede">Run <code>wpantry check --json &gt; findings.json</code>, then drop the file here or use Load report.</p></section>';
+    main.innerHTML='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>No <em>scan</em> loaded</h1><p class="lede">Run <code>wpantry scan --json &gt; findings.json</code>, then drop the file here or use Load report.</p></section>';
     return;
   }
   main.innerHTML=pageHTML(r,false);

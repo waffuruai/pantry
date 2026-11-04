@@ -39,7 +39,7 @@ body:
         One paragraph of context. What are you trying to do, what
         happened (or what should happen), why does it matter?
       placeholder: |
-        `wpantry --path ~/code/app --no-machine` reports nothing for a
+        `wpantry scan --path ~/code/app --no-machine` reports nothing for a
         `pnpm-lock.yaml` v9 that pins vite 8.2.1, which OSV lists as
         affected by GHSA-xxxx-xxxx-xxxx (fixed in 8.2.3).
     validations:
@@ -62,7 +62,7 @@ body:
           already considered.
       placeholder: |
         ```bash
-        wpantry check --path /tmp/repro --no-machine --json --no-input | jq '.findings[] | select(.kind == "project")'
+        wpantry scan --path /tmp/repro --no-machine --json --no-input | jq '.findings[] | select(.kind == "project")'
         # → nothing
         ```
 

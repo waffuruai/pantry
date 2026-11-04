@@ -49,7 +49,7 @@ fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
-/// `check --json`: the findings plus what was checked (schema 1).
+/// `scan --json`: the findings plus what was checked (schema 1).
 fn envelope(scan: &Outcome) -> J {
     obj([
         ("schema", J::Int(SCHEMA)),
@@ -96,7 +96,7 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
     out
 }
 
-fn cmd_check(a: Check) -> Result<i32> {
+fn cmd_scan(a: Check) -> Result<i32> {
     let html = a.html.as_deref().map(html::Output::new).transpose()?;
     let net = wpantry::net::Http::new();
     let opts = Options {
@@ -376,7 +376,7 @@ fn cmd_breach(enable: bool, disable: bool) -> Result<i32> {
         return Ok(EXIT_OK);
     }
     let v = cache.get("breach_consent")?.filter(|v| !v.is_empty());
-    say(&format!("breach check: {}", v.as_deref().unwrap_or("not decided (asked on the next interactive check)")));
+    say(&format!("breach check: {}", v.as_deref().unwrap_or("not decided (asked on the next interactive scan)")));
     Ok(EXIT_OK)
 }
 
@@ -779,7 +779,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
                 state
             ));
             match (&w.fixed, &w.mitigation) {
-                (Some(_), _) => say("    Fix: run wpantry --fix --dryrun for the step"),
+                (Some(_), _) => say("    Fix: run wpantry fix --dryrun for the step"),
                 (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
                 (None, None) => {
                     say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
@@ -789,7 +789,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
         say(&format!(
             "{} advisories watched, {landed} with a fix now{}",
             watched.len(),
-            if landed > 0 { ". Re-run wpantry check to see the update plan" } else { "" }
+            if landed > 0 { ". Re-run wpantry scan to see the update plan" } else { "" }
         ));
     }
     Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
@@ -801,7 +801,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
     wpantry::catrust::fix(bundle, &|line| show(line))?;
     if bundle.is_none() {
-        show("  Re-run wpantry check to confirm. A macOS update may restore the file: re-run this after one.");
+        show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
     }
     Ok(EXIT_OK)
 }
@@ -877,9 +877,9 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
     }
     let mut status = EXIT_OK;
     let mut did_something = false;
-    // the unattended fixes (a version bump), the way --fix runs them
+    // the unattended fixes (a version bump), the way `fix` runs them
     if findings.iter().any(|f| f.fix_auto && !f.fix_cmd.is_empty()) {
-        // as `check --fix`: without a terminal they run; a terminal is asked
+        // as `fix`: without a terminal they run; a terminal is asked
         let confirm = |cmds: &[String]| {
             if yes || !interactive {
                 return true;
@@ -958,7 +958,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             show(&format!("\n==> Needs you: {m}"));
         } else if findings.is_empty() && stopgap.is_none() {
             show(&format!(
-                "\n✗ nothing known for {id} here: it isn't in the last scan's findings (run wpantry check) and wpantry has no stopgap for it"
+                "\n✗ nothing known for {id} here: it isn't in the last scan's findings (run wpantry scan) and wpantry has no stopgap for it"
             ));
         } else if findings.is_empty() {
             show("  nothing to do here");
@@ -994,7 +994,7 @@ fn cmd_mitigate_list() -> Result<i32> {
         findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();
     auto.sort_by(|a, b| a.vuln_id.cmp(&b.vuln_id).then(a.component.cmp(&b.component)));
     auto.dedup_by(|a, b| a.vuln_id == b.vuln_id && a.component == b.component);
-    show("\n==> Advisories in the last scan with an unattended fix (wpantry --fix runs them):");
+    show("\n==> Advisories in the last scan with an unattended fix (wpantry fix runs them):");
     if auto.is_empty() {
         show("  none");
     }
@@ -1020,7 +1020,7 @@ fn cmd_skill() -> Result<i32> {
 
 fn dispatch(cmd: Command) -> Result<i32> {
     match cmd {
-        Command::Check(c) => cmd_check(c),
+        Command::Scan(c) => cmd_scan(c),
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
         Command::Export { csv, jsonl, all } => cmd_export(csv.as_deref(), jsonl.as_deref(), all),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
@@ -1049,7 +1049,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         }
         Command::Mitigate { target, dry_run, yes, no_input, undo, offline, no_machine, path } => match target {
             Target::List => cmd_mitigate_list(),
-            Target::All => cmd_check(Check {
+            Target::All => cmd_scan(Check {
                 fix: true,
                 dryrun: dry_run,
                 yes,

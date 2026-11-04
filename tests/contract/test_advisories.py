@@ -121,7 +121,7 @@ class Advisories(unittest.TestCase):
         return p.returncode, p.stdout, p.stderr
 
     def check(self, *paths):
-        code, out, err = self.run_bin("--no-machine", "--offline", "--no-input", "--json",
+        code, out, err = self.run_bin("scan", "--no-machine", "--offline", "--no-input", "--json",
                                       *[a for p in paths for a in ("--path", str(p))])
         self.assertIn(code, (0, 1), err)
         return code, json.loads(out)
@@ -130,7 +130,7 @@ class Advisories(unittest.TestCase):
         """What OSV answered on 2026-10-31 for each control, replayed into the
         cache: the records, one `queries` row per (ecosystem, package, version)
         and CISA's KEV entry."""
-        self.run_bin("--no-machine", "--offline", "--no-input", "--json", "--path", str(self.tmp.name))  # creates the schema
+        self.run_bin("scan", "--no-machine", "--offline", "--no-input", "--json", "--path", str(self.tmp.name))  # creates the schema
         conn = sqlite3.connect(str(self.db))
         for rec in self.records.values():
             aliases = " ".join(rec.get("aliases", []))

@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Email **security@waffuru.ai** with the subject "Security vulnerability in Pantry (wpantry)", or use GitHub's private vulnerability reporting on this repository (Security → Report a vulnerability). Include the wpantry version (`wpantry --version`), the platform, steps or a minimal reproducer, the impact as you see it, and how you want to be credited. Remove secrets and identifying data first: no scan output, credentials, email addresses, usernames, hostnames or filesystem paths. Do not open a public issue or pull request.
+Email **security@waffuru.ai** with the subject "Security vulnerability in Pantry (wpantry)", or use GitHub's private vulnerability reporting on this repository (Security → Report a vulnerability). Include the wpantry version (`wpantry version`), the platform, steps or a minimal reproducer, the impact as you see it, and how you want to be credited. Remove secrets and identifying data first: no scan output, credentials, email addresses, usernames, hostnames or filesystem paths. Do not open a public issue or pull request.
 
 We acknowledge within 3 business days, tell you the severity and who is on it within 10 business days, fix by severity (CVSS: Critical 14 days, High 30, Medium 90, Low 180) and agree public disclosure with you, 90 days after the report at the latest, or when the fix ships if sooner. A fix is released with a GitHub security advisory and, for a vulnerability in wpantry itself, a CVE. We have no PGP key yet; say so in a first email if a report needs encryption and we will arrange a channel.
 
@@ -24,7 +24,7 @@ We name you in the fix's release notes and security advisory if you want that, i
 
 wpantry reads a lot of your computer to tell you what is exposed, so it is built to take as little as it can.
 
-- **It reads, and changes nothing unless asked.** A scan only reads. `--fix` runs the fixes it marks unattended and user-level (Homebrew, pip, npm, cargo, rustup, uv, editor extensions); anything needing sudo, a vendor or a code change is printed for you to run.
+- **It reads, and changes nothing unless asked.** A scan only reads. `wpantry fix` runs the fixes it marks unattended and user-level (Homebrew, pip, npm, cargo, rustup, uv, editor extensions); anything needing sudo, a vendor or a code change is printed for you to run.
 - **Little leaves the machine.** Package names and versions go to OSV.dev, and public feeds are fetched (CISA KEV, endoflife.date, release feeds, the OpenSSF malicious-packages repo). File contents, paths and secrets are never sent. The hosts are a compiled-in list the binary refuses to go outside, over TLS verified against your machine's trust store. The email breach check is the one exception, and it runs only after you say yes (`wpantry breach`).
 - **Secrets stay redacted.** gitleaks runs with `--redact`; the cache and the report hold the rule, file, line, commit and fingerprint, never the secret.
 - **Unreachable is not clean.** A source that can't be reached, or a tool that is missing, is reported; it never makes the result look better.

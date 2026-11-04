@@ -3,7 +3,7 @@ id: pantry/download-guard
 status: draft
 owner: Eric
 affected: [pantry, wsentinel]
-tracking: pending
+tracking: https://github.com/waffuruai/pantry/issues/126
 updated: 2026-11-04
 ---
 # Downloads are checked for malware before they run, without getting in the way
@@ -76,7 +76,7 @@ The YARA engine and rules bundle are being built for the scan, the clipboard gua
 
 ## Acceptance criteria
 
-All evidence is "not evidence yet": nothing is built.
+All criteria track [#126](https://github.com/waffuruai/pantry/issues/126) until the phase issues exist. All evidence is "not evidence yet": nothing is built.
 
 ### Functionality
 

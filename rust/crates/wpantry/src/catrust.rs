@@ -7,7 +7,13 @@
 //! makes. On macOS the keychain's trust settings are asked too.
 
 use crate::error::{Error, Result};
-use crate::system::{self, MACOS, TempDir, exec, realpath, run, which};
+use crate::utils::files::realpath;
+use crate::utils::os::MACOS;
+use crate::utils::process::exec;
+use crate::utils::process::run;
+use crate::utils::process::which;
+use crate::utils::temp::TempDir;
+use crate::utils::{files, homebrew, parallel, process};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -125,7 +131,7 @@ impl Checker {
             ("OPENSSL_X509_TEA_DISABLE", "1"),
         ];
         // One intermediate per call (see `new`), all at once; read in order.
-        let outputs = system::par_map(&self.ints, system::PROBES, |int| {
+        let outputs = parallel::par_map(&self.ints, parallel::PROBES, |int| {
             let argv = [
                 self.openssl.as_os_str(),
                 OsStr::new("verify"),
@@ -172,7 +178,7 @@ impl Checker {
         names.sort();
         let mut pem = String::new();
         for n in names {
-            if let Ok(b) = crate::system::read_capped_bytes(&n, MAX_STORE) {
+            if let Ok(b) = crate::utils::files::read_capped_bytes(&n, MAX_STORE) {
                 pem.push_str(&certificates(&String::from_utf8_lossy(&b)).concat());
             }
         }
@@ -199,7 +205,7 @@ impl Checker {
             if std::fs::metadata(bundle).map_or(true, |m| m.len() == 0) {
                 return None;
             }
-            match crate::system::read_capped_bytes(bundle, MAX_STORE) {
+            match crate::utils::files::read_capped_bytes(bundle, MAX_STORE) {
                 Ok(b) if certificates(&String::from_utf8_lossy(&b)).is_empty() => {
                     unchecked = Some("no PEM certificate in the file".to_string())
                 }
@@ -221,7 +227,7 @@ impl Checker {
     /// Verify the stores, a few at once (each runs its intermediates at
     /// once too), in their order.
     fn finish(&self, pending: Vec<Pending>) -> Vec<Store> {
-        let verdicts = system::par_map(&pending, STORES_AT_ONCE, |p| match &p.store.unchecked {
+        let verdicts = parallel::par_map(&pending, STORES_AT_ONCE, |p| match &p.store.unchecked {
             Some(why) => Verdict::Unknown(why.clone()),
             None => self.verify(&p.bundle),
         });
@@ -313,13 +319,13 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
             add(c.store("openssl", &f, Path::new(&f), &format!("Update the store {} reads", openssl.display())));
         }
     }
-    let brew = system::brew_prefix();
+    let brew = homebrew::brew_prefix();
     if !brew.is_empty() {
         let f = format!("{brew}/etc/ca-certificates/cert.pem");
         add(c.store("brew", &f, Path::new(&f), "Run: brew upgrade ca-certificates"));
     }
     let mut pythons: Vec<String> =
-        system::on_path::<&str>("python3", &[]).into_iter().map(|(shown, _)| shown).collect();
+        process::on_path::<&str>("python3", &[]).into_iter().map(|(shown, _)| shown).collect();
     if MACOS && sh(&[OsStr::new("xcode-select"), OsStr::new("-p")]).starts_with('/') {
         pythons.push("/usr/bin/python3".into());
     }
@@ -337,7 +343,7 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
             .unwrap_or("")
             .to_string()
     };
-    let bundles = system::par_map(&pythons, system::PROBES, |py| {
+    let bundles = parallel::par_map(&pythons, parallel::PROBES, |py| {
         (
             path_of(py, "import certifi; print(certifi.where())"),
             path_of(py, "import pip._vendor.certifi as c; print(c.where())"),
@@ -358,8 +364,8 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
         ));
     }
     // Node compiles its roots in; dump them to check like any other bundle.
-    let nodes: Vec<String> = system::on_path::<&str>("node", &[]).into_iter().map(|(node, _)| node).collect();
-    let dumps = system::par_map(&nodes, system::PROBES, |node| {
+    let nodes: Vec<String> = process::on_path::<&str>("node", &[]).into_iter().map(|(node, _)| node).collect();
+    let dumps = parallel::par_map(&nodes, parallel::PROBES, |node| {
         let roots =
             sh(&[OsStr::new(node), OsStr::new("-p"), OsStr::new("require('tls').rootCertificates.join('\\n')")]);
         (roots, sh(&[OsStr::new(node), OsStr::new("--version")]))
@@ -382,7 +388,7 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
     let mut out = c.finish(pending);
     // The macOS trust settings that Safari, URLSession and Go use; -L: local only.
     if MACOS {
-        let trusts = system::par_map(&c.ints, system::PROBES, |int| {
+        let trusts = parallel::par_map(&c.ints, parallel::PROBES, |int| {
             let argv = [
                 OsStr::new("security"),
                 OsStr::new("verify-cert"),
@@ -445,7 +451,7 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 /// without colons: what `openssl x509 -fingerprint -sha256` prints, joined.
 pub fn fingerprint(pem: &str) -> Option<String> {
     let body: String = pem.lines().filter(|l| !l.starts_with("-----")).map(str::trim).collect();
-    base64_decode(&body).filter(|d| !d.is_empty()).map(|d| crate::sha256::hex(&d).to_ascii_uppercase())
+    base64_decode(&body).filter(|d| !d.is_empty()).map(|d| crate::utils::sha256::hex(&d).to_ascii_uppercase())
 }
 
 /// A bundle's entries: each certificate with the comment lines above it,
@@ -576,7 +582,7 @@ fn install(target: &Path, new: &Path) -> Result<()> {
 /// /etc/ssl/cert.pem, or `--bundle FILE`). Never installs a bundle that
 /// lost more than the roots, or that still trusts them.
 fn fix_bundle(target: &Path, drop: &[String], say: &dyn Fn(&str)) -> Result<()> {
-    let bytes = system::read_capped_bytes(target, MAX_STORE)
+    let bytes = files::read_capped_bytes(target, MAX_STORE)
         .map_err(|e| Error::Failed(format!("no such bundle: {}: {e}", target.display())))?;
     let text = String::from_utf8_lossy(&bytes);
     let mut kept = String::new();
@@ -640,7 +646,7 @@ fn crt_files(dir: &Path, depth: usize) -> Vec<PathBuf> {
 }
 
 fn file_fingerprint(p: &Path) -> Option<String> {
-    let b = system::read_capped_bytes(p, MAX_STORE).ok()?;
+    let b = files::read_capped_bytes(p, MAX_STORE).ok()?;
     entry_fingerprint(&String::from_utf8_lossy(&b))
 }
 
@@ -1032,7 +1038,7 @@ mod tests {
         assert!(bundle.hint.starts_with("Update the store "), "{}", bundle.hint);
         let hashed = find("openssl", &format!("{}/certs", ossl.display())).expect("OPENSSLDIR's hashed directory");
         assert!(!hashed.trusts && hashed.unchecked.is_none(), "{hashed:?}");
-        let pythons = system::on_path::<&str>("python3", &[]);
+        let pythons = process::on_path::<&str>("python3", &[]);
         if !pythons.is_empty() {
             let s = find("certifi", &certifi_s).expect("certifi's bundle");
             assert!(!s.trusts && s.unchecked.is_none() && s.hint.contains("pip install -U certifi"), "{s:?}");
@@ -1041,7 +1047,7 @@ mod tests {
                 assert!(s.trusts && s.hint.contains("PIP_CERT"), "{s:?}");
             }
         }
-        for (i, (node, _)) in system::on_path::<&str>("node", &[]).iter().enumerate() {
+        for (i, (node, _)) in process::on_path::<&str>("node", &[]).iter().enumerate() {
             let s = find("node", &format!("{node} (v22.0.0)")).expect("the node's roots");
             assert!(!s.trusts && s.unchecked.is_none() && s.hint.starts_with("Upgrade Node"), "node {i}: {s:?}");
         }

@@ -5,11 +5,12 @@
 //! second run the same day makes no OSV calls at all. Failures are never
 //! cached.
 
+use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::json::{self, arr_at, str_at};
-use crate::net::{self, Net};
-use crate::system::{Status, now};
+use crate::utils::json::{self, arr_at, str_at};
+use crate::utils::net::{self, Net};
+use crate::utils::os::now;
 use crate::versions;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -529,7 +530,7 @@ pub fn candidates(cache: &Cache, repo: &str, installed: &str, offline: bool) -> 
 /// none when they can't be listed.
 pub fn tags(cache: &Cache, repo: &str, offline: bool) -> Result<Vec<String>> {
     let fetch = || -> Result<Value> {
-        let out = crate::system::exec(
+        let out = crate::utils::process::exec(
             &["git".as_ref(), "ls-remote".as_ref(), "--tags".as_ref(), "--refs".as_ref(), repo.as_ref()],
             &[("GIT_TERMINAL_PROMPT", "0")],
             Duration::from_secs(60),
@@ -558,7 +559,7 @@ pub fn tags(cache: &Cache, repo: &str, offline: bool) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{Fake, Response};
+    use crate::utils::net::{Fake, Response};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -573,8 +574,8 @@ mod tests {
                "modified": "2026-10-01T00:00:00Z", "affected": [affected]})
     }
 
-    fn cache() -> (crate::system::TempDir, Cache) {
-        let d = crate::system::TempDir::new("osv").unwrap();
+    fn cache() -> (crate::utils::temp::TempDir, Cache) {
+        let d = crate::utils::temp::TempDir::new("osv").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         (d, c)
     }

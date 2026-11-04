@@ -217,7 +217,7 @@ pub fn scan_dir(root: &Path, kind: Kind, policy: &Policy) -> Vec<Suspect> {
                 continue;
             }
             budget -= meta.len();
-            let Ok(text) = crate::system::read_capped(&rel_path, MAX_FILE) else { continue };
+            let Ok(text) = crate::utils::files::read_capped(&rel_path, MAX_FILE) else { continue };
             let found = scan_text(&rel, &text, kind);
             if found.iter().any(|s| s.id == wallet::ID) {
                 wallet_anywhere = true;
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn policy_downgrades_but_never_silences() {
         let p = Policy::parse("# mine\nSUSPECT-PRIV-ESCALATION\npath:scripts/legacy/\n");
-        let d = crate::system::TempDir::new("suspect").unwrap();
+        let d = crate::utils::temp::TempDir::new("suspect").unwrap();
         std::fs::create_dir_all(d.path().join("scripts/legacy")).unwrap();
         std::fs::write(d.path().join("scripts/legacy/old.js"), "eval(atob('x'))").unwrap();
         std::fs::write(d.path().join("package.json"), "{\"scripts\": {\"postinstall\": \"chmod u+s x\"}}").unwrap();
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn walk_skips_output_and_pairs_pages_with_signing() {
-        let d = crate::system::TempDir::new("suspect-walk").unwrap();
+        let d = crate::utils::temp::TempDir::new("suspect-walk").unwrap();
         let root = d.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("out")).unwrap();

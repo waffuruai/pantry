@@ -119,7 +119,7 @@ pub fn rpm_listing(out: &str) -> Vec<Package> {
 /// The installed packages of this Linux machine with where they came from,
 /// or None when it has no package database we read.
 pub fn installed(rel: &BTreeMap<String, String>) -> Result<Option<(String, Vec<Package>)>> {
-    installed_from(rel, Path::new(DPKG_STATUS), Path::new(APK_INSTALLED), &|| crate::system::which("rpm"))
+    installed_from(rel, Path::new(DPKG_STATUS), Path::new(APK_INSTALLED), &|| crate::utils::process::which("rpm"))
 }
 
 /// [`installed`] from the dpkg status file and apk database at these paths,
@@ -132,16 +132,16 @@ fn installed_from(
 ) -> Result<Option<(String, Vec<Package>)>> {
     let id = rel.get("ID").map(String::as_str).unwrap_or("");
     if dpkg_status.is_file() {
-        let text = crate::system::read_capped(dpkg_status, MAX_DB)?;
+        let text = crate::utils::files::read_capped(dpkg_status, MAX_DB)?;
         return Ok(Some((dpkg_status.to_string_lossy().into_owned(), dpkg(&text))));
     }
     if apk_installed.is_file() {
-        let text = crate::system::read_capped(apk_installed, MAX_DB)?;
+        let text = crate::utils::files::read_capped(apk_installed, MAX_DB)?;
         return Ok(Some((apk_installed.to_string_lossy().into_owned(), apk(&text))));
     }
     if id.contains("suse") || id == "sles" {
         let rpm = which_rpm().ok_or_else(|| Error::Missing("rpm".into()))?;
-        let out = crate::system::exec(
+        let out = crate::utils::process::exec(
             &[
                 rpm.as_os_str(),
                 "-qa".as_ref(),
@@ -162,7 +162,7 @@ fn installed_from(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::parse_os_release;
+    use crate::utils::os::parse_os_release;
 
     fn eco(text: &str) -> std::result::Result<String, String> {
         ecosystem(&parse_os_release(text))
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn installed_reads_whichever_database_the_machine_has() {
         use std::os::unix::fs::PermissionsExt;
-        let d = crate::system::TempDir::new("osdb").unwrap();
+        let d = crate::utils::temp::TempDir::new("osdb").unwrap();
         let (dpkg_status, apk_db, nowhere) = (d.path().join("status"), d.path().join("installed"), d.path().join("no"));
         std::fs::write(&dpkg_status, "Package: openssl\nStatus: install ok installed\nVersion: 3.0.13\n").unwrap();
         std::fs::write(&apk_db, "P:busybox\nV:1.36.1-r29\n").unwrap();
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn a_failing_rpm_is_a_source_error() {
         use std::os::unix::fs::PermissionsExt;
-        let d = crate::system::TempDir::new("osdb").unwrap();
+        let d = crate::utils::temp::TempDir::new("osdb").unwrap();
         let rpm = d.path().join("rpm");
         std::fs::write(&rpm, "#!/bin/sh\necho broken >&2\nexit 1\n").unwrap();
         std::fs::set_permissions(&rpm, std::fs::Permissions::from_mode(0o755)).unwrap();

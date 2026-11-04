@@ -5,7 +5,7 @@
 
 use super::Package;
 use crate::error::Result;
-use crate::json::{self, arr_at, str_at};
+use crate::utils::json::{self, arr_at, str_at};
 
 pub fn name(url: &str) -> &str {
     let u = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);

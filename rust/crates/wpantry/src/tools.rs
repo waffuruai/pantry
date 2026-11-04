@@ -2,13 +2,19 @@
 //! and every runtime a version manager has installed, active or not.
 //!
 //! A binary is only ours to check when nothing else vouches for it (see
-//! [`system::owner`]): Homebrew formulae go to `brew vulns`, npm and pipx
+//! [`files::owner`]): Homebrew formulae go to `brew vulns`, npm and pipx
 //! installs to their package listings, Apple's and the distro's files to the
 //! OS update check, and binaries inside an app bundle to the app check.
 
 use crate::catalog::{TOOLS, Tool};
-use crate::re::Regex;
-use crate::system::{self, Component, home, on_path, owner, read_json, run};
+use crate::component::Component;
+use crate::utils::files::home;
+use crate::utils::files::owner;
+use crate::utils::files::read_json;
+use crate::utils::process::on_path;
+use crate::utils::process::run;
+use crate::utils::re::Regex;
+use crate::utils::{files, net, parallel};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
@@ -99,7 +105,7 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
 
 /// Every catalog tool found, plus nvm, one entry per install.
 pub fn tools() -> Vec<Component> {
-    let mut found: Vec<Component> = system::par_map(TOOLS, system::PROBES, |t| find(t, &[])).concat();
+    let mut found: Vec<Component> = parallel::par_map(TOOLS, parallel::PROBES, |t| find(t, &[])).concat();
     found.extend(nvm());
     dedupe(found)
 }
@@ -120,7 +126,7 @@ fn nvm_at(root: &str) -> Vec<Component> {
         return Vec::new();
     }
     let mut c = Component::new("manager", "nvm", &v, root);
-    c.osv = Some(("GIT".into(), system::github("nvm-sh/nvm"), format!("v{v}")));
+    c.osv = Some(("GIT".into(), net::github("nvm-sh/nvm"), format!("v{v}")));
     c.fix = "Upgrade nvm: https://github.com/nvm-sh/nvm#upgrading".into();
     vec![c]
 }
@@ -134,7 +140,7 @@ pub fn dedupe(components: Vec<Component>) -> Vec<Component> {
         let dir = if c.path.is_empty() {
             String::new()
         } else {
-            Path::new(&system::realpath(&c.path)).parent().map(|p| p.display().to_string()).unwrap_or_default()
+            Path::new(&files::realpath(&c.path)).parent().map(|p| p.display().to_string()).unwrap_or_default()
         };
         let k = (c.name.clone(), c.version.clone(), dir);
         if !seen.contains(&k) {
@@ -195,8 +201,8 @@ mod tests {
 
     #[test]
     fn updaters_under_home() {
-        let home = crate::system::test_home();
-        let h = crate::system::home().display().to_string();
+        let home = crate::utils::files::test_home();
+        let h = crate::utils::files::home().display().to_string();
         assert_eq!(updater(&format!("{h}/.cargo/bin/cargo"), "cargo"), ("rustup update".into(), true));
         assert_eq!(updater(&format!("{h}/.local/bin/python3"), "python"), ("uv python upgrade".into(), true));
         assert_eq!(updater("/opt/miniconda3/bin/python", "python"), ("conda update --name base python".into(), false));
@@ -229,7 +235,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn find_runs_each_copy_and_reads_its_version() {
-        let d = crate::system::TempDir::new("tools").unwrap();
+        let d = crate::utils::temp::TempDir::new("tools").unwrap();
         let bin = d.path().join("bin");
         script(&bin.join("wpantry-fake"), "fake 1.2.3 (2026)");
         script(&bin.join("wpantry-fake-alias"), "not a version");
@@ -250,7 +256,7 @@ mod tests {
             (
                 &*format!(
                     "Upgrade wpantry-fake at {} to {{safe}}",
-                    system::realpath(&bin.join("wpantry-fake").display().to_string())
+                    files::realpath(&bin.join("wpantry-fake").display().to_string())
                 ),
                 false
             )
@@ -260,7 +266,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn find_checks_brew_and_app_copies_when_nobody_else_does() {
-        let d = crate::system::TempDir::new("tools").unwrap();
+        let d = crate::utils::temp::TempDir::new("tools").unwrap();
         script(&d.path().join("Cellar/wpantry-fake/1.2.4/bin/wpantry-fake"), "fake 1.2.4");
         script(&d.path().join("Fake.app/Contents/MacOS/wpantry-fake"), "fake 1.2.5");
         let dirs = [
@@ -279,7 +285,7 @@ mod tests {
 
     #[test]
     fn nvm_from_its_repo() {
-        let d = crate::system::TempDir::new("nvm").unwrap();
+        let d = crate::utils::temp::TempDir::new("nvm").unwrap();
         let root = d.path().join(".nvm");
         assert!(nvm_at(&root.display().to_string()).is_empty());
         std::fs::create_dir_all(&root).unwrap();
@@ -296,8 +302,8 @@ mod tests {
 
     #[test]
     fn nvm_under_home_unless_nvm_dir_says_otherwise() {
-        let home = crate::system::test_home();
-        let root = crate::system::home().join(".nvm");
+        let home = crate::utils::files::test_home();
+        let root = crate::utils::files::home().join(".nvm");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("package.json"), r#"{"version": "0.40.1"}"#).unwrap();
         let found = nvm();
@@ -310,7 +316,7 @@ mod tests {
 
     #[test]
     fn dedupe_counts_one_install_once() {
-        let d = crate::system::TempDir::new("dedupe").unwrap();
+        let d = crate::utils::temp::TempDir::new("dedupe").unwrap();
         std::fs::create_dir_all(d.path().join("a")).unwrap();
         std::fs::write(d.path().join("a/postgres"), "").unwrap();
         std::fs::write(d.path().join("a/psql"), "").unwrap();

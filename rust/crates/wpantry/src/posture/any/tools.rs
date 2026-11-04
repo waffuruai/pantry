@@ -19,7 +19,7 @@ pub const EDITORS: &[(&str, &str)] = &[
 
 /// The settings.json of every editor of the family installed here.
 pub fn editor_settings() -> Vec<(&'static str, PathBuf)> {
-    let home = crate::system::home();
+    let home = crate::utils::files::home();
     let roots: Vec<PathBuf> = if cfg!(target_os = "macos") {
         vec![home.join("Library/Application Support")]
     } else if cfg!(target_os = "windows") {
@@ -93,7 +93,7 @@ fn extension_cooldown(_: Runner) -> Outcome {
     let mut manual = Vec::new();
     let mut good = Vec::new();
     for (name, file) in &editors {
-        let text = crate::system::read_capped(file, 1 << 20).unwrap_or_default();
+        let text = crate::utils::files::read_capped(file, 1 << 20).unwrap_or_default();
         let p = extension_policy(&text);
         match p.cooldown_hours {
             Some(h) if h >= 24.0 => good.push(format!("{name} {h}h")),
@@ -126,7 +126,7 @@ fn extension_cooldown(_: Runner) -> Outcome {
 pub fn set_extension_cooldown(hours: u32) -> crate::error::Result<Vec<String>> {
     let mut changed = Vec::new();
     for (name, file) in editor_settings() {
-        let text = if file.is_file() { crate::system::read_capped(&file, 1 << 20)? } else { String::new() };
+        let text = if file.is_file() { crate::utils::files::read_capped(&file, 1 << 20)? } else { String::new() };
         let new = with_cooldown(&text, hours);
         if new != text {
             if let Some(dir) = file.parent() {
@@ -178,7 +178,7 @@ fn git_hooks(r: Runner) -> Outcome {
     let path = path.trim();
     if !path.is_empty() {
         let dir = if let Some(rest) = path.strip_prefix("~/") {
-            crate::system::home().join(rest)
+            crate::utils::files::home().join(rest)
         } else {
             PathBuf::from(path)
         };
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn git_hooks_outcomes() {
-        let d = crate::system::TempDir::new("hooks").unwrap();
+        let d = crate::utils::temp::TempDir::new("hooks").unwrap();
         std::fs::write(d.path().join("pre-commit"), "#!/bin/sh\n").unwrap();
         let dir = d.path().to_string_lossy().into_owned();
         let with =
@@ -274,7 +274,7 @@ mod tests {
     /// OS; None where the test can't place one (Windows, or a Linux with
     /// XDG_CONFIG_HOME pointing elsewhere).
     fn user_dir(dir: &str) -> Option<PathBuf> {
-        let home = crate::system::home();
+        let home = crate::utils::files::home();
         if cfg!(target_os = "macos") {
             Some(home.join("Library/Application Support").join(dir).join("User"))
         } else if cfg!(target_os = "windows") || std::env::var_os("XDG_CONFIG_HOME").is_some_and(|v| !v.is_empty()) {
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn extension_cooldown_across_the_installed_editors() {
-        let home = crate::system::test_home();
+        let home = crate::utils::files::test_home();
         assert!(editor_settings().is_empty());
         let o = extension_cooldown(&|_: &[&str]| String::new());
         assert_eq!(
@@ -339,8 +339,8 @@ mod tests {
 
     #[test]
     fn git_hooks_under_home_and_without_a_pre_commit() {
-        let home = crate::system::test_home();
-        let hooks = crate::system::home().join("hooks");
+        let home = crate::utils::files::test_home();
+        let hooks = crate::utils::files::home().join("hooks");
         std::fs::create_dir_all(&hooks).unwrap();
         let tilde =
             |argv: &[&str]| if argv.contains(&"core.hooksPath") { "~/hooks\n".to_string() } else { String::new() };

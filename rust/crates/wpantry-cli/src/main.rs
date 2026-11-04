@@ -21,7 +21,7 @@ use style::Style;
 use wpantry::check::{Options, Outcome, Policy, Scan};
 use wpantry::db::{self, Cache};
 use wpantry::error::Result;
-use wpantry::json::{J, obj};
+use wpantry::utils::json::{J, obj};
 use wpantry::{IMPL, SCHEMA, VERSION};
 
 const EXIT_OK: i32 = 0;
@@ -68,7 +68,7 @@ fn envelope(scan: &Outcome) -> J {
 }
 
 /// One scan with a live progress line; the line is gone before this returns.
-fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcome> {
+fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result<Outcome> {
     let progress = progress::Progress::start();
     let log = |m: &str| {
         if !json {
@@ -103,7 +103,7 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
 
 fn cmd_scan(a: Check) -> Result<i32> {
     let html = a.html.as_deref().map(html::Output::new).transpose()?;
-    let net = wpantry::net::Http::new();
+    let net = wpantry::utils::net::Http::new();
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
@@ -202,7 +202,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
 type StopgapRun = (String, bool, Vec<String>);
 
 fn stopgaps(
-    findings: &[wpantry::check::Finding],
+    findings: &[wpantry::finding::Finding],
     dryrun: bool,
     yes: bool,
     interactive: bool,
@@ -431,7 +431,7 @@ fn cmd_tools(json: bool) -> Result<i32> {
 fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&str>) -> Result<i32> {
     use wpantry::history::{self, stamp};
     let cache = Cache::open(None)?;
-    let since = wpantry::system::now() - since_days as f64 * wpantry::db::DAY;
+    let since = wpantry::utils::os::now() - since_days as f64 * wpantry::db::DAY;
     let want = |s: &str| sections.iter().any(|x| x == s || x == "all");
     let exposures = if want("exposure") { history::exposures(&cache, since)? } else { Vec::new() };
     let fixes = if want("remediation") { history::fixes(&cache, since)? } else { Vec::new() };
@@ -472,7 +472,7 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
         _ => {
             let mut t = format!(
                 "# wpantry report\n\nGenerated {} by wpantry {VERSION}; the last {since_days} days.\n",
-                stamp(wpantry::system::now())
+                stamp(wpantry::utils::os::now())
             );
             if want("exposure") {
                 let open = exposures.iter().filter(|e| e.resolved_at.is_none()).count();
@@ -564,7 +564,7 @@ fn md(s: &str) -> String {
 
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
-    let net = wpantry::net::Http::new();
+    let net = wpantry::utils::net::Http::new();
     let progress = progress::Progress::start();
     let status = |m: &str| progress.set(m);
     let cache = Cache::open(None)?;
@@ -694,7 +694,7 @@ fn cmd_clipboard(watch: bool, once: bool, window: f64, json: bool) -> Result<i32
     let scripted = fake.is_some();
     let mut on_alert = |a: &guard::Alert| {
         if json {
-            emit(&a.to_json(wpantry::system::now()).to_string());
+            emit(&a.to_json(wpantry::utils::os::now()).to_string());
         } else {
             show(&format!("  ✗ {}", a.note()));
         }
@@ -757,7 +757,7 @@ fn mb(bytes: u64) -> String {
 /// again now; exit 10 when any has a fix.
 fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
     let cache = Cache::open(None)?;
-    let net = wpantry::net::Http::new();
+    let net = wpantry::utils::net::Http::new();
     let style = Style::stderr();
     let status = |s: &str| {
         if !json && std::io::stderr().is_terminal() {
@@ -857,7 +857,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
         }
     }
-    let findings: Vec<wpantry::check::Finding> = wpantry::export::findings(&cache)?
+    let findings: Vec<wpantry::finding::Finding> = wpantry::export::findings(&cache)?
         .into_iter()
         .filter(|f| ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id)))
         .collect();
@@ -897,7 +897,7 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
             progress::Progress::new(false).ask("Run these now?", true).unwrap_or(false)
         };
-        let auto: Vec<wpantry::check::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
+        let auto: Vec<wpantry::finding::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
         let applied = report::apply(&auto, dry_run, &confirm, &mut |l| show(l));
         for (cmd, ok) in &applied.ran {
             let targets: Vec<String> =
@@ -998,7 +998,7 @@ fn cmd_mitigate_list() -> Result<i32> {
     let cache = Cache::open(None)?;
     let findings = wpantry::export::findings(&cache)?;
     cache.close()?;
-    let mut auto: Vec<&wpantry::check::Finding> =
+    let mut auto: Vec<&wpantry::finding::Finding> =
         findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();
     auto.sort_by(|a, b| a.vuln_id.cmp(&b.vuln_id).then(a.component.cmp(&b.component)));
     auto.dedup_by(|a, b| a.vuln_id == b.vuln_id && a.component == b.component);
@@ -1026,7 +1026,7 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     let cache = Cache::open(None)?;
     let mut failed = None;
     if update {
-        let net = wpantry::net::Http::new();
+        let net = wpantry::utils::net::Http::new();
         let progress = progress::Progress::start();
         progress.set("Fetching YARA Forge's rules");
         if let Err(e) = malware::update(&cache, &net, true) {
@@ -1105,9 +1105,9 @@ fn cmd_rules_gen(
     let name = name.map(str::to_string).unwrap_or_else(|| rulegen::rule_name(&family, category));
     let mut hashes = Vec::new();
     for s in samples {
-        hashes.push(wpantry::sha256::hex(&std::fs::read(s)?));
+        hashes.push(wpantry::utils::sha256::hex(&std::fs::read(s)?));
     }
-    let date = wpantry::history::stamp(wpantry::system::now());
+    let date = wpantry::history::stamp(wpantry::utils::os::now());
     let describe = rulegen::Describe {
         name: &name,
         category,
@@ -1231,7 +1231,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wpantry::check::Finding;
+    use wpantry::finding::Finding;
 
     #[test]
     fn csv_fields_quote_only_what_needs_it() {
@@ -1268,7 +1268,8 @@ mod tests {
             unfixed: 1,
             unknown_licenses: 4,
         };
-        let env = wpantry::json::parse(envelope(&scan).dumps().as_bytes(), wpantry::json::MAX_DOCUMENT).unwrap();
+        let env = wpantry::utils::json::parse(envelope(&scan).dumps().as_bytes(), wpantry::utils::json::MAX_DOCUMENT)
+            .unwrap();
         assert_eq!(env["schema"].as_i64(), Some(SCHEMA));
         assert_eq!(env["impl"].as_str(), Some(IMPL));
         assert_eq!(env["version"].as_str(), Some(VERSION));

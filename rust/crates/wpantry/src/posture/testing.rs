@@ -3,7 +3,7 @@
 
 use crate::posture::Runner;
 use crate::posture::any::persistence::Roots;
-use crate::system::TempDir;
+use crate::utils::temp::TempDir;
 use std::path::Path;
 
 /// A machine's answers, keyed by the command's words: the first key the

@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn walks_and_skips_output_dirs() {
-        let d = crate::system::TempDir::new("documents").unwrap();
+        let d = crate::utils::temp::TempDir::new("documents").unwrap();
         std::fs::create_dir_all(d.path().join("node_modules/x")).unwrap();
         std::fs::create_dir_all(d.path().join("docs")).unwrap();
         std::fs::write(d.path().join("node_modules/x/a.pdf"), b"MZ\x90\x00").unwrap();
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn files_over_the_size_limit_are_named_not_read() {
-        let d = crate::system::TempDir::new("documents-big").unwrap();
+        let d = crate::utils::temp::TempDir::new("documents-big").unwrap();
         // A sparse file: the size is what matters, and nothing reads it.
         let big = std::fs::File::create(d.path().join("big.pdf")).unwrap();
         big.set_len(MAX_FILE + 1).unwrap();

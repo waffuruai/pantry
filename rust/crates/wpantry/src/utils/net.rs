@@ -8,7 +8,7 @@
 //! distrusted here too.
 
 use crate::error::{Error, Result};
-use crate::json;
+use crate::utils::json;
 use serde_json::Value;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -351,9 +351,19 @@ impl Net for Fake {
     }
 }
 
+/// A GitHub repository's clone URL.
+pub fn github(repo: &str) -> String {
+    format!("https://github.com/{repo}.git")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_clone_urls() {
+        assert_eq!(github("jdx/mise"), "https://github.com/jdx/mise.git");
+    }
 
     #[test]
     fn redirects_are_followed_only_to_listed_hosts() {

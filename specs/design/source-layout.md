@@ -48,7 +48,7 @@ wpantry/src/
     mod.rs  mitigate.rs  harden.rs  editors.rs
   utils/
     json.rs  toml.rs  plist.rs  re.rs  sha256.rs  net.rs  walk.rs  addresses.rs
-    process.rs  paths.rs  os.rs  parallel.rs  temp.rs
+    files.rs  process.rs  os.rs  parallel.rs  temp.rs  homebrew.rs
     archive/  zip.rs  deflate.rs
 
 wpantry-cli/src/
@@ -63,11 +63,11 @@ wpantry-cli/src/
 |---|---|---|
 | `lib.rs`, `error.rs`, `db.rs`, `history.rs`, `selfinstall.rs`, `sync.rs`, `watch.rs`, `guard.rs`, `external.rs` | stay at `src/` | Core |
 | `check.rs` | `checks/mod.rs`, with `Finding` moving to `finding.rs` | `Options` and `Scan` stay with the checks; the finding is shared by checks, reporters and remediation |
-| `system.rs` | `component.rs` (`Component`), `utils/process.rs`, `utils/paths.rs`, `utils/os.rs`, `utils/parallel.rs` (`par_map`, `PROBES`), `utils/temp.rs` (`TempDir`) | One helper per file, by kind |
+| `system.rs` | `component.rs` (`Component`, the `Status` progress callback), `utils/files.rs` (`home`, `test_home`, capped reads, globs, `realpath`, `fingerprint`, `owner`), `utils/process.rs` (`which`, `exec`, `run`, `on_path`, `app_cli`), `utils/os.rs` (`MACOS`, `now`, `os-release`, `os_fix`), `utils/parallel.rs` (`par_map`, `PROBES`, `cores`), `utils/temp.rs` (`TempDir`), `utils/homebrew.rs` (the prefix and installed casks, which tools, apps and Homebrew checks all read); `github()` joins `utils/net.rs` | One helper per file, by kind |
 | `check_machine.rs` | `checks/machine/mod.rs` | The machine area's index |
 | `tools.rs`, `catalog.rs`, `packages.rs`, `apps.rs`, `editors.rs`, `harnesses.rs`, `images.rs` | `checks/machine/` | `images.rs` reads container images |
 | `osdb.rs` | `checks/machine/os_packages.rs` | |
-| `cellar.rs`, `scanners.rs` | `checks/machine/homebrew.rs` | Both are Homebrew: bottles poured without `brew`, and `brew vulns` |
+| `cellar.rs`, `scanners.rs` | `checks/machine/homebrew.rs` | Both are Homebrew: bottles poured without `brew`, and `brew vulns`. The prefix and cask readers they share with other checks are `utils/homebrew.rs` |
 | `catrust.rs` | `checks/machine/ca_trust.rs`, with `wpantry harden` going to `remediation/harden.rs` | |
 | `clipper.rs` | `checks/machine/clipper.rs`; `item_dirs_for` and `command_of` go to `checks/posture/any/persistence/units.rs` | Persistence uses them more than the clipper does |
 | `check_supply.rs` | `checks/supply_chain/mod.rs` | |
@@ -103,8 +103,8 @@ Each phase-1 PR moves code without changing it: `git mv` where a file moves whol
 
 | PR | Moves |
 |---|---|
-| 1a | `utils/` and the core types |
-| 1b | `checks/` |
+| 1a | `utils/` from the root-level helpers (`json`, `plist`, `re`, `sha256`, `net`, `addresses`) and `system.rs`; `component.rs` and `finding.rs` |
+| 1b | `checks/`, with the helpers that come out of its folders: `utils/toml.rs` (from `lockfiles/`), `utils/archive/` (from `documents/`), `utils/walk.rs` (from `repos.rs`) |
 | 1c | `reporters/` and `remediation/` |
 
 **Each PR is checked by:**

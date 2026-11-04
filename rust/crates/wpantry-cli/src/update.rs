@@ -11,7 +11,8 @@ use wpantry::VERSION;
 use wpantry::db::Cache;
 use wpantry::error::{Error, Result};
 use wpantry::selfinstall::{self, Kind};
-use wpantry::system::{exec, which};
+use wpantry::utils::process::exec;
+use wpantry::utils::process::which;
 
 pub struct Update {
     /// Only say whether an update exists (exit 10 when one does).
@@ -26,14 +27,14 @@ pub struct Update {
 }
 
 pub fn run(u: Update) -> Result<i32> {
-    let net = wpantry::net::Http::new();
+    let net = wpantry::utils::net::Http::new();
     let exe = std::env::current_exe()?.canonicalize()?;
     run_with(u, &net, &exe, None)
 }
 
 /// `run` for the binary at `exe` (its real path), over `net`, with the
 /// cache at `db` (None: the usual one).
-fn run_with(u: Update, net: &dyn wpantry::net::Net, exe: &Path, db: Option<&Path>) -> Result<i32> {
+fn run_with(u: Update, net: &dyn wpantry::utils::net::Net, exe: &Path, db: Option<&Path>) -> Result<i32> {
     let kind = selfinstall::kind(exe);
     let latest = match &u.version {
         Some(v) => v.trim_start_matches('v').to_string(),
@@ -127,7 +128,7 @@ fn through(argv: &[&str]) -> Result<i32> {
 }
 
 fn describe(kind: &Kind, exe: &Path) -> String {
-    let where_ = wpantry::system::short(&exe.to_string_lossy());
+    let where_ = wpantry::utils::files::short(&exe.to_string_lossy());
     match kind {
         Kind::Mise => format!("installed by mise at {where_}"),
         Kind::Cargo => format!("installed by cargo at {where_}"),
@@ -140,14 +141,14 @@ fn describe(kind: &Kind, exe: &Path) -> String {
 /// One line on stderr when a newer release is cached, for `scan`; never
 /// a network call of its own beyond the daily memo, never under `--json`,
 /// `--offline` or `WPANTRY_NO_UPDATE_CHECK`.
-pub fn notice(net: &dyn wpantry::net::Net, offline: bool) -> Option<String> {
+pub fn notice(net: &dyn wpantry::utils::net::Net, offline: bool) -> Option<String> {
     if offline || std::env::var_os("WPANTRY_NO_UPDATE_CHECK").is_some() {
         return None;
     }
     notice_in(Cache::open(None).ok()?, net)
 }
 
-fn notice_in(cache: Cache, net: &dyn wpantry::net::Net) -> Option<String> {
+fn notice_in(cache: Cache, net: &dyn wpantry::utils::net::Net) -> Option<String> {
     let latest = selfinstall::latest(&cache, net, false).ok()?;
     let _ = cache.close();
     selfinstall::newer(VERSION, &latest)
@@ -157,8 +158,8 @@ fn notice_in(cache: Cache, net: &dyn wpantry::net::Net) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wpantry::net::{Fake, Response};
-    use wpantry::system::TempDir;
+    use wpantry::utils::net::{Fake, Response};
+    use wpantry::utils::temp::TempDir;
 
     /// A GitHub that names `tag` as the latest release.
     fn github(tag: &'static str) -> Fake {

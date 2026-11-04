@@ -1,9 +1,15 @@
 //! macOS apps and browsers, pending macOS updates, and Docker (the engine
 //! and the images behind running containers).
 
-use crate::plist;
-use crate::re::Regex;
-use crate::system::{self, Component, MACOS, brew_casks, github, run, which};
+use crate::component::Component;
+use crate::utils::files;
+use crate::utils::homebrew::brew_casks;
+use crate::utils::net::github;
+use crate::utils::os::MACOS;
+use crate::utils::plist;
+use crate::utils::process::run;
+use crate::utils::process::which;
+use crate::utils::re::Regex;
 use serde_json::Value;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -72,14 +78,14 @@ pub fn apps() -> Vec<Component> {
     if !MACOS {
         return Vec::new();
     }
-    let home = system::home().display().to_string();
+    let home = files::home().display().to_string();
     apps_in(&["/Applications".to_string(), format!("{home}/Applications")])
 }
 
 /// Every app in these folders (one folder deep), except Apple's own.
 fn apps_in(roots: &[String]) -> Vec<Component> {
     let patterns: Vec<String> = roots.iter().flat_map(|r| [format!("{r}/*.app"), format!("{r}/*/*.app")]).collect();
-    let mut bundles = system::expand(&patterns);
+    let mut bundles = files::expand(&patterns);
     bundles.sort();
     bundles.dedup();
     bundles.iter().filter_map(|b| app(Path::new(b))).collect()
@@ -87,7 +93,7 @@ fn apps_in(roots: &[String]) -> Vec<Component> {
 
 fn firefox_channel(bundle: &Path) -> String {
     let Ok(prefs) =
-        crate::system::read_capped(&bundle.join("Contents/Resources/defaults/pref/channel-prefs.js"), 1 << 20)
+        crate::utils::files::read_capped(&bundle.join("Contents/Resources/defaults/pref/channel-prefs.js"), 1 << 20)
     else {
         return String::new();
     };
@@ -197,6 +203,7 @@ pub fn image_id(r: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::temp;
 
     #[test]
     fn softwareupdate_listing() {
@@ -206,7 +213,7 @@ mod tests {
 
     #[test]
     fn app_bundles() {
-        let d = system::TempDir::new("app").unwrap();
+        let d = temp::TempDir::new("app").unwrap();
         let b = d.path().join("Slack.app");
         std::fs::create_dir_all(b.join("Contents/Frameworks/Electron Framework.framework/Versions/A/Resources"))
             .unwrap();
@@ -249,7 +256,7 @@ mod tests {
 
     #[test]
     fn apps_in_folders_one_level_deep_except_apples() {
-        let d = system::TempDir::new("apps").unwrap();
+        let d = temp::TempDir::new("apps").unwrap();
         let root = d.path().join("Applications");
         bundle(
             &root,
@@ -274,7 +281,7 @@ mod tests {
 
     #[test]
     fn browsers_carry_their_channel() {
-        let d = system::TempDir::new("browser").unwrap();
+        let d = temp::TempDir::new("browser").unwrap();
         let ff = bundle(
             d.path(),
             "Firefox.app",

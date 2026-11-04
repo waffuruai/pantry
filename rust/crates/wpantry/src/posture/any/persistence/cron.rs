@@ -2,7 +2,7 @@
 
 use super::{Inventory, Item, Roots, Source, entries, file_item, injects_in};
 use crate::clipper::program_file;
-use crate::system;
+use crate::utils::files;
 use std::collections::BTreeMap;
 
 /// The command a crontab line runs: past the five time fields (or an
@@ -51,12 +51,12 @@ pub(super) fn cron(r: &Roots, inv: &mut Inventory) {
         cron_items(&user, "crontab -l", false, inv);
     }
     let etc = r.sys("/etc/crontab");
-    if let Ok(text) = system::read_capped(&etc, 1 << 20) {
+    if let Ok(text) = files::read_capped(&etc, 1 << 20) {
         cron_items(&text, &r.show(&etc), true, inv);
     }
     if !r.macos {
         for path in entries(&r.sys("/etc/cron.d"), |_| true) {
-            if let Ok(text) = system::read_capped(&path, 1 << 20) {
+            if let Ok(text) = files::read_capped(&path, 1 << 20) {
                 cron_items(&text, &r.show(&path), true, inv);
             }
         }

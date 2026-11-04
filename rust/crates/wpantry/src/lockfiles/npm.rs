@@ -12,7 +12,7 @@
 
 use super::{Package, Scope, plausible};
 use crate::error::{Error, Result};
-use crate::json::{self, str_at};
+use crate::utils::json::{self, str_at};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 

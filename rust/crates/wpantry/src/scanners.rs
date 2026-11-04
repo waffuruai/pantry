@@ -3,9 +3,11 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
-use crate::json::{self, arr_at, str_at};
-use crate::sha256;
-use crate::system::{exec, run, which};
+use crate::utils::json::{self, arr_at, str_at};
+use crate::utils::process::exec;
+use crate::utils::process::run;
+use crate::utils::process::which;
+use crate::utils::sha256;
 use serde_json::{Value, json};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -15,7 +17,7 @@ use std::time::Duration;
 /// Cellar: the cache key `brew list --versions` gave, without starting
 /// Homebrew's Ruby (most of a second). None when there's no Cellar to read.
 fn cellar(brew: &Path) -> Option<String> {
-    let prefix = crate::system::homebrew_prefix(brew)?;
+    let prefix = crate::utils::homebrew::homebrew_prefix(brew)?;
     let dir = std::env::var_os("HOMEBREW_CELLAR").map(PathBuf::from).unwrap_or_else(|| prefix.join("Cellar"));
     cellar_listing(&dir)
 }
@@ -64,7 +66,7 @@ pub fn brew_job(cache: &Cache, refresh: bool, offline: bool) -> Result<Option<Br
     });
     let fingerprint = sha256::hex(listing.as_bytes());
     let cached = cache.run("brew-vulns")?.filter(|(fp, _, _)| *fp == fingerprint);
-    let stale = !offline && (refresh || !cached.is_some_and(|(_, at, _)| at > crate::system::now() - DAY));
+    let stale = !offline && (refresh || !cached.is_some_and(|(_, at, _)| at > crate::utils::os::now() - DAY));
     Ok(Some(BrewJob { exe, fingerprint, stale }))
 }
 
@@ -116,7 +118,7 @@ mod tests {
 
     #[test]
     fn cellar_lists_formulae_and_versions() {
-        let d = crate::system::TempDir::new("cellar").unwrap();
+        let d = crate::utils::temp::TempDir::new("cellar").unwrap();
         for v in ["openssl@3/3.6.0", "openssl@3/3.5.4", "jq/1.8.1", "jq/.DS_Store"] {
             std::fs::create_dir_all(d.path().join("Cellar").join(v)).unwrap();
         }
@@ -124,8 +126,8 @@ mod tests {
         assert_eq!(cellar_listing(&d.path().join("nowhere")), None);
     }
 
-    fn cache() -> (crate::system::TempDir, Cache) {
-        let d = crate::system::TempDir::new("brew").unwrap();
+    fn cache() -> (crate::utils::temp::TempDir, Cache) {
+        let d = crate::utils::temp::TempDir::new("brew").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         (d, c)
     }
@@ -139,7 +141,7 @@ mod tests {
 
     #[test]
     fn a_cellar_beside_brew() {
-        let d = crate::system::TempDir::new("cellar").unwrap();
+        let d = crate::utils::temp::TempDir::new("cellar").unwrap();
         std::fs::create_dir_all(d.path().join("bin")).unwrap();
         std::fs::create_dir_all(d.path().join("Cellar/jq/1.8.1")).unwrap();
         let listing = cellar(&d.path().join("bin/brew"));
@@ -174,7 +176,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn brew_scan_parses_json_and_reports_old_homebrew() {
-        let d = crate::system::TempDir::new("brew").unwrap();
+        let d = crate::utils::temp::TempDir::new("brew").unwrap();
         let ok = BrewJob::new(&fake_brew(d.path(), r#"{"checked": 1, "findings": []}"#, "warning"), "fp", true);
         assert_eq!(brew_scan(&ok).unwrap(), json!({"checked": 1, "findings": []}));
         let old = BrewJob::new(&fake_brew(d.path(), "", "Error: Unknown command: vulns"), "fp", true);

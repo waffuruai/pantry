@@ -14,8 +14,8 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::json;
-use crate::net::{self, Net};
+use crate::utils::json;
+use crate::utils::net::{self, Net};
 use std::collections::HashMap;
 use std::path::Path;
 use wpantry_yara::pattern::{Node, Syntax, parse_regex};
@@ -164,7 +164,7 @@ impl Iocs {
             return None;
         }
         let lengths: Vec<usize> = self.hashes.keys().map(String::len).collect();
-        let mut digests = vec![crate::sha256::hex(data)];
+        let mut digests = vec![crate::utils::sha256::hex(data)];
         if lengths.contains(&32) {
             digests.push(wpantry_yara::modules::hex(&wpantry_yara::modules::hash::md5(data)));
         }
@@ -262,7 +262,7 @@ pub fn verify(cache: &Cache, net: &dyn Net, sha256: &str) -> (Verdicts, Failures
                 };
                 let _ = cache.conn.execute(
                     "INSERT OR REPLACE INTO hash_verdict VALUES (?, ?, ?, ?, ?)",
-                    rusqlite::params![sha256, source, verdict, family, crate::system::now()],
+                    rusqlite::params![sha256, source, verdict, family, crate::utils::os::now()],
                 );
                 out.push((source, v));
             }
@@ -282,7 +282,7 @@ fn cached(cache: &Cache, sha256: &str, source: &str) -> Option<Verdict> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok()?;
-    let now = crate::system::now();
+    let now = crate::utils::os::now();
     if at < now - MAX_AGE || at > now + crate::db::CLOCK_SKEW {
         return None;
     }

@@ -437,7 +437,7 @@ fn invalid_command(word: &str) -> Parsed {
 
 fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~/").or(if p == "~" { Some("") } else { None }) {
-        Some(rest) => wpantry::system::home().join(rest),
+        Some(rest) => wpantry::utils::files::home().join(rest),
         None => PathBuf::from(p),
     }
 }
@@ -1035,8 +1035,8 @@ mod tests {
 
     #[test]
     fn check_options_and_their_errors() {
-        let _home = wpantry::system::test_home();
-        let file = wpantry::system::home().join("g.toml");
+        let _home = wpantry::utils::files::test_home();
+        let file = wpantry::utils::files::home().join("g.toml");
         std::fs::write(&file, "").unwrap();
         let Parsed::Run(Command::Scan(c)) = p(&["--gitleaks-config", "~/g.toml", "--jobs=3", "--no-posture"]) else {
             panic!()
@@ -1044,7 +1044,7 @@ mod tests {
         assert_eq!((c.gitleaks_config, c.jobs, c.no_posture), (Some(file.clone()), Some(3), true));
         let Parsed::Usage(text) = p(&["--install-scripts", "~", "--update"]) else { panic!() };
         assert!(text.contains("argument --install-scripts: no such file: ~"), "a directory is no policy file: {text}");
-        assert_eq!(expand("~"), wpantry::system::home());
+        assert_eq!(expand("~"), wpantry::utils::files::home());
         assert_eq!(expand("/x"), PathBuf::from("/x"));
         for (bad, msg) in [
             (&["check", "extra"][..], "unrecognized arguments: extra"),

@@ -1,7 +1,7 @@
 //! The startup files a shell reads, recorded by line.
 
 use super::{Inventory, Item, Roots, Source, entries, injects_in};
-use crate::system;
+use crate::utils::files;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -30,7 +30,7 @@ pub(super) fn shell(r: &Roots, inv: &mut Inventory) {
         files.extend(entries(&r.sys("/etc/profile.d"), |n| n.ends_with(".sh")));
     }
     for path in files {
-        let Ok(text) = system::read_capped(&path, 4 << 20) else { continue };
+        let Ok(text) = files::read_capped(&path, 4 << 20) else { continue };
         let location = r.show(&path);
         let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
         for (i, raw) in text.lines().enumerate() {

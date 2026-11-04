@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::sync::Mutex;
 use wpantry::check::{Options, Scan};
 use wpantry::db::Cache;
-use wpantry::net::{Fake, Response};
+use wpantry::utils::net::{Fake, Response};
 
 const LOCK: &str = r#"version = 4
 
@@ -40,7 +40,7 @@ fn record(id: &str, aliases: &[&str]) -> Value {
 
 #[test]
 fn repo_scan_end_to_end() {
-    let tmp = wpantry::system::TempDir::new("scan").unwrap();
+    let tmp = wpantry::utils::temp::TempDir::new("scan").unwrap();
     let project = tmp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("Cargo.lock"), LOCK).unwrap();

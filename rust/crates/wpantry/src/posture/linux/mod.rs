@@ -30,7 +30,7 @@ pub use mptcp::{MptcpListener, mptcp_listeners, unit_of};
 pub(super) const ETC: &str = "/etc";
 
 pub(super) fn text(p: &Path) -> String {
-    crate::system::read_capped(p, 1 << 20).unwrap_or_default()
+    crate::utils::files::read_capped(p, 1 << 20).unwrap_or_default()
 }
 
 /// The checks, in the order the report lists them.

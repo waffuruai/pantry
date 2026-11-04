@@ -6,10 +6,10 @@
 
 use crate::check::{display_id, mitigation};
 use crate::compare::Comparator;
+use crate::component::Status;
 use crate::db::Cache;
 use crate::error::Result;
-use crate::net::Net;
-use crate::system::Status;
+use crate::utils::net::Net;
 use crate::{osv, versions};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -97,7 +97,7 @@ pub fn run(cache: &Cache, net: &dyn Net, offline: bool, status: Status) -> Resul
             out.push(Watched {
                 id: id.clone(),
                 severity: crate::db::severity_of(rec),
-                summary: crate::json::str_at(rec, "summary").to_string(),
+                summary: crate::utils::json::str_at(rec, "summary").to_string(),
                 item: item.clone(),
                 fixed,
                 mitigation: mitigation(&id),
@@ -123,8 +123,8 @@ pub fn report_json(watched: &[Watched]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::Finding;
-    use crate::net::Fake;
+    use crate::finding::Finding;
+    use crate::utils::net::Fake;
     use serde_json::json;
 
     fn record(fixed: Option<&str>) -> Value {
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn a_fix_landing_is_noticed_offline_from_the_cache() {
-        let dir = crate::system::TempDir::new("watch").unwrap();
+        let dir = crate::utils::temp::TempDir::new("watch").unwrap();
         let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
         cache.put_vuln(&record(None)).unwrap();
         cache.put_query("npm", "kern", "1.0.0", &["GHSA-k".into()]).unwrap();

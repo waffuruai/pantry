@@ -1,7 +1,8 @@
 //! Print the findings, and plan or apply the fixes (`wpantry fix`).
 
-use wpantry::check::{Finding, Outcome};
-use wpantry::system::short;
+use wpantry::check::Outcome;
+use wpantry::finding::Finding;
+use wpantry::utils::files::short;
 use wpantry::versions;
 
 pub const MISE_FIX: &str = "mise: manual, update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it";

@@ -12,7 +12,7 @@ const MAX: u64 = 16 << 20;
 /// The plist at `path` as JSON, or an empty object.
 pub fn read(path: &Path) -> Value {
     let empty = Value::Object(Map::new());
-    let Ok(bytes) = crate::system::read_capped_bytes(path, MAX) else { return empty };
+    let Ok(bytes) = crate::utils::files::read_capped_bytes(path, MAX) else { return empty };
     parse(&bytes).filter(Value::is_object).unwrap_or(empty)
 }
 
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn read_gives_an_object_or_nothing() {
-        let d = crate::system::TempDir::new("plist").unwrap();
+        let d = crate::utils::temp::TempDir::new("plist").unwrap();
         let f = d.path().join("Info.plist");
         std::fs::write(&f, XML).unwrap();
         assert_eq!(read(&f)["CFBundleIdentifier"], "com.example.App");

@@ -3,14 +3,18 @@
 //! certificate authorities it trusts.
 
 use crate::catalog::{MISE_REPO, TOOLS};
-use crate::check::{Finding, REMOVE, Scan, display_id, fill, is_kev, is_malicious};
+use crate::check::{REMOVE, Scan, display_id, fill, is_kev, is_malicious};
+use crate::component::Component;
 use crate::db::severity_of;
 use crate::distros::{self, Advisories};
 use crate::error::{Error, Result};
 use crate::feeds;
+use crate::finding::Finding;
 use crate::osdb;
 use crate::osv::{self, Item};
-use crate::system::{self, Component, MACOS, now};
+use crate::utils::os::MACOS;
+use crate::utils::os::now;
+use crate::utils::{files, homebrew, os, process};
 use crate::{apps as apps_mod, catrust, cellar, clipper as clipper_mod, packages, scanners, tools, versions};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -60,7 +64,7 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
 /// people are sent, read for the shapes malware takes, and ClamAV over
 /// them when it is installed.
 fn downloads(scan: &mut Scan) {
-    let home = crate::system::home();
+    let home = crate::utils::files::home();
     let dirs: Vec<std::path::PathBuf> =
         ["Downloads", "Desktop", "Documents"].iter().map(|d| home.join(d)).filter(|d| d.is_dir()).collect();
     if dirs.is_empty() {
@@ -70,7 +74,7 @@ fn downloads(scan: &mut Scan) {
     let mut files = Vec::new();
     for dir in &dirs {
         for d in crate::documents::scan_dir(dir, 1) {
-            let component = crate::system::short(&dir.join(&d.file).to_string_lossy());
+            let component = crate::utils::files::short(&dir.join(&d.file).to_string_lossy());
             crate::check_supply::add_doc(scan, &component, d);
         }
         files.extend(crate::documents::files_under(dir, 1));
@@ -102,7 +106,7 @@ fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     // Bottles poured without the `brew` command (mise's brew: engine): read
     // from the Cellar, since `brew vulns` can't run and `tools` leaves
     // Cellar-owned binaries to it. With brew present, brew vulns covers them.
-    if system::which("brew").is_none() {
+    if process::which("brew").is_none() {
         scan.status("Reading the Homebrew Cellar (no brew)");
         if let Some((cellar, inv)) = cellar::inventory() {
             scan.count("Homebrew formulae (Cellar, no brew)", inv.components.len() as i64);
@@ -167,7 +171,7 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
                 .filter_map(|t| {
                     later
                         .get(&("GIT".to_string(), k.1.clone(), t.clone()))
-                        .map(|recs| (t, recs.iter().map(|r| crate::json::str_at(r, "id").to_string()).collect()))
+                        .map(|recs| (t, recs.iter().map(|r| crate::utils::json::str_at(r, "id").to_string()).collect()))
                 })
                 .collect();
             (k, m)
@@ -262,7 +266,7 @@ pub fn persistence(scan: &mut Scan, (inv, vetted): crate::posture::any::persiste
     };
     let baselined = inv.items.iter().filter(|i| first.contains(&i.source)).count();
     scan.count("persistence items recorded as the baseline (first scan)", baselined as i64);
-    for f in p::findings(&inv, &new, &vetted, &|path| system::short(&path.to_string_lossy())) {
+    for f in p::findings(&inv, &new, &vetted, &|path| files::short(&path.to_string_lossy())) {
         scan.add(f);
     }
 }
@@ -386,7 +390,7 @@ pub fn postgres(scan: &mut Scan, c: &Component, advisories: &[feeds::PgAdvisory]
 
 pub fn apps(scan: &mut Scan) -> Result<()> {
     scan.status("Reading installed apps");
-    apps_found(scan, apps_mod::apps(), system::brew_casks)
+    apps_found(scan, apps_mod::apps(), homebrew::brew_casks)
 }
 
 /// The app checks over the bundles found; `casks` lists what Homebrew
@@ -542,12 +546,12 @@ pub fn os_updates(scan: &mut Scan, macos_updates: (Vec<(String, String)>, String
         macos(scan, macos_updates);
         return Ok(());
     }
-    linux_updates(scan, &system::os_release())
+    linux_updates(scan, &os::os_release())
 }
 
 /// A Linux distro's packages, by the source its os-release names.
 fn linux_updates(scan: &mut Scan, rel: &BTreeMap<String, String>) -> Result<()> {
-    match system::os_family(rel) {
+    match os::os_family(rel) {
         "osv" => os_packages(scan, rel),
         "dnf" => {
             scan.status("Asking dnf for security advisories");
@@ -654,7 +658,7 @@ fn os_packages_from(
     for (p, item) in pkgs.iter().zip(items) {
         let Some(recs) = answers.get(&item).filter(|r| !r.is_empty()) else { continue };
         let mut c = Component::new("os", &p.name, &p.version, &location);
-        c.fix = system::os_fix(rel, &p.name);
+        c.fix = os::os_fix(rel, &p.name);
         let groups = osv::group_by_alias(recs);
         c.osv = Some(item);
         scan.advisories(&c, &[], None, "fail", Some(groups));
@@ -678,7 +682,7 @@ fn distro(scan: &mut Scan, rel: &BTreeMap<String, String>, res: Advisories) {
             kev,
             severity: p.severity,
             note: p.issues.iter().take(4).cloned().collect::<Vec<_>>().join(", "),
-            fix_cmd: system::os_fix(rel, &p.name),
+            fix_cmd: os::os_fix(rel, &p.name),
             fix_auto: false,
             ..Default::default()
         });
@@ -712,9 +716,9 @@ pub fn brew(scan: &mut Scan, job: Option<&scanners::BrewJob>, ran: Option<Result
         Err(e) => return Err(e),
     };
     scan.count("Homebrew formulae", res.get("checked").and_then(Value::as_i64).unwrap_or(0));
-    for f in crate::json::arr_at(&res, "findings") {
-        let formula = crate::json::str_at(f, "formula").to_string();
-        let version = crate::json::str_at(f, "version").to_string();
+    for f in crate::utils::json::arr_at(&res, "findings") {
+        let formula = crate::utils::json::str_at(f, "formula").to_string();
+        let version = crate::utils::json::str_at(f, "version").to_string();
         let (fix, auto) = match manual(&formula) {
             Some(m) => (m.to_string(), false),
             None => (format!("brew upgrade {formula}"), true),
@@ -722,31 +726,31 @@ pub fn brew(scan: &mut Scan, job: Option<&scanners::BrewJob>, ran: Option<Result
         let mut c = Component::new("brew", &formula, &version, "Homebrew");
         c.fix = fix;
         c.auto = auto;
-        for v in crate::json::arr_at(f, "vulnerabilities") {
-            let rec = serde_json::json!({"id": crate::json::str_at(v, "id"), "aliases": v.get("aliases").cloned().unwrap_or(serde_json::json!([]))});
+        for v in crate::utils::json::arr_at(f, "vulnerabilities") {
+            let rec = serde_json::json!({"id": crate::utils::json::str_at(v, "id"), "aliases": v.get("aliases").cloned().unwrap_or(serde_json::json!([]))});
             let fixes: Vec<String> =
-                crate::json::strs_at(v, "fixed_versions").into_iter().filter(|x| osv::released(x)).collect();
+                crate::utils::json::strs_at(v, "fixed_versions").into_iter().filter(|x| osv::released(x)).collect();
             if is_malicious(&rec) {
                 scan.add(Finding {
-                    vuln_id: crate::json::str_at(v, "id").into(),
+                    vuln_id: crate::utils::json::str_at(v, "id").into(),
                     status: "fail".into(),
                     kev: true,
                     severity: "MALICIOUS".into(),
-                    note: crate::json::str_at(v, "summary").into(),
+                    note: crate::utils::json::str_at(v, "summary").into(),
                     fix_cmd: REMOVE.replace("{}", &formula),
                     ..Finding::of(&c)
                 });
             } else if fixes.is_empty() {
                 scan.unfixed += 1;
             } else {
-                let sev = crate::json::str_at(v, "severity").to_uppercase();
+                let sev = crate::utils::json::str_at(v, "severity").to_uppercase();
                 scan.add(Finding {
                     vuln_id: display_id(&rec),
                     status: "fail".into(),
                     kev: is_kev(&rec, &scan.kev),
                     fixed: versions::pick_safe(&version, &fixes).unwrap_or_else(|| fixes[0].clone()),
                     severity: if sev.is_empty() { severity_of(&rec) } else { sev },
-                    note: crate::json::str_at(v, "summary").into(),
+                    note: crate::utils::json::str_at(v, "summary").into(),
                     fix_cmd: c.fix.clone(),
                     fix_auto: c.auto,
                     ..Finding::of(&c)
@@ -801,19 +805,19 @@ mod tests {
     use super::*;
     use crate::catalog::MISE_FIX;
     use crate::db::Cache;
-    use crate::net::Fake;
+    use crate::utils::net::Fake;
 
-    fn scan<'a>(net: &'a Fake, d: &crate::system::TempDir) -> Scan<'a> {
+    fn scan<'a>(net: &'a Fake, d: &crate::utils::temp::TempDir) -> Scan<'a> {
         Scan::new(Default::default(), Cache::open(Some(&d.path().join("w.db"))).unwrap(), net, &|_| {}, &|_| {})
     }
 
     // The test vectors the Python implementation had (`Mise`).
     #[test]
     fn mise_behind_latest_release_warns_and_is_never_unattended() {
-        let d = crate::system::TempDir::new("mise").unwrap();
+        let d = crate::utils::temp::TempDir::new("mise").unwrap();
         let net = Fake::new(|r| {
             assert_eq!(r.url, "https://api.github.com/repos/jdx/mise/releases/latest");
-            Ok(crate::net::Response::ok(r#"{"tag_name": "v2026.10.21"}"#))
+            Ok(crate::utils::net::Response::ok(r#"{"tag_name": "v2026.10.21"}"#))
         });
         let mut s = scan(&net, &d);
         let mut c = Component::new("manager", "mise", "2026.10.19", "/h/.local/bin/mise");
@@ -836,8 +840,8 @@ mod tests {
 
     #[test]
     fn unreachable_github_is_unchecked_not_clean() {
-        let d = crate::system::TempDir::new("mise").unwrap();
-        let net = Fake::new(|_| Ok(crate::net::Response { status: 403, body: vec![], etag: None }));
+        let d = crate::utils::temp::TempDir::new("mise").unwrap();
+        let net = Fake::new(|_| Ok(crate::utils::net::Response { status: 403, body: vec![], etag: None }));
         let mut s = scan(&net, &d);
         mise(&mut s, &Component::new("manager", "mise", "2026.10.19", "")).unwrap();
         assert_eq!(
@@ -848,7 +852,7 @@ mod tests {
 
     #[test]
     fn postgres_advisories_by_major() {
-        let d = crate::system::TempDir::new("pg").unwrap();
+        let d = crate::utils::temp::TempDir::new("pg").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         let mut c = Component::new("datastore", "postgres", "17.4", "/usr/bin/postgres");
@@ -889,17 +893,18 @@ mod tests {
     }
 
     /// An OSV querybatch answer: the ids for each (package, version) asked.
-    fn querybatch(body: &[u8], answer: &dyn Fn(&str, &str) -> Vec<&'static str>) -> crate::net::Response {
+    fn querybatch(body: &[u8], answer: &dyn Fn(&str, &str) -> Vec<&'static str>) -> crate::utils::net::Response {
         let body: Value = serde_json::from_slice(body).unwrap();
-        let results: Vec<Value> = crate::json::arr_at(&body, "queries")
+        let results: Vec<Value> = crate::utils::json::arr_at(&body, "queries")
             .iter()
             .map(|q| {
-                let ids = answer(crate::json::str_at(&q["package"], "name"), crate::json::str_at(q, "version"));
+                let ids =
+                    answer(crate::utils::json::str_at(&q["package"], "name"), crate::utils::json::str_at(q, "version"));
                 let vulns: Vec<Value> = ids.iter().map(|id| serde_json::json!({"id": id, "modified": "m"})).collect();
                 if vulns.is_empty() { serde_json::json!({}) } else { serde_json::json!({"vulns": vulns}) }
             })
             .collect();
-        crate::net::Response::ok(serde_json::json!({"results": results}).to_string())
+        crate::utils::net::Response::ok(serde_json::json!({"results": results}).to_string())
     }
 
     fn npm_rec(id: &str, pkg: &str, fixed: Option<&str>, aliases: &[&str]) -> Value {
@@ -937,8 +942,8 @@ mod tests {
     }
 
     /// The feeds the app check reads: casks, Chrome, Firefox and OSV.
-    fn app_net(r: &crate::net::Request) -> Result<crate::net::Response> {
-        use crate::net::Response;
+    fn app_net(r: &crate::utils::net::Request) -> Result<crate::utils::net::Response> {
+        use crate::utils::net::Response;
         let url = r.url.as_str();
         if url == feeds::CASKS_URL {
             return Ok(Response::ok(casks_body()));
@@ -988,7 +993,7 @@ mod tests {
 
     #[test]
     fn apps_behind_their_cask_and_with_vulnerable_electron() {
-        let d = crate::system::TempDir::new("apps").unwrap();
+        let d = crate::utils::temp::TempDir::new("apps").unwrap();
         let net = Fake::new(app_net);
         let mut s = scan(&net, &d);
         let found = vec![
@@ -1033,7 +1038,7 @@ mod tests {
 
     #[test]
     fn browsers_follow_their_vendor_feeds() {
-        let d = crate::system::TempDir::new("browsers").unwrap();
+        let d = crate::utils::temp::TempDir::new("browsers").unwrap();
         let net = Fake::new(app_net);
         let mut s = scan(&net, &d);
         let found = vec![
@@ -1067,10 +1072,10 @@ mod tests {
 
     #[test]
     fn browser_feeds_down_are_unchecked_and_no_apps_is_nothing() {
-        let d = crate::system::TempDir::new("browsers").unwrap();
+        let d = crate::utils::temp::TempDir::new("browsers").unwrap();
         let net = Fake::new(|r| {
             if r.url == feeds::CASKS_URL {
-                return Ok(crate::net::Response::ok(casks_body()));
+                return Ok(crate::utils::net::Response::ok(casks_body()));
             }
             Err(Error::Offline("down".into()))
         });
@@ -1090,7 +1095,7 @@ mod tests {
 
     #[test]
     fn cask_catalog_down_still_checks_electron() {
-        let d = crate::system::TempDir::new("casks").unwrap();
+        let d = crate::utils::temp::TempDir::new("casks").unwrap();
         let net = Fake::new(|r| {
             if r.url == feeds::CASKS_URL {
                 return Err(Error::Offline("down".into()));
@@ -1111,9 +1116,9 @@ mod tests {
 
     #[test]
     fn components_against_osv_eol_postgres_and_mise() {
-        let d = crate::system::TempDir::new("components").unwrap();
+        let d = crate::utils::temp::TempDir::new("components").unwrap();
         let net = Fake::new(|r| {
-            use crate::net::Response;
+            use crate::utils::net::Response;
             let url = r.url.as_str();
             if url.ends_with("/querybatch") {
                 let body = r.body.clone().unwrap_or_default();
@@ -1192,7 +1197,7 @@ mod tests {
 
     #[test]
     fn postgres_skips_other_majors_and_known_cves() {
-        let d = crate::system::TempDir::new("pg").unwrap();
+        let d = crate::utils::temp::TempDir::new("pg").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         let c = Component::new("datastore", "postgres", "17.4", "/usr/bin/postgres");
@@ -1220,7 +1225,7 @@ mod tests {
     #[test]
     fn persistence_baselines_first_then_warns_on_what_is_new() {
         use crate::posture::any::persistence::{Inventory, Item, Source};
-        let d = crate::system::TempDir::new("persistence").unwrap();
+        let d = crate::utils::temp::TempDir::new("persistence").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         let item = |loc: &str| Item {
@@ -1253,7 +1258,7 @@ mod tests {
 
     #[test]
     fn posture_reports_what_fails_and_what_it_cannot_tell() {
-        let d = crate::system::TempDir::new("posture").unwrap();
+        let d = crate::utils::temp::TempDir::new("posture").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         // A machine that answers nothing: every check fails or can't tell.
@@ -1275,7 +1280,7 @@ mod tests {
 
     #[test]
     fn macos_updates_fail_and_a_stale_scan_warns() {
-        let d = crate::system::TempDir::new("macos").unwrap();
+        let d = crate::utils::temp::TempDir::new("macos").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         let updates =
@@ -1299,13 +1304,13 @@ mod tests {
 
     #[test]
     fn os_updates_on_this_machine_only_ever_report_unchecked_offline() {
-        let d = crate::system::TempDir::new("os").unwrap();
+        let d = crate::utils::temp::TempDir::new("os").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         // A Mac: Software Update's answer, given above. Linux: its package
         // database against OSV (unreachable here), or no source yet.
         os_updates(&mut s, (Vec::new(), String::new())).unwrap();
-        if MACOS || system::os_family(&system::os_release()) != "dnf" {
+        if MACOS || os::os_family(&os::os_release()) != "dnf" {
             assert!(s.findings.iter().all(|f| f.kind == "unchecked"), "{:?}", kinds(&s));
         }
     }
@@ -1316,10 +1321,10 @@ mod tests {
 
     #[test]
     fn distros_without_a_source_are_unchecked() {
-        let d = crate::system::TempDir::new("distro").unwrap();
+        let d = crate::utils::temp::TempDir::new("distro").unwrap();
         let net = Fake::new(|r| {
             assert_eq!(r.url, feeds::ARCH_URL);
-            Ok(crate::net::Response::ok(r#"[{"name": "ASA-1", "packages": ["x"]}]"#))
+            Ok(crate::utils::net::Response::ok(r#"[{"name": "ASA-1", "packages": ["x"]}]"#))
         });
         let mut s = scan(&net, &d);
         linux_updates(&mut s, &rel(&[("ID", "debian")])).unwrap();
@@ -1341,9 +1346,9 @@ mod tests {
     #[test]
     fn os_packages_against_osv_in_the_distro_ecosystem() {
         use crate::lockfiles::Package;
-        let d = crate::system::TempDir::new("dpkg").unwrap();
+        let d = crate::utils::temp::TempDir::new("dpkg").unwrap();
         let net = Fake::new(|r| {
-            use crate::net::Response;
+            use crate::utils::net::Response;
             if r.url.ends_with("/querybatch") {
                 let body = r.body.clone().unwrap_or_default();
                 return Ok(querybatch(&body, &|pkg, _| if pkg == "acl" { vec!["DEBIAN-CVE-1"] } else { vec![] }));
@@ -1383,7 +1388,7 @@ mod tests {
 
     #[test]
     fn a_suse_without_rpm_or_a_mac_has_no_package_database_to_read() {
-        let d = crate::system::TempDir::new("suse").unwrap();
+        let d = crate::utils::temp::TempDir::new("suse").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         linux_updates(&mut s, &rel(&[("ID", "sles"), ("VERSION_ID", "15.6"), ("PRETTY_NAME", "SLES 15")])).unwrap();
@@ -1393,7 +1398,7 @@ mod tests {
 
     #[test]
     fn distro_advisories_become_os_findings() {
-        let d = crate::system::TempDir::new("dnf").unwrap();
+        let d = crate::utils::temp::TempDir::new("dnf").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         s.kev.insert("CVE-2026-5".into());
@@ -1427,7 +1432,7 @@ mod tests {
 
     #[test]
     fn brew_vulns_findings_malicious_unfixed_and_manual() {
-        let d = crate::system::TempDir::new("brew").unwrap();
+        let d = crate::utils::temp::TempDir::new("brew").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         s.kev.insert("CVE-2026-7".into());
@@ -1470,7 +1475,7 @@ mod tests {
     #[test]
     fn brew_vulns_missing_failing_or_absent() {
         let net = Fake::offline();
-        let d = crate::system::TempDir::new("brew").unwrap();
+        let d = crate::utils::temp::TempDir::new("brew").unwrap();
         let mut s = scan(&net, &d);
         brew(&mut s, None, None).unwrap();
         assert!(s.findings.is_empty());
@@ -1481,18 +1486,18 @@ mod tests {
             (f.component.as_str(), f.vuln_id.as_str(), f.fix_cmd.as_str(), f.fix_auto),
             ("brew vulns", "MISSING", "brew update", true)
         );
-        let d2 = crate::system::TempDir::new("brew").unwrap();
+        let d2 = crate::utils::temp::TempDir::new("brew").unwrap();
         let mut s2 = scan(&net, &d2);
         brew(&mut s2, Some(&job), Some(Err(Error::Failed("brew vulns failed: boom".into())))).unwrap();
         assert_eq!(unchecked_note(&s2, "Homebrew formulae (brew vulns)"), "brew vulns failed: boom");
-        let d3 = crate::system::TempDir::new("brew").unwrap();
+        let d3 = crate::utils::temp::TempDir::new("brew").unwrap();
         let mut s3 = scan(&net, &d3);
         assert!(brew(&mut s3, Some(&job), Some(Err(Error::Cache(rusqlite::Error::InvalidQuery)))).is_err());
     }
 
     #[test]
     fn trust_stores_that_trust_a_distrusted_ca_fail() {
-        let d = crate::system::TempDir::new("ca").unwrap();
+        let d = crate::utils::temp::TempDir::new("ca").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         let store = |label: &str, trusts: bool, unchecked: Option<&str>| catrust::Store {
@@ -1532,13 +1537,13 @@ mod tests {
 
     #[test]
     fn downloads_and_desktop_are_read_when_present() {
-        let home = crate::system::test_home();
-        let d = crate::system::TempDir::new("dl").unwrap();
+        let home = crate::utils::files::test_home();
+        let d = crate::utils::temp::TempDir::new("dl").unwrap();
         let net = Fake::offline();
         let mut s = scan(&net, &d);
         downloads(&mut s);
         assert!(s.findings.is_empty() && s.counts.is_empty(), "no folders, nothing read");
-        let dl = crate::system::home().join("Downloads");
+        let dl = crate::utils::files::home().join("Downloads");
         std::fs::create_dir_all(&dl).unwrap();
         std::fs::write(
             dl.join("invoice.pdf"),

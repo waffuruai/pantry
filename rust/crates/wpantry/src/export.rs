@@ -10,9 +10,9 @@
 //! rows too (their `status` is the last one seen, `resolved_at` is set):
 //! that is where "fixed, N days later" comes from.
 
-use crate::check::Finding;
 use crate::db::Cache;
 use crate::error::Result;
+use crate::finding::Finding;
 use crate::history::{self, Exposure};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -148,7 +148,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         Some(r) => {
             let mut ids = crate::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
-            (ids, format!("https://osv.dev/vulnerability/{}", crate::json::str_at(r, "id")))
+            (ids, format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")))
         }
         None if f.vuln_id.starts_with("CVE-") => {
             (Vec::new(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
@@ -156,7 +156,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         None => (Vec::new(), String::new()),
     };
     let life = exposure(cache, &row.key)?;
-    let now = crate::system::now();
+    let now = crate::utils::os::now();
     let (first_seen, last_seen, resolved_at, days) = match life {
         Some((first, last, resolved)) => (
             Some(history::stamp(first)),
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn rows_join_the_record_the_lifecycle_and_the_fix() {
-        let d = crate::system::TempDir::new("export").unwrap();
+        let d = crate::utils::temp::TempDir::new("export").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         c.put_vuln(&json!({"id": "GHSA-1", "aliases": ["CVE-2026-1"], "summary": "zip bomb",
             "affected": [{"package": {"ecosystem": "crates.io", "name": "zip"},
@@ -245,7 +245,7 @@ mod tests {
         let f = finding("CVE-2026-1", cmd);
         c.replace_findings(std::slice::from_ref(&f)).unwrap();
         let s1 =
-            history::record_scan(&c, crate::system::now() - 86400.0, std::slice::from_ref(&f), &[], &opts).unwrap();
+            history::record_scan(&c, crate::utils::os::now() - 86400.0, std::slice::from_ref(&f), &[], &opts).unwrap();
         let (text, n) = jsonl(&c, false).unwrap();
         assert_eq!(n, 1);
         let row: Value = serde_json::from_str(text.trim()).unwrap();
@@ -269,7 +269,7 @@ mod tests {
             .unwrap();
         history::record_fix(&c, Some(s1), cmd, "auto", true, &targets).unwrap();
         c.replace_findings(&[]).unwrap();
-        let s2 = history::record_scan(&c, crate::system::now(), &[], &[], &opts).unwrap();
+        let s2 = history::record_scan(&c, crate::utils::os::now(), &[], &[], &opts).unwrap();
         history::verify_fixes(&c, s1, s2).unwrap();
         let (text, n) = jsonl(&c, false).unwrap();
         assert_eq!((n, text.as_str()), (0, ""), "the latest scan has no findings");

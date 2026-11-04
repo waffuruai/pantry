@@ -20,10 +20,11 @@
 //! times a second costs about five percent of one core, nearly all of it
 //! in `pbpaste`. The quiet path makes no allocation beyond the read itself.
 
-use crate::addresses::{self, Chain};
 use crate::db::Cache;
 use crate::error::Result;
-use crate::{history, system};
+use crate::history;
+use crate::utils::addresses::{self, Chain};
+use crate::utils::{os, process};
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -69,7 +70,7 @@ impl Alert {
 /// Record the swap in the cache's `events` table as a `clipper` event, so
 /// `wpantry report --audit` lists it.
 pub fn record(cache: &Cache, a: &Alert) -> Result<()> {
-    let mut detail = a.to_json(system::now());
+    let mut detail = a.to_json(os::now());
     if let Value::Object(o) = &mut detail {
         for k in ["schema", "impl", "version", "at"] {
             o.remove(k);
@@ -217,9 +218,9 @@ pub fn notify(a: &Alert) {
     let timeout = Duration::from_secs(10);
     if cfg!(target_os = "macos") {
         let script = format!("display notification {} with title {}", applescript(&body), applescript(title));
-        let _ = system::exec(&[OsStr::new("osascript"), OsStr::new("-e"), OsStr::new(&script)], &[], timeout);
-    } else if system::which("notify-send").is_some() {
-        let _ = system::exec(
+        let _ = process::exec(&[OsStr::new("osascript"), OsStr::new("-e"), OsStr::new(&script)], &[], timeout);
+    } else if process::which("notify-send").is_some() {
+        let _ = process::exec(
             &[OsStr::new("notify-send"), OsStr::new("--urgency=critical"), OsStr::new(title), OsStr::new(&body)],
             &[],
             timeout,
@@ -332,7 +333,7 @@ mod tests {
         assert_eq!(v["chain"], "Tron");
         assert_eq!(v["seconds"], 0.33);
         assert_eq!(v["at"], 1_793_348_743.0);
-        let d = crate::system::TempDir::new("guard").unwrap();
+        let d = crate::utils::temp::TempDir::new("guard").unwrap();
         let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
         record(&c, &a).unwrap();
         let events = history::events(&c, 0.0).unwrap();

@@ -3,8 +3,9 @@
 //! the Rust one reads lockfiles, package databases and image contents
 //! itself, so osv-scanner is not on it.
 
-use crate::json::{J, obj};
-use crate::system::{run, which};
+use crate::utils::json::{J, obj};
+use crate::utils::process::run;
+use crate::utils::process::which;
 use std::time::Duration;
 
 /// (name, required, version arguments, what wpantry uses it for)

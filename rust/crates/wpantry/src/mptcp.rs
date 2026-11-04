@@ -145,7 +145,7 @@ fn opt_in(text: &str) -> Option<(&'static str, usize)> {
 
 fn read(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
-    (meta.is_file() && meta.len() <= MAX_FILE).then(|| crate::system::read_capped(path, MAX_FILE).ok())?
+    (meta.is_file() && meta.len() <= MAX_FILE).then(|| crate::utils::files::read_capped(path, MAX_FILE).ok())?
 }
 
 /// Every program under `root` exposed through MPTCP, sorted by file.
@@ -241,8 +241,8 @@ mod tests {
 
     const SERVER: &str = "package main\n\nimport (\n\t\"net\"\n\t\"net/http\"\n)\n\nfunc main() {\n\t// net.Listen in a comment doesn't count\n\tln, _ := net.Listen(\"tcp\", \":8080\")\n\thttp.Serve(ln, nil)\n}\n";
 
-    fn repo(files: &[(&str, &str)]) -> crate::system::TempDir {
-        let d = crate::system::TempDir::new("mptcp").unwrap();
+    fn repo(files: &[(&str, &str)]) -> crate::utils::temp::TempDir {
+        let d = crate::utils::temp::TempDir::new("mptcp").unwrap();
         for (name, text) in files {
             let p = d.path().join(name);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();

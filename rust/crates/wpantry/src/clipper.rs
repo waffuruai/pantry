@@ -18,8 +18,8 @@
 //! The browser-extension side is the `SUSPECT-CLIPBOARD-SWAP` rule over
 //! installed code.
 
-use crate::addresses::{self, Chain};
-use crate::system;
+use crate::utils::addresses::{self, Chain};
+use crate::utils::{files, process};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -46,7 +46,7 @@ const QUICK: Duration = Duration::from_secs(5);
 /// The clipboard of this session, or why there is none to test.
 pub fn real() -> Result<Real, String> {
     if cfg!(target_os = "macos") {
-        return if system::which("pbpaste").is_some() && system::which("pbcopy").is_some() {
+        return if process::which("pbpaste").is_some() && process::which("pbcopy").is_some() {
             Ok(Real::Mac)
         } else {
             Err("pbcopy and pbpaste are missing".into())
@@ -57,13 +57,13 @@ pub fn real() -> Result<Real, String> {
     if !wayland && !x11 {
         return Err("no display session (DISPLAY and WAYLAND_DISPLAY are unset): nothing owns a clipboard here".into());
     }
-    if wayland && system::which("wl-paste").is_some() && system::which("wl-copy").is_some() {
+    if wayland && process::which("wl-paste").is_some() && process::which("wl-copy").is_some() {
         return Ok(Real::Wayland);
     }
-    if system::which("xclip").is_some() {
+    if process::which("xclip").is_some() {
         return Ok(Real::Xclip);
     }
-    if system::which("xsel").is_some() {
+    if process::which("xsel").is_some() {
         return Ok(Real::Xsel);
     }
     Err(if wayland {
@@ -75,7 +75,7 @@ pub fn real() -> Result<Real, String> {
 }
 
 fn run(argv: &[&str]) -> String {
-    system::run(argv, QUICK)
+    process::run(argv, QUICK)
 }
 
 /// `argv` with `text` on its stdin, waited for briefly; the clipboard
@@ -223,7 +223,7 @@ pub fn extension_permissions(dir: &Path) -> Option<Permissions> {
         subs.sort();
         candidates.extend(subs);
     }
-    let manifest = candidates.into_iter().find(|m| m.is_file()).and_then(|m| system::read_json(&m))?;
+    let manifest = candidates.into_iter().find(|m| m.is_file()).and_then(|m| files::read_json(&m))?;
     let strings = |key: &str| -> Vec<String> {
         manifest
             .get(key)
@@ -315,7 +315,7 @@ pub(crate) fn item_dirs_for(home: &Path, macos: bool) -> Vec<PathBuf> {
 pub(crate) fn command_of(path: &Path) -> Vec<String> {
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or("");
     if name.ends_with(".plist") {
-        let v = crate::plist::read(path);
+        let v = crate::utils::plist::read(path);
         if let Some(args) = v.get("ProgramArguments").and_then(|a| a.as_array()) {
             let mut argv: Vec<String> = args.iter().filter_map(|a| a.as_str().map(str::to_string)).collect();
             if let Some(p) = v.get("Program").and_then(|p| p.as_str()) {
@@ -329,7 +329,7 @@ pub(crate) fn command_of(path: &Path) -> Vec<String> {
         }
         return v.get("Program").and_then(|p| p.as_str()).map(|p| vec![p.to_string()]).unwrap_or_default();
     }
-    let Ok(text) = system::read_capped(path, 1 << 20) else { return Vec::new() };
+    let Ok(text) = files::read_capped(path, 1 << 20) else { return Vec::new() };
     let key = if name.ends_with(".desktop") { "Exec=" } else { "ExecStart=" };
     text.lines()
         .find_map(|l| l.trim().strip_prefix(key))
@@ -347,7 +347,7 @@ pub(crate) fn program_file(argv: &[String]) -> Option<PathBuf> {
     if interpreter && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_file()) {
         return Some(PathBuf::from(script));
     }
-    let p = if first.contains('/') { PathBuf::from(first) } else { system::which(first)? };
+    let p = if first.contains('/') { PathBuf::from(first) } else { process::which(first)? };
     Some(p)
 }
 
@@ -417,7 +417,7 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
             let program = program_file(&argv);
             let mut text = argv.join(" ");
             if let Some(p) = &program
-                && let Ok(bytes) = system::read_capped_bytes(p, MAX_PROGRAM)
+                && let Ok(bytes) = files::read_capped_bytes(p, MAX_PROGRAM)
             {
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&bytes));
@@ -435,8 +435,8 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
                 continue;
             }
             out.push(Persisted {
-                item: system::short(&item.to_string_lossy()),
-                program: system::short(&shown_program),
+                item: files::short(&item.to_string_lossy()),
+                program: files::short(&shown_program),
                 chains,
                 patterns,
                 odd_place: odd,
@@ -450,7 +450,7 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
 /// Every file a launch item names or runs, with the items themselves: what
 /// the malware scan reads among the programs that start at login.
 pub fn persisted_files() -> Vec<PathBuf> {
-    let home = system::home();
+    let home = files::home();
     let mut out = Vec::new();
     for dir in item_dirs(&home) {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -469,7 +469,7 @@ pub fn persisted_files() -> Vec<PathBuf> {
 }
 
 pub fn persistence() -> (Vec<Persisted>, usize) {
-    let home = system::home();
+    let home = files::home();
     persistence_in(&home, &item_dirs(&home))
 }
 
@@ -502,6 +502,7 @@ impl Persisted {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::temp;
     use std::cell::RefCell;
 
     /// A clipboard that swaps any address of `target` after `after` reads.
@@ -584,7 +585,7 @@ mod tests {
 
     #[test]
     fn launch_agents_that_clip_are_found_and_managers_are_not() {
-        let d = system::TempDir::new("clipper").unwrap();
+        let d = temp::TempDir::new("clipper").unwrap();
         let home = d.path();
         let agents = home.join("Library/LaunchAgents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -665,7 +666,7 @@ mod tests {
 
     #[test]
     fn autostart_entries_and_units_read_their_exec_lines() {
-        let d = system::TempDir::new("clipper-linux").unwrap();
+        let d = temp::TempDir::new("clipper-linux").unwrap();
         let home = d.path();
         let auto = home.join(".config/autostart");
         std::fs::create_dir_all(&auto).unwrap();
@@ -694,7 +695,7 @@ mod tests {
 
     #[test]
     fn extension_manifests_say_what_the_clipboard_is_to_them() {
-        let d = system::TempDir::new("clipper-ext").unwrap();
+        let d = temp::TempDir::new("clipper-ext").unwrap();
         let ext = d.path().join("abcdefgh");
         std::fs::create_dir_all(ext.join("1.2.3_0")).unwrap();
         std::fs::write(
@@ -720,7 +721,7 @@ mod tests {
 
     #[test]
     fn program_files_follow_interpreters_and_odd_places_are_named() {
-        let d = system::TempDir::new("clipper-prog").unwrap();
+        let d = temp::TempDir::new("clipper-prog").unwrap();
         let script = d.path().join("s.py");
         std::fs::write(&script, "x").unwrap();
         let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();

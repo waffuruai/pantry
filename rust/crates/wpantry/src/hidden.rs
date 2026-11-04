@@ -163,7 +163,7 @@ pub fn scan_repo(root: &Path) -> Vec<Hidden> {
                 continue;
             }
             budget -= meta.len();
-            let Ok(text) = crate::system::read_capped(&path, MAX_FILE) else { continue };
+            let Ok(text) = crate::utils::files::read_capped(&path, MAX_FILE) else { continue };
             if looks_minified(&text) {
                 continue; // a bundle: not something a person reads, and full of escapes
             }
@@ -1374,7 +1374,7 @@ pub fn commit_messages(root: &Path) -> Vec<Hidden> {
     use std::ffi::OsStr;
     use std::time::Duration;
     let mut out = Vec::new();
-    let log = crate::system::run(
+    let log = crate::utils::process::run(
         &[
             OsStr::new("git"),
             OsStr::new("-C"),
@@ -1689,7 +1689,7 @@ mod tests {
 
     #[test]
     fn walks_a_repo_and_skips_what_it_should() {
-        let d = crate::system::TempDir::new("hidden").unwrap();
+        let d = crate::utils::temp::TempDir::new("hidden").unwrap();
         std::fs::create_dir_all(d.path().join("node_modules/x")).unwrap();
         std::fs::write(d.path().join("node_modules/x/i.js"), "\u{202E}").unwrap();
         std::fs::write(d.path().join("a.min.js"), "\u{202E}").unwrap();

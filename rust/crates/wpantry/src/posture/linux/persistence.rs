@@ -3,7 +3,7 @@
 //! `/etc/ld.so.preload`.
 
 use crate::posture::any::persistence::{Inventory, Item, Roots, Source};
-use crate::system;
+use crate::utils::files;
 use std::path::Path;
 
 /// Read every Linux-only source into `inv`.
@@ -15,7 +15,7 @@ pub(crate) fn collect(r: &Roots, inv: &mut Inventory) {
 /// program on the system.
 fn preload(r: &Roots, inv: &mut Inventory) {
     let path = r.sys("/etc/ld.so.preload");
-    if let Ok(text) = system::read_capped(&path, 1 << 20) {
+    if let Ok(text) = files::read_capped(&path, 1 << 20) {
         for (i, lib) in text.lines().map(str::trim).enumerate() {
             if lib.is_empty() || lib.starts_with('#') {
                 continue;
@@ -38,11 +38,11 @@ mod tests {
     use super::*;
     use crate::posture::any::persistence::inventory_in;
     use crate::posture::testing::{roots, write};
-    use crate::system;
+    use crate::utils::temp;
 
     #[test]
     fn a_linux_inventory_reads_units_cron_autostart_and_preload() {
-        let d = system::TempDir::new("persist").unwrap();
+        let d = temp::TempDir::new("persist").unwrap();
         let none = |_: &[&str]| String::new();
         let r = roots(d.path(), false, &none);
         write(&r.home.join(".config/systemd/user/sync.service"), "[Service]\nExecStart=/usr/bin/true --x\n");

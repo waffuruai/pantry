@@ -33,6 +33,17 @@ mod zip;
 pub use clamav::clamav;
 pub use deflate::inflate;
 
+/// The members of a zip whose names end in `suffix`, each inflated up to
+/// `max` bytes: `(name, bytes)`. Members that can't be read are left out.
+pub fn zip_members(bytes: &[u8], suffix: &str, max: usize) -> Vec<(String, Vec<u8>)> {
+    let Some(z) = zip::Zip::parse(bytes) else { return Vec::new() };
+    z.entries
+        .iter()
+        .filter(|e| e.name.ends_with(suffix))
+        .filter_map(|e| z.read_capped(bytes, &e.name, max).map(|b| (e.name.clone(), b)))
+        .collect()
+}
+
 /// One finding about one file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Doc {

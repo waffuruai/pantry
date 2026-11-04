@@ -209,3 +209,47 @@ fn duplicate_rules_and_bad_syntax_are_rejected_without_losing_the_rest() {
     assert!(rules.rejected.iter().any(|r| r.rule == "a" && r.error.to_string().contains("duplicate")));
     assert!(rules.rejected.iter().any(|r| r.rule == "b"));
 }
+
+#[test]
+fn a_files_imports_dont_classify_rules_that_dont_use_them() {
+    let src = r#"import "pe" import "elf"
+        rule Plain { strings: $a = "abc" condition: $a }
+        rule Uses_Pe { condition: pe.is_pe and for any s in pe.sections : (s.name == "x") }
+        rule Uses_Elf_In_Loop { condition: for any i in (0..elf.number_of_sections) : (true) }
+        rule Uses_Pe_In_Of { strings: $a = "abc" condition: 1 of ($a) at pe.entry_point }
+        rule Uses_Elf_In_With { condition: with n = elf.type : (n == 2) }
+    "#;
+    let mut c = Compiler::new();
+    c.add_source("t", src, Syntax::Relaxed);
+    let rules = c.build();
+    let os: Vec<_> = rules.rules().iter().map(|r| r.os).collect();
+    use crate::Os::*;
+    assert_eq!(os, [Any, Windows, Linux, Windows, Linux]);
+}
+
+#[test]
+fn rules_are_classified_and_filtered() {
+    let src = r#"
+        rule MAL_Win_Thing { strings: $a = "abc" condition: uint16(0) == 0x5A4D and $a }
+        rule HKTL_Lnx_Tool { strings: $a = "abc" condition: $a }
+        rule Generic_Script { meta: score = 50 strings: $a = "abc" condition: $a }
+    "#;
+    let mut c = Compiler::new();
+    c.add_source("t", src, Syntax::Relaxed);
+    let rules = c.build();
+    let got: Vec<_> = rules.rules().iter().map(|r| (r.name.as_str(), r.os, r.category, r.score)).collect();
+    assert_eq!(
+        got,
+        [
+            ("MAL_Win_Thing", crate::Os::Windows, "malware", 75),
+            ("HKTL_Lnx_Tool", crate::Os::Linux, "hacktool", 75),
+            ("Generic_Script", crate::Os::Any, "suspicious", 50),
+        ]
+    );
+    let mut c = Compiler::new();
+    c.set_filter(|os, _| matches!(os, crate::Os::Linux | crate::Os::Any));
+    c.add_source("t", src, Syntax::Relaxed);
+    let rules = c.build();
+    assert_eq!(rules.rules().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["HKTL_Lnx_Tool", "Generic_Script"]);
+    assert_eq!(rules.stats().skipped, 1);
+}

@@ -10,6 +10,7 @@
 use crate::Error;
 use crate::ast::*;
 use crate::atoms::{AtomTable, Target};
+use crate::classify::{self, Os};
 use crate::matcher;
 use crate::modules::{self, Module};
 use crate::parser;
@@ -41,6 +42,11 @@ pub struct Rejected {
 
 pub struct CompiledRule {
     pub name: String,
+    /// The system its targets run on and the threat it names ([`crate::classify`]).
+    pub os: Os,
+    pub category: &'static str,
+    /// The rule's `score` meta (Forge's), 75 when it has none.
+    pub score: i64,
     pub namespace: String,
     pub tags: Vec<String>,
     pub meta: Vec<(String, Meta)>,
@@ -66,6 +72,7 @@ pub struct Rules {
     pub(crate) brute: Vec<(u32, u32)>,
     pub(crate) modules: Vec<Arc<dyn Module>>,
     pub(crate) nslots: usize,
+    pub(crate) skipped: usize,
     pub rejected: Vec<Rejected>,
 }
 
@@ -73,6 +80,8 @@ pub struct Rules {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stats {
     pub rules: usize,
+    /// Rules left out by the compiler's filter.
+    pub skipped: usize,
     pub strings: usize,
     pub atoms: usize,
     /// String variants with no atom, tried at every position.
@@ -101,6 +110,7 @@ impl Rules {
     pub fn stats(&self) -> Stats {
         Stats {
             rules: self.rules.len(),
+            skipped: self.skipped,
             strings: self.strings.len(),
             atoms: self.atoms.len(),
             unanchored: self.brute.len(),
@@ -117,7 +127,12 @@ pub struct Compiler {
     names: HashMap<(String, String), usize>,
     rejected: Vec<Rejected>,
     nslots: usize,
+    /// Which rules to keep, by system and category; the rest are skipped.
+    filter: Option<Filter>,
+    skipped: usize,
 }
+
+type Filter = Box<dyn Fn(Os, &str) -> bool>;
 
 impl Default for Compiler {
     fn default() -> Self {
@@ -135,7 +150,16 @@ impl Compiler {
             names: HashMap::new(),
             rejected: Vec::new(),
             nslots: 0,
+            filter: None,
+            skipped: 0,
         }
+    }
+
+    /// Keep only the rules `keep(os, category)` accepts (this machine's
+    /// system and `any`, say); the others are skipped, not rejected. A kept
+    /// rule that names a skipped one is rejected as naming an unknown rule.
+    pub fn set_filter(&mut self, keep: impl Fn(Os, &str) -> bool + 'static) {
+        self.filter = Some(Box::new(keep));
     }
 
     /// Make a module importable (replacing a built-in of the same name).
@@ -161,7 +185,13 @@ impl Compiler {
         let mut added = 0;
         for rule in file.rules {
             let name = rule.name.clone();
-            match self.rule(namespace, &imports, rule) {
+            let used: Vec<String> = file.imports.iter().filter(|m| uses(&rule.condition, m)).cloned().collect();
+            let class = classify::classify(&rule.name, &rule.tags, &rule.meta, &used, file_need(&rule.condition));
+            if self.filter.as_ref().is_some_and(|keep| !keep(class.0, class.1)) {
+                self.skipped += 1;
+                continue;
+            }
+            match self.rule(namespace, &imports, rule, class) {
                 Ok(()) => added += 1,
                 Err(error) => self.rejected.push(Rejected { namespace: namespace.into(), rule: name, error }),
             }
@@ -169,7 +199,13 @@ impl Compiler {
         added
     }
 
-    fn rule(&mut self, namespace: &str, imports: &[usize], rule: Rule) -> Result<(), Error> {
+    fn rule(
+        &mut self,
+        namespace: &str,
+        imports: &[usize],
+        rule: Rule,
+        (os, category, score): (Os, &'static str, i64),
+    ) -> Result<(), Error> {
         let key = (namespace.to_string(), rule.name.clone());
         if self.names.contains_key(&key) {
             return Err(Error::Semantic { line: rule.line, msg: format!("duplicate rule {}", rule.name) });
@@ -198,6 +234,9 @@ impl Compiler {
         self.names.insert(key, self.rules.len());
         self.rules.push(CompiledRule {
             name: rule.name,
+            os,
+            category,
+            score,
             namespace: namespace.into(),
             tags: rule.tags,
             meta: rule.meta,
@@ -233,6 +272,7 @@ impl Compiler {
             brute,
             modules: self.modules,
             nslots: self.nslots,
+            skipped: self.skipped,
             rejected: self.rejected,
         }
     }
@@ -1085,6 +1125,44 @@ fn magic_check(read: &Expr, value: &Expr) -> Option<FileType> {
             Some(FileType::MachO)
         }
         _ => None,
+    }
+}
+
+/// Whether a condition names `module` (a file imports modules for all its
+/// rules; this is what one rule uses).
+fn uses(e: &Expr, module: &str) -> bool {
+    let any = |items: &[Expr]| items.iter().any(|i| uses(i, module));
+    let anchor = |a: &Option<Anchor>| match a {
+        Some(Anchor::At(x)) => uses(x, module),
+        Some(Anchor::In(lo, hi)) => uses(lo, module) || uses(hi, module),
+        None => false,
+    };
+    let quant = |q: &Quant| matches!(q, Quant::Count(x) | Quant::Percent(x) if uses(x, module));
+    match e {
+        Expr::Ident(n) => n == module,
+        Expr::Field(b, _) => uses(b, module),
+        Expr::Index(a, b) => uses(a, module) || uses(b, module),
+        Expr::Call(f, args) => uses(f, module) || any(args),
+        Expr::Unary(_, x) => uses(x, module),
+        Expr::Binary(_, a, b) => uses(a, module) || uses(b, module),
+        Expr::StrMatch { anchor: a, .. } => anchor(a),
+        Expr::StrCount { range: Some((lo, hi)), .. } => uses(lo, module) || uses(hi, module),
+        Expr::StrOffset { index: Some(i), .. } | Expr::StrLength { index: Some(i), .. } => uses(i, module),
+        Expr::Of { quant: q, items, anchor: a } => {
+            quant(q) || anchor(a) || matches!(items, OfItems::Exprs(x) if any(x))
+        }
+        Expr::ForOf { quant: q, body, .. } => quant(q) || uses(body, module),
+        Expr::ForIn { quant: q, iter, body, .. } => {
+            quant(q)
+                || uses(body, module)
+                || match iter {
+                    Iterable::Range(lo, hi) => uses(lo, module) || uses(hi, module),
+                    Iterable::List(items) => any(items),
+                    Iterable::Expr(x) => uses(x, module),
+                }
+        }
+        Expr::With { binds, body } => binds.iter().any(|(_, x)| uses(x, module)) || uses(body, module),
+        _ => false,
     }
 }
 

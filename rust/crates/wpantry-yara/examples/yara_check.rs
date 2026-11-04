@@ -3,7 +3,7 @@
 //! output can be compared with the reference implementation.
 //!
 //! ```text
-//! cargo run --release --example yara_check -- RULES.yar [--strict] [--unanchored] [PATH...]
+//! cargo run --release --example yara_check -- RULES.yar [--strict] [--unanchored] [--categories] [PATH...]
 //! ```
 
 use std::collections::BTreeMap;
@@ -40,6 +40,15 @@ fn main() {
     if args.iter().any(|a| a == "--unanchored") {
         for (rule, string) in rules.unanchored() {
             eprintln!("unanchored: {rule} ${string}");
+        }
+    }
+    if args.iter().any(|a| a == "--categories") {
+        let mut by: BTreeMap<(String, &str), usize> = BTreeMap::new();
+        for r in rules.rules() {
+            *by.entry((r.os.name().to_string(), r.category)).or_default() += 1;
+        }
+        for ((os, cat), n) in by {
+            eprintln!("{n:6}  {os:8} {cat}");
         }
     }
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();

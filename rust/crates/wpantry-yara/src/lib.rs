@@ -22,6 +22,7 @@
 
 mod ast;
 pub mod atoms;
+pub mod classify;
 pub mod compile;
 mod lexer;
 pub mod matcher;
@@ -32,6 +33,7 @@ pub mod scan;
 pub mod strings;
 pub mod value;
 
+pub use classify::Os;
 pub use compile::{Compiler, Rejected, Rules};
 pub use pattern::Syntax;
 pub use scan::{Hit, ScanOptions, ScanResult};

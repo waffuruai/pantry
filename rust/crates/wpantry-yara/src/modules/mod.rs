@@ -26,6 +26,12 @@ pub trait Module: Send + Sync {
     fn parse(&self, data: &[u8]) -> Value;
 }
 
+/// A small 64-bit ELF executable, for other modules' tests.
+#[cfg(test)]
+pub fn elf_sample_for_tests() -> Vec<u8> {
+    elf::tests::sample_elf()
+}
+
 /// The modules every compiler starts with.
 pub fn builtin() -> Vec<Arc<dyn Module>> {
     vec![

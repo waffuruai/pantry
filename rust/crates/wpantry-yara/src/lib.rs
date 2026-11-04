@@ -24,6 +24,7 @@ mod ast;
 pub mod atoms;
 pub mod classify;
 pub mod compile;
+pub mod generate;
 mod lexer;
 pub mod matcher;
 pub mod modules;

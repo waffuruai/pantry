@@ -417,6 +417,9 @@ mod tests {
             osv::API,
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",
+            crate::malware::FORGE_RELEASE,
+            "https://release-assets.githubusercontent.com/github-production-release-asset/x",
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/x",
         ];
         for url in sources {
             assert!(allowed(url).is_ok(), "{url}");

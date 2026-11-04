@@ -44,6 +44,11 @@ fn emit(json: &str) {
     println!("{json}");
 }
 
+/// A one-line note on stderr (stdout stays the command's output).
+fn note(line: &str) {
+    eprintln!("{}", Style::stderr().line(&format!("  ℹ {}", style::clean(line))));
+}
+
 /// A line of the report on stdout, coloured by its mark on a terminal.
 fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
@@ -104,6 +109,8 @@ fn cmd_scan(a: Check) -> Result<i32> {
         machine: !a.no_machine,
         no_posture: a.no_posture,
         no_clipboard: a.no_clipboard,
+        no_malware: a.no_malware,
+        deep: a.deep,
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
@@ -1011,6 +1018,131 @@ fn cmd_mitigate_list() -> Result<i32> {
     Ok(EXIT_OK)
 }
 
+/// `rules`: where the malware scan's rules come from and what compiled;
+/// `--update` fetches YARA Forge's package first.
+fn cmd_rules(update: bool, json: bool) -> Result<i32> {
+    use wpantry::malware;
+    let cache = Cache::open(None)?;
+    let mut failed = None;
+    if update {
+        let net = wpantry::net::Http::new();
+        let progress = progress::Progress::start();
+        progress.set("Fetching YARA Forge's rules");
+        if let Err(e) = malware::update(&cache, &net, true) {
+            failed = Some(e.to_string());
+        }
+        progress.finish();
+    }
+    let dir = malware::rules_dir(&cache);
+    let loaded = malware::load(&dir, false);
+    let all = malware::load(&dir, true);
+    cache.close()?;
+    let stats = all.rules.stats();
+    if json {
+        let sources = all
+            .sources
+            .iter()
+            .map(|(n, c)| obj([("source", n.as_str().into()), ("rules", J::Int(*c as i64))]))
+            .collect();
+        say(&obj([
+            ("directory", dir.to_string_lossy().as_ref().into()),
+            ("sources", J::Arr(sources)),
+            ("rules", J::Int(stats.rules as i64)),
+            ("this_system", J::Int(loaded.rules.rules().len() as i64)),
+            ("rejected", J::Int(all.rules.rejected.len() as i64)),
+            ("update_failed", failed.as_deref().map_or(J::Null, |f| f.into())),
+        ])
+        .dumps_indent(1));
+    } else {
+        show(&format!("Rules in {}", dir.display()));
+        for (name, n) in &all.sources {
+            show(&format!("  {n:>6}  {name}"));
+        }
+        show(&format!(
+            "{} rules compile ({} for this system and any; --deep uses all), {} rejected",
+            stats.rules,
+            loaded.rules.rules().len(),
+            all.rules.rejected.len()
+        ));
+        if let Some(f) = &failed {
+            show(&format!("Not updated: {f}"));
+        }
+    }
+    Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
+}
+
+/// `rules goodware`: rebuild the goodware database; returns how many files it read.
+fn cmd_rules_goodware() -> Result<usize> {
+    let cache = Cache::open(None)?;
+    let progress = progress::Progress::start();
+    let status = |m: &str| progress.set(m);
+    let files = wpantry::rulegen::goodware_files(&wpantry::rulegen::goodware_dirs());
+    let read = wpantry::rulegen::build(&cache, &files, &status);
+    progress.finish();
+    let read = read?;
+    cache.close()?;
+    note(&format!("goodware: {read} system programs read"));
+    Ok(read)
+}
+
+/// `rules gen`: a rule from samples, checked against the goodware.
+fn cmd_rules_gen(
+    samples: &[std::path::PathBuf],
+    category: &str,
+    family: Option<&str>,
+    name: Option<&str>,
+    out: Option<&std::path::Path>,
+) -> Result<i32> {
+    use wpantry::rulegen;
+    if !rulegen::built(&Cache::open(None)?)? {
+        cmd_rules_goodware()?;
+    }
+    let cache = Cache::open(None)?;
+    let family = family.map(str::to_string).unwrap_or_else(|| {
+        samples[0].file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Unknown".into())
+    });
+    let name = name.map(str::to_string).unwrap_or_else(|| rulegen::rule_name(&family, category));
+    let mut hashes = Vec::new();
+    for s in samples {
+        hashes.push(wpantry::sha256::hex(&std::fs::read(s)?));
+    }
+    let date = wpantry::history::stamp(wpantry::system::now());
+    let describe = rulegen::Describe {
+        name: &name,
+        category,
+        family: &family,
+        author: "wpantry rules gen",
+        reference: "",
+        date: date.get(..10).unwrap_or(&date),
+        hashes: &hashes,
+    };
+    let Some(output) = rulegen::run(&cache, samples, &describe)? else {
+        note("no rule: the samples share nothing that this machine's programs don't also have");
+        return Ok(EXIT_FAIL);
+    };
+    cache.close()?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &output.rule.text)?;
+            std::fs::write(path.with_extension("test.toml"), &output.test_toml)?;
+            note(&format!(
+                "wrote {} ({} strings, {} code snippets) and its test file",
+                path.display(),
+                output.rule.strings,
+                output.rule.opcodes
+            ));
+        }
+        None => say(&output.rule.text),
+    }
+    if !output.false_positives.is_empty() {
+        for f in &output.false_positives {
+            note(&format!("false positive: the rule matches {}", f.display()));
+        }
+        return Ok(EXIT_FAIL);
+    }
+    Ok(EXIT_OK)
+}
+
 fn cmd_skill() -> Result<i32> {
     let mut out = std::io::stdout().lock();
     out.write_all(wpantry::SKILL.as_bytes())?;
@@ -1028,6 +1160,11 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
+        Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
+            "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
+            "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),
+            _ => cmd_rules(update, json),
+        },
         Command::Report { sections, since_days, format, out } => {
             cmd_report(&sections, since_days, &format, out.as_deref())
         }

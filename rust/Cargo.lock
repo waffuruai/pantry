@@ -825,6 +825,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+ "wpantry-yara",
 ]
 
 [[package]]

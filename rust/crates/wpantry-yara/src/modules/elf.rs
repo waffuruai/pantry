@@ -569,7 +569,7 @@ fn symbol_md5(c: &FnCtx, imports: bool) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::{Compiler, ScanOptions, Syntax};
 
     /// A 64-bit little-endian executable: one load segment, a dynamic

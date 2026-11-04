@@ -1,24 +1,24 @@
 //! Optional, self-contained report. Stage next to the destination so errors
 //! leave any previous report intact; never follow the destination's symlink.
+use crate::checks::{Options, Outcome};
+use crate::db::Cache;
+use crate::error::Result;
+use crate::history;
+use crate::utils::json::{J, obj};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use wpantry::checks::{Options, Outcome};
-use wpantry::db::Cache;
-use wpantry::error::Result;
-use wpantry::history;
-use wpantry::utils::json::{J, obj};
 
-const TEMPLATE: &str = include_str!("../assets/report.html");
+const TEMPLATE: &str = include_str!("../../assets/report/report.html");
 const TOKEN: &str = "{{PANTRY_BUNDLE}}";
 /// The brand faces (SIL OFL, `assets/fonts/`), embedded so a report opens
 /// offline without fetching a font.
 const FONTS: [(&str, &[u8]); 4] = [
-    ("{{FONT_SERIF}}", include_bytes!("../assets/fonts/instrument-serif-latin-400-normal.woff2")),
-    ("{{FONT_SERIF_ITALIC}}", include_bytes!("../assets/fonts/instrument-serif-latin-400-italic.woff2")),
-    ("{{FONT_SANS}}", include_bytes!("../assets/fonts/geist-latin-wght-normal.woff2")),
-    ("{{FONT_MONO}}", include_bytes!("../assets/fonts/geist-mono-latin-wght-normal.woff2")),
+    ("{{FONT_SERIF}}", include_bytes!("../../assets/report/fonts/instrument-serif-latin-400-normal.woff2")),
+    ("{{FONT_SERIF_ITALIC}}", include_bytes!("../../assets/report/fonts/instrument-serif-latin-400-italic.woff2")),
+    ("{{FONT_SANS}}", include_bytes!("../../assets/report/fonts/geist-latin-wght-normal.woff2")),
+    ("{{FONT_MONO}}", include_bytes!("../../assets/report/fonts/geist-mono-latin-wght-normal.woff2")),
 ];
 /// How far back the history sections look, as `wpantry report` does.
 const HISTORY_DAYS: f64 = 90.0;
@@ -104,7 +104,7 @@ fn history_json(report: &Outcome) -> (J, String, String) {
     // another scope. A machine scan can list tens of thousands.
     let listed: std::collections::HashSet<String> = report.findings.iter().map(history::key_of).collect();
     let key = |e: &history::Exposure| format!("{}|{}|{}|{}", e.kind, e.component, e.location, e.vuln_id);
-    let since = wpantry::utils::os::now() - HISTORY_DAYS * wpantry::db::DAY;
+    let since = crate::utils::os::now() - HISTORY_DAYS * crate::db::DAY;
     let out = match (history::exposures(&cache, since), history::fixes(&cache, since), history::scans(&cache, since)) {
         (Ok(exposures), Ok(fixes), Ok(scans)) => {
             let this = scans.iter().find(|s| s.id == scan_id);
@@ -146,7 +146,7 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
     let policy_path =
         |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "bundled".into());
     let strings = |xs: Vec<String>| J::Arr(xs.into_iter().map(J::from).collect());
-    let plan: Vec<J> = super::report::steps(&report.findings)
+    let plan: Vec<J> = crate::remediation::steps(&report.findings)
         .iter()
         .map(|s| {
             obj([
@@ -162,10 +162,10 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
             J::Arr(vec![obj([
                 ("title", "Security scan".into()),
                 ("file", "wpantry scan".into()),
-                ("report", super::envelope(report)),
+                ("report", super::json::envelope(report)),
             ])]),
         ),
-        ("generated_at", J::Int((wpantry::utils::os::now() * 1000.0) as i64)),
+        ("generated_at", J::Int((crate::utils::os::now() * 1000.0) as i64)),
         ("phase", phase.into()),
         ("scan_id", J::Int(report.scan_id)),
         ("host", host.into()),
@@ -201,7 +201,7 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wpantry::finding::Finding;
+    use crate::finding::Finding;
 
     #[test]
     fn hostile_text_stays_json_data() {
@@ -216,7 +216,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(!payload.contains(['<', '>', '&']));
-        let parsed = wpantry::utils::json::parse(payload.as_bytes(), usize::MAX).unwrap();
+        let parsed = crate::utils::json::parse(payload.as_bytes(), usize::MAX).unwrap();
         assert_eq!(parsed["note"], hostile);
         assert!(!html.contains(TOKEN));
     }
@@ -346,7 +346,7 @@ mod tests {
         let scan = fixture();
         let b = bundle(&scan, &Options::default(), "scan", J::Null, "mac", "eric");
         let text = b.dumps();
-        let v = wpantry::utils::json::parse(text.as_bytes(), usize::MAX).unwrap();
+        let v = crate::utils::json::parse(text.as_bytes(), usize::MAX).unwrap();
         assert_eq!(v["runs"][0]["report"]["findings"].as_array().unwrap().len(), scan.findings.len());
         assert_eq!(
             (v["host"].as_str(), v["user"].as_str(), v["scan_id"].as_i64()),

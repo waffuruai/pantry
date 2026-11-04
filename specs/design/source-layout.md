@@ -45,7 +45,7 @@ wpantry/src/
   reporters/
     mod.rs  text.rs  json.rs  jsonl.rs  html.rs  csv.rs  yara.rs
   remediation/
-    mod.rs  mitigate.rs  harden.rs  editors.rs
+    mod.rs  mitigate.rs  ca_trust.rs  editors.rs
   utils/
     json.rs  toml.rs  dates.rs  plist.rs  re.rs  sha256.rs  net.rs  walk.rs  addresses.rs
     files.rs  process.rs  os.rs  parallel.rs  temp.rs  homebrew.rs
@@ -68,7 +68,7 @@ wpantry-cli/src/
 | `tools.rs`, `catalog.rs`, `packages.rs`, `apps.rs`, `editors.rs`, `harnesses.rs`, `images.rs` | `checks/machine/` | `images.rs` reads container images |
 | `osdb.rs` | `checks/machine/os_packages.rs` | |
 | `cellar.rs`, `scanners.rs` | `checks/machine/cellar.rs` and `checks/machine/brew_vulns.rs` | Bottles poured without `brew`, and `brew vulns`: two jobs, so two files. The prefix and cask readers they share with other checks are `utils/homebrew.rs` |
-| `catrust.rs` | `checks/machine/ca_trust.rs`, with `wpantry harden` going to `remediation/harden.rs` | |
+| `catrust.rs` | `checks/machine/ca_trust.rs` (1b), with the fix behind `wpantry harden ca-trust` going to `remediation/ca_trust.rs` (1d) | Named like the check it fixes |
 | `clipper.rs` | `checks/machine/clipper.rs`; `item_dirs_for` and `command_of` go to `checks/posture/any/persistence/units.rs` | Persistence uses them more than the clipper does |
 | `check_supply.rs` | `checks/supply_chain/mod.rs` | |
 | `repos.rs` | `checks/supply_chain/repos.rs`; `PRUNE`, `DISCOVER_PRUNE`, `skip` and the bounded, memoised walk go to `utils/walk.rs` | One walker and one prune list for every check |
@@ -92,9 +92,10 @@ wpantry-cli/src/
 | `json.rs`, `plist.rs`, `re.rs`, `sha256.rs`, `addresses.rs` | `utils/` | `addresses.rs` is shared by the suspect, clipper and malware checks |
 | `export.rs` | `reporters/jsonl.rs` | |
 | `mitigate.rs` | `remediation/mitigate.rs` | |
-| `posture/any/tools.rs`'s `set_extension_cooldown` | `remediation/editors.rs` | The check stays in posture; applying it moves |
-| CLI `html.rs` (and `assets/report.html`) | `reporters/html.rs` | |
-| CLI `report.rs` | `reporters/text.rs` (rendering) and `remediation/mod.rs` (planning and applying fixes) | Colour stays in the CLI's `style.rs` |
+| `posture/any/tools.rs`'s `set_extension_cooldown` and `with_cooldown` | `remediation/editors.rs` | The check stays in posture; applying it moves |
+| CLI `html.rs` (and `assets/report.html`, `assets/fonts/`) | `reporters/html.rs`, with the template and fonts in the library's `assets/report/` | |
+| CLI `main.rs`'s `envelope` | `reporters/json.rs` | The `--json` envelope |
+| CLI `report.rs` | `reporters/text.rs` (rendering) and `remediation/mod.rs` (planning and applying fixes) | Colour stays in the CLI's `style.rs`. The CLI's `report` command (the exposure, remediation and audit logs) stays in `main.rs` until phase 5 |
 | CLI `main.rs`, `args.rs`, `progress.rs`, `style.rs`, `schedule.rs`, `update.rs` | stay | |
 
 ## How the moves land
@@ -106,7 +107,7 @@ Each phase-1 PR moves code without changing it: `git mv` where a file moves whol
 | 1a | `utils/` from the root-level helpers (`json`, `plist`, `re`, `sha256`, `net`, `addresses`) and `system.rs`; `component.rs` and `finding.rs` |
 | 1b | `checks/`, every file whole (a file that is both a source and a check moves with the check), and the helpers that come out of its folders: `utils/toml.rs` (from `lockfiles/`), `utils/archive/` (from `documents/`), `utils/walk.rs` (from `repos.rs`), and `item_dirs_for` and `command_of` (from `clipper.rs`) |
 | 1c | `sources/`: `osv.rs`, `distros.rs`, `feeds.rs` split by family, and the source halves of `email.rs`, `malicious.rs`, `licenses.rs` and `indicators.rs` |
-| 1d | `reporters/` and `remediation/` |
+| 1d | `reporters/` (`export.rs`, and the CLI's `html.rs`, its assets, `report.rs`'s rendering and `main.rs`'s `envelope`) and `remediation/` (`mitigate.rs`, `report.rs`'s plan and apply, and the `harden` fixes out of `ca_trust.rs` and `posture/any/tools.rs`) |
 
 **Each PR is checked by:**
 - the contract suite;

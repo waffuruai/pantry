@@ -2,7 +2,7 @@
 // Renders the viewer in a fake DOM: the structure of the page for a scan of
 // every kind, escaping, imports, the print document and the all-clear state.
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('path');
-const html=fs.readFileSync(path.join(__dirname,'../../rust/crates/wpantry-cli/assets/report.html'),'utf8');
+const html=fs.readFileSync(path.join(__dirname,'../../rust/crates/wpantry/assets/report/report.html'),'utf8');
 const scripts=[...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)].map(x=>x[1]);
 const viewer=scripts[2];
 assert(viewer.includes("'use strict'"));
@@ -77,7 +77,7 @@ const every=[
   finding('unchecked','CISA KEV','UNCHECKED','warn',{note:'offline and not cached <b>x</b>',location:'',version:''}),
   finding('unchecked','repo dependencies against OSV','UNCHECKED','warn',{note:'offline and not cached',location:'',version:''}),
 ];
-function planOf(findings){ // the shape src/html.rs writes: one step per command, fails first
+function planOf(findings){ // the shape src/reporters/html.rs writes: one step per command, fails first
   const by=new Map(); findings.forEach((f,i)=>{if(!f.fix_cmd||f.kind==='unchecked')return; if(!by.has(f.fix_cmd))by.set(f.fix_cmd,{command:f.fix_cmd,mode:f.fix_auto?'auto':(f.status==='fail'?'manual':'optional'),findings:[]}); by.get(f.fix_cmd).findings.push(i)});
   return [...by.values()].sort((a,b)=>(a.mode==='optional')-(b.mode==='optional'));
 }

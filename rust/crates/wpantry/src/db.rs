@@ -633,7 +633,7 @@ mod tests {
         assert_eq!(&cols[12..], ["dep_scope", "dep_direct", "affected_range"]);
         let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
         assert_eq!(kept, 1);
-        let f = crate::export::findings(&c).unwrap();
+        let f = crate::reporters::jsonl::findings(&c).unwrap();
         assert_eq!((f[0].dep_scope.as_str(), f[0].dep_direct, f[0].affected_range.as_str()), ("", None, ""));
         c.close().unwrap();
         // Opening again is a no-op.

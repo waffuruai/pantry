@@ -1,8 +1,15 @@
 //! `brew vulns` (Homebrew formulae), the one scanner still delegated: it
 //! reruns only when the installed formulae change or a day passes.
 
+use crate::checks::ecosystems::versions;
+use crate::checks::machine::manual;
+use crate::checks::{REMOVE, Scan, display_id, is_kev, is_malicious};
+use crate::component::Component;
+use crate::db::severity_of;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::finding::Finding;
+use crate::sources::osv;
 use crate::utils::json::{self, arr_at, str_at};
 use crate::utils::process::exec;
 use crate::utils::process::run;
@@ -112,9 +119,85 @@ pub fn brew_vulns(
     cache.memo("brew-vulns", scan, DAY, &job.fingerprint, refresh, offline).map(Some)
 }
 
+// Homebrew ----------------------------------------------------------------------
+
+pub fn brew(scan: &mut Scan, job: Option<&BrewJob>, ran: Option<Result<Value>>) -> Result<()> {
+    scan.status("Checking Homebrew formulae (brew vulns)");
+    let res = match brew_vulns(&scan.cache, job, ran, scan.opts.refresh, scan.opts.offline) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(()),
+        Err(Error::Missing(_)) => {
+            scan.add(Finding {
+                kind: "tool".into(),
+                component: "brew vulns".into(),
+                vuln_id: "MISSING".into(),
+                status: "fail".into(),
+                note: "Homebrew formulae can't be checked".into(),
+                fix_cmd: "brew update".into(),
+                fix_auto: true,
+                ..Default::default()
+            });
+            return Ok(());
+        }
+        Err(e) if e.is_source() => {
+            scan.unchecked("Homebrew formulae (brew vulns)", &e.to_string());
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+    scan.count("Homebrew formulae", res.get("checked").and_then(Value::as_i64).unwrap_or(0));
+    for f in crate::utils::json::arr_at(&res, "findings") {
+        let formula = crate::utils::json::str_at(f, "formula").to_string();
+        let version = crate::utils::json::str_at(f, "version").to_string();
+        let (fix, auto) = match manual(&formula) {
+            Some(m) => (m.to_string(), false),
+            None => (format!("brew upgrade {formula}"), true),
+        };
+        let mut c = Component::new("brew", &formula, &version, "Homebrew");
+        c.fix = fix;
+        c.auto = auto;
+        for v in crate::utils::json::arr_at(f, "vulnerabilities") {
+            let rec = serde_json::json!({"id": crate::utils::json::str_at(v, "id"), "aliases": v.get("aliases").cloned().unwrap_or(serde_json::json!([]))});
+            let fixes: Vec<String> =
+                crate::utils::json::strs_at(v, "fixed_versions").into_iter().filter(|x| osv::released(x)).collect();
+            if is_malicious(&rec) {
+                scan.add(Finding {
+                    vuln_id: crate::utils::json::str_at(v, "id").into(),
+                    status: "fail".into(),
+                    kev: true,
+                    severity: "MALICIOUS".into(),
+                    note: crate::utils::json::str_at(v, "summary").into(),
+                    fix_cmd: REMOVE.replace("{}", &formula),
+                    ..Finding::of(&c)
+                });
+            } else if fixes.is_empty() {
+                scan.unfixed += 1;
+            } else {
+                let sev = crate::utils::json::str_at(v, "severity").to_uppercase();
+                scan.add(Finding {
+                    vuln_id: display_id(&rec),
+                    status: "fail".into(),
+                    kev: is_kev(&rec, &scan.kev),
+                    fixed: versions::pick_safe(&version, &fixes).unwrap_or_else(|| fixes[0].clone()),
+                    severity: if sev.is_empty() { severity_of(&rec) } else { sev },
+                    note: crate::utils::json::str_at(v, "summary").into(),
+                    fix_cmd: c.fix.clone(),
+                    fix_auto: c.auto,
+                    ..Finding::of(&c)
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::machine::catalog::MISE_FIX;
+
+    use crate::checks::machine::testing;
+    use crate::utils::net::Fake;
 
     #[test]
     fn cellar_lists_formulae_and_versions() {
@@ -216,5 +299,76 @@ mod tests {
             matches!(brew_vulns(&c, Some(&other), None, false, false), Err(Error::Failed(_))),
             "a changed Cellar scans again"
         );
+    }
+
+    #[test]
+    fn brew_vulns_finding_for_mise_stays_manual() {
+        assert_eq!(manual("mise"), Some(MISE_FIX));
+        assert_eq!(manual("node"), None);
+    }
+
+    #[test]
+    fn brew_vulns_findings_malicious_unfixed_and_manual() {
+        let d = crate::utils::temp::TempDir::new("brew").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d);
+        s.kev.insert("CVE-2026-7".into());
+        let job = BrewJob::new(&d.path().join("brew"), "fp", true);
+        let ran = serde_json::json!({"checked": 3, "findings": [
+            {"formula": "mise", "version": "2026.10.19", "vulnerabilities": [
+                {"id": "GHSA-m", "severity": "high", "summary": "mise bug", "fixed_versions": ["2026.10.21"]}]},
+            {"formula": "jq", "version": "1.7", "vulnerabilities": [
+                {"id": "MAL-0001", "summary": "a backdoor"},
+                {"id": "GHSA-nofix", "fixed_versions": []},
+                {"id": "GHSA-cve", "aliases": ["CVE-2026-7"], "summary": "jq overflow",
+                 "fixed_versions": ["1.8.1", "76b7feab363d547e06151c8a8aa0ca72ade0594a"]}]}]});
+        brew(&mut s, Some(&job), Some(Ok(ran))).unwrap();
+        assert_eq!(s.counts, [("Homebrew formulae".to_string(), 3)]);
+        assert_eq!(s.unfixed, 1);
+        assert_eq!(
+            testing::kinds(&s),
+            [
+                ("mise".to_string(), "GHSA-m".to_string(), "fail".to_string()),
+                ("jq".to_string(), "MAL-0001".to_string(), "fail".to_string()),
+                ("jq".to_string(), "CVE-2026-7".to_string(), "fail".to_string()),
+            ]
+        );
+        let (mise, mal, jq) = (&s.findings[0], &s.findings[1], &s.findings[2]);
+        assert_eq!(
+            (mise.fix_cmd.as_str(), mise.fix_auto, mise.severity.as_str(), mise.fixed.as_str()),
+            (MISE_FIX, false, "HIGH", "2026.10.21")
+        );
+        assert_eq!(
+            (mal.severity.as_str(), mal.kev, mal.fix_cmd.as_str()),
+            ("MALICIOUS", true, &*REMOVE.replace("{}", "jq"))
+        );
+        assert_eq!(
+            (jq.fix_cmd.as_str(), jq.fix_auto, jq.kev, jq.fixed.as_str(), jq.note.as_str()),
+            ("brew upgrade jq", true, true, "1.8.1", "jq overflow")
+        );
+        assert_eq!((jq.kind.as_str(), jq.location.as_str()), ("brew", "Homebrew"));
+    }
+
+    #[test]
+    fn brew_vulns_missing_failing_or_absent() {
+        let net = Fake::offline();
+        let d = crate::utils::temp::TempDir::new("brew").unwrap();
+        let mut s = testing::scan(&net, &d);
+        brew(&mut s, None, None).unwrap();
+        assert!(s.findings.is_empty());
+        let job = BrewJob::new(&d.path().join("brew"), "fp", true);
+        brew(&mut s, Some(&job), Some(Err(Error::Missing("brew vulns (run: brew update)".into())))).unwrap();
+        let f = &s.findings[0];
+        assert_eq!(
+            (f.component.as_str(), f.vuln_id.as_str(), f.fix_cmd.as_str(), f.fix_auto),
+            ("brew vulns", "MISSING", "brew update", true)
+        );
+        let d2 = crate::utils::temp::TempDir::new("brew").unwrap();
+        let mut s2 = testing::scan(&net, &d2);
+        brew(&mut s2, Some(&job), Some(Err(Error::Failed("brew vulns failed: boom".into())))).unwrap();
+        assert_eq!(testing::unchecked_note(&s2, "Homebrew formulae (brew vulns)"), "brew vulns failed: boom");
+        let d3 = crate::utils::temp::TempDir::new("brew").unwrap();
+        let mut s3 = testing::scan(&net, &d3);
+        assert!(brew(&mut s3, Some(&job), Some(Err(Error::Cache(rusqlite::Error::InvalidQuery)))).is_err());
     }
 }

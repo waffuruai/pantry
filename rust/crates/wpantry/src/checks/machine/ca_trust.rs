@@ -6,7 +6,9 @@
 //! trust decision every OpenSSL-, LibreSSL-, pip- or Node-based client
 //! makes. On macOS the keychain's trust settings are asked too.
 
+use crate::checks::Scan;
 use crate::error::{Error, Result};
+use crate::finding::Finding;
 use crate::utils::files::realpath;
 use crate::utils::os::MACOS;
 use crate::utils::process::exec;
@@ -415,9 +417,50 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
     Ok(out)
 }
 
+// Certificate authorities -------------------------------------------------------
+
+/// Trust stores that still trust a distrusted CA fail (Python ran this as
+/// `check-ca-trust.sh` beside the scan; here it is part of it).
+pub fn ca_trust(scan: &mut Scan, stores: Result<Vec<Store>>) {
+    scan.status("Checking trust stores for distrusted CAs");
+    match stores {
+        Ok(stores) => {
+            scan.count("CA trust stores", stores.len() as i64);
+            for s in &stores {
+                if let Some(why) = &s.unchecked {
+                    scan.unchecked(&format!("CA trust: {} {}", s.label, s.shown), why);
+                }
+            }
+            for s in stores.into_iter().filter(|s| s.trusts) {
+                scan.add(Finding {
+                    kind: "config".into(),
+                    component: format!("CA trust: {} {}", s.label, s.shown),
+                    vuln_id: "DISTRUSTED-CA".into(),
+                    status: "fail".into(),
+                    note: format!("trusts the leaked eMudhra intermediate CAs ({})", ADVISORY),
+                    fix_cmd: s.hint,
+                    ..Default::default()
+                });
+            }
+        }
+        Err(Error::Missing(_)) => scan.add(Finding {
+            kind: "tool".into(),
+            component: "openssl".into(),
+            vuln_id: "MISSING".into(),
+            status: "fail".into(),
+            note: "the trust stores can't be checked for distrusted CAs".into(),
+            fix_cmd: "Install openssl".into(),
+            ..Default::default()
+        }),
+        Err(e) => scan.unchecked("CA trust stores", &e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::machine::testing;
+    use crate::utils::net::Fake;
 
     impl Checker {
         pub(crate) fn trusts(&self, anchors: &Path) -> bool {
@@ -656,5 +699,45 @@ mod tests {
         let stores = check().unwrap();
         assert!(stores.iter().all(|s| !s.label.is_empty() && !s.shown.is_empty() && !s.hint.is_empty()));
         assert!(stores.iter().all(|s| !s.trusts || s.unchecked.is_none()));
+    }
+
+    #[test]
+    fn trust_stores_that_trust_a_distrusted_ca_fail() {
+        let d = crate::utils::temp::TempDir::new("ca").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d);
+        let store = |label: &str, trusts: bool, unchecked: Option<&str>| Store {
+            label: label.into(),
+            shown: format!("/etc/{label}"),
+            trusts,
+            unchecked: unchecked.map(str::to_string),
+            hint: format!("fix {label}"),
+        };
+        ca_trust(
+            &mut s,
+            Ok(vec![
+                store("system", true, None),
+                store("java", false, Some("no keytool")),
+                store("python", false, None),
+            ]),
+        );
+        assert_eq!(s.counts, [("CA trust stores".to_string(), 3)]);
+        assert_eq!(testing::unchecked_note(&s, "CA trust: java /etc/java"), "no keytool");
+        let f = s.findings.iter().find(|f| f.vuln_id == "DISTRUSTED-CA").unwrap();
+        assert_eq!(
+            (f.kind.as_str(), f.component.as_str(), f.fix_cmd.as_str()),
+            ("config", "CA trust: system /etc/system", "fix system")
+        );
+        assert!(f.note.contains(ADVISORY));
+        assert_eq!(s.findings.len(), 2);
+        let mut s2 = testing::scan(&net, &d);
+        ca_trust(&mut s2, Err(Error::Missing("openssl".into())));
+        assert_eq!(
+            (s2.findings[0].component.as_str(), s2.findings[0].vuln_id.as_str(), s2.findings[0].fix_cmd.as_str()),
+            ("openssl", "MISSING", "Install openssl")
+        );
+        let mut s3 = testing::scan(&net, &d);
+        ca_trust(&mut s3, Err(Error::Failed("openssl crashed".into())));
+        assert_eq!(testing::unchecked_note(&s3, "CA trust stores"), "openssl crashed");
     }
 }

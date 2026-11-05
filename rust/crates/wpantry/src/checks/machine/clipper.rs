@@ -18,7 +18,9 @@
 //! The browser-extension side is the `SUSPECT-CLIPBOARD-SWAP` rule over
 //! installed code.
 
+use crate::checks::Scan;
 use crate::checks::machine::any::persistence::units::{command_of, item_dirs_for};
+use crate::finding::Finding;
 use crate::utils::addresses::{self, Chain};
 use crate::utils::{files, process};
 use std::ffi::OsStr;
@@ -457,6 +459,67 @@ impl Persisted {
             )
         } else {
             format!("{} runs{where_} at login and touches the clipboard", self.program)
+        }
+    }
+}
+
+/// Clipboard clippers: the persisted programs that touch the clipboard
+/// with wallet addresses in hand, and the self-test's canaries that came
+/// back changed. Both are Critical: money sent from this machine goes
+/// elsewhere.
+pub fn clipper(scan: &mut Scan, self_test: Option<SelfTest>) {
+    use SelfTest;
+    scan.status("Looking for clipboard clippers");
+    let (found, read) = persistence();
+    scan.count("launch agents and autostart items read", read as i64);
+    for p in found {
+        scan.add(Finding {
+            kind: "clipper".into(),
+            component: p.item.clone(),
+            location: p.program.clone(),
+            vuln_id: "CLIPPER-PERSISTENCE".into(),
+            status: if p.hard { "fail" } else { "warn" }.into(),
+            severity: if p.hard { "CRITICAL" } else { "" }.into(),
+            note: p.note(),
+            fix_cmd: if p.hard {
+                format!(
+                    "Don't send funds from this machine until it is gone. Unload it (launchctl bootout gui/$(id -u) {}; or remove the autostart entry), move the program aside for a look, check login items and browser extensions for the same, then change the passwords and move the wallets that were used here",
+                    p.item
+                )
+            } else {
+                format!("Read what {} is and who installed it; a clipboard manager you installed is fine, anything you don't recognise is not", p.program)
+            },
+            fix_auto: false,
+            ..Default::default()
+        });
+    }
+    match self_test {
+        None => {}
+        Some(SelfTest::Skipped(why)) => scan.unchecked("clipboard self-test", &why),
+        Some(SelfTest::Clean(n)) => scan.count("clipboard canaries copied and read back unchanged", n as i64),
+        Some(SelfTest::Swapped(swaps)) => {
+            for s in swaps {
+                scan.add(Finding {
+                    kind: "clipper".into(),
+                    component: "clipboard".into(),
+                    location: s.chain.name().into(),
+                    vuln_id: "CLIPPER-ACTIVE".into(),
+                    status: "fail".into(),
+                    severity: "CRITICAL".into(),
+                    note: format!(
+                        "a {} address copied to the clipboard came back as {} on read {}: something on this machine rewrites the clipboard (a clipper). If Handoff / Universal Clipboard is on, other Apple devices receive the swapped address too; the clipper is here, not on them",
+                        s.chain.name(),
+                        s.got,
+                        s.read
+                    ),
+                    fix_cmd: format!(
+                        "Don't send funds from this machine. Find what rewrites the clipboard (the CLIPPER-PERSISTENCE findings, login items, browser extensions, recently installed apps), remove it or reinstall the OS, then report {} on chainabuse.com and the chain's explorer so the next person who searches it is warned",
+                        s.got
+                    ),
+                    fix_auto: false,
+                    ..Default::default()
+                });
+            }
         }
     }
 }

@@ -14,6 +14,8 @@ use std::ffi::OsStr;
 use std::time::Duration;
 
 use super::{any, linux, macos};
+use crate::checks::Scan;
+use crate::finding::Finding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -159,9 +161,51 @@ pub fn launchd_disabled(listing: &str, label: &str) -> Option<bool> {
     })
 }
 
+/// The machine's own security settings (`posture`): a failing Critical or
+/// High check fails, the rest warn, a check that can't tell says so.
+pub fn posture(scan: &mut Scan) {
+    posture_with(scan, &crate::checks::machine::settings::real_runner)
+}
+
+/// The posture checks over `runner` (the real machine, or a recording).
+fn posture_with(scan: &mut Scan, runner: crate::checks::machine::settings::Runner) {
+    use crate::checks::machine::settings::{Severity, Status};
+    scan.status("Checking the machine's security settings");
+    let skip = scan.opts.policy.posture_skip();
+    let results = run(&skip, runner);
+    scan.count("security settings checked", results.len() as i64);
+    for (c, o) in results {
+        let (status, note) = match o.status {
+            Status::Pass => continue,
+            Status::Fail if matches!(c.severity, Severity::Critical | Severity::High) => ("fail", o.evidence),
+            Status::Fail => ("warn", o.evidence),
+            Status::Manual => ("warn", o.evidence),
+            Status::Unknown => ("warn", format!("couldn't tell: {}", o.evidence)),
+        };
+        let (fix_cmd, fix_auto) = match &c.fix {
+            Some(f) => (f.cmd.to_string(), !f.admin && o.status == Status::Fail),
+            None => (c.explain.to_string(), false),
+        };
+        scan.add(Finding {
+            kind: "posture".into(),
+            component: c.title.into(),
+            location: if c.cis.is_empty() { String::new() } else { format!("CIS {}", c.cis) },
+            vuln_id: c.id.into(),
+            status: status.into(),
+            severity: c.severity.as_str().into(),
+            note,
+            fix_cmd,
+            fix_auto,
+            ..Default::default()
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::machine::testing;
+    use crate::utils::net::Fake;
 
     #[test]
     fn flags_and_launchd_listings_parse() {
@@ -218,5 +262,27 @@ mod tests {
     fn the_real_runner_runs_a_command() {
         assert_eq!(real_runner(&["echo", "x"]), "x\n");
         assert_eq!(real_runner(&["/nonexistent/command"]), "");
+    }
+
+    #[test]
+    fn posture_reports_what_fails_and_what_it_cannot_tell() {
+        let d = crate::utils::temp::TempDir::new("posture").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d);
+        // A machine that answers nothing: every check fails or can't tell.
+        posture_with(&mut s, &|_argv: &[&str]| String::new());
+        assert!(!s.findings.is_empty());
+        for f in &s.findings {
+            assert_eq!(f.kind, "posture");
+            assert!(f.vuln_id.starts_with("POSTURE-"), "{}", f.vuln_id);
+            assert!(f.status == "fail" || f.status == "warn", "{f:?}");
+            assert!(!f.fix_cmd.is_empty(), "{f:?}");
+            if f.status == "fail" {
+                assert!(f.severity == "CRITICAL" || f.severity == "HIGH", "{f:?}");
+            }
+        }
+        assert!(s.counts.iter().any(|(k, n)| k == "security settings checked" && *n > 0));
+        let unknown: Vec<&Finding> = s.findings.iter().filter(|f| f.note.starts_with("couldn't tell: ")).collect();
+        assert!(unknown.iter().all(|f| f.status == "warn" && !f.fix_auto));
     }
 }

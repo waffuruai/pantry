@@ -9,10 +9,16 @@
 //! report hold the rule, file, line, commit and fingerprint, never the
 //! secret.
 
+use crate::checks::Scan;
+use crate::checks::supply_chain::GITLEAKS_INSTALL;
+use crate::checks::supply_chain::repos::Repo;
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::finding::Finding;
 use crate::utils::files::fingerprint;
+use crate::utils::files::short;
 use crate::utils::json::{self, str_at};
+use crate::utils::parallel;
 use crate::utils::process::exec;
 use crate::utils::process::run;
 use crate::utils::process::which;
@@ -366,9 +372,112 @@ pub fn finish(cache: &Cache, job: &Job, ran: Option<Result<Value>>, refresh: boo
         .collect())
 }
 
+/// gitleaks scans run at once on a first run (`--jobs`): each is CPU-bound,
+/// so together they get the machine's cores, not each of them all of them.
+pub(crate) fn gitleaks_at_once(scan: &Scan) -> usize {
+    scan.opts.jobs.unwrap_or_else(|| (parallel::cores() / 2).clamp(1, 4))
+}
+
+/// Each repo's gitleaks job (with the `gitleaks` binary; None: not
+/// installed), its fingerprint and ref tips read at once, and whether its
+/// cached result is stale.
+pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], gitleaks: Option<PathBuf>) -> Result<Vec<(Result<Job>, bool)>> {
+    if repos.is_empty() {
+        return Ok(Vec::new());
+    }
+    let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
+    let threads = (parallel::cores() / gitleaks_at_once(scan)).max(1);
+    repos
+        .iter()
+        .map(|(_, root)| {
+            let job = job_with(&scan.cache, root, &config, threads, gitleaks.clone());
+            let stale = match &job {
+                Ok(j) => stale(j, scan.opts.refresh, scan.opts.offline),
+                Err(_) => false,
+            };
+            Ok((job, stale))
+        })
+        .collect()
+}
+
+/// Secrets committed anywhere in the repos' history, from the jobs
+/// [`secret_jobs`] made and the scans run ahead (`ran`), in the repos'
+/// order. A provider-specific rule (AWS, GitHub, OpenAI, …) fails; a generic
+/// one asks for review.
+pub(crate) fn secrets(
+    scan: &mut Scan,
+    repos: &[Repo],
+    jobs: Vec<(Result<Job>, bool)>,
+    ran: Vec<Option<Result<Value>>>,
+) -> Result<()> {
+    let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
+    for (((name, root), (job, _)), ran) in repos.iter().zip(jobs).zip(ran) {
+        scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
+        if job.as_ref().is_ok_and(|j| j.own_policy) {
+            scan.add(Finding {
+                kind: "secret".into(),
+                component: format!("{name}/.gitleaks.toml"),
+                vuln_id: "REPO-POLICY".into(),
+                status: "warn".into(),
+                note: "the repo's own gitleaks config was ignored; the scan used your policy".into(),
+                fix_cmd: "Review the repo's .gitleaks.toml; pass it with --gitleaks-config to scan with it".into(),
+                ..Default::default()
+            });
+        }
+        let found = match job.and_then(|job| finish(&scan.cache, &job, ran, refresh, offline)) {
+            Ok(f) => f,
+            Err(Error::Missing(_)) => {
+                let has_brew = which("brew").is_some();
+                scan.add(Finding {
+                    kind: "tool".into(),
+                    component: "gitleaks".into(),
+                    vuln_id: "MISSING".into(),
+                    status: "fail".into(),
+                    note: "secrets in the repos' history can't be checked".into(),
+                    fix_auto: has_brew,
+                    fix_cmd: if has_brew {
+                        "brew install gitleaks".into()
+                    } else {
+                        format!("Install gitleaks: {GITLEAKS_INSTALL}")
+                    },
+                    ..Default::default()
+                });
+                return Ok(());
+            }
+            Err(e) if e.is_source() => {
+                scan.unchecked(&format!("secrets in {name}'s history (gitleaks)"), &e.to_string());
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        scan.count("repos scanned for secrets", 1);
+        for f in found {
+            let generic = GENERIC.contains(&f.rule.as_str());
+            scan.add(Finding {
+                kind: "secret".into(),
+                component: format!("{name}/{}", f.file),
+                location: format!("line {}, commit {}", f.line, f.commit),
+                vuln_id: f.rule.clone(),
+                status: if generic { "warn" } else { "fail" }.into(),
+                note: format!("{}{}", f.description, if generic { " (review: generic rule)" } else { "" }),
+                fix_cmd: format!(
+                    "If it's real: rotate it, then purge it from history. If not: add {} to {}/.gitleaksignore",
+                    f.fingerprint,
+                    short(&root.to_string_lossy())
+                ),
+                ..Default::default()
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::Options;
+    use crate::checks::supply_chain::testing;
+    use crate::utils::net::Fake;
 
     /// Only a list of findings is a result; no report, an empty one or
     /// another shape is a run that didn't finish, so nothing is cached as
@@ -638,5 +747,104 @@ mod tests {
         assert!(job.since().is_none());
         run_job(&job).unwrap();
         assert!(!argv(d.path()).contains(&"--log-opts".to_string()));
+    }
+
+    #[test]
+    fn gitleaks_runs_at_once_from_the_jobs_flag_or_the_cores() {
+        let d = TempDir::new("jobs").unwrap();
+        let net = Fake::offline();
+        assert_eq!(gitleaks_at_once(&testing::scan(&net, &d, Options { jobs: Some(7), ..Default::default() })), 7);
+        let n = gitleaks_at_once(&testing::scan(&net, &d, Options::default()));
+        assert!((1..=4).contains(&n), "{n}");
+    }
+
+    /// A finding per redacted hit: a provider rule fails, a generic one
+    /// warns; a repo's own gitleaks config is reported as ignored.
+    #[test]
+    fn secrets_from_a_scan_run_ahead() {
+        let d = TempDir::new("secrets").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d, Options::default());
+        let (name, root) = testing::repo(&d, "app");
+        testing::write(&root, ".gitleaks.toml", "[allowlist]\n");
+        // The binary never runs here: a missing one makes its version "".
+        let exe = Some(d.path().join("no-gitleaks"));
+        let jobs = secret_jobs(&s, &[(name.clone(), root.clone())], exe).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].1, "nothing cached: stale");
+        let ran = json!({"tips": [], "hits": [
+            {"rule": "aws-access-token", "file": "x.env", "line": 3, "commit": "0123456789ab", "fingerprint": "fp1", "description": "AWS"},
+            {"rule": "generic-api-key", "file": "cfg.py", "line": 9, "commit": "abcdef012345", "fingerprint": "fp2", "description": "Generic"}]});
+        secrets(&mut s, &[(name.clone(), root.clone())], jobs, vec![Some(Ok(ran))]).unwrap();
+        assert!(s.counts.contains(&("repos scanned for secrets".to_string(), 1)), "{:?}", s.counts);
+        let policy = testing::by_id(&s, "REPO-POLICY");
+        assert_eq!(policy.len(), 1);
+        assert_eq!((policy[0].component.as_str(), policy[0].status.as_str()), ("app/.gitleaks.toml", "warn"));
+        let aws = testing::by_id(&s, "aws-access-token");
+        assert_eq!(aws.len(), 1);
+        assert_eq!(
+            (
+                aws[0].kind.as_str(),
+                aws[0].component.as_str(),
+                aws[0].location.as_str(),
+                aws[0].status.as_str(),
+                aws[0].note.as_str()
+            ),
+            ("secret", "app/x.env", "line 3, commit 0123456789ab", "fail", "AWS")
+        );
+        assert_eq!(
+            aws[0].fix_cmd,
+            format!(
+                "If it's real: rotate it, then purge it from history. If not: add fp1 to {}/.gitleaksignore",
+                short(&root.to_string_lossy())
+            )
+        );
+        let generic = testing::by_id(&s, "generic-api-key");
+        assert_eq!((generic[0].status.as_str(), generic[0].note.as_str()), ("warn", "Generic (review: generic rule)"));
+        // The result is cached now: the next jobs aren't stale, and finish reads them without a run.
+        let jobs = secret_jobs(&s, &[(name.clone(), root.clone())], Some(d.path().join("no-gitleaks"))).unwrap();
+        assert!(!jobs[0].1);
+        let before = s.findings.len();
+        secrets(&mut s, &[(name.clone(), root.clone())], jobs, vec![None]).unwrap();
+        assert_eq!(s.findings.len(), before + 3, "the same three again");
+        assert_eq!(testing::by_id(&s, "aws-access-token").len(), 2);
+        // A run that failed as a source: that repo is unchecked, the rest go on.
+        let (other, oroot) = testing::repo(&d, "other");
+        let repos = [(name.clone(), root.clone()), (other, oroot)];
+        let jobs = secret_jobs(&s, &repos, Some(d.path().join("no-gitleaks"))).unwrap();
+        secrets(&mut s, &repos, jobs, vec![None, Some(Err(Error::Offline("gitleaks: killed".into())))]).unwrap();
+        assert_eq!(testing::unchecked(&s), ["secrets in other's history (gitleaks)"]);
+        // An internal error passes through.
+        let jobs = secret_jobs(&s, &repos, Some(d.path().join("no-gitleaks"))).unwrap();
+        let io = Error::Io(std::io::Error::other("disk"));
+        assert!(matches!(secrets(&mut s, &repos, jobs, vec![None, Some(Err(io))]), Err(Error::Io(_))));
+        assert!(secret_jobs(&s, &[], None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_gitleaks_the_tool_is_missing() {
+        let d = TempDir::new("no-gitleaks").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d, Options::default());
+        let (name, root) = testing::repo(&d, "app");
+        let jobs = secret_jobs(&s, &[(name.clone(), root.clone())], None).unwrap();
+        assert!(!jobs[0].1, "nothing to run");
+        secrets(&mut s, &[(name, root)], jobs, vec![None]).unwrap();
+        assert_eq!(s.findings.len(), 1);
+        let f = &s.findings[0];
+        assert_eq!(
+            (f.kind.as_str(), f.component.as_str(), f.vuln_id.as_str(), f.status.as_str()),
+            ("tool", "gitleaks", "MISSING", "fail")
+        );
+        let has_brew = which("brew").is_some();
+        assert_eq!(f.fix_auto, has_brew);
+        assert_eq!(
+            f.fix_cmd,
+            if has_brew {
+                "brew install gitleaks".to_string()
+            } else {
+                format!("Install gitleaks: {GITLEAKS_INSTALL}")
+            }
+        );
     }
 }

@@ -41,7 +41,7 @@ wpantry/src/
                  pypi.rs  rpm.rs  rubygems.rs  semver.rs  versions.rs
     documents/  (as today, less zip and deflate)
     suspects/  (as today)
-    hidden.rs
+    hidden/  mod.rs  unicode.rs  instructions.rs  html.rs  links.rs  bait.rs  names.rs  commits.rs
     malware/  mod.rs  targets.rs  yara.rs  indicators.rs  verdict.rs  rulegen.rs
     email.rs
   reporters/
@@ -83,7 +83,7 @@ wpantry-cli/src/
 | `posture/` | `checks/machine/`: `mod.rs` becomes `settings.rs`, `any/`, `macos/` and `linux/` sit in `machine/`, and `any/tools.rs` becomes `any/dev_settings.rs` (1e) | Inventory and settings are both "this machine" |
 | `documents/` | `checks/documents/`; `zip.rs` and `deflate.rs` go to `utils/archive/`, with the byte helpers they share (`rfind`, `u16le`, `u32le`, `MAX_MEMBER`) in its `mod.rs` | The malware scan reads zips too |
 | `suspect/` | `checks/suspects/` (1e) | Each rule's `scan` becomes one `Rule` in a table (phase 2) |
-| `hidden.rs` | `checks/hidden.rs` | |
+| `hidden.rs` | `checks/hidden.rs` (1b), then `checks/hidden/`, one file per behaviour (1f) | |
 | `malware.rs`, `malware/tests.rs` | `checks/malware/mod.rs` and `tests.rs` (1b); split into `targets.rs`, `yara.rs` (the analyzer) and `verdict.rs` (severity and lookups) in phase 2 | Phase 2 rewrites the walk and the cache, so the split lands with it. The per-file cache moves to `checks/files.rs` |
 | `iocs.rs` | `checks/malware/indicators.rs` whole (1b); then `sources/indicator_lists.rs` (fetching and reading signature-base and Feodo) and `sources/hash_lookups.rs` (YARAify, CIRCL, MalwareBazaar, and the consent to ask them) come out of it (1c) | `indicator_lists.rs` fetches and reads both lists in one function each; it splits into `sources/formats/signature_base.rs` and `abusech.rs` when phase 4 gives every list its own entry and reader |
 | `rulegen.rs` | `checks/malware/rulegen.rs` (the goodware database), with its output in `reporters/yara.rs` | Open decision 3 |
@@ -111,6 +111,7 @@ Each phase-1 PR moves code without changing it: `git mv` where a file moves whol
 | 1c | `sources/`: `osv.rs`, `distros.rs`, `feeds.rs` split by family, and the source halves of `email.rs`, `malicious.rs`, `licenses.rs` and `indicators.rs` |
 | 1d | `reporters/` (`export.rs`, and the CLI's `html.rs`, its assets, `report.rs`'s rendering and `main.rs`'s `envelope`) and `remediation/` (`mitigate.rs`, `report.rs`'s plan and apply, and the `harden` fixes out of `ca_trust.rs` and `posture/any/tools.rs`) |
 | 1e | Consolidation: `posture/` into `machine/`, `suspect/` to `suspects/`, `deps_dev` to `package_licenses`, `package_managers/` to `ecosystems/`, and the four per-ecosystem match tables (`Comparator::for_ecosystem`, `deps_dev::system`, `malicious_packages::dir_for` and `norm`) folded into one `Ecosystem` table |
+| 1f | The three largest files split by behaviour, each item and its tests into the behaviour's file: `supply_chain/mod.rs` (2,397 lines, now 185) into `projects`, `suspect_code`, `hidden_text`, `documents`, `images`, `extensions` and `mcp` and the existing `leaks`, `hooks`, `licenses`, `typosquat`, `install_scripts`, `mptcp` and `malicious` (the breach check into `checks/email.rs`); `machine/mod.rs` (1,586, now 150) into `components`, `app_updates`, `os_updates` and `downloads` and the existing `settings`, `clipper`, `brew_vulns`, `ca_trust` and `any/persistence/findings`; `hidden.rs` (1,705) into `hidden/` (`unicode`, `instructions`, `html`, `links`, `bait`, `names`, `commits`). Shared test helpers go to each folder's `testing.rs` |
 
 **Each PR is checked by:**
 - the contract suite;

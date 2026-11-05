@@ -6,7 +6,16 @@
 //! but nothing else reads what an allowed script does, so a version outside
 //! its entry warns until someone reads the new script and widens the entry.
 
+use crate::checks::Scan;
 use crate::checks::ecosystems::semver;
+use crate::checks::supply_chain::repos::Repo;
+use crate::checks::supply_chain::{INSTALL_SCRIPTS, repos};
+use crate::component::Component;
+use crate::finding::Finding;
+use crate::utils::process::run as sh;
+use std::ffi::OsStr;
+use std::path::PathBuf;
+use std::time::Duration;
 
 /// A version's numeric core, padded to three parts.
 type Core = [u64; 3];
@@ -151,9 +160,81 @@ pub fn verdict(allows: &[Allow], name: &str, versions: &[String]) -> Verdict {
     if locked.is_empty() { Verdict::Allowed } else { Verdict::OutsideRange { allowed, locked } }
 }
 
+/// Dependencies that run code at install time, outside the allowlist, and
+/// whether npm runs them by default on this machine.
+pub fn install_scripts(scan: &mut Scan, repos: &[Repo], found: &[Component]) {
+    scan.status("Checking which dependencies run install scripts");
+    let allows = parse_entries(&scan.opts.policy.install_scripts());
+    let files: Vec<PathBuf> = repos.iter().flat_map(|(_, r)| repos::lockfiles(r)).collect();
+    for s in repos::install_scripts(&files) {
+        let name = &s.name;
+        let (note, fix_cmd) = match verdict(&allows, name, &s.versions) {
+            Verdict::Allowed => continue,
+            Verdict::NotListed => (
+                "runs code when installed".to_string(),
+                format!(
+                    "Check what {name}'s install script does; then allow it in {INSTALL_SCRIPTS} ({name}@<range>), or drop it from the build allowlist"
+                ),
+            ),
+            Verdict::OutsideRange { allowed, locked } => {
+                let locked = locked.join(", ");
+                (
+                    format!(
+                        "runs code when installed; allowed at {allowed} but {locked} is locked: re-read its install script before widening the entry"
+                    ),
+                    format!(
+                        "Re-read {name}'s install script at {locked}; then widen its entry in {INSTALL_SCRIPTS}, or drop the package"
+                    ),
+                )
+            }
+            Verdict::UnknownVersion { allowed } => (
+                format!("runs code when installed; allowed at {allowed} but the locked version couldn't be read"),
+                format!(
+                    "Check which {name} the lockfile pins and what its install script does; then fix the lockfile or its entry in {INSTALL_SCRIPTS}"
+                ),
+            ),
+        };
+        scan.add(Finding {
+            kind: "install-script".into(),
+            component: name.clone(),
+            location: s.file.to_string_lossy().into_owned(),
+            vuln_id: "INSTALL-SCRIPT".into(),
+            status: "warn".into(),
+            note,
+            fix_cmd,
+            ..Default::default()
+        });
+    }
+    let npm = found.iter().find(|c| c.name == "npm" && !c.path.is_empty()).map(|c| c.path.clone());
+    if let Some(npm) = npm
+        && sh(
+            &[OsStr::new(&npm), OsStr::new("config"), OsStr::new("get"), OsStr::new("ignore-scripts")],
+            Duration::from_secs(15),
+        )
+        .trim()
+        .ends_with("false")
+    {
+        scan.add(Finding {
+            kind: "config".into(),
+            component: "npm ignore-scripts".into(),
+            location: npm.clone(),
+            vuln_id: "NPM-SCRIPTS".into(),
+            status: "warn".into(),
+            note: "npm runs every dependency's install scripts (how most npm attacks run)".into(),
+            fix_cmd: format!("{npm} config set ignore-scripts true  (then allow builds per project)"),
+            ..Default::default()
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::Options;
+    use crate::checks::supply_chain::testing;
+    use crate::utils::net::Fake;
+    use crate::utils::temp::TempDir;
+    use serde_json::json;
 
     fn allows(lines: &[&str]) -> Vec<Allow> {
         parse_entries(&lines.iter().map(|l| l.to_string()).collect::<Vec<_>>())
@@ -265,5 +346,67 @@ mod tests {
         assert_eq!(parsed.len(), lines.len(), "every line of the default file is an entry");
         assert!(parsed.iter().all(|a| a.range.is_some()), "every default entry carries a version range");
         assert_eq!(verdict(&parsed, "esbuild", &v(&["0.28.2"])), Verdict::Allowed);
+    }
+
+    /// Install scripts outside the allowlist warn, each verdict with its own
+    /// advice; npm running scripts by default is a config warning.
+    #[cfg(unix)]
+    #[test]
+    fn install_scripts_outside_the_allowlist_warn() {
+        let d = TempDir::new("install").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d, Options::default());
+        let (name, root) = testing::repo(&d, "app");
+        testing::write(
+            &root,
+            "package-lock.json",
+            json!({"name": "app", "lockfileVersion": 3, "packages": {
+            "": {"name": "app"},
+            "node_modules/foo": {"version": "1.0.0", "hasInstallScript": true},
+            "node_modules/esbuild": {"version": "0.27.0", "hasInstallScript": true},
+            "node_modules/fsevents": {"version": "2.3.3", "hasInstallScript": true},
+            "node_modules/sharp": {"hasInstallScript": true}}})
+            .to_string(),
+        );
+        let npm = testing::script(d.path(), "npm", "#!/bin/sh\necho false\n");
+        let found = [Component::new("manager", "npm", "10.0.0", &npm.to_string_lossy())];
+        install_scripts(&mut s, &[(name, root.clone())], &found);
+        let script_for = |n: &str| {
+            testing::by_id(&s, "INSTALL-SCRIPT")
+                .into_iter()
+                .find(|f| f.component == n)
+                .map(|f| (f.note.clone(), f.fix_cmd.clone()))
+        };
+        assert!(script_for("fsevents").is_none(), "allowed at that version");
+        let (note, fix) = script_for("foo").unwrap();
+        assert_eq!(note, "runs code when installed");
+        assert!(fix.starts_with("Check what foo's install script does"), "{fix}");
+        let (note, fix) = script_for("esbuild").unwrap();
+        assert!(note.contains("allowed at ^0.28 but 0.27.0 is locked"), "{note}");
+        assert!(fix.starts_with("Re-read esbuild's install script at 0.27.0"), "{fix}");
+        let (note, fix) = script_for("sharp").unwrap();
+        assert!(note.contains("the locked version couldn't be read"), "{note}");
+        assert!(fix.starts_with("Check which sharp the lockfile pins"), "{fix}");
+        let f = testing::by_id(&s, "INSTALL-SCRIPT")[0];
+        assert_eq!(
+            (f.kind.as_str(), f.status.as_str(), f.location.as_str()),
+            ("install-script", "warn", root.join("package-lock.json").to_str().unwrap())
+        );
+        let cfg = testing::by_id(&s, "NPM-SCRIPTS");
+        assert_eq!(cfg.len(), 1, "{:?}", s.findings);
+        assert_eq!(
+            (cfg[0].kind.as_str(), cfg[0].component.as_str(), cfg[0].location.as_str()),
+            ("config", "npm ignore-scripts", npm.to_str().unwrap())
+        );
+        assert_eq!(
+            cfg[0].fix_cmd,
+            format!("{} config set ignore-scripts true  (then allow builds per project)", npm.display())
+        );
+        // npm that ignores scripts, or no npm: no config warning.
+        let npm = testing::script(d.path(), "npm2", "#!/bin/sh\necho true\n");
+        let before = s.findings.len();
+        install_scripts(&mut s, &[], &[Component::new("manager", "npm", "10.0.0", &npm.to_string_lossy())]);
+        install_scripts(&mut s, &[], &[Component::new("manager", "npm", "10.0.0", "")]);
+        assert_eq!(s.findings.len(), before);
     }
 }

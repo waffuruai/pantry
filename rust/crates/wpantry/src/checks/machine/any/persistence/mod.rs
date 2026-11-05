@@ -44,7 +44,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 mod cron;
-mod findings;
+pub(crate) mod findings;
 mod shell;
 pub(crate) mod units;
 mod vet;

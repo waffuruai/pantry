@@ -7,6 +7,13 @@
 //! allowlist holds, so it is reported, not counted as unknown.
 //! The declared licenses come from [`crate::sources::package_licenses`].
 
+use crate::checks::supply_chain::LICENSES;
+use crate::checks::{Scan, lockfiles};
+use crate::error::Result;
+use crate::finding::Finding;
+use crate::sources::osv::Item;
+use std::path::PathBuf;
+
 /// Whether an SPDX license expression can be satisfied with `allowed` ids:
 /// OR needs one side, AND both; `X WITH exception` is judged as X; ids
 /// compare case-insensitively, and `X+` (or-later) as X.
@@ -76,10 +83,61 @@ pub fn judge(licenses: &[String], allowed: &[String]) -> Option<Vec<String>> {
     Some(licenses.to_vec())
 }
 
+/// Dependencies whose license isn't in the allowlist warn; ones with no
+/// identifiable license are counted (`--licenses`).
+pub(crate) fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) -> Result<()> {
+    let allowed = scan.opts.policy.licenses();
+    let items: Vec<Item> = read
+        .iter()
+        .flat_map(|(_, ps)| ps.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())))
+        .collect();
+    scan.status(&format!("Checking {} dependencies' licenses", items.len()));
+    let status = scan.status;
+    let found = match crate::sources::package_licenses::lookup(&scan.cache, scan.net, &items, scan.opts.offline, status)
+    {
+        Ok(f) => f,
+        Err(e) if e.is_source() => {
+            scan.unchecked("dependency licenses (deps.dev)", &e.to_string());
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+    let mut i = 0;
+    for (f, ps) in read {
+        for p in ps {
+            let verdict = crate::checks::supply_chain::licenses::judge(&found[i], &allowed);
+            i += 1;
+            match verdict {
+                None => {}
+                Some(v) if v == ["UNKNOWN"] => scan.unknown_licenses += 1,
+                Some(v) => scan.add(Finding {
+                    kind: "license".into(),
+                    component: p.name.clone(),
+                    version: p.version.clone(),
+                    location: f.to_string_lossy().into_owned(),
+                    vuln_id: "LICENSE".into(),
+                    status: "warn".into(),
+                    note: format!("license {} isn't in {LICENSES}", v.join(", ")),
+                    fix_cmd: format!("Review {}: replace it, or approve its license in {LICENSES}", p.name),
+                    ..Default::default()
+                }),
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::Options;
+    use crate::checks::supply_chain::testing::CARGO_LOCK;
+    use crate::checks::supply_chain::{projects, testing};
+    use crate::error::Error;
     use crate::sources::testing::ids;
+    use crate::utils::net::{Fake, Response};
+    use crate::utils::temp::TempDir;
+    use serde_json::json;
 
     #[test]
     fn spdx_expressions() {
@@ -96,5 +154,52 @@ mod tests {
         assert_eq!(judge(&ids(&["GPL-3.0-only"]), &allow), Some(ids(&["GPL-3.0-only"])));
         assert_eq!(judge(&ids(&["GPL-3.0-only", "MIT"]), &allow), None);
         assert_eq!(judge(&ids(&["non-standard"]), &allow), Some(ids(&["non-standard"])), "custom terms need review");
+    }
+
+    /// `--licenses`: a license outside the allowlist warns, none at all is
+    /// only counted, and deps.dev unreachable is unchecked.
+    #[test]
+    fn licenses_outside_the_allowlist_warn() {
+        let d = TempDir::new("licenses").unwrap();
+        let net = Fake::new(|r| {
+            if let Some(rest) = r.url.strip_prefix("https://api.deps.dev/v3/systems/cargo/packages/") {
+                let licenses = match rest.split('/').next().unwrap_or("") {
+                    "serde" => json!(["GPL-3.0-only"]),
+                    "sedre" => json!(["MIT OR Apache-2.0"]),
+                    _ => json!([]),
+                };
+                return Ok(Response::ok(json!({"licenses": licenses}).to_string()));
+            }
+            testing::osv(r, &[]).unwrap_or_else(|| panic!("unexpected request to {}", r.url))
+        });
+        let mut s = testing::scan(&net, &d, Options { licenses: true, ..Default::default() });
+        let (name, root) = testing::repo(&d, "app");
+        testing::write(
+            &root,
+            "Cargo.lock",
+            format!(
+                "{CARGO_LOCK}\n[[package]]\nname = \"itoa\"\nversion = \"1.0.9\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+            ),
+        );
+        projects::projects(&mut s, &[(name, root.clone())]).unwrap();
+        let lic = testing::by_id(&s, "LICENSE");
+        assert_eq!(lic.len(), 1, "{:?}", s.findings);
+        assert_eq!((lic[0].component.as_str(), lic[0].status.as_str()), ("serde", "warn"));
+        assert_eq!(lic[0].note, format!("license GPL-3.0-only isn't in {LICENSES}"));
+        assert_eq!(lic[0].location, root.join("Cargo.lock").to_string_lossy());
+        assert_eq!(s.unknown_licenses, 1, "itoa has none; sedre's MIT passes");
+
+        let d = TempDir::new("licenses-off").unwrap();
+        let net = Fake::new(|r| {
+            if r.url.starts_with("https://api.deps.dev/") {
+                return Err(Error::Offline("deps.dev: down".into()));
+            }
+            testing::osv(r, &[]).unwrap_or_else(|| panic!("unexpected request to {}", r.url))
+        });
+        let mut s = testing::scan(&net, &d, Options { licenses: true, ..Default::default() });
+        let (name, root) = testing::repo(&d, "app");
+        testing::write(&root, "Cargo.lock", CARGO_LOCK);
+        projects::projects(&mut s, &[(name, root)]).unwrap();
+        assert_eq!(testing::unchecked(&s), ["dependency licenses (deps.dev)"]);
     }
 }

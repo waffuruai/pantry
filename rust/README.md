@@ -43,7 +43,7 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 | `checks/supply_chain/` | Every repo: discovery (`repos`), `hooks`, `install_scripts`, `typosquat`, `malicious` (known malicious packages), `licenses` (the SPDX allowlist), `leaks` (gitleaks), `mptcp` (Go servers exposed to CVE-2026-98432) |
 | `checks/lockfiles/` | One reader per lockfile format; `mod.rs` dispatches by name |
 | `checks/ecosystems/` | One `Ecosystem` table (OSV's name, version order, deps.dev's system, the OpenSSF directory, name normalisation), and the version order per ecosystem (semver, PyPI, Go, dpkg, apk, rpm, RubyGems, Maven, Packagist) with the generic order in `versions` |
-| `checks/documents/`, `checks/suspects/`, `checks/hidden.rs` | Office, PDF, RTF, SVG and image readers; suspect code, one file per behaviour; hidden Unicode |
+| `checks/documents/`, `checks/suspects/`, `checks/hidden/` | Office, PDF, RTF, SVG and image readers; suspect code, one file per behaviour; hidden Unicode |
 | `checks/malware/` | The YARA pass (`mod.rs`), `indicators` (matching the indicator lists), `rulegen` (the goodware database for `rules gen`) |
 | `checks/email.rs` | The opt-in breach check of the user's email address: consent and which addresses |
 | `reporters/` | How a scan is shown: `text` (the grouped terminal report), `json` (the `--json` envelope), `jsonl` (`export`), `html` (the standalone report; its template and fonts are `assets/report/`) |

@@ -10,11 +10,11 @@ updated: 2026-11-04
 
 ## TL;DR
 
-`wpantry guard downloads` is a resident guard, like the clipboard guard, that notices files arriving from browsers, mail, `curl`, `wget`, `git clone` and archive tools, makes sure macOS's Gatekeeper will check them when they're opened, scans them statically in a sandboxed worker with pantry's YARA engine and hash IOCs, and holds anything that is malware: execute bit off, quarantine xattr on, moved into a quarantine store, one notification. Nothing leaves the machine unless the person turns on hash lookups. Status 2026-11-04: design only; the YARA engine (`rust/crates/wpantry-yara`) is in progress and nothing of the guard is built. Detail lives in [design/download-guard.md](design/download-guard.md).
+`wpantry guard downloads` is a resident guard that notices files arriving from browsers, mail, `curl`, `wget`, `git clone` and archive tools, makes sure macOS's Gatekeeper will check them when they're opened, scans them statically in a sandboxed worker with pantry's YARA engine and hash IOCs, and holds anything that is malware: execute bit off, quarantine xattr on, moved into a quarantine store, one notification. Nothing leaves the machine unless the person turns on hash lookups. Status 2026-11-04: design only; the YARA engine (`rust/crates/wpantry-yara`) is in progress and nothing of the guard is built. Detail lives in [design/download-guard.md](design/download-guard.md).
 
 ## Architecture
 
-Before: the scheduled scan reads installed software and repos once a day, and the clipboard guard is the only resident check. After (new parts marked):
+Before: the scheduled scan reads installed software and repos once a day, and nothing is resident (the clipboard guard was removed on 2026-11-05: live watching belongs to a resident watchdog, see Open questions). After (new parts marked):
 
 ```mermaid
 flowchart LR
@@ -72,7 +72,7 @@ Infostealers on macOS (AMOS, Poseidon, Cuckoo, Banshee) and loaders on Linux arr
 
 ## Why now
 
-The YARA engine and rules bundle are being built for the scan, the clipboard guard proved the resident pattern and its install path ([#106](https://github.com/waffuruai/pantry/issues/106)), and the persistence inventory ([#125](https://github.com/waffuruai/pantry/issues/125)) covers what malware does after it runs; this covers the moment before.
+The YARA engine and rules bundle are being built for the scan, the clipboard guard (since removed) proved the resident pattern and its install path ([#106](https://github.com/waffuruai/pantry/issues/106)), and the persistence inventory ([#125](https://github.com/waffuruai/pantry/issues/125)) covers what malware does after it runs; this covers the moment before.
 
 ## Acceptance criteria
 
@@ -131,7 +131,7 @@ All criteria track [#126](https://github.com/waffuruai/pantry/issues/126) until 
 - Depends on the YARA engine (`rust/crates/wpantry-yara`, in progress) and the curated rules bundle with hash IOCs; phase 2 cannot start before both.
 - Endpoint Security: blocking `exec` needs Apple's entitlement, a notarized system extension and an app, not a CLI. Recommend not in v1; revisit if S1's race shows up in practice.
 - macOS privacy (TCC): a launch agent reading `~/Downloads` and `~/Desktop` needs the person's Files and Folders approval, and a background agent may be denied without a prompt. Phase 1 must show how the approval is asked for (for example on the first foreground `wpantry guard downloads`) and what `guard status` says when it is missing.
-- Command name: `wpantry guard downloads` next to `wpantry clipboard --watch`. Recommend moving the clipboard guard to `wpantry guard clipboard`, keeping the old form as an alias.
+- Where the watcher lives. The clipboard guard left pantry on 2026-11-05 because pantry is a file scanner that runs on a schedule or when triggered, not a resident watcher. The same reasoning puts this spec's watcher in a resident watchdog that calls `wpantry scan --path FILE`; pantry keeps the triage, the scan and the verdict. Decide before F1.
 - Risky files (macros, PDF JavaScript): notify only, or hold? Recommend notify only; holding every macro document would teach people to ignore holds.
 - Linux without landlock: recommend scanning with seccomp alone and saying so in the event, rather than not scanning.
 - Release scope: an allow by SHA-256 only, or by Developer ID team as well? Recommend SHA-256 only in v1.

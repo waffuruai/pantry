@@ -97,20 +97,6 @@ wpantry cache prune                   # drop what no scan has used in 90 days, c
 
 `sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `scan --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the scan's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry fix` yourself when the morning report says so.
 
-## Guarding the clipboard
-
-A clipper swaps the wallet address you copied for its own, and a browser extension can do it as you paste, so a scan that copies a canary catches only a clipper that is running and takes the bait. The guard watches instead, while you work:
-
-```bash
-wpantry clipboard                     # the self-test now: copy a canary of each shape, read it back
-wpantry clipboard --watch             # guard the clipboard until Ctrl-C; alerts on stdout and the desktop
-wpantry clipboard --watch --window 5  # a swap is two addresses of one chain within 5 s (default 2)
-wpantry clipboard --watch --once --json   # exit after the first alert, as one JSON object
-wpantry schedule install --clipboard-guard    # start it at login (launchd, or a systemd user service)
-wpantry schedule uninstall --clipboard-guard
-```
-
-The guard reads the clipboard about four times a second (on macOS a `pbpaste` per read: about five percent of one core on an M-series Mac, nearly all of it `pbpaste`; the rest of the time it sleeps) and keeps the last wallet address it saw and when. When text holding one address of some chain becomes a different valid address of the same chain within the window, with nothing but addresses on the clipboard in between, that is a swap: one line naming both addresses and the chain, a desktop notification, and a `clipper` event in the cache that `wpantry report --audit` lists. Don't paste it; find what rewrote it (the `CLIPPER-PERSISTENCE` findings, login items, browser extensions). The guard never writes the clipboard: a guard that put your address back would hide the clipper from you and fight it for the clipboard. The one false positive is copying two addresses of the same chain yourself within the window; the alert says so, and `--window` sets it. Installed with `schedule install --clipboard-guard`, it is a launch agent (`~/Library/LaunchAgents/ai.waffuru.wpantry.clipboard.plist`) or a systemd user service of your graphical session (`~/.config/systemd/user/wpantry-clipboard.service`), off unless you install it, with its output in `~/.local/state/wpantry/clipboard.log`; `wpantry schedule status` says whether it is installed and shows the last alert. Without launchd or a systemd user session, add `wpantry clipboard --watch` to your desktop's autostart.
 ## Keeping wpantry current
 
 ```bash
@@ -223,7 +209,6 @@ Package names and versions go to OSV.dev; the feeds are downloaded; the breach c
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
 | `WPANTRY_TIMINGS` | Any value: each scan step on stderr with the seconds since the scan began, to see where a slow run spends its time |
-| `WPANTRY_CLIPBOARD_FAKE` | A test hook: `clipboard --watch` reads this file instead of the clipboard, one line per read, and sends no notification. The contract suite uses it; you shouldn't need to |
 | `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
 | `HTTPS_PROXY` | Requests go through the proxy |
 
@@ -236,7 +221,7 @@ Package names and versions go to OSV.dev; the feeds are downloaded; the breach c
 Every command and its options, as `wpantry help` and `wpantry <command> --help` print them. `wpantry` with no arguments prints the same top-level help as `wpantry help` and `wpantry -h`, and exits 0; `wpantry help <command>` is `wpantry <command> --help`. An option can be shortened to any prefix that names only one (`--no-m` for `--no-machine`) and takes its value as the next word or after `=`. A usage error prints the usage line and the error to stderr and exits 2.
 
 ```
-usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,help} ...
+usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help} ...
 ```
 
 | Command | What it does |
@@ -257,7 +242,6 @@ usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,ski
 | `update` | Check for a newer release and install it verified |
 | `report` | The exposure, remediation and audit logs |
 | `harden` | Apply a fix wpantry can make itself (`extension-cooldown`, `ca-trust`) |
-| `clipboard` | Test the clipboard for a clipper, or guard it while you work (`--watch`) |
 | `mitigate` | `list`, `all`, or one advisory: its unattended fixes, its stopgap, the steps left for you |
 | `help` | This help, or with a command that command's (`wpantry help fix`) |
 
@@ -266,7 +250,7 @@ usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,ski
 ```
 usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
                     [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
-                    [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard]
+                    [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
 
 `check` is the same command under its older name: `wpantry check --help` prints the same options. Exit 0 when nothing fails, 1 when something does, 2 on a usage error, 3 on an internal error.
@@ -289,7 +273,8 @@ usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--
 | `--suspect-policy FILE` | Suspicious-code ids and `path:` entries that should warn instead of fail (a legitimate hex table, an installer that uses sudo); nothing is silenced |
 | `--no-posture` | Skip the machine's security settings (FileVault, firewall, sharing, …) |
 | `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
-| `--no-clipboard` | Skip the clipboard self-test. On a machine scan wpantry copies a valid address of each shape a clipper goes after (EVM, Bitcoin, Tron, Solana, XRP, Stellar) to the clipboard, reads it back twice over the next half second, and puts the clipboard back; an address that comes back changed is a clipper at work (`CLIPPER-ACTIVE`, fail). An image or files on the clipboard are left alone (the test reports itself skipped). The passive checks always run: launch agents and autostart entries that touch the clipboard with wallet addresses in hand (`CLIPPER-PERSISTENCE`), and browser extensions whose manifest can read and write the clipboard (`CLIPPER-EXTENSION`: warn, fail when the code has the clipper shape) |
+| `--no-malware` | Skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs) |
+| `--deep` | The malware scan reads everything under `~` with every system's rules (slower) |
 
 Policy files are one entry per line, `#` for comments. An install-scripts entry is `name@1.2.3` (that version), `name@^1.2` or `name@~1.2` (npm's caret and tilde ranges, so `^0.28` is `>=0.28.0 <0.29.0`), or a bare `name` for every version, which is allowed and discouraged: the allowlist is the only thing that decides whether an install script runs unremarked, so each entry should name the versions someone has read. The bundled list ([`install-scripts.txt`](../../rust/crates/wpantry/assets/defaults/install-scripts.txt)) explains itself, as does the hooks policy's ([`hooks.txt`](../../rust/crates/wpantry/assets/defaults/hooks.txt)). Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 
@@ -298,7 +283,7 @@ Policy files are one entry per line, `#` for comments. An install-scripts entry 
 ```
 usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
                    [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
-                   [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard]
+                   [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
 
 Scan, then run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check. It takes every option `scan` does, plus:
@@ -391,17 +376,16 @@ Refresh the cache: the feeds, end-of-life dates and OSV answers for what was sca
 ### schedule
 
 ```
-usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] [--clipboard-guard] {install,status,uninstall,run}
+usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] {install,status,uninstall,run}
 ```
 
-Run sync and scan on a schedule (launchd, a systemd user timer, or cron); a scheduled run never fixes anything (that is `wpantry fix`). `install` sets it up, `status` says whether it is installed and what the last run found, `uninstall` takes it away, `run` is what the scheduler runs.
+Run sync and scan on a schedule (launchd, a systemd user timer, or cron); a scheduled run never fixes anything (that is `wpantry fix`). `install` sets it up, `status` says whether it is installed and what the last run found, `uninstall` takes it away, `run` is what the scheduler runs. `install` and `uninstall` also take out the clipboard guard an earlier version could install.
 
 | Option | Effect |
 |---|---|
 | `--every WHEN` | `hourly`, `daily` (default) or `weekly` |
 | `--at HH:MM` | The time of day (default 09:30; weekly: Mondays) |
 | `--dry-run` | Print the job definition without installing it |
-| `--clipboard-guard` | Install or uninstall the resident clipboard guard (`wpantry clipboard --watch`) instead of the scan: a launch agent or systemd user service that starts at login, off by default |
 
 ### cache
 
@@ -460,21 +444,6 @@ Apply one of the fixes wpantry can make itself. `extension-cooldown` sets `exten
 |---|---|
 | `--hours N` | `extension-cooldown`: the cooldown (default 72) |
 | `--bundle FILE` | `ca-trust`: rewrite this PEM bundle instead of the system store |
-
-### clipboard
-
-```
-usage: wpantry clipboard [-h] [--watch] [--once] [--window SECONDS] [--json]
-```
-
-Test the clipboard for a clipper now, or with `--watch` guard it while you work. See [Guarding the clipboard](#guarding-the-clipboard).
-
-| Option | Effect |
-|---|---|
-| `--watch` | Keep reading the clipboard four times a second until stopped; never writes it |
-| `--once` | With `--watch`: exit 0 after the first alert |
-| `--window SECONDS` | With `--watch`: how long after one address a different one of the same chain is a swap (default 2; a double copy inside it is the false positive) |
-| `--json` | The self-test's result as one object, or with `--watch` one object per alert |
 
 ### mitigate
 

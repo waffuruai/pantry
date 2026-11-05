@@ -10,7 +10,7 @@ Where every file in `rust/crates/wpantry/src/` and `rust/crates/wpantry-cli/src/
   - how is it shown: `reporters/`;
   - how is it fixed: `remediation/`;
   - what does everything lean on: `utils/`.
-- **Core files stay at `src/`.** These are what wpantry *is* rather than what it checks: the library root, errors, the finding and component types, the cache and its history, self-install, and the long-running commands (`sync`, `watch`, the clipboard guard).
+- **Core files stay at `src/`.** These are what wpantry *is* rather than what it checks: the library root, errors, the finding and component types, the cache and its history, self-install, and the long-running commands (`sync`, `watch`). The clipboard guard that was here was removed on 2026-11-05: watching the clipboard live is a resident watchdog's job.
 - **A file in `sources/` knows a remote API or a format.** A file in `checks/` knows what to look at on this machine or in a repo and how to judge it. When one file does both today (`breach.rs`, `licenses.rs`, `malicious.rs`), it splits along that line.
 - **Inside a check, it's one file per behaviour,** with `mod.rs` as the index, as in `suspects/` and `machine/`. A behaviour that differs by OS goes in `os/behaviour` folders (`macos/`, `linux/`, `any/`), as the posture checks and the YARA rules do.
 - **Module names are snake_case nouns.** No `check_` prefixes: the folder already says it.

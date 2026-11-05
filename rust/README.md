@@ -36,7 +36,7 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 
 | Folder | Holds |
 |---|---|
-| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `guard` (the clipboard guard), `external` (the tools wpantry uses). |
+| `src/` | What wpantry is: `lib` (the public surface and defaults), `error`, `finding`, `component`, `db` (the SQLite cache: tables, memo with fingerprints, FTS5 search), `history`, `selfinstall`, `sync`, `watch`, `external` (the tools wpantry uses). |
 | `sources/` | Where the data comes from: `file` (the sources file, `assets/defaults/sources.toml`, and the user's merged over it), `fetch` (every request through it: its cap, refresh, pin, and each outcome kept for `wpantry sources`), `user` (the user's own sources, asked about once), and one file per remote API or list, each cached and `Offline` (never clean) when unreachable with nothing cached: `osv`, `kev`, `endoflife`, `releases`, `extensions`, `distros`, `malicious_packages`, `package_licenses`, `breaches`, `indicator_lists`, `hash_lookups` |
 | `checks/` | The scan: `mod.rs` (options, findings, counts, "not checked", the policy files) and one folder per area |
 | `checks/machine/` | The machine: inventory (`tools`, `catalog`, `packages`, `apps`, `editors`, `harnesses`, `images`, `os_packages`), Homebrew (`cellar`, `brew_vulns`), the trust stores (`ca_trust`), clipboard hijackers (`clipper`), and its security settings: `settings` (the checks' types and runner) over `any/`, `macos/` and `linux/`, one file per behaviour, persistence included |

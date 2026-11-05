@@ -181,10 +181,6 @@ pub struct Options {
     /// Skip the machine's security settings (`--no-posture`); they run
     /// with the machine inventory otherwise.
     pub no_posture: bool,
-    /// Skip the clipboard self-test (`--no-clipboard`): it copies a canary
-    /// address of each shape and reads it back, which writes to the
-    /// clipboard for a second. The passive persistence check still runs.
-    pub no_clipboard: bool,
     pub policy: Policy,
     /// Check dependency licenses against the allowlist (`--licenses`); off
     /// by default, it's noisy.

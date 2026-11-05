@@ -46,7 +46,7 @@ function finding(kind,component,vuln_id,status,extra){
 }
 const every=[
   finding('suspect-code','repo-a/setup.js','SUSPECT-EXEC-DECODED','fail',{fix_cmd:'Read repo-a/setup.js before running anything in repo-a'}),
-  finding('clipper','ClipGrab','CLIPPER-ACTIVE','fail',{fix_cmd:"Don't send funds from this machine; remove ClipGrab"}),
+  finding('clipper','ClipGrab','CLIPPER-PERSISTENCE','fail',{fix_cmd:"Don't send funds from this machine; remove ClipGrab"}),
   finding('extension','evil.helper','MALICIOUS','fail',{severity:'MALICIOUS',kev:true,fix_cmd:'code --uninstall-extension evil.helper',fix_auto:true}),
   finding('secret','repo-b/.env','aws-access-token','fail',{fix_cmd:'If it\'s real: rotate it, then purge it from history. If not: add abc:.env:aws-access-token:3 to ~/w/repo-b/.gitleaksignore'}),
   finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock'}),

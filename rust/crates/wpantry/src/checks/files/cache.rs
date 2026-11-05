@@ -110,11 +110,15 @@ pub fn version(check: Check) -> String {
 /// unchanged.
 pub(super) fn get(cache: &Cache, job: &Job, read: &Read, stat: &Stat) -> Option<Out> {
     let (dev, ino, size, mtime) = stat.id;
-    let row: Option<String> = cache
+    let mut stmt = cache
         .conn
-        .query_row(
+        .prepare_cached(
             "SELECT result FROM file_results WHERE checker=? AND root=? AND path=? AND role=? \
              AND dev=? AND ino=? AND size=? AND mtime=? AND version=?",
+        )
+        .ok()?;
+    let row: Option<String> = stmt
+        .query_row(
             params![
                 name(job.check),
                 job.root.to_string_lossy(),
@@ -137,30 +141,40 @@ pub(super) fn get(cache: &Cache, job: &Job, read: &Read, stat: &Stat) -> Option<
 /// Keep `out` for `read` in `job`, seen at `seen`.
 pub(super) fn put(cache: &Cache, job: &Job, read: &Read, stat: &Stat, out: &Out, seen: f64) {
     let (dev, ino, size, mtime) = stat.id;
-    let _ = cache.conn.execute(
-        "INSERT OR REPLACE INTO file_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            name(job.check),
-            job.root.to_string_lossy(),
-            read.path.to_string_lossy(),
-            read.role,
-            dev,
-            ino,
-            size,
-            mtime,
-            version(job.check),
-            to_json(out).to_string(),
-            seen
-        ],
-    );
+    let Ok(mut stmt) =
+        cache.conn.prepare_cached("INSERT OR REPLACE INTO file_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    else {
+        return;
+    };
+    let _ = stmt.execute(params![
+        name(job.check),
+        job.root.to_string_lossy(),
+        read.path.to_string_lossy(),
+        read.role,
+        dev,
+        ino,
+        size,
+        mtime,
+        version(job.check),
+        to_json(out).to_string(),
+        seen
+    ]);
 }
 
 /// Mark a cached result seen at `seen`.
 pub(super) fn touch(cache: &Cache, job: &Job, read: &Read, seen: f64) {
-    let _ = cache.conn.execute(
-        "UPDATE file_results SET seen=? WHERE checker=? AND root=? AND path=? AND role=?",
-        params![seen, name(job.check), job.root.to_string_lossy(), read.path.to_string_lossy(), read.role],
-    );
+    let Ok(mut stmt) =
+        cache.conn.prepare_cached("UPDATE file_results SET seen=? WHERE checker=? AND root=? AND path=? AND role=?")
+    else {
+        return;
+    };
+    let _ = stmt.execute(params![
+        seen,
+        name(job.check),
+        job.root.to_string_lossy(),
+        read.path.to_string_lossy(),
+        read.role
+    ]);
 }
 
 /// Drop the results of files these jobs no longer read (deleted, moved,

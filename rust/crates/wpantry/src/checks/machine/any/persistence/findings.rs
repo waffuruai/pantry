@@ -2,9 +2,12 @@
 //! warns every scan.
 
 use super::{Inventory, Item, Signature, Source, Vetted};
+use crate::checks::Scan;
 use crate::db::Cache;
 use crate::error::Result;
 use crate::finding::Finding;
+use crate::utils::files;
+use crate::utils::os::now;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -150,9 +153,37 @@ pub fn findings(
     out
 }
 
+/// Persistence: every place a program can arrange to run again (listed
+/// and checked beside the other probes), diffed against the last scan's
+/// list in the cache's `persistence` table. Runs with the machine inventory
+/// whatever `--no-posture` says, as the clipper's persistence check does:
+/// it is malware's footing, not a setting.
+pub fn persistence(scan: &mut Scan, (inv, vetted): crate::checks::machine::any::persistence::Gathered) {
+    use crate::checks::machine::any::persistence as p;
+    scan.status("Comparing launch agents, login items and the other persistence places with the last scan");
+    scan.count("persistence items listed", inv.items.len() as i64);
+    for (source, why) in &inv.unread {
+        scan.unchecked(&format!("persistence: {}s", source.what()), why);
+    }
+    let (new, first) = match p::diff(&scan.cache, &inv, now()) {
+        Ok(d) => d,
+        Err(e) => {
+            scan.unchecked("persistence baseline", &e.to_string());
+            (Vec::new(), Vec::new())
+        }
+    };
+    let baselined = inv.items.iter().filter(|i| first.contains(&i.source)).count();
+    scan.count("persistence items recorded as the baseline (first scan)", baselined as i64);
+    for f in p::findings(&inv, &new, &vetted, &|path| files::short(&path.to_string_lossy())) {
+        scan.add(f);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::machine::testing;
+    use crate::utils::net::Fake;
     use crate::utils::temp;
 
     #[test]
@@ -239,5 +270,39 @@ mod tests {
         assert_eq!(got[1].note, "2 new lines since the last scan (lines 3, 9); every new shell runs them");
         // Nothing new: only what warns every scan.
         assert_eq!(findings(&inv, &[], &vetted, &show).len(), 3);
+    }
+
+    #[test]
+    fn persistence_baselines_first_then_warns_on_what_is_new() {
+        use crate::checks::machine::any::persistence::{Inventory, Item, Source};
+        let d = crate::utils::temp::TempDir::new("persistence").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d);
+        let item = |loc: &str| Item {
+            source: Source::Launchd,
+            location: loc.into(),
+            ident: String::new(),
+            program: None,
+            injects: Vec::new(),
+            line: 0,
+        };
+        let mut inv = Inventory {
+            items: vec![item("a.plist")],
+            read: vec![Source::Launchd],
+            unread: vec![(Source::SystemExtension, "systemextensionsctl list gave no answer".into())],
+        };
+        persistence(&mut s, (inv.clone(), Default::default()));
+        assert_eq!(
+            testing::kinds(&s),
+            [("persistence: system extensions".to_string(), "UNCHECKED".to_string(), "warn".to_string())],
+            "the first scan records, and says what it couldn't read"
+        );
+        assert!(s.counts.iter().any(|(k, n)| k.starts_with("persistence items recorded") && *n == 1));
+        let mut s2 = Scan::new(Default::default(), s.cache, &net, &|_| {}, &|_| {});
+        inv.items.push(item("b.plist"));
+        inv.unread.clear();
+        persistence(&mut s2, (inv, Default::default()));
+        assert_eq!(testing::kinds(&s2), [("b.plist".to_string(), "PERSISTENCE-NEW".to_string(), "warn".to_string())]);
+        assert_eq!(s2.findings[0].kind, "persistence");
     }
 }

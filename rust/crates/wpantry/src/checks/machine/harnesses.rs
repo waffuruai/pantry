@@ -308,22 +308,7 @@ fn dotted(name: &str) -> Vec<String> {
 
 /// The strings in a TOML array's raw text (`["-y", "x@1.0.0"]`).
 fn toml_strings(raw: &str) -> Vec<Value> {
-    let mut out = Vec::new();
-    let mut rest = raw.trim().strip_prefix('[').unwrap_or("");
-    loop {
-        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
-        if rest.starts_with('#') {
-            rest = rest.split_once('\n').map(|(_, r)| r).unwrap_or("");
-            continue;
-        }
-        match toml::string(rest) {
-            Some((v, r)) => {
-                out.push(Value::String(v));
-                rest = r;
-            }
-            None => return out,
-        }
-    }
+    toml::strings(raw).into_iter().map(Value::String).collect()
 }
 
 /// `[mcp_servers.<name>]` tables of a TOML config (Codex), as {"mcp_servers":

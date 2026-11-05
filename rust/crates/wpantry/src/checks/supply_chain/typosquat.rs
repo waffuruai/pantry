@@ -12,6 +12,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::checks::lockfiles::Package;
+use crate::checks::{Scan, lockfiles, suspects};
+use crate::finding::Finding;
+use crate::utils::files::short;
+use std::path::PathBuf;
 
 /// A dependency that looks like a typo of a popular one.
 #[derive(Clone, Debug, PartialEq)]
@@ -271,9 +275,54 @@ pub fn find(packages: &[Package]) -> Vec<Squat> {
     out
 }
 
+/// Dependencies one keystroke from a popular package (`lodahs`): a warning,
+/// a failure when the popular one is in the same lockfile too (a typo that
+/// pulled in a stranger's package). The suspect policy downgrades by id or
+/// lockfile path.
+pub(crate) fn typosquats(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package>)]) {
+    let policy = scan.opts.policy.suspect_policy();
+    for (f, pkgs) in read {
+        let file = short(&f.to_string_lossy());
+        for s in crate::checks::supply_chain::typosquat::find(pkgs) {
+            let mut probe = vec![suspects::Suspect {
+                file: file.clone(),
+                id: "SUSPECT-TYPOSQUAT",
+                line: 0,
+                note: format!(
+                    "`{}` is one keystroke from the popular `{}`{}",
+                    s.name,
+                    s.near,
+                    if s.both {
+                        ", and both are in the lockfile: a typo that pulled in a stranger's package beside the one meant"
+                    } else {
+                        ""
+                    }
+                ),
+                hard: s.both,
+            }];
+            suspects::apply_policy(&mut probe, &policy);
+            let p = probe.remove(0);
+            scan.add(Finding {
+                kind: "suspect-code".into(),
+                component: format!("{} ({})", s.name, s.ecosystem),
+                location: file.clone(),
+                vuln_id: p.id.into(),
+                status: if p.hard { "fail" } else { "warn" }.into(),
+                note: p.note,
+                fix_cmd: "Check the package page (publisher, age, downloads); if it isn't the one you meant, remove it and rotate anything the install could have read. A package you do mean goes in the suspect policy (--suspect-policy) so it warns instead".into(),
+                ..Default::default()
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::supply_chain::testing::CARGO_LOCK;
+    use crate::checks::supply_chain::{projects, testing};
+    use crate::checks::{Options, Policy};
+    use crate::utils::temp::TempDir;
 
     fn pkg(eco: &str, name: &str) -> Package {
         Package::new(eco, name, "1.0.0")
@@ -397,5 +446,38 @@ mod tests {
         }
         let s = find(&[pkg("npm", "lodahs"), pkg("npm", "lodash")]);
         assert!(s[0].both, "the typo beside the name meant");
+    }
+
+    #[test]
+    fn a_typosquat_in_the_suspect_policy_warns_instead() {
+        let d = TempDir::new("typosquat").unwrap();
+        let net = testing::osv_net(&[]);
+        let policy = d.path().join("suspect.txt");
+        std::fs::write(&policy, "SUSPECT-TYPOSQUAT\n").unwrap();
+        let opts = Options { policy: Policy { suspect: Some(policy), ..Default::default() }, ..Default::default() };
+        let mut s = testing::scan(&net, &d, opts);
+        let (name, root) = testing::repo(&d, "app");
+        testing::write(&root, "Cargo.lock", CARGO_LOCK);
+        projects::projects(&mut s, &[(name, root)]).unwrap();
+        let squat = testing::by_id(&s, "SUSPECT-TYPOSQUAT");
+        assert_eq!(squat.len(), 1);
+        assert_eq!(squat[0].status, "warn");
+        assert!(squat[0].note.ends_with("(exempted by the suspect policy: still a warning)"), "{}", squat[0].note);
+        // Without the popular one beside it, a warning on its own.
+        let (name, root) = testing::repo(&d, "solo");
+        testing::write(
+            &root,
+            "Cargo.lock",
+            CARGO_LOCK.split("\n[[package]]\nname = \"sedre\"").next().unwrap().replace("serde", "sedre"),
+        );
+        projects::projects(&mut s, &[(name, root)]).unwrap();
+        let solo = testing::by_id(&s, "SUSPECT-TYPOSQUAT");
+        assert_eq!(solo.len(), 2, "{:?}", s.findings);
+        assert_eq!(solo[1].status, "warn");
+        assert_eq!(solo[1].note, "`sedre` is one keystroke from the popular `serde`");
+        // No lockfiles at all: nothing is asked.
+        let (name, root) = testing::repo(&d, "empty");
+        projects::projects(&mut s, &[(name, root)]).unwrap();
+        assert!(net.requests().iter().all(|r| r.url.ends_with("/v1/querybatch")));
     }
 }

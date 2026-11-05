@@ -4,13 +4,19 @@
 //! known only by name (an unpinned `npx some-mcp-server`).
 
 use crate::checks::ecosystems::{self, normalize, openssf};
+use crate::checks::{REMOVE, Scan};
+use crate::component::Component;
 use crate::db::Cache;
 use crate::error::Result;
+use crate::finding::Finding;
+use crate::sources::malicious_packages;
+use crate::utils::json::str_at;
 use crate::utils::json::{self, arr_at};
 use crate::utils::net::{self, Net};
 use rusqlite::params;
 use serde_json::Value;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 
 /// What the index says about one package: the reports that cover this
 /// version, and the ids whose report couldn't be read (offline, or the fetch
@@ -113,11 +119,61 @@ pub fn applies(rec: &Value, version: &str) -> bool {
     false
 }
 
+/// Every package name we know against the local malicious-package index,
+/// which also covers what OSV couldn't be asked about (offline, unpinned).
+pub fn sweep(scan: &mut Scan, found: &[Component], refs: &[Component]) -> Result<()> {
+    scan.status("Updating the malicious-package index (OpenSSF)");
+    let synced = malicious_packages::sync(&scan.cache, scan.opts.offline);
+    if scan.guard("malicious-package index (OpenSSF)", synced.map(Some), None)?.is_none() {
+        return Ok(());
+    }
+    let mut flagged: HashSet<(String, String)> =
+        scan.findings.iter().map(|f| (f.component.clone(), f.vuln_id.clone())).collect();
+    let mut items: Vec<(&Component, String, String, String)> =
+        found.iter().filter_map(|c| c.osv.as_ref().map(|(e, n, v)| (c, e.clone(), n.clone(), v.clone()))).collect();
+    let extra = |c: &Component, k: &str| c.extra.get(k).cloned().unwrap_or_default();
+    items.extend(refs.iter().map(|c| (c, extra(c, "eco"), extra(c, "pkg"), extra(c, "ver"))));
+    let total = items.len();
+    let mut unread = Vec::new();
+    for (n, (c, eco, name, ver)) in items.into_iter().enumerate() {
+        scan.status(&format!("Checking {name} against the malicious-package index ({}/{total})", n + 1));
+        let found = reports(&scan.cache, scan.net, &eco, &name, &ver, scan.opts.offline)?;
+        unread.extend(found.unknown.iter().map(|id| format!("{name} {ver} ({id})")));
+        for rec in found.matched {
+            let id = str_at(&rec, "id").to_string();
+            if flagged.insert((c.name.clone(), id.clone())) {
+                let summary = str_at(&rec, "summary");
+                scan.add(Finding {
+                    vuln_id: id,
+                    status: "fail".into(),
+                    kev: true,
+                    severity: "MALICIOUS".into(),
+                    note: if summary.is_empty() { format!("known malicious package {name}") } else { summary.into() },
+                    fix_cmd: REMOVE.replace("{}", &name),
+                    ..Finding::of(c)
+                });
+            }
+        }
+    }
+    if !unread.is_empty() {
+        unread.sort();
+        unread.dedup();
+        scan.unchecked(
+            "packages named in the malicious-package index",
+            &format!("couldn't read the report to tell whether these versions are covered: {}", unread.join(", ")),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::Options;
+    use crate::checks::supply_chain::testing;
     use crate::error::Error;
     use crate::utils::net::Fake;
+    use crate::utils::temp::TempDir;
     use serde_json::json;
 
     #[test]
@@ -241,5 +297,52 @@ mod tests {
         assert_eq!(reports(&c, &good, "crates.io", "evil", "9.9.0", false).unwrap(), Reports::default());
         assert_eq!(good.requests().len(), 1);
         assert_eq!(reports(&c, &no_calls, "crates.io", "evil", "1.0.5", true).unwrap().matched, [rec]);
+    }
+
+    /// Every package name against the index: a match fails (once per
+    /// component and report), a report that couldn't be read is unchecked
+    /// by name, and no index at all is unchecked.
+    #[test]
+    fn the_sweep_matches_the_malicious_index() {
+        let d = TempDir::new("sweep").unwrap();
+        testing::seed_index(
+            &d,
+            &[("npm", "evil", "MAL-0001"), ("npm", "evil", "MAL-0002"), ("pypi", "bad", "MAL-0003")],
+        );
+        let net = Fake::new(|r| {
+            if r.url.ends_with("/MAL-0002") {
+                return Err(Error::Offline("osv: down".into()));
+            }
+            testing::osv(r, &[]).unwrap_or_else(|| panic!("unexpected request to {}", r.url))
+        });
+        let mut s = testing::scan(&net, &d, Options::default());
+        let mut evil = Component::new("npm", "evil", "1.0.0", "/n/evil");
+        evil.osv = Some(("npm".into(), "evil".into(), "1.0.0".into()));
+        let mut good = Component::new("npm", "good", "1.0.0", "/n/good");
+        good.osv = Some(("npm".into(), "good".into(), "1.0.0".into()));
+        let mut bad = Component::new("mcp", "bad (project: x)", "unpinned", "/r/.mcp.json");
+        for (k, v) in [("eco", "PyPI"), ("pkg", "bad"), ("ver", "")] {
+            bad.extra.insert(k.into(), v.into());
+        }
+        // Already reported under that id (by OSV, say): not again.
+        s.add(Finding { vuln_id: "MAL-0001".into(), status: "fail".into(), ..Finding::of(&evil) });
+        sweep(&mut s, &[evil, good], &[bad]).unwrap();
+        assert_eq!(testing::by_id(&s, "MAL-0001").len(), 1, "{:?}", s.findings);
+        let bad = testing::by_id(&s, "MAL-0003");
+        assert_eq!(bad.len(), 1, "{:?}", s.findings);
+        assert_eq!(
+            (bad[0].component.as_str(), bad[0].status.as_str(), bad[0].severity.as_str(), bad[0].note.as_str()),
+            ("bad (project: x)", "fail", "MALICIOUS", "MAL-0003 is malicious")
+        );
+        assert!(bad[0].kev);
+        assert_eq!(bad[0].fix_cmd, REMOVE.replace("{}", "bad"));
+        assert_eq!(testing::unchecked(&s), ["packages named in the malicious-package index"]);
+        let un = s.findings.iter().find(|f| f.kind == "unchecked").unwrap();
+        assert!(un.note.ends_with("covered: evil 1.0.0 (MAL-0002)"), "{}", un.note);
+
+        let d = TempDir::new("sweep-off").unwrap();
+        let mut s = testing::scan(&net, &d, Options { offline: true, ..Default::default() });
+        sweep(&mut s, &[], &[]).unwrap();
+        assert_eq!(testing::unchecked(&s), ["malicious-package index (OpenSSF)"]);
     }
 }

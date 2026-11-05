@@ -11,10 +11,14 @@
 //! Everything here is read-only and bounded: no hook is run, no target is
 //! executed, files are read through [`crate::utils::files::read_capped`].
 
+use crate::checks::Scan;
 use crate::checks::machine::harnesses;
 use crate::checks::supply_chain::repos::Repo;
+use crate::finding::Finding;
 use crate::utils::files::read_capped;
+use crate::utils::files::short;
 use crate::utils::json::str_at;
+use crate::utils::parallel;
 use crate::utils::walk::walk;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -679,9 +683,82 @@ fn first_line(path: &Path) -> String {
         .collect()
 }
 
+/// Code each repo runs when it is opened, installed or built (agent hooks,
+/// MCP servers in the repo, editor tasks on open, install scripts, native
+/// addons), and the markers of known hijacked-repo campaigns. Running a file
+/// kept in the repo fails; running a command at all warns, unless the hooks
+/// policy accepts that exact hook, in which case it is only counted.
+pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
+    if repos.is_empty() {
+        return;
+    }
+    scan.status("Looking for code the repos run on open or install");
+    let iocs = Indicators::parse(&scan.opts.policy.repo_hooks());
+    let accepted = scan.opts.policy.hooks_policy();
+    let found: Vec<Vec<Hook>> = parallel::par_map(repos, parallel::PROBES, |(_, root)| {
+        let mut h = scan_repo(root, &iocs);
+        h.extend(campaign_markers(root));
+        h
+    });
+    for ((name, root), hooks) in repos.iter().zip(found) {
+        scan.count("repos checked for hooks", 1);
+        for h in hooks {
+            let listed = accepted.lists(root, &h);
+            if listed && h.acceptable() {
+                scan.count("repo hooks accepted by policy", 1);
+                continue;
+            }
+            let fails = h.fails();
+            let (status, mut fix_cmd) = if fails {
+                (
+                    "fail",
+                    format!(
+                        "Don't open {} in an agent or editor until you've read {}: remove the hook, or review what it runs",
+                        short(&root.to_string_lossy()),
+                        h.file
+                    ),
+                )
+            } else if h.id == "MARKER" {
+                (
+                    "warn",
+                    "If this isn't yours: treat the repo and every token it could reach as compromised, remove the persistence first, then rotate".into(),
+                )
+            } else {
+                (
+                    "warn",
+                    format!(
+                        "Read {} before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {}",
+                        h.file,
+                        h.policy_line()
+                    ),
+                )
+            };
+            if listed {
+                fix_cmd.push_str(&format!(
+                    ". Your hooks policy names it, but a {} hook is never accepted: the policy only covers hooks that warn",
+                    h.id
+                ));
+            }
+            scan.add(Finding {
+                kind: "repo-hook".into(),
+                component: format!("{name}/{}", h.file),
+                location: h.when.clone(),
+                vuln_id: h.id.into(),
+                status: status.into(),
+                note: if h.command.is_empty() { h.note } else { format!("{}: `{}`", h.note, h.command) },
+                fix_cmd,
+                ..Default::default()
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::Options;
+    use crate::checks::supply_chain::testing;
+    use crate::utils::net::Fake;
     use crate::utils::temp::TempDir;
 
     fn repo() -> TempDir {
@@ -1020,5 +1097,98 @@ mod tests {
         assert!(i.packages.contains("@iobandamwer/cache-helper"));
         assert!(i.hosts.iter().any(|h| h == "aiarmor.website"));
         assert_eq!(i.sha256.len(), 7);
+    }
+
+    /// A command on open warns, a repo file run on open fails, and a hooks
+    /// policy accepts the first and never the second.
+    #[test]
+    fn repo_hooks_fail_on_repo_files_and_warn_on_commands() {
+        let d = TempDir::new("hooks").unwrap();
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d, Options::default());
+        let (name, root) = testing::repo(&d, "app");
+        testing::write(&root, ".envrc", "source_up\n");
+        testing::write(
+            &root,
+            ".vscode/tasks.json",
+            r#"{"version": "2.0.0", "tasks": [{"label": "deps", "type": "shell", "command": "sh ./scripts/setup.sh", "runOptions": {"runOn": "folderOpen"}}]}"#,
+        );
+        testing::write(&root, "scripts/setup.sh", "#!/bin/sh\nnpm ci\n");
+        repo_hooks(&mut s, &[]);
+        assert!(s.findings.is_empty());
+        repo_hooks(&mut s, &[(name.clone(), root.clone())]);
+        assert!(s.counts.contains(&("repos checked for hooks".to_string(), 1)));
+        let open = testing::by_id(&s, "OPEN-HOOK");
+        assert_eq!(open.len(), 1, "{:?}", s.findings);
+        assert_eq!(
+            (open[0].kind.as_str(), open[0].component.as_str(), open[0].status.as_str()),
+            ("repo-hook", "app/.envrc", "warn")
+        );
+        assert!(open[0].note.ends_with(": `source_up`"), "{}", open[0].note);
+        let line = "hook .envrc \"direnv, on every cd (once allowed)\" source_up";
+        assert_eq!(
+            open[0].fix_cmd,
+            format!(
+                "Read .envrc before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {line}"
+            )
+        );
+        let runs = testing::by_id(&s, "RUNS-REPO-FILE");
+        assert_eq!(runs.len(), 1, "{:?}", s.findings);
+        assert_eq!((runs[0].component.as_str(), runs[0].status.as_str()), ("app/.vscode/tasks.json", "fail"));
+        let refuse = format!(
+            "Don't open {} in an agent or editor until you've read .vscode/tasks.json: remove the hook, or review what it runs",
+            short(&root.to_string_lossy())
+        );
+        assert_eq!(runs[0].fix_cmd, refuse);
+
+        // The printed line, in a hooks policy, accepts the warning: counted, not
+        // reported. A `repo` line covering the clone accepts it too, and names
+        // the failing hook without accepting it.
+        for policy in [line.to_string(), format!("repo {}", root.display())] {
+            let file = d.path().join("hooks.txt");
+            std::fs::write(&file, format!("# mine\n{policy}\n")).unwrap();
+            let opts = Options {
+                policy: crate::checks::Policy { hooks: Some(file), ..Default::default() },
+                ..Default::default()
+            };
+            let mut s = testing::scan(&net, &d, opts);
+            repo_hooks(&mut s, &[(name.clone(), root.clone())]);
+            assert!(testing::by_id(&s, "OPEN-HOOK").is_empty(), "{policy}: {:?}", s.findings);
+            assert!(s.counts.contains(&("repo hooks accepted by policy".to_string(), 1)), "{policy}: {:?}", s.counts);
+            let runs = testing::by_id(&s, "RUNS-REPO-FILE");
+            assert_eq!(runs.len(), 1, "{policy}: {:?}", s.findings);
+            assert_eq!(runs[0].status, "fail");
+            if policy.starts_with("repo ") {
+                assert_eq!(
+                    runs[0].fix_cmd,
+                    format!(
+                        "{refuse}. Your hooks policy names it, but a RUNS-REPO-FILE hook is never accepted: the policy only covers hooks that warn"
+                    )
+                );
+            } else {
+                assert_eq!(runs[0].fix_cmd, refuse);
+            }
+        }
+    }
+
+    #[test]
+    fn a_campaign_commit_trailer_is_a_marker() {
+        let d = TempDir::new("markers").unwrap();
+        let Some(r) = testing::git_repo(
+            &d,
+            "app",
+            &[&["init", "-q"], &["commit", "-q", "--allow-empty", "-m", "a", "-m", "skip-checks:true"]],
+        ) else {
+            panic!("git can't make a repo here");
+        };
+        let net = Fake::offline();
+        let mut s = testing::scan(&net, &d, Options::default());
+        repo_hooks(&mut s, &[r]);
+        let marker = testing::by_id(&s, "MARKER");
+        assert_eq!(marker.len(), 1, "{:?}", s.findings);
+        assert_eq!((marker[0].component.as_str(), marker[0].status.as_str()), ("app/.git", "warn"));
+        assert!(marker[0].location.starts_with("commit ") && marker[0].location.len() == 19, "{}", marker[0].location);
+        assert!(marker[0].fix_cmd.starts_with("If this isn't yours: treat the repo"), "{}", marker[0].fix_cmd);
+        assert!(marker[0].note.starts_with("carries the `skip-checks:true` trailer"), "{}", marker[0].note);
     }
 }

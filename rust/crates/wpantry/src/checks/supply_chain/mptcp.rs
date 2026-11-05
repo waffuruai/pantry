@@ -19,6 +19,10 @@
 //! GODEBUG settings from the main module's `go` directive, so a module on
 //! `go 1.22` built with a 1.24 toolchain keeps MPTCP off.
 
+use crate::checks::Scan;
+use crate::checks::supply_chain::repos::Repo;
+use crate::finding::Finding;
+use crate::utils::parallel;
 use crate::utils::walk::walk;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -233,6 +237,39 @@ pub fn scan_repo(root: &Path) -> Vec<Exposure> {
     }
     out.sort_by(|a, b| a.file.cmp(&b.file));
     out
+}
+
+/// Programs that listen with Multipath TCP on (Go 1.24 and later by
+/// default, or an explicit opt-in): CVE-2026-98432 is reachable through
+/// the listener until the kernel under it is fixed, so each warns with the
+/// opt-out as its step, as an unfixed Critical advisory does, and counts
+/// as unfixed. Never a failure: the program is right, the kernel isn't.
+pub fn mptcp_listeners(scan: &mut Scan, repos: &[Repo]) {
+    if repos.is_empty() {
+        return;
+    }
+    scan.status("Looking for programs that listen with Multipath TCP on");
+    let found: Vec<Vec<Exposure>> = parallel::par_map(repos, parallel::PROBES, |(_, root)| scan_repo(root));
+    let kev = scan.kev.contains(ID);
+    for ((name, _), hits) in repos.iter().zip(found) {
+        scan.count("repos checked for programs listening with MPTCP on", 1);
+        for h in hits {
+            scan.unfixed += 1;
+            scan.add(Finding {
+                kind: "project".into(),
+                component: format!("{name}/{}", h.file),
+                version: h.go,
+                location: format!("line {}", h.line),
+                vuln_id: ID.into(),
+                status: "warn".into(),
+                kev,
+                severity: "CRITICAL".into(),
+                note: h.note,
+                fix_cmd: h.fix.into(),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 #[cfg(test)]

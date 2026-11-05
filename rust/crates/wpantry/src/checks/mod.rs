@@ -12,6 +12,7 @@
 pub mod documents;
 pub mod ecosystems;
 pub mod email;
+pub mod files;
 pub mod hidden;
 pub mod lockfiles;
 pub mod machine;

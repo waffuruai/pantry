@@ -26,6 +26,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "clipboard",
     "mitigate",
     "rules",
+    "sources",
     "help",
 ];
 
@@ -104,6 +105,10 @@ pub enum Command {
         json: bool,
     },
     Tools {
+        json: bool,
+    },
+    /// `sources`: every source wpantry reads and what its fetches came to.
+    Sources {
         json: bool,
     },
     Report {
@@ -185,7 +190,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,rules,help} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,rules,sources,help} ...";
 
 /// The scan's options in its usage line, shared by `scan`, `check` and
 /// `fix` (`fix` adds `--dryrun` and `--yes` in front).
@@ -215,6 +220,7 @@ pub fn usage(cmd: &str) -> String {
         "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
+        "sources" => "usage: wpantry sources [-h] [--json]",
         "skill" => "usage: wpantry skill [-h]",
         "rules" => {
             "usage: wpantry rules [-h] [--update] [--json]\n       wpantry rules gen [--category CAT] [--family NAME] [--name RULE] [--out FILE] SAMPLE [SAMPLE ...]\n       wpantry rules goodware"
@@ -277,6 +283,9 @@ fn help(cmd: &str) -> String {
             "list the external tools this implementation uses\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
+        "sources" => {
+            "every outside source wpantry reads (assets/defaults/sources.toml): its kind, tier, host and licence, when it was last fetched, whether that is fresh, and what last went wrong\n\noptions:\n  -h, --help  show this help message and exit\n  --json      the sources as JSON"
+        }
         "rules" => {
             "the YARA rules the malware scan uses: ours, built in, and YARA Forge's, fetched into the cache directory; gen writes a rule from samples\n\npositional arguments:\n  gen SAMPLE ...   write a YARA rule matching what the samples share and this machine's programs don't (unreviewed: category suspicious, score 60)\n  goodware         rebuild the goodware database from this machine's system programs (gen builds it the first time)\n\noptions:\n  -h, --help       show this help message and exit\n  --update         fetch YARA Forge's latest package now\n  --json           the sources and counts as JSON\n  --category CAT   gen: the category you propose (default malware)\n  --family NAME    gen: the family's name (default: the first sample's file name)\n  --name RULE      gen: the rule's name (default Gen_<category>_<family>)\n  --out FILE       gen: write the rule there, and its test file beside it (default: stdout)"
         }
@@ -305,7 +314,7 @@ fn help(cmd: &str) -> String {
             "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for scan\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,rules,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -385,7 +394,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
-        "version" | "tools" => &[("--help", false), ("--json", false)],
+        "version" | "tools" | "sources" => &[("--help", false), ("--json", false)],
         "report" => &[
             ("--help", false),
             ("--exposure", false),
@@ -817,7 +826,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 out: value("--out").map(|o| expand(&o)),
             }
         }
-        "version" | "tools" | "skill" | "watch" => {
+        "version" | "tools" | "skill" | "watch" | "sources" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
             }
@@ -825,6 +834,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 "watch" => Command::Watch { json: flag("--json"), offline: flag("--offline") },
                 "version" => Command::Version { json: flag("--json") },
                 "tools" => Command::Tools { json: flag("--json") },
+                "sources" => Command::Sources { json: flag("--json") },
                 _ => Command::Skill,
             }
         }
@@ -881,6 +891,10 @@ mod tests {
         assert!(matches!(p(&["rules", "goodware", "x"]), Parsed::Usage(_)));
         assert!(usage("scan").contains("[--no-malware] [--deep]"));
         assert!(help("rules").contains("--update"));
+        assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false }));
+        assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true }));
+        assert!(matches!(p(&["sources", "extra"]), Parsed::Usage(_)));
+        assert!(help("sources").contains("--json"));
     }
 
     #[test]

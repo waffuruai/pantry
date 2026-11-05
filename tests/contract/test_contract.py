@@ -117,6 +117,27 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 1 if missing else 0)
         self.assertEqual(self.run_bin("tools")[0], code)
 
+    def test_sources(self):
+        code, out, _ = self.run_bin("sources", "--json")
+        self.assertEqual(code, 0)
+        got = json.loads(out)
+        self.assertEqual(set(got), {"sources"})
+        ids = [s["id"] for s in got["sources"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn("osv", ids)
+        for s in got["sources"]:
+            self.assertEqual(
+                set(s),
+                {"id", "kind", "format", "tier", "host", "transport", "license", "redistribute", "refresh_seconds",
+                 "sends", "last_attempt", "last_success", "fresh", "error"},
+            )
+            self.assertIn(s["tier"], ("default", "deep", "off"))
+            self.assertIn(s["transport"], ("https", "git"))
+            self.assertEqual(s["host"] is None, s["transport"] == "git")
+        code, out, _ = self.run_bin("sources")
+        self.assertEqual(code, 0)
+        self.assertIn("api.osv.dev", out)
+
     def test_skill(self):
         code, out, _ = self.run_bin("skill")
         self.assertEqual(code, 0)

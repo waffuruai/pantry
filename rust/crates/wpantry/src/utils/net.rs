@@ -432,7 +432,7 @@ mod tests {
             osv::API,
             "https://haveibeenpwned.com/api/v3/breachedaccount/x",
             "https://api.xposedornot.com/v1/check-email/x",
-            crate::checks::malware::FORGE_RELEASE,
+            crate::checks::malware::yara::FORGE_RELEASE,
             crate::sources::indicator_lists::SIGNATURE_BASE,
             crate::sources::indicator_lists::FEODO,
             crate::sources::hash_lookups::YARAIFY,

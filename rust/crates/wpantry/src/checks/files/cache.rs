@@ -11,6 +11,8 @@ use super::pass::{Check, Job, Out};
 use super::{Read, Stat};
 use crate::checks::documents::Doc;
 use crate::checks::hidden::Hidden;
+use crate::checks::malware::targets::{Scanned, Scope};
+use crate::checks::malware::yara::Hit;
 use crate::checks::supply_chain::mptcp::Facts;
 use crate::checks::suspects::{FileResult, Kind, Suspect};
 use crate::db::{Cache, DAY};
@@ -36,7 +38,9 @@ fn name(check: Check) -> &'static str {
         Check::Suspects(Kind::Installed) => "suspects:installed",
         Check::Mptcp => "mptcp",
         Check::Documents => "documents",
-        Check::Programs => "programs",
+        Check::Malware(Scope::Programs) => "malware:programs",
+        Check::Malware(Scope::All) => "malware:all",
+        Check::Malware(Scope::File) => "malware:file",
     }
 }
 
@@ -84,12 +88,18 @@ fn sources(check: Check) -> &'static [&'static str] {
             include_str!("../../utils/archive/zip.rs"),
             include_str!("../../utils/archive/deflate.rs"),
         ],
-        Check::Programs => &[include_str!("../malware/mod.rs")],
+        Check::Malware(_) => &[include_str!("../malware/targets.rs"), include_str!("../malware/yara.rs")],
     }
 }
 
-/// The check's version: wpantry's, and a hash of its source and the pass's.
-pub fn version(check: Check) -> String {
+/// The check's version: wpantry's, a hash of its source and the pass's,
+/// and `salt` (the malware rules' hash).
+pub fn version(check: Check, salt: &str) -> String {
+    let base = base_version(check);
+    if matches!(check, Check::Malware(_)) { format!("{base}:{salt}") } else { base }
+}
+
+fn base_version(check: Check) -> String {
     static VERSIONS: LazyLock<Mutex<std::collections::HashMap<&'static str, String>>> = LazyLock::new(Default::default);
     VERSIONS
         .lock()
@@ -205,6 +215,8 @@ fn place(root: &Path, path: &Path) -> (String, String) {
 
 /// The records of the roots a pass reads, and what it found this time.
 pub(super) struct Store {
+    /// The malware rules' hash, part of the malware scan's version.
+    salt: String,
     old: HashMap<PathBuf, (String, Record)>,
     new: HashMap<PathBuf, Record>,
     /// The checks each root ran this time.
@@ -213,7 +225,7 @@ pub(super) struct Store {
 
 impl Store {
     /// The records of `jobs`' roots.
-    pub fn load(cache: &Cache, jobs: &[Job]) -> Store {
+    pub fn load(cache: &Cache, jobs: &[Job], salt: &str) -> Store {
         let mut old = HashMap::new();
         let mut ran: HashMap<PathBuf, HashSet<String>> = HashMap::new();
         for job in jobs {
@@ -233,7 +245,7 @@ impl Store {
             let record = Record::parse(&text);
             old.insert(job.root.clone(), (text, record));
         }
-        Store { old, new: HashMap::new(), ran }
+        Store { salt: salt.to_string(), old, new: HashMap::new(), ran }
     }
 
     /// `read`'s cached result in `job`, while the file and the check are
@@ -241,7 +253,7 @@ impl Store {
     pub fn get(&self, job: &Job, read: &Read, stat: &Stat) -> Option<Out> {
         let (_, record) = self.old.get(&job.root)?;
         let check = name(job.check);
-        if record.versions.get(check)? != &version(job.check) {
+        if record.versions.get(check)? != &version(job.check, &self.salt) {
             return None;
         }
         let (dir, file) = place(&job.root, &read.path);
@@ -250,14 +262,14 @@ impl Store {
             return None;
         }
         let (_, _, result) = entry.results.iter().find(|(c, r, _)| c == check && *r == read.role)?;
-        from_json(job.check, &serde_json::from_str(result).ok()?)
+        from_json(job.check, &serde_json::from_str(result).ok()?, &read.path)
     }
 
     /// Keep `out` as `read`'s result in `job` this time.
     pub fn put(&mut self, job: &Job, read: &Read, stat: &Stat, out: &Out) {
         let check = name(job.check);
         let record = self.new.entry(job.root.clone()).or_default();
-        record.versions.insert(check.into(), version(job.check));
+        record.versions.insert(check.into(), version(job.check, &self.salt));
         let (dir, file) = place(&job.root, &read.path);
         let entry = record.files.entry(dir).or_default().entry(file).or_default();
         let print = fingerprint(stat);
@@ -406,11 +418,16 @@ fn to_json(out: &Out) -> Value {
             "listen": found_json(&f.listen),
         }),
         Out::Documents(v) => Value::Array(v.iter().map(doc_json).collect()),
-        Out::Program(b) => Value::Bool(*b),
+        // Nearly every file: the bare `target`, nothing found.
+        Out::Malware(s) if s.hits.is_empty() => Value::Bool(s.target),
+        Out::Malware(s) => json!({
+            "target": s.target,
+            "hits": s.hits.iter().map(|h| json!([h.namespace, h.rule, h.category, h.description, h.sha256])).collect::<Vec<_>>(),
+        }),
     }
 }
 
-fn from_json(check: Check, v: &Value) -> Option<Out> {
+fn from_json(check: Check, v: &Value, path: &std::path::Path) -> Option<Out> {
     Some(match check {
         Check::Hidden => Out::Hidden(v.as_array()?.iter().map(hidden_of).collect()),
         Check::Suspects(_) => Out::Suspects(FileResult {
@@ -433,7 +450,26 @@ fn from_json(check: Check, v: &Value) -> Option<Out> {
             listen: found_of(v.get("listen")),
         })),
         Check::Documents => Out::Documents(v.as_array()?.iter().map(doc_of).collect()),
-        Check::Programs => Out::Program(v.as_bool()?),
+        Check::Malware(_) if v.is_boolean() => Out::Malware(Scanned { target: v.as_bool()?, hits: Vec::new() }),
+        Check::Malware(_) => Out::Malware(Scanned {
+            target: v.get("target")?.as_bool()?,
+            hits: v
+                .get("hits")?
+                .as_array()?
+                .iter()
+                .map(|h| {
+                    let s = |i: usize| h.get(i).and_then(Value::as_str).unwrap_or_default().to_string();
+                    Hit {
+                        path: path.to_path_buf(),
+                        namespace: s(0),
+                        rule: s(1),
+                        category: s(2),
+                        description: s(3),
+                        sha256: s(4),
+                    }
+                })
+                .collect(),
+        }),
     })
 }
 
@@ -476,7 +512,18 @@ mod tests {
                 listen: None,
             })),
             Out::Documents(vec![Doc { file: "a.pdf".into(), id: "DOC-JS-ON-OPEN", note: "n".into(), hard: true }]),
-            Out::Program(true),
+            Out::Malware(Scanned { target: false, hits: Vec::new() }),
+            Out::Malware(Scanned {
+                target: true,
+                hits: vec![Hit {
+                    path: "/x/a.sh".into(),
+                    namespace: "ns".into(),
+                    rule: "R".into(),
+                    category: "miner".into(),
+                    description: "d".into(),
+                    sha256: "ab".into(),
+                }],
+            }),
         ];
         let checks = [
             Check::Hidden,
@@ -485,12 +532,17 @@ mod tests {
             Check::Mptcp,
             Check::Mptcp,
             Check::Documents,
-            Check::Programs,
+            Check::Malware(Scope::Programs),
+            Check::Malware(Scope::All),
         ];
         for (check, out) in checks.iter().zip(&outs) {
-            assert_eq!(from_json(*check, &to_json(out)).as_ref(), Some(out), "{check:?}");
+            assert_eq!(
+                from_json(*check, &to_json(out), std::path::Path::new("/x/a.sh")).as_ref(),
+                Some(out),
+                "{check:?}"
+            );
         }
-        assert_eq!(from_json(Check::Programs, &json!("garbage")), None);
+        assert_eq!(from_json(Check::Malware(Scope::All), &json!("garbage"), std::path::Path::new("/x")), None);
         assert!(std::ptr::eq(intern("SUSPECT-X"), intern(&String::from("SUSPECT-X"))));
     }
 
@@ -514,8 +566,9 @@ mod tests {
 
     #[test]
     fn versions_differ_by_check_and_hold_still() {
-        assert_ne!(version(Check::Hidden), version(Check::Documents));
-        assert_eq!(version(Check::Suspects(Kind::Repo)), version(Check::Suspects(Kind::Installed)));
-        assert_eq!(version(Check::Mptcp), version(Check::Mptcp));
+        assert_ne!(version(Check::Hidden, ""), version(Check::Documents, ""));
+        assert_eq!(version(Check::Suspects(Kind::Repo), ""), version(Check::Suspects(Kind::Installed), ""));
+        assert_eq!(version(Check::Mptcp, "a"), version(Check::Mptcp, "b"), "only the malware scan's rules salt it");
+        assert_ne!(version(Check::Malware(Scope::All), "a"), version(Check::Malware(Scope::All), "b"));
     }
 }

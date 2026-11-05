@@ -85,6 +85,36 @@ impl FileView {
         crate::utils::files::read_capped_bytes(&self.path, cap).ok()
     }
 
+    /// The file opened once: its first bytes, then the whole of it when a
+    /// check reads it whole (`always`, the most it reads) or reads it whole
+    /// only when those bytes say it is a program (`programs`, judged by
+    /// `program`). The whole is refused (None) over its cap or when the
+    /// file isn't a regular one, as
+    /// [`crate::utils::files::read_capped_bytes`] refuses.
+    pub fn load(&self, always: u64, programs: u64, program: fn(&[u8]) -> bool) -> (Vec<u8>, Option<Vec<u8>>) {
+        opened(&self.path);
+        let Ok(mut f) = std::fs::File::open(&self.path) else { return (Vec::new(), None) };
+        let Ok(meta) = f.metadata() else { return (Vec::new(), None) };
+        if !meta.is_file() {
+            return (Vec::new(), None);
+        }
+        let mut bytes = Vec::with_capacity(HEAD);
+        if (&mut f).take(HEAD as u64).read_to_end(&mut bytes).is_err() {
+            return (Vec::new(), None);
+        }
+        let head = bytes.clone();
+        let cap = if program(&head) { always.max(programs) } else { always };
+        if cap == 0 || meta.len() > cap {
+            return (head, None);
+        }
+        bytes.reserve(meta.len().saturating_sub(bytes.len() as u64) as usize);
+        let whole = (&mut f).take((cap + 1).saturating_sub(bytes.len() as u64)).read_to_end(&mut bytes);
+        if whole.is_err() || bytes.len() as u64 > cap {
+            return (head, None);
+        }
+        (head, Some(bytes))
+    }
+
     /// Up to [`HEAD`] first bytes; empty when it can't be read.
     pub fn head(&self) -> &[u8] {
         self.head.get_or_init(|| {
@@ -115,6 +145,28 @@ mod tests {
         assert_eq!(opens(&p), 1, "the head is read once");
         assert_eq!(v.read(1 << 20).map(|b| b.len()), Some(18));
         assert_eq!(opens(&p), 2);
+    }
+
+    #[test]
+    fn a_load_reads_the_head_then_the_whole_once() {
+        let d = TempDir::new("view").unwrap();
+        let sh = d.path().join("run.sh");
+        std::fs::write(&sh, "#!/bin/sh\necho hi\n").unwrap();
+        let txt = d.path().join("notes.txt");
+        std::fs::write(&txt, "just words\n").unwrap();
+        let program = |h: &[u8]| h.starts_with(b"#!");
+        let (head, whole) = FileView::new(sh.clone()).load(0, 100, program);
+        assert_eq!((&head[..2], whole.map(|b| b.len())), (&b"#!"[..], Some(18)));
+        assert_eq!(opens(&sh), 1);
+        let (head, whole) = FileView::new(txt.clone()).load(0, 100, program);
+        assert_eq!((head.len(), whole), (11, None), "not a program: its head only");
+        assert_eq!(FileView::new(txt.clone()).load(100, 0, program).1.map(|b| b.len()), Some(11), "read whole always");
+        assert_eq!(FileView::new(txt.clone()).load(5, 0, program).1, None, "over the cap");
+        assert_eq!(FileView::new(d.path().to_path_buf()).load(100, 100, program), (Vec::new(), None), "a directory");
+        assert_eq!(FileView::new(d.path().join("gone")).load(100, 100, program), (Vec::new(), None));
+        let big = d.path().join("big.sh");
+        std::fs::write(&big, [b"#!".as_slice(), &[b'x'; 200]].concat()).unwrap();
+        assert_eq!(FileView::new(big.clone()).load(0, 202, program).1.map(|b| b.len()), Some(202), "past the head");
     }
 
     #[test]

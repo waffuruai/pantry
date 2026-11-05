@@ -239,6 +239,8 @@ pub struct Scan<'a> {
     pub kev: HashSet<String>,
     /// The files pass's findings ([`Scan::read_files`]).
     pub(crate) files: Option<files::Results>,
+    /// The malware scan's rules, compiled before the files are read.
+    pub(crate) malware: Option<malware::Prepared>,
 }
 
 impl<'a> Scan<'a> {
@@ -265,18 +267,25 @@ impl<'a> Scan<'a> {
             unknown_licenses: 0,
             kev: HashSet::new(),
             files: None,
+            malware: None,
         }
     }
 
     /// The content checks' findings (hidden text, suspect code, MPTCP,
-    /// documents, the repos' programs): one files pass over every repo and,
-    /// on a machine scan, the installed extensions and plugins, run the
-    /// first time a check asks.
+    /// documents, malware): one files pass over every repo and, on a machine
+    /// scan, the installed extensions and plugins, Downloads, Desktop and
+    /// Documents, and the places malware lands, run the first time a check
+    /// asks. The malware rules are compiled first, so they read the files
+    /// with the rest.
     pub(crate) fn read_files(&mut self) -> &files::Results {
         if self.files.is_none() {
-            self.status("Reading the repos' files");
+            if !self.opts.no_malware && self.malware.is_none() {
+                self.malware = Some(malware::prepare(self));
+            }
+            self.status("Reading files");
             let jobs = self.file_jobs();
-            self.files = Some(files::pass::run_cached(&jobs, Some(&self.cache)));
+            let rules = self.malware.as_ref().map(|m| m.loaded.clone());
+            self.files = Some(files::pass::run_cached(&jobs, Some(&self.cache), rules));
         }
         self.files.as_ref().expect("the files pass just ran")
     }
@@ -291,14 +300,18 @@ impl<'a> Scan<'a> {
             }
             jobs.push(Job::new(Check::Mptcp, root, supply_chain::mptcp::DEPTH));
             jobs.push(Job::new(Check::Documents, root, 6));
-            if !self.opts.no_malware {
-                jobs.push(Job::new(Check::Programs, root, malware::DEEP));
-            }
         }
         if self.opts.machine {
             for (_, dir) in supply_chain::suspect_code::installed_code() {
                 jobs.push(Job::new(Check::Suspects(suspects::Kind::Installed), &dir, suspects::DEPTH));
             }
+            for dir in machine::downloads::dirs() {
+                jobs.push(Job::new(Check::Documents, &dir, 1));
+            }
+        }
+        if !self.opts.no_malware {
+            let repos: Vec<PathBuf> = self.repos.iter().map(|(_, r)| r.clone()).collect();
+            jobs.extend(malware::targets::jobs(&self.home, &repos, self.opts.machine, self.opts.deep));
         }
         jobs
     }

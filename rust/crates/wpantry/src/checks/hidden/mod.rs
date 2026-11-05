@@ -33,7 +33,7 @@ mod links;
 mod names;
 mod unicode;
 
-use crate::checks::files::{Contents, Read, Stats};
+use crate::checks::files::{Contents, Read, Stats, When};
 use bait::bait_identifiers;
 use commits::commit_messages;
 use html::{hidden_elements, html_comments};
@@ -209,7 +209,7 @@ pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
             }
             budget -= s.size;
             plan.steps.push(Step::Read(plan.reads.len()));
-            plan.reads.push(Read { path, rel, cap: MAX_FILE, role: 0 });
+            plan.reads.push(Read { path, rel, cap: MAX_FILE, role: 0, when: When::Always });
         }
     }
     plan

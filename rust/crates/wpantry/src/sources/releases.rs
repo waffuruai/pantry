@@ -4,9 +4,9 @@
 //! reached with nothing cached is `Offline`, so the caller reports it
 //! unchecked instead of clean.
 
-use crate::db::{Cache, DAY};
+use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::sources::fetch::etag_fetch;
+use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::utils::dates::epoch;
 use crate::utils::json::{self, str_at};
@@ -21,8 +21,11 @@ pub fn casks(
     net: &dyn Net,
     offline: bool,
 ) -> Result<std::collections::BTreeMap<String, (String, String)>> {
-    if let Some(body) = etag_fetch(cache, net, url("homebrew-casks"), "casks", 7.0 * DAY, offline)? {
-        let data = json::parse(&body, json::MAX_DOCUMENT)?;
+    if let Some(body) = fetch::file(cache, net, "homebrew-casks", "casks", offline)? {
+        let data = json::parse(&body, json::MAX_DOCUMENT).unwrap_or_else(|e| {
+            fetch::rejected("homebrew-casks", &e.to_string());
+            Value::Null
+        });
         let mut rows: Vec<(String, String, String)> = Vec::new();
         for c in data.as_array().map(Vec::as_slice).unwrap_or(&[]) {
             let version = match c.get("version") {
@@ -47,13 +50,18 @@ pub fn casks(
                 }
             }
         }
-        cache.conn.execute("DELETE FROM casks", [])?;
-        let mut stmt = cache.conn.prepare("INSERT INTO casks VALUES (?, ?, ?)")?;
-        for (a, t, v) in &rows {
-            stmt.execute(params![a, t, v])?;
+        // A catalog with no apps in it is refused: the last good one stays.
+        if rows.is_empty() {
+            fetch::rejected("homebrew-casks", "no apps in the catalog");
+        } else {
+            cache.conn.execute("DELETE FROM casks", [])?;
+            let mut stmt = cache.conn.prepare("INSERT INTO casks VALUES (?, ?, ?)")?;
+            for (a, t, v) in &rows {
+                stmt.execute(params![a, t, v])?;
+            }
+            drop(stmt);
+            cache.commit()?;
         }
-        drop(stmt);
-        cache.commit()?;
     }
     let mut stmt = cache.conn.prepare("SELECT app, token, version FROM casks")?;
     let out: std::collections::BTreeMap<String, (String, String)> = stmt
@@ -76,17 +84,22 @@ pub fn casks(
 /// [(version, serving since epoch)] currently served on Chrome's stable channel.
 pub fn chrome(cache: &Cache, net: &dyn Net, platform: &str, offline: bool) -> Result<Vec<(String, f64)>> {
     let fetch = || -> Result<Value> {
-        let data = net::get_json(net, &url("chrome-releases").replace("{}", platform), &[])?.unwrap_or(Value::Null);
+        let data = fetch::get_json(net, "chrome-releases", &url("chrome-releases").replace("{}", platform), &[])?
+            .unwrap_or(Value::Null);
         let rows: Vec<Value> = json::arr_at(&data, "releases")
             .iter()
             .map(|r| {
                 let start = r.get("serving").map(|s| str_at(s, "startTime")).unwrap_or("");
                 serde_json::json!([str_at(r, "version"), epoch(start)])
             })
+            .filter(|r| r[0].as_str().is_some_and(|v| !v.is_empty()))
             .collect();
+        if rows.is_empty() {
+            return Err(fetch::invalid("chrome-releases", "no releases"));
+        }
         Ok(Value::Array(rows))
     };
-    let v = cache.memo(&format!("chrome:{platform}"), fetch, DAY, "", false, offline)?;
+    let v = fetch::memo(cache, "chrome-releases", &format!("chrome:{platform}"), fetch, "", false, offline)?;
     Ok(v.as_array()
         .map(|a| a.iter().map(|r| (r[0].as_str().unwrap_or("").to_string(), r[1].as_f64().unwrap_or(0.0))).collect())
         .unwrap_or_default())
@@ -101,11 +114,18 @@ pub struct Firefox {
 
 pub fn firefox(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Firefox> {
     let fetch = || -> Result<Value> {
-        let v = net::get_json(net, &format!("{}firefox_versions.json", url("firefox-releases")), &[])?
-            .unwrap_or(Value::Null);
+        let v = fetch::get_json(
+            net,
+            "firefox-releases",
+            &format!("{}firefox_versions.json", url("firefox-releases")),
+            &[],
+        )?
+        .unwrap_or(Value::Null);
         let mut dates = serde_json::Map::new();
         for name in ["firefox_history_major_releases.json", "firefox_history_stability_releases.json"] {
-            if let Some(Value::Object(m)) = net::get_json(net, &format!("{}{name}", url("firefox-releases")), &[])? {
+            if let Some(Value::Object(m)) =
+                fetch::get_json(net, "firefox-releases", &format!("{}{name}", url("firefox-releases")), &[])?
+            {
                 for (ver, day) in m {
                     dates.insert(ver, serde_json::json!(epoch(day.as_str().unwrap_or(""))));
                 }
@@ -120,9 +140,12 @@ pub fn firefox(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Firefox> {
                     .collect()
             })
             .unwrap_or_default();
+        if str_at(&v, "LATEST_FIREFOX_VERSION").is_empty() {
+            return Err(fetch::invalid("firefox-releases", "no latest version"));
+        }
         Ok(serde_json::json!({"latest": str_at(&v, "LATEST_FIREFOX_VERSION"), "esr": esr, "dates": dates}))
     };
-    let v = cache.memo("firefox", fetch, DAY, "", false, offline)?;
+    let v = fetch::memo(cache, "firefox-releases", "firefox", fetch, "", false, offline)?;
     Ok(Firefox {
         latest: str_at(&v, "latest").to_string(),
         esr: json::strs_at(&v, "esr"),
@@ -140,7 +163,8 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
     let fetch = || -> Result<Value> {
         let headers = net::github_headers();
         let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let data = net::get_json(net, &url("github-releases").replace("{}", repo), &h)?.unwrap_or(Value::Null);
+        let data = fetch::get_json(net, "github-releases", &url("github-releases").replace("{}", repo), &h)?
+            .unwrap_or(Value::Null);
         let tag = str_at(&data, "tag_name");
         if tag.is_empty() {
             return Err(Error::Offline(format!("{repo} has no latest release")));
@@ -149,7 +173,10 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
             if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
         Ok(Value::String(v.to_string()))
     };
-    Ok(cache.memo(&format!("github-latest:{repo}"), fetch, DAY, "", false, offline)?.as_str().unwrap_or("").to_string())
+    Ok(fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?
+        .as_str()
+        .unwrap_or("")
+        .to_string())
 }
 
 /// One row of PostgreSQL's security table.
@@ -235,14 +262,24 @@ pub fn parse_postgres(page: &str) -> Vec<PgAdvisory> {
 /// release data) for every supported major.
 pub fn postgres(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Vec<PgAdvisory>> {
     let fetch = || -> Result<Value> {
-        let resp = net::request(net, url("postgresql-security"), None, &[("Accept", "text/html")], None)?;
+        let resp = fetch::request(
+            net,
+            "postgresql-security",
+            url("postgresql-security"),
+            None,
+            &[("Accept", "text/html")],
+            None,
+        )?;
         let rows: Vec<Value> = parse_postgres(&String::from_utf8_lossy(&resp.body))
             .into_iter()
             .map(|a| serde_json::json!({"cve": a.cve, "majors": a.majors, "fixed": a.fixed, "component": a.component, "score": a.score, "vector": a.vector, "summary": a.summary}))
             .collect();
+        if rows.is_empty() {
+            return Err(fetch::invalid("postgresql-security", "no advisories in the page"));
+        }
         Ok(Value::Array(rows))
     };
-    let v = cache.memo("postgres", fetch, DAY, "", false, offline)?;
+    let v = fetch::memo(cache, "postgresql-security", "postgres", fetch, "", false, offline)?;
     Ok(v.as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[])
@@ -341,7 +378,7 @@ mod tests {
         assert_eq!(got, [("142.0.1".to_string(), epoch("2026-10-01")), ("141.0.0".to_string(), 0.0)]);
         assert!(epoch("2026-10-01") > 0.0 && epoch("soon") == 0.0);
         let gone = Fake::new(|_| Ok(Response { status: 404, body: Vec::new(), etag: None }));
-        assert!(chrome(&c, &gone, "linux", false).unwrap().is_empty());
+        assert!(chrome(&c, &gone, "linux", false).is_err(), "a feed that is gone is unchecked, not empty");
     }
 
     #[test]
@@ -367,8 +404,7 @@ mod tests {
         assert_eq!(net.requests().len(), 3);
         let gone = Fake::new(|_| Ok(Response { status: 404, body: Vec::new(), etag: None }));
         let (_d2, c2) = cache();
-        let f = firefox(&c2, &gone, false).unwrap();
-        assert!(f.latest.is_empty() && f.esr.is_empty() && f.dates.is_empty());
+        assert!(firefox(&c2, &gone, false).is_err(), "a feed that is gone is unchecked, not empty");
     }
 
     #[test]

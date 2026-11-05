@@ -4,9 +4,10 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::utils::json;
-use crate::utils::net::{self, Net};
+use crate::utils::net::Net;
 use crate::utils::os::now;
 use crate::utils::sha256;
 use serde_json::Value;
@@ -72,8 +73,9 @@ fn lookup(net: &dyn Net, email: &str) -> Result<Vec<String>> {
 /// Have I Been Pwned with `key`, else XposedOrNot.
 fn lookup_with(net: &dyn Net, email: &str, key: Option<String>) -> Result<Vec<String>> {
     if let Some(key) = key {
-        let r = net::request(
+        let r = fetch::request(
             net,
+            "haveibeenpwned",
             &url("haveibeenpwned").replace("{}", &quote(email)),
             None,
             &[("hibp-api-key", &key)],
@@ -88,7 +90,7 @@ fn lookup_with(net: &dyn Net, email: &str, key: Option<String>) -> Result<Vec<St
             .map(|a| a.iter().map(|b| json::str_at(b, "Name").to_string()).collect())
             .unwrap_or_default());
     }
-    let r = net::request(net, &url("xposedornot").replace("{}", &quote(email)), None, &[], None)?;
+    let r = fetch::request(net, "xposedornot", &url("xposedornot").replace("{}", &quote(email)), None, &[], None)?;
     if r.status == 404 {
         return Ok(Vec::new());
     }

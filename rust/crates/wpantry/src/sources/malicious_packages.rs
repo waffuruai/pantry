@@ -4,8 +4,9 @@
 //! read into the cache as names. Works offline once cloned. Each
 //! ecosystem's directory is [`crate::checks::ecosystems::openssf`].
 
-use crate::db::{Cache, DAY};
+use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::file::source;
 use crate::sources::file::url;
 use crate::utils::process::exec;
 use rusqlite::params;
@@ -31,7 +32,7 @@ fn git(args: &[&OsStr], timeout: u64) -> Result<String> {
 /// only when it can't be refreshed and there is no earlier index.
 pub fn sync(cache: &Cache, offline: bool) -> Result<i64> {
     let have: i64 = cache.conn.query_row("SELECT COUNT(*) FROM malicious", [], |r| r.get(0))?;
-    if have > 0 && (offline || cache.fresh("malicious_at", DAY)?) {
+    if have > 0 && (offline || cache.fresh("malicious_at", source("openssf-malicious-packages").refresh)?) {
         return Ok(have);
     }
     if offline {
@@ -72,6 +73,7 @@ pub fn sync(cache: &Cache, offline: bool) -> Result<i64> {
         )
         .map(|_| "HEAD")
     };
+    crate::sources::fetch::note("openssf-malicious-packages", &fetched);
     let listing = fetched.and_then(|r#ref| {
         git(
             &[

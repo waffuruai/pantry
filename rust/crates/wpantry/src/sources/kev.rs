@@ -1,10 +1,9 @@
 //! CISA's Known Exploited Vulnerabilities list, refetched daily with an
 //! ETag. Unreachable with nothing cached is `Offline`, never clean.
 
-use crate::db::{Cache, DAY};
+use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::sources::fetch::etag_fetch;
-use crate::sources::file::url;
+use crate::sources::fetch;
 use crate::utils::json::{self, str_at};
 use crate::utils::net::Net;
 use rusqlite::params;
@@ -12,18 +11,36 @@ use std::collections::HashSet;
 
 /// The CVE ids in CISA's Known Exploited Vulnerabilities list.
 pub fn kev(cache: &Cache, net: &dyn Net, offline: bool) -> Result<HashSet<String>> {
-    if let Some(body) = etag_fetch(cache, net, url("cisa-kev"), "kev", DAY, offline)? {
-        let data = json::parse(&body, json::MAX_DOCUMENT)?;
-        cache.conn.execute("DELETE FROM kev", [])?;
-        let mut stmt = cache.conn.prepare("INSERT OR REPLACE INTO kev VALUES (?, ?, ?)")?;
-        for v in json::arr_at(&data, "vulnerabilities") {
-            let id = str_at(v, "cveID");
-            if !id.is_empty() {
-                stmt.execute(params![id, str_at(v, "dateAdded"), str_at(v, "vulnerabilityName")])?;
+    if let Some(body) = fetch::file(cache, net, "cisa-kev", "kev", offline)? {
+        // A copy with nothing in it is refused: the last good list stays.
+        let rows: Vec<(String, String, String)> = match json::parse(&body, json::MAX_DOCUMENT) {
+            Ok(data) => json::arr_at(&data, "vulnerabilities")
+                .iter()
+                .map(|v| {
+                    (
+                        str_at(v, "cveID").to_string(),
+                        str_at(v, "dateAdded").to_string(),
+                        str_at(v, "vulnerabilityName").to_string(),
+                    )
+                })
+                .filter(|(id, _, _)| !id.is_empty())
+                .collect(),
+            Err(e) => {
+                fetch::rejected("cisa-kev", &e.to_string());
+                Vec::new()
             }
+        };
+        if rows.is_empty() {
+            fetch::rejected("cisa-kev", "no vulnerabilities in the catalog");
+        } else {
+            cache.conn.execute("DELETE FROM kev", [])?;
+            let mut stmt = cache.conn.prepare("INSERT OR REPLACE INTO kev VALUES (?, ?, ?)")?;
+            for (id, added, name) in &rows {
+                stmt.execute(params![id, added, name])?;
+            }
+            drop(stmt);
+            cache.commit()?;
         }
-        drop(stmt);
-        cache.commit()?;
     }
     let ids = cache.kev_ids()?;
     if ids.is_empty() {
@@ -81,7 +98,7 @@ mod tests {
         c.set("kev_at", "0").unwrap();
         assert_eq!(kev(&c, &net, false).unwrap().len(), 1);
         assert_eq!(net.requests().len(), 2);
-        assert!(c.fresh("kev_at", DAY).unwrap(), "a 304 counts as a refresh");
+        assert!(c.fresh("kev_at", crate::db::DAY).unwrap(), "a 304 counts as a refresh");
         c.set("kev_at", "0").unwrap();
         let bug = Fake::new(|_| Err(Error::Missing("not a source failure".into())));
         assert!(matches!(kev(&c, &bug, false), Err(Error::Missing(_))));

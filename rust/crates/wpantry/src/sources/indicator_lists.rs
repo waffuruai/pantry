@@ -4,6 +4,8 @@
 
 use crate::db::Cache;
 use crate::error::Error;
+use crate::sources::fetch;
+use crate::sources::file::source;
 use crate::sources::file::url;
 use crate::utils::json;
 use crate::utils::net::{self, Net};
@@ -22,7 +24,13 @@ pub fn update(cache: &Cache, net: &dyn Net, dir: &Path, refresh: bool) -> Vec<(&
         failed.push(("IOC lists", e.into()));
         return failed;
     }
-    let fresh = |key: &str, file: &Path| !refresh && file.is_file() && cache.fresh(key, MAX_AGE).unwrap_or(false);
+    let fresh = |key: &str, file: &Path| {
+        !refresh
+            && file.is_file()
+            && cache
+                .fresh(key, source(if key == "iocs:feodo" { "feodo" } else { "signature-base" }).refresh)
+                .unwrap_or(false)
+    };
     let headers = net::github_headers();
     let mut h: Vec<(&str, &str)> =
         headers.iter().filter(|(k, _)| k != "Accept").map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -33,7 +41,7 @@ pub fn update(cache: &Cache, net: &dyn Net, dir: &Path, refresh: bool) -> Vec<(&
         if fresh(&key, &file) {
             continue;
         }
-        match net::request(net, &format!("{}{name}", url("signature-base")), None, &h, None) {
+        match fetch::request(net, "signature-base", &format!("{}{name}", url("signature-base")), None, &h, None) {
             Ok(r) if r.status == 200 => {
                 if let Err(e) = std::fs::write(&file, &r.body).map_err(Error::from).and_then(|_| cache.touch(&key)) {
                     failed.push(("signature-base IOCs", e));
@@ -45,7 +53,7 @@ pub fn update(cache: &Cache, net: &dyn Net, dir: &Path, refresh: bool) -> Vec<(&
     }
     let feodo = dir.join("feodo-ipblocklist.json");
     if !fresh("iocs:feodo", &feodo) {
-        match net::request(net, url("feodo"), None, &[], None) {
+        match fetch::request(net, "feodo", url("feodo"), None, &[], None) {
             Ok(r) if r.status == 200 => {
                 if let Err(e) =
                     std::fs::write(&feodo, &r.body).map_err(Error::from).and_then(|_| cache.touch("iocs:feodo"))

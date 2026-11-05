@@ -6,9 +6,10 @@ use crate::checks::ecosystems::deps_dev;
 use crate::component::Status;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::utils::json;
-use crate::utils::net::{self, Net};
+use crate::utils::net::Net;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
@@ -32,7 +33,7 @@ const PARALLEL: usize = 16;
 /// unknown), cached.
 fn fetch(net: &dyn Net, sys: &str, name: &str, version: &str) -> Result<Vec<String>> {
     let url = format!("{}/{sys}/packages/{}/versions/{}", url("deps-dev"), segment(name), segment(version));
-    let Some(v) = net::get_json(net, &url, &[])? else { return Ok(Vec::new()) };
+    let Some(v) = fetch::get_json(net, "deps-dev", &url, &[])? else { return Ok(Vec::new()) };
     Ok(json::strs_at(&v, "licenses").into_iter().filter(|l| !l.is_empty()).collect())
 }
 

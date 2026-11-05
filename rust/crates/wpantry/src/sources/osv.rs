@@ -9,9 +9,10 @@ use crate::checks::ecosystems::versions;
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::utils::json::{self, arr_at, str_at};
-use crate::utils::net::{self, Net};
+use crate::utils::net::Net;
 use crate::utils::os::now;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -195,7 +196,7 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
     let mut answers: Vec<(Item, Vec<(String, String)>)> = Vec::new();
     for chunk in stale.chunks(BATCH) {
         let body = json!({"queries": chunk.iter().map(query).collect::<Vec<_>>()});
-        let res = net::post_json(net, &format!("{}/querybatch", url("osv")), &body)?;
+        let res = fetch::post_json(net, "osv", &format!("{}/querybatch", url("osv")), &body)?;
         let results = arr_at(&res, "results");
         if results.len() != chunk.len() {
             return Err(Error::Invalid(format!(
@@ -215,7 +216,7 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
                 // Rare: more than one page of advisories for one version.
                 let mut q = query(it);
                 q["page_token"] = Value::String(token);
-                let page = net::post_json(net, &format!("{}/query", url("osv")), &q)?;
+                let page = fetch::post_json(net, "osv", &format!("{}/query", url("osv")), &q)?;
                 if !page.is_object() {
                     return Err(Error::Invalid(format!("OSV answered {page} for a page of {what}")));
                 }
@@ -273,7 +274,7 @@ fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)], status: Status
                     }
                     let Some((id, etag)) = queue.lock().expect("lock").next() else { return };
                     let url = format!("{}/vulns/{id}", url("osv"));
-                    let got = net::request(net, &url, None, &[], etag.as_deref()).map(|r| match r.status {
+                    let got = fetch::request(net, "osv", &url, None, &[], etag.as_deref()).map(|r| match r.status {
                         200 => match json::parse(&r.body, json::MAX_DOCUMENT) {
                             Ok(rec) if str_at(&rec, "id") == id => Fetched::Record(rec, r.etag),
                             _ => Fetched::Missing,
@@ -546,7 +547,12 @@ pub fn tags(cache: &Cache, repo: &str, offline: bool) -> Result<Vec<String>> {
             .collect();
         Ok(Value::Array(tags))
     };
-    match cache.memo(&format!("tags:{repo}"), fetch, TAGS_TTL, "", false, offline) {
+    let fetch = || {
+        let r = fetch();
+        fetch::note("osv-git-tags", &r);
+        r
+    };
+    match fetch::memo(cache, "osv-git-tags", &format!("tags:{repo}"), fetch, "", false, offline) {
         Ok(v) => Ok(v
             .as_array()
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())

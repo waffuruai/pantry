@@ -1,11 +1,13 @@
 //! endoflife.date: each product's release cycles and when each one's
 //! support ends, fetched side by side and cached.
 
-use crate::db::{Cache, DAY};
+use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::fetch;
+use crate::sources::file::source;
 use crate::sources::file::url;
 use crate::utils::dates::{parse_date, today};
-use crate::utils::net::{self, Net};
+use crate::utils::net::Net;
 use rusqlite::params;
 use serde_json::Value;
 
@@ -29,12 +31,13 @@ pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: 
     }
     let mut stale: Vec<String> = Vec::new();
     for p in products {
-        if !stale.contains(p) && !cache.fresh(&format!("eol_at:{p}"), 7.0 * DAY)? {
+        if !stale.contains(p) && !cache.fresh(&format!("eol_at:{p}"), source("endoflife").refresh)? {
             stale.push(p.clone());
         }
     }
-    let fetched =
-        crate::utils::parallel::par_map(&stale, 8, |p| net::get_json(net, &url("endoflife").replace("{}", p), &[]));
+    let fetched = crate::utils::parallel::par_map(&stale, 8, |p| {
+        fetch::get_json(net, "endoflife", &url("endoflife").replace("{}", p), &[])
+    });
     for (p, r) in stale.iter().zip(fetched) {
         match r {
             Ok(data) => eol_store(cache, p, data.as_ref())?,
@@ -68,8 +71,8 @@ fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
 /// endoflife.date's view of `cycle` of `product`, or None when it doesn't
 /// know the cycle.
 pub fn eol(cache: &Cache, net: &dyn Net, product: &str, cycle: &str, offline: bool) -> Result<Option<Eol>> {
-    if !(offline || cache.fresh(&format!("eol_at:{product}"), 7.0 * DAY)?) {
-        match net::get_json(net, &url("endoflife").replace("{}", product), &[]) {
+    if !(offline || cache.fresh(&format!("eol_at:{product}"), source("endoflife").refresh)?) {
+        match fetch::get_json(net, "endoflife", &url("endoflife").replace("{}", product), &[]) {
             Ok(data) => eol_store(cache, product, data.as_ref())?,
             Err(e) if e.is_source() => {}
             Err(e) => return Err(e),

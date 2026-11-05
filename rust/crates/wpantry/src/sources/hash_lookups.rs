@@ -5,6 +5,7 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::sources::indicator_lists::MAX_AGE;
 use crate::utils::json;
@@ -139,8 +140,12 @@ fn names_malware(sig: &str) -> bool {
 /// YARAify knows a file once anyone submitted it, so being known says
 /// nothing; the ClamAV signatures its analysis found are the verdict.
 fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
-    let resp =
-        net::post_json(net, url("yaraify"), &serde_json::json!({"query": "lookup_hash", "search_term": sha256}))?;
+    let resp = fetch::post_json(
+        net,
+        "yaraify",
+        url("yaraify"),
+        &serde_json::json!({"query": "lookup_hash", "search_term": sha256}),
+    )?;
     match resp.get("query_status").and_then(|s| s.as_str()) {
         Some("ok") => Ok(match clamav_names(&resp).into_iter().find(|n| names_malware(n)) {
             Some(sig) => Verdict::Malware(sig),
@@ -152,7 +157,8 @@ fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
 }
 
 fn circl(net: &dyn Net, sha256: &str) -> Result<Verdict> {
-    let resp = net::request(net, &format!("{}{sha256}", url("circl-hashlookup")), None, &[], None)?;
+    let resp =
+        fetch::request(net, "circl-hashlookup", &format!("{}{sha256}", url("circl-hashlookup")), None, &[], None)?;
     Ok(if resp.status == 200 { Verdict::KnownGood } else { Verdict::Unknown })
 }
 
@@ -167,8 +173,11 @@ fn malwarebazaar(net: &dyn Net, sha256: &str, key: &str) -> Result<Verdict> {
             ("Auth-Key".into(), key.into()),
         ],
         body: Some(format!("query=get_info&hash={sha256}").into_bytes()),
+        limit: crate::sources::file::source("malwarebazaar").max_bytes,
     };
-    let r = net.send(&req)?;
+    let r = net.send(&req);
+    fetch::note("malwarebazaar", &r);
+    let r = r?;
     if !(200..300).contains(&r.status) {
         return Err(Error::Offline(format!("MalwareBazaar: HTTP {}", r.status)));
     }

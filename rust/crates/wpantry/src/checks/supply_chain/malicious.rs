@@ -12,7 +12,7 @@ use crate::finding::Finding;
 use crate::sources::malicious_packages;
 use crate::utils::json::str_at;
 use crate::utils::json::{self, arr_at};
-use crate::utils::net::{self, Net};
+use crate::utils::net::Net;
 use rusqlite::params;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -46,7 +46,12 @@ pub fn reports(cache: &Cache, net: &dyn Net, eco: &str, name: &str, version: &st
                 out.unknown.push(id);
                 continue;
             }
-            None => match net::get_json(net, &format!("{}/vulns/{id}", crate::sources::file::url("osv")), &[]) {
+            None => match crate::sources::fetch::get_json(
+                net,
+                "osv",
+                &format!("{}/vulns/{id}", crate::sources::file::url("osv")),
+                &[],
+            ) {
                 Ok(Some(r)) if json::str_at(&r, "id") == id => {
                     cache.put_vuln(&r)?;
                     r

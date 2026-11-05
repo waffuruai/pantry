@@ -1060,6 +1060,68 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// `sources`: every outside source and what its fetches came to.
+fn cmd_sources(json: bool) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let all = wpantry::sources::fetch::listing(&cache)?;
+    cache.close()?;
+    let now = wpantry::utils::os::now();
+    let when = |t: f64| if t > 0.0 { J::Float(t) } else { J::Null };
+    if json {
+        let rows = all
+            .iter()
+            .map(|l| {
+                let s = &l.source;
+                obj([
+                    ("id", s.id.as_str().into()),
+                    ("kind", s.kind.as_str().into()),
+                    ("format", s.format.as_str().into()),
+                    ("tier", s.tier.as_str().into()),
+                    ("host", s.host().map_or(J::Null, |h| h.as_str().into())),
+                    (
+                        "transport",
+                        if s.transport == wpantry::sources::file::Transport::Git { "git" } else { "https" }.into(),
+                    ),
+                    ("license", s.license.as_str().into()),
+                    ("redistribute", J::Bool(s.redistribute)),
+                    ("refresh_seconds", J::Float(s.refresh)),
+                    ("sends", if s.sends.is_empty() { J::Null } else { s.sends.as_str().into() }),
+                    ("last_attempt", when(l.state.attempt)),
+                    ("last_success", when(l.state.success)),
+                    ("fresh", J::Bool(l.fresh)),
+                    ("error", if l.state.error.is_empty() { J::Null } else { l.state.error.as_str().into() }),
+                ])
+            })
+            .collect();
+        say(&obj([("sources", J::Arr(rows))]).dumps_indent(1));
+        return Ok(EXIT_OK);
+    }
+    for l in &all {
+        let s = &l.source;
+        let fetched = if l.state.success > 0.0 {
+            format!(
+                "{} ago{}",
+                schedule::ago((now - l.state.success).max(0.0) as u64),
+                if l.fresh { "" } else { ", stale" }
+            )
+        } else {
+            "never fetched".to_string()
+        };
+        let host = s.host().unwrap_or_else(|| "git".into());
+        show(&format!("{:<28} {:<18} {:<7} {:<34} {}", s.id, s.kind, s.tier.as_str(), host, fetched));
+        show(&format!(
+            "{:<28} licence: {}{}",
+            "",
+            s.license,
+            if s.redistribute { "" } else { " (fetched here, never redistributed)" }
+        ));
+        if !l.state.error.is_empty() {
+            show(&format!("{:<28} last error: {}", "", l.state.error));
+        }
+    }
+    Ok(EXIT_OK)
+}
+
 /// `rules goodware`: rebuild the goodware database; returns how many files it read.
 fn cmd_rules_goodware() -> Result<usize> {
     let cache = Cache::open(None)?;
@@ -1149,6 +1211,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
+        Command::Sources { json } => cmd_sources(json),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),

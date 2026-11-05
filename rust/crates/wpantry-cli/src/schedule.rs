@@ -541,7 +541,7 @@ fn word(every: Every) -> &'static str {
     }
 }
 
-fn ago(secs: u64) -> String {
+pub(crate) fn ago(secs: u64) -> String {
     match secs {
         s if s < 90 => format!("{s} s"),
         s if s < 90 * 60 => format!("{} min", s / 60),

@@ -29,7 +29,6 @@ use crate::sources::kev;
 use crate::sources::osv::{self, Item};
 use crate::utils::json::str_at;
 use crate::utils::net::Net;
-use ecosystems::Comparator;
 use ecosystems::versions;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -395,7 +394,7 @@ impl<'a> Scan<'a> {
         groups: Option<Vec<Vec<Value>>>,
     ) -> bool {
         let (eco, pkg, qver) = c.osv.clone().unwrap_or_default();
-        let order = Comparator::for_ecosystem(&eco);
+        let order = ecosystems::order(&eco);
         let groups = groups.unwrap_or_else(|| recs.iter().map(|r| vec![r.clone()]).collect());
         let mut failing = false;
         let mut seen = HashSet::new();

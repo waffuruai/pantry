@@ -2,6 +2,7 @@
 //! side and cached for 30 days. deps.dev covers npm, PyPI, crates.io, Go,
 //! Maven, NuGet and RubyGems; the rest count as unknown.
 
+use crate::checks::ecosystems::deps_dev;
 use crate::component::Status;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
@@ -12,20 +13,6 @@ use std::sync::Mutex;
 
 pub const API: &str = "https://api.deps.dev/v3/systems";
 pub const TTL: f64 = 30.0 * DAY;
-
-/// deps.dev's system for an OSV ecosystem.
-pub fn system(eco: &str) -> Option<&'static str> {
-    Some(match eco {
-        "npm" => "npm",
-        "PyPI" => "pypi",
-        "crates.io" => "cargo",
-        "Go" => "go",
-        "Maven" => "maven",
-        "NuGet" => "nuget",
-        "RubyGems" => "rubygems",
-        _ => return None,
-    })
-}
 
 /// A path segment, percent-encoded (`@scope/name` → `%40scope%2Fname`).
 fn segment(s: &str) -> String {
@@ -67,7 +54,7 @@ pub fn lookup(
             Some((_, at, v)) if offline || at > crate::utils::os::now() - TTL => {
                 out.push(Some(json::strs_at(&json!({"l": v}), "l")))
             }
-            _ if system(&it.0).is_none() => out.push(Some(Vec::new())),
+            _ if deps_dev(&it.0).is_none() => out.push(Some(Vec::new())),
             _ if offline => out.push(None),
             _ => {
                 out.push(None);
@@ -83,7 +70,7 @@ pub fn lookup(
             s.spawn(|| {
                 while let Some(&i) = { queue.lock().expect("lock").next() } {
                     let (e, n, v) = &items[i];
-                    match fetch(net, system(e).unwrap_or(""), n, v) {
+                    match fetch(net, deps_dev(e).unwrap_or(""), n, v) {
                         Ok(l) => {
                             let mut r = results.lock().expect("lock");
                             r.push((i, l));

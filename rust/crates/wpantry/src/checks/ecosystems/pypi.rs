@@ -8,6 +8,28 @@
 use crate::checks::ecosystems::versions::num_cmp;
 use std::cmp::Ordering;
 
+/// A project name as PyPI compares names (PEP 503): lowercased, with each
+/// run of `-`, `_` and `.` as one `-`.
+pub fn normalize(name: &str) -> String {
+    let mut out = String::new();
+    let mut sep = false;
+    for c in name.chars() {
+        if matches!(c, '-' | '_' | '.') {
+            sep = true;
+        } else {
+            if sep {
+                out.push('-');
+                sep = false;
+            }
+            out.push(c.to_ascii_lowercase());
+        }
+    }
+    if sep {
+        out.push('-');
+    }
+    out
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Version {
     epoch: String,

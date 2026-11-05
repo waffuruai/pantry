@@ -220,11 +220,12 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>) -> Results {
     }
     let mut outs: Vec<Vec<Option<Out>>> = plans.iter().map(|p| p.reads().iter().map(|_| None).collect()).collect();
     let stat_of = |read: &Read| index.get(&read.path).and_then(|&i| views[i].stat());
-    if let Some(c) = cache {
+    let mut store = cache.map(|c| super::cache::Store::load(c, &jobs));
+    if let Some(s) = &store {
         for (j, p) in plans.iter().enumerate() {
             for (r, read) in p.reads().iter().enumerate() {
-                if let Some(s) = stat_of(read) {
-                    outs[j][r] = super::cache::get(c, &jobs[j], read, &s);
+                if let Some(st) = stat_of(read) {
+                    outs[j][r] = s.get(&jobs[j], read, &st);
                 }
             }
         }
@@ -254,23 +255,18 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>) -> Results {
             })
             .collect()
     });
-    if let Some(c) = cache {
+    for (j, r, o) in done.into_iter().flatten() {
+        outs[j][r] = Some(o);
+    }
+    if let (Some(c), Some(mut s)) = (cache, store.take()) {
         for (j, p) in plans.iter().enumerate() {
             for (r, read) in p.reads().iter().enumerate() {
-                if outs[j][r].is_some() {
-                    super::cache::touch(c, &jobs[j], read, started);
+                if let (Some(o), Some(st)) = (&outs[j][r], stat_of(read)) {
+                    s.put(&jobs[j], read, &st, o);
                 }
             }
         }
-    }
-    for (j, r, o) in done.into_iter().flatten() {
-        if let (Some(c), Some(s)) = (cache, stat_of(&plans[j].reads()[r])) {
-            super::cache::put(c, &jobs[j], &plans[j].reads()[r], &s, &o, started);
-        }
-        outs[j][r] = Some(o);
-    }
-    if let Some(c) = cache {
-        super::cache::prune(c, &jobs, started);
+        s.save(c, started);
     }
     let items: Vec<(&Job, &Plan, &Vec<Option<Out>>)> =
         jobs.iter().zip(&plans).zip(&outs).map(|((j, p), o)| (j, p, o)).collect();

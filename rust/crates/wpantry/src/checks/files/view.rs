@@ -44,8 +44,10 @@ pub struct Stat {
 
 impl Stat {
     fn of(path: &Path) -> Option<Stat> {
-        let m = std::fs::metadata(path).ok()?;
-        let link = std::fs::symlink_metadata(path).is_ok_and(|l| l.file_type().is_symlink());
+        // One syscall for all but symlinks: lstat, then stat only to follow a link.
+        let l = std::fs::symlink_metadata(path).ok()?;
+        let link = l.file_type().is_symlink();
+        let m = if link { std::fs::metadata(path).ok()? } else { l };
         let mtime = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64();
         #[cfg(unix)]
         let id = {

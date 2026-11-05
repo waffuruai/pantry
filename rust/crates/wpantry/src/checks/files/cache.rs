@@ -1,6 +1,11 @@
 //! The files pass's cache: each check's result for each file, kept while
 //! the file is unchanged (its device, inode, size and modification time)
 //! and the check's code is the same, so a scan reads only what changed.
+//!
+//! One record per root, read in one query and written back only when it
+//! changed: the files by folder, each with a fingerprint of its identity
+//! and each check's result under it. A repo of a hundred thousand files is
+//! a few megabytes, not a row per file and check.
 
 use super::pass::{Check, Job, Out};
 use super::{Read, Stat};
@@ -11,15 +16,13 @@ use crate::checks::suspects::{FileResult, Kind, Suspect};
 use crate::db::{Cache, DAY};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS file_results (
-  checker TEXT, root TEXT, path TEXT, role INTEGER,
-  dev INTEGER, ino INTEGER, size INTEGER, mtime REAL,
-  version TEXT, result TEXT, seen REAL,
-  PRIMARY KEY (checker, root, path, role));
+DROP TABLE IF EXISTS file_results;
+CREATE TABLE IF NOT EXISTS file_cache (root TEXT PRIMARY KEY, seen REAL, data TEXT);
 ";
 
 /// How long a file's results are kept once no scan sees it.
@@ -106,88 +109,209 @@ pub fn version(check: Check) -> String {
         .clone()
 }
 
-/// A cached result for `read` in `job`, while the file and the check are
-/// unchanged.
-pub(super) fn get(cache: &Cache, job: &Job, read: &Read, stat: &Stat) -> Option<Out> {
+/// A file's identity as the cache keeps it: a hash of its device, inode,
+/// size and modification time.
+fn fingerprint(stat: &Stat) -> u64 {
     let (dev, ino, size, mtime) = stat.id;
-    let mut stmt = cache
-        .conn
-        .prepare_cached(
-            "SELECT result FROM file_results WHERE checker=? AND root=? AND path=? AND role=? \
-             AND dev=? AND ino=? AND size=? AND mtime=? AND version=?",
-        )
-        .ok()?;
-    let row: Option<String> = stmt
-        .query_row(
-            params![
-                name(job.check),
-                job.root.to_string_lossy(),
-                read.path.to_string_lossy(),
-                read.role,
-                dev,
-                ino,
-                size,
-                mtime,
-                version(job.check)
-            ],
-            |r| r.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten();
-    from_json(job.check, &serde_json::from_str(&row?).ok()?)
-}
-
-/// Keep `out` for `read` in `job`, seen at `seen`.
-pub(super) fn put(cache: &Cache, job: &Job, read: &Read, stat: &Stat, out: &Out, seen: f64) {
-    let (dev, ino, size, mtime) = stat.id;
-    let Ok(mut stmt) =
-        cache.conn.prepare_cached("INSERT OR REPLACE INTO file_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    else {
-        return;
-    };
-    let _ = stmt.execute(params![
-        name(job.check),
-        job.root.to_string_lossy(),
-        read.path.to_string_lossy(),
-        read.role,
-        dev,
-        ino,
-        size,
-        mtime,
-        version(job.check),
-        to_json(out).to_string(),
-        seen
-    ]);
-}
-
-/// Mark a cached result seen at `seen`.
-pub(super) fn touch(cache: &Cache, job: &Job, read: &Read, seen: f64) {
-    let Ok(mut stmt) =
-        cache.conn.prepare_cached("UPDATE file_results SET seen=? WHERE checker=? AND root=? AND path=? AND role=?")
-    else {
-        return;
-    };
-    let _ = stmt.execute(params![
-        seen,
-        name(job.check),
-        job.root.to_string_lossy(),
-        read.path.to_string_lossy(),
-        read.role
-    ]);
-}
-
-/// Drop the results of files these jobs no longer read (deleted, moved,
-/// past a limit), and of any file no scan has seen for [`KEEP`].
-pub(super) fn prune(cache: &Cache, jobs: &[Job], started: f64) {
-    for job in jobs {
-        let _ = cache.conn.execute(
-            "DELETE FROM file_results WHERE checker=? AND root=? AND seen < ?",
-            params![name(job.check), job.root.to_string_lossy(), started],
-        );
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in [dev.to_le_bytes(), ino.to_le_bytes(), size.to_le_bytes(), mtime.to_bits().to_le_bytes()].concat() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
-    let _ = cache.conn.execute("DELETE FROM file_results WHERE seen < ?", params![started - KEEP]);
-    let _ = cache.commit();
+    h
+}
+
+/// One file's results, all under one fingerprint: `(check, role, JSON)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Entry {
+    print: u64,
+    results: Vec<(String, u8, String)>,
+}
+
+/// One root's record: each check's version, and each file (by folder,
+/// then name, relative to the root) with its results.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Record {
+    versions: BTreeMap<String, String>,
+    files: BTreeMap<String, BTreeMap<String, Entry>>,
+}
+
+const MAGIC: &str = "wpantry-files 1";
+
+impl Record {
+    fn text(&self) -> String {
+        let mut out = String::from(MAGIC);
+        out.push('\n');
+        for (check, v) in &self.versions {
+            out.push_str(&format!("c\t{check}\t{v}\n"));
+        }
+        for (dir, files) in &self.files {
+            out.push_str(&format!("d\t{}\n", json!(dir)));
+            for (name, e) in files {
+                out.push_str(&format!("{}\t{:016x}", json!(name), e.print));
+                for (check, role, result) in &e.results {
+                    out.push_str(&format!("\t{check}/{role}={result}"));
+                }
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// A record read back; an unreadable one is empty.
+    fn parse(text: &str) -> Record {
+        let mut lines = text.lines();
+        let mut r = Record::default();
+        if lines.next() != Some(MAGIC) {
+            return r;
+        }
+        let mut dir = String::new();
+        for line in lines {
+            let mut parts = line.split('\t');
+            let first = parts.next().unwrap_or("");
+            match first {
+                "c" => {
+                    if let (Some(check), Some(v)) = (parts.next(), parts.next()) {
+                        r.versions.insert(check.into(), v.into());
+                    }
+                }
+                "d" => dir = parts.next().and_then(|d| serde_json::from_str(d).ok()).unwrap_or_default(),
+                name => {
+                    let Some(name) = serde_json::from_str::<String>(name).ok() else { return Record::default() };
+                    let Some(print) = parts.next().and_then(|p| u64::from_str_radix(p, 16).ok()) else {
+                        return Record::default();
+                    };
+                    let results = parts
+                        .filter_map(|p| {
+                            let (key, result) = p.split_once('=')?;
+                            let (check, role) = key.split_once('/')?;
+                            Some((check.to_string(), role.parse().ok()?, result.to_string()))
+                        })
+                        .collect();
+                    r.files.entry(dir.clone()).or_default().insert(name, Entry { print, results });
+                }
+            }
+        }
+        r
+    }
+}
+
+/// Where a file sits in its root's record: (folder, name).
+fn place(root: &Path, path: &Path) -> (String, String) {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let dir = rel.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    (dir, name)
+}
+
+/// The records of the roots a pass reads, and what it found this time.
+pub(super) struct Store {
+    old: HashMap<PathBuf, (String, Record)>,
+    new: HashMap<PathBuf, Record>,
+    /// The checks each root ran this time.
+    ran: HashMap<PathBuf, HashSet<String>>,
+}
+
+impl Store {
+    /// The records of `jobs`' roots.
+    pub fn load(cache: &Cache, jobs: &[Job]) -> Store {
+        let mut old = HashMap::new();
+        let mut ran: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for job in jobs {
+            ran.entry(job.root.clone()).or_default().insert(name(job.check).into());
+            if old.contains_key(&job.root) {
+                continue;
+            }
+            let text: Option<String> = cache
+                .conn
+                .query_row("SELECT data FROM file_cache WHERE root=?", params![job.root.to_string_lossy()], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .ok()
+                .flatten();
+            let text = text.unwrap_or_default();
+            let record = Record::parse(&text);
+            old.insert(job.root.clone(), (text, record));
+        }
+        Store { old, new: HashMap::new(), ran }
+    }
+
+    /// `read`'s cached result in `job`, while the file and the check are
+    /// unchanged.
+    pub fn get(&self, job: &Job, read: &Read, stat: &Stat) -> Option<Out> {
+        let (_, record) = self.old.get(&job.root)?;
+        let check = name(job.check);
+        if record.versions.get(check)? != &version(job.check) {
+            return None;
+        }
+        let (dir, file) = place(&job.root, &read.path);
+        let entry = record.files.get(&dir)?.get(&file)?;
+        if entry.print != fingerprint(stat) {
+            return None;
+        }
+        let (_, _, result) = entry.results.iter().find(|(c, r, _)| c == check && *r == read.role)?;
+        from_json(job.check, &serde_json::from_str(result).ok()?)
+    }
+
+    /// Keep `out` as `read`'s result in `job` this time.
+    pub fn put(&mut self, job: &Job, read: &Read, stat: &Stat, out: &Out) {
+        let check = name(job.check);
+        let record = self.new.entry(job.root.clone()).or_default();
+        record.versions.insert(check.into(), version(job.check));
+        let (dir, file) = place(&job.root, &read.path);
+        let entry = record.files.entry(dir).or_default().entry(file).or_default();
+        let print = fingerprint(stat);
+        if entry.print != print {
+            *entry = Entry { print, results: Vec::new() };
+        }
+        entry.results.push((check.into(), read.role, to_json(out).to_string()));
+    }
+
+    /// Write back each root's record that changed: this time's results,
+    /// and the results of checks that didn't run this time for files that
+    /// haven't changed. Every root read is marked seen; a root no scan has
+    /// seen for [`KEEP`] is dropped.
+    pub fn save(mut self, cache: &Cache, started: f64) {
+        for (root, (text, old)) in self.old {
+            let mut record = self.new.remove(&root).unwrap_or_default();
+            let ran = self.ran.get(&root).cloned().unwrap_or_default();
+            for (check, v) in &old.versions {
+                if !ran.contains(check) {
+                    record.versions.entry(check.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            for (dir, files) in &old.files {
+                for (name, e) in files {
+                    let kept: Vec<_> = e.results.iter().filter(|(c, _, _)| !ran.contains(c)).cloned().collect();
+                    if kept.is_empty() {
+                        continue;
+                    }
+                    let entry = record
+                        .files
+                        .entry(dir.clone())
+                        .or_default()
+                        .entry(name.clone())
+                        .or_insert_with(|| Entry { print: e.print, results: Vec::new() });
+                    if entry.print == e.print {
+                        entry.results.extend(kept);
+                    }
+                }
+            }
+            let new = record.text();
+            let _ = if new != text {
+                cache.conn.execute(
+                    "INSERT OR REPLACE INTO file_cache VALUES (?, ?, ?)",
+                    params![root.to_string_lossy(), started, new],
+                )
+            } else {
+                cache
+                    .conn
+                    .execute("UPDATE file_cache SET seen=? WHERE root=?", params![started, root.to_string_lossy()])
+            };
+        }
+        let _ = cache.conn.execute("DELETE FROM file_cache WHERE seen < ?", params![started - KEEP]);
+        let _ = cache.commit();
+    }
 }
 
 /// A `&'static str` for an id read back from the cache: each distinct
@@ -313,17 +437,19 @@ fn from_json(check: Check, v: &Value) -> Option<Out> {
     })
 }
 
-/// Whether `root` has results cached for `check` (for tests).
+/// How many files `root`'s record holds a result of `check` for (for tests).
 #[cfg(test)]
-pub(super) fn rows(cache: &Cache, check: Check, root: &std::path::Path) -> i64 {
-    cache
+pub(super) fn rows(cache: &Cache, check: Check, root: &Path) -> usize {
+    let text: String = cache
         .conn
-        .query_row(
-            "SELECT count(*) FROM file_results WHERE checker=? AND root=?",
-            params![name(check), root.to_string_lossy()],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
+        .query_row("SELECT data FROM file_cache WHERE root=?", params![root.to_string_lossy()], |r| r.get(0))
+        .unwrap_or_default();
+    Record::parse(&text)
+        .files
+        .values()
+        .flat_map(|f| f.values())
+        .filter(|e| e.results.iter().any(|(c, _, _)| c == name(check)))
+        .count()
 }
 
 #[cfg(test)]
@@ -366,6 +492,24 @@ mod tests {
         }
         assert_eq!(from_json(Check::Programs, &json!("garbage")), None);
         assert!(std::ptr::eq(intern("SUSPECT-X"), intern(&String::from("SUSPECT-X"))));
+    }
+
+    #[test]
+    fn a_record_reads_back_as_it_was_written() {
+        let mut r = Record::default();
+        r.versions.insert("hidden".into(), "v1".into());
+        r.files.entry(String::new()).or_default().insert(
+            "odd\tname\n.md".into(),
+            Entry { print: 7, results: vec![("hidden".into(), 0, "[]".into()), ("mptcp".into(), 2, "null".into())] },
+        );
+        r.files.entry("a/b".into()).or_default().insert("c.rs".into(), Entry { print: u64::MAX, results: vec![] });
+        assert_eq!(Record::parse(&r.text()), r);
+        assert_eq!(Record::parse("not a record"), Record::default());
+        assert_eq!(
+            Record::parse(&format!("{MAGIC}\nnot json\t0\n")),
+            Record::default(),
+            "a broken line drops the record"
+        );
     }
 
     #[test]

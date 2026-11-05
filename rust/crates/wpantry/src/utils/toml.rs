@@ -112,6 +112,27 @@ fn key(s: &str) -> Option<(String, &str)> {
     (end > 0).then(|| (s[..end].to_string(), &s[end..]))
 }
 
+/// The strings in an array's raw text (`["-y", "x@1.0.0"]`), comments
+/// skipped; anything else ends it.
+pub fn strings(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = raw.trim().strip_prefix('[').unwrap_or("");
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.starts_with('#') {
+            rest = rest.split_once('\n').map(|(_, r)| r).unwrap_or("");
+            continue;
+        }
+        match string(rest) {
+            Some((v, r)) => {
+                out.push(v);
+                rest = r;
+            }
+            None => return out,
+        }
+    }
+}
+
 /// Every table in the document, in order; key/value pairs before the first
 /// header go in a table named "".
 pub fn parse(text: &str) -> Result<Vec<Table>> {

@@ -276,7 +276,7 @@ impl<'a> Scan<'a> {
         if self.files.is_none() {
             self.status("Reading the repos' files");
             let jobs = self.file_jobs();
-            self.files = Some(files::pass::run(&jobs));
+            self.files = Some(files::pass::run_cached(&jobs, Some(&self.cache)));
         }
         self.files.as_ref().expect("the files pass just ran")
     }

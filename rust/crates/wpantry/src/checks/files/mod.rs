@@ -7,6 +7,7 @@
 //! file; and its findings for the root, from those. The pass reads each
 //! file once and hands it to every check that wants it.
 
+pub mod cache;
 pub mod pass;
 pub mod view;
 

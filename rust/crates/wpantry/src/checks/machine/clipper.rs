@@ -1,19 +1,13 @@
-//! Clipboard clippers on this machine. A clipper watches the clipboard
-//! for a wallet address and replaces it with its own, so the address a
-//! person pastes into a wallet isn't the one they copied; it lives in a
-//! launch agent, an autostart entry or a browser extension and rotates
-//! its addresses, so there is no list to match it against. Two checks:
-//!
-//! - the **self-test**: copy a valid address of each shape a clipper goes
-//!   after (EVM, Bitcoin, Tron, Solana, XRP, Stellar), read it back twice
-//!   over the next half second, and fail if it came back as a different
-//!   address. The clipboard is put back as it was; an image or files on
-//!   it are never clobbered (the test is skipped and says so).
-//! - the **persistence** check: every launch agent and daemon, autostart
-//!   entry and user service, read for the program it runs; a program that
-//!   touches the clipboard and carries wallet addresses, or the patterns
-//!   that recognise them, is a clipper; one that touches the clipboard
-//!   from a temporary or hidden place warns.
+//! Clipboard clippers on this machine, found in its files. A clipper
+//! watches the clipboard for a wallet address and replaces it with its
+//! own, so the address a person pastes into a wallet isn't the one they
+//! copied; it lives in a launch agent, an autostart entry or a browser
+//! extension and rotates its addresses, so there is no list to match it
+//! against. Every launch agent and daemon, autostart entry and user
+//! service is read for the program it runs; a program that touches the
+//! clipboard and carries wallet addresses, or the patterns that recognise
+//! them, is a clipper; one that touches the clipboard from a temporary or
+//! hidden place warns. wpantry never reads or writes the clipboard itself.
 //!
 //! The browser-extension side is the `SUSPECT-CLIPBOARD-SWAP` rule over
 //! installed code.
@@ -25,185 +19,6 @@ use crate::utils::addresses::{self, Chain};
 use crate::utils::{files, process};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-/// The system clipboard, or a fake in tests.
-pub trait Clipboard {
-    /// What it holds now, as the system names the types ("«class PNGf»",
-    /// "image/png", "text/uri-list"); "" when unknown.
-    fn kinds(&self) -> String;
-    fn read(&self) -> String;
-    fn write(&self, text: &str);
-}
-
-/// The clipboard tools of this desktop.
-pub enum Real {
-    Mac,
-    Wayland,
-    Xclip,
-    Xsel,
-}
-
-const QUICK: Duration = Duration::from_secs(5);
-
-/// The clipboard of this session, or why there is none to test.
-pub fn real() -> Result<Real, String> {
-    if cfg!(target_os = "macos") {
-        return if process::which("pbpaste").is_some() && process::which("pbcopy").is_some() {
-            Ok(Real::Mac)
-        } else {
-            Err("pbcopy and pbpaste are missing".into())
-        };
-    }
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
-    let x11 = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty());
-    if !wayland && !x11 {
-        return Err("no display session (DISPLAY and WAYLAND_DISPLAY are unset): nothing owns a clipboard here".into());
-    }
-    if wayland && process::which("wl-paste").is_some() && process::which("wl-copy").is_some() {
-        return Ok(Real::Wayland);
-    }
-    if process::which("xclip").is_some() {
-        return Ok(Real::Xclip);
-    }
-    if process::which("xsel").is_some() {
-        return Ok(Real::Xsel);
-    }
-    Err(if wayland {
-        "install wl-clipboard (wl-paste, wl-copy) to test the clipboard"
-    } else {
-        "install xclip or xsel to test the clipboard"
-    }
-    .into())
-}
-
-fn run(argv: &[&str]) -> String {
-    process::run(argv, QUICK)
-}
-
-/// `argv` with `text` on its stdin, waited for briefly; the clipboard
-/// tools return at once (wl-copy and xclip fork to serve the selection).
-fn feed(argv: &[&str], text: &str) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let Some((prog, args)) = argv.split_first() else { return };
-    let child = Command::new(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-    let Ok(mut child) = child else { return };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(text.as_bytes());
-    }
-    let started = std::time::Instant::now();
-    while started.elapsed() < QUICK {
-        match child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => break,
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-impl Clipboard for Real {
-    fn kinds(&self) -> String {
-        match self {
-            Real::Mac => run(&["osascript", "-e", "clipboard info"]),
-            Real::Wayland => run(&["wl-paste", "--list-types"]),
-            Real::Xclip => run(&["xclip", "-selection", "clipboard", "-o", "-t", "TARGETS"]),
-            Real::Xsel => String::new(),
-        }
-    }
-
-    fn read(&self) -> String {
-        match self {
-            Real::Mac => run(&["pbpaste"]),
-            Real::Wayland => run(&["wl-paste", "--no-newline"]),
-            Real::Xclip => run(&["xclip", "-selection", "clipboard", "-o"]),
-            Real::Xsel => run(&["xsel", "--clipboard", "--output"]),
-        }
-    }
-
-    fn write(&self, text: &str) {
-        match self {
-            Real::Mac => feed(&["pbcopy"], text),
-            Real::Wayland => {
-                if text.is_empty() {
-                    run(&["wl-copy", "--clear"]);
-                } else {
-                    feed(&["wl-copy", "--type", "text/plain"], text)
-                }
-            }
-            Real::Xclip => feed(&["xclip", "-selection", "clipboard", "-i"], text),
-            Real::Xsel => feed(&["xsel", "--clipboard", "--input"], text),
-        }
-    }
-}
-
-/// One canary that came back changed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Swap {
-    pub chain: Chain,
-    pub canary: String,
-    pub got: String,
-    /// Which read-back saw it (1 or 2).
-    pub read: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SelfTest {
-    /// Not run, and why.
-    Skipped(String),
-    /// Every canary came back as copied: how many were tried.
-    Clean(usize),
-    Swapped(Vec<Swap>),
-}
-
-/// The delays before each read-back: a clipper polls a few times a
-/// second, and some wait for a second read.
-const READS: [Duration; 2] = [Duration::from_millis(150), Duration::from_millis(450)];
-
-/// Types that pbcopy or wl-copy would destroy: the test steps aside.
-const RICH: &[&str] = &["PNGf", "TIFF", "furl", "image/", "uri-list", "JPEG", "GIFf", "PDF ", "RTF"];
-
-/// Copy each canary, read it back, put the clipboard back.
-pub fn self_test(cb: &dyn Clipboard, sleep: &dyn Fn(Duration)) -> SelfTest {
-    let kinds = cb.kinds();
-    if RICH.iter().any(|k| kinds.contains(k)) {
-        return SelfTest::Skipped(
-            "the clipboard holds an image, a file or rich text; copy some text and run again".into(),
-        );
-    }
-    let original = cb.read();
-    let mut swaps = Vec::new();
-    for &chain in Chain::CANARIES {
-        let canary = addresses::canary(chain);
-        cb.write(&canary);
-        for (i, delay) in READS.iter().enumerate() {
-            sleep(*delay);
-            let got = cb.read();
-            let got = got.trim();
-            if got == canary {
-                continue;
-            }
-            if got.is_empty() {
-                // Nothing read back: the tool failed, not a swap.
-                break;
-            }
-            swaps.push(Swap { chain, canary: canary.clone(), got: got.chars().take(120).collect(), read: i + 1 });
-            break;
-        }
-    }
-    cb.write(original.trim_end_matches('\n'));
-    if swaps.is_empty() { SelfTest::Clean(Chain::CANARIES.len()) } else { SelfTest::Swapped(swaps) }
-}
-
-/// The self-test on this machine's clipboard.
-pub fn run_self_test() -> SelfTest {
-    match real() {
-        Ok(cb) => self_test(&cb, &std::thread::sleep),
-        Err(why) => SelfTest::Skipped(why),
-    }
-}
 
 // Browser extensions ----------------------------------------------------------
 
@@ -464,11 +279,9 @@ impl Persisted {
 }
 
 /// Clipboard clippers: the persisted programs that touch the clipboard
-/// with wallet addresses in hand, and the self-test's canaries that came
-/// back changed. Both are Critical: money sent from this machine goes
-/// elsewhere.
-pub fn clipper(scan: &mut Scan, self_test: Option<SelfTest>) {
-    use SelfTest;
+/// with wallet addresses in hand. Critical: money sent from this machine
+/// goes elsewhere.
+pub fn clipper(scan: &mut Scan) {
     scan.status("Looking for clipboard clippers");
     let (found, read) = persistence();
     scan.count("launch agents and autostart items read", read as i64);
@@ -493,120 +306,12 @@ pub fn clipper(scan: &mut Scan, self_test: Option<SelfTest>) {
             ..Default::default()
         });
     }
-    match self_test {
-        None => {}
-        Some(SelfTest::Skipped(why)) => scan.unchecked("clipboard self-test", &why),
-        Some(SelfTest::Clean(n)) => scan.count("clipboard canaries copied and read back unchanged", n as i64),
-        Some(SelfTest::Swapped(swaps)) => {
-            for s in swaps {
-                scan.add(Finding {
-                    kind: "clipper".into(),
-                    component: "clipboard".into(),
-                    location: s.chain.name().into(),
-                    vuln_id: "CLIPPER-ACTIVE".into(),
-                    status: "fail".into(),
-                    severity: "CRITICAL".into(),
-                    note: format!(
-                        "a {} address copied to the clipboard came back as {} on read {}: something on this machine rewrites the clipboard (a clipper). If Handoff / Universal Clipboard is on, other Apple devices receive the swapped address too; the clipper is here, not on them",
-                        s.chain.name(),
-                        s.got,
-                        s.read
-                    ),
-                    fix_cmd: format!(
-                        "Don't send funds from this machine. Find what rewrites the clipboard (the CLIPPER-PERSISTENCE findings, login items, browser extensions, recently installed apps), remove it or reinstall the OS, then report {} on chainabuse.com and the chain's explorer so the next person who searches it is warned",
-                        s.got
-                    ),
-                    fix_auto: false,
-                    ..Default::default()
-                });
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::temp;
-    use std::cell::RefCell;
-
-    /// A clipboard that swaps any address of `target` after `after` reads.
-    struct Fake {
-        held: RefCell<String>,
-        kinds: String,
-        target: Option<Chain>,
-        after: usize,
-        reads: RefCell<usize>,
-        writes: RefCell<Vec<String>>,
-    }
-
-    impl Fake {
-        fn new(held: &str, target: Option<Chain>, after: usize) -> Fake {
-            Fake {
-                held: RefCell::new(held.into()),
-                kinds: "«class utf8»".into(),
-                target,
-                after,
-                reads: RefCell::new(0),
-                writes: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Clipboard for Fake {
-        fn kinds(&self) -> String {
-            self.kinds.clone()
-        }
-        fn read(&self) -> String {
-            *self.reads.borrow_mut() += 1;
-            let held = self.held.borrow().clone();
-            match (self.target, addresses::classify(held.trim())) {
-                (Some(t), Some(c)) if t == c && *self.reads.borrow() > self.after => {
-                    "0xD62Eb957610d49f77cFce8bCc9827b5428D790E6\n".into()
-                }
-                _ => held,
-            }
-        }
-        fn write(&self, text: &str) {
-            *self.reads.borrow_mut() = 0;
-            self.writes.borrow_mut().push(text.to_string());
-            *self.held.borrow_mut() = text.to_string();
-        }
-    }
-
-    #[test]
-    fn a_clean_clipboard_is_put_back_as_it_was() {
-        let cb = Fake::new("hello\n", None, 0);
-        let slept = RefCell::new(Vec::new());
-        let got = self_test(&cb, &|d| slept.borrow_mut().push(d));
-        assert_eq!(got, SelfTest::Clean(6));
-        let writes = cb.writes.borrow();
-        assert_eq!(writes.len(), 7, "six canaries and the original");
-        assert_eq!(writes.last().map(String::as_str), Some("hello"));
-        assert!(writes[..6].iter().all(|w| addresses::classify(w).is_some()), "{writes:?}");
-        assert_eq!(slept.borrow().len(), 12, "two read-backs per canary");
-    }
-
-    #[test]
-    fn a_swapped_canary_fails_and_names_what_it_became() {
-        let cb = Fake::new("", Some(Chain::Evm), 1);
-        let got = self_test(&cb, &|_| {});
-        let SelfTest::Swapped(swaps) = got else { panic!("{got:?}") };
-        assert_eq!(swaps.len(), 1);
-        assert_eq!((swaps[0].chain, swaps[0].read), (Chain::Evm, 2), "seen on the second read");
-        assert_eq!(swaps[0].got, "0xD62Eb957610d49f77cFce8bCc9827b5428D790E6");
-        assert_eq!(swaps[0].canary, addresses::canary(Chain::Evm));
-        assert_eq!(cb.writes.borrow().last().map(String::as_str), Some(""), "an empty clipboard is cleared again");
-    }
-
-    #[test]
-    fn an_image_on_the_clipboard_is_left_alone() {
-        let mut cb = Fake::new("", None, 0);
-        cb.kinds = "«class PNGf», «class TIFF»".into();
-        let got = self_test(&cb, &|_| {});
-        assert!(matches!(got, SelfTest::Skipped(ref why) if why.contains("image")), "{got:?}");
-        assert!(cb.writes.borrow().is_empty(), "nothing written");
-    }
 
     #[test]
     fn launch_agents_that_clip_are_found_and_managers_are_not() {

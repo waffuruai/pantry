@@ -14,7 +14,6 @@ pub mod db;
 pub mod error;
 pub mod external;
 pub mod finding;
-pub mod guard;
 pub mod history;
 pub mod remediation;
 pub mod reporters;

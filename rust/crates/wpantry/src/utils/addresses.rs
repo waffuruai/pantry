@@ -37,11 +37,6 @@ impl Chain {
             Chain::Stellar => "Stellar",
         }
     }
-
-    /// The shapes a clipper goes after, most common first: what the
-    /// clipboard self-test copies.
-    pub const CANARIES: &'static [Chain] =
-        &[Chain::Evm, Chain::Bitcoin, Chain::Tron, Chain::Solana, Chain::Ripple, Chain::Stellar];
 }
 
 /// An address found in some text.
@@ -79,6 +74,7 @@ fn base58_decode(s: &str, alphabet: &[u8; 58]) -> Option<Vec<u8>> {
     Some(full)
 }
 
+#[cfg(test)]
 fn base58_encode(bytes: &[u8], alphabet: &[u8; 58]) -> String {
     let mut digits: Vec<u8> = Vec::new();
     for &b in bytes {
@@ -119,6 +115,7 @@ fn base58check(s: &str, alphabet: &[u8; 58]) -> Option<Vec<u8>> {
     (double_sha(payload)[..4] == *check).then(|| payload.to_vec())
 }
 
+#[cfg(test)]
 fn base58check_encode(payload: &[u8], alphabet: &[u8; 58]) -> String {
     let mut full = payload.to_vec();
     full.extend_from_slice(&double_sha(payload)[..4]);
@@ -177,6 +174,7 @@ fn bech32_valid(s: &str, hrp: &str) -> bool {
     }
 }
 
+#[cfg(test)]
 fn bech32_encode(hrp: &str, version: u8, program: &[u8]) -> String {
     let mut data = vec![version];
     // 8-bit groups to 5-bit groups, padded.
@@ -226,6 +224,7 @@ fn base32_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+#[cfg(test)]
 fn base32_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 8 / 5 + 1);
     let mut acc: u32 = 0;
@@ -273,6 +272,7 @@ fn strkey_public(s: &str) -> Option<[u8; 32]> {
     Some(key)
 }
 
+#[cfg(test)]
 fn strkey_encode(key: &[u8; 32]) -> String {
     let mut raw = vec![6u8 << 3];
     raw.extend_from_slice(key);
@@ -391,9 +391,9 @@ pub fn chains_in(text: &str) -> Vec<Chain> {
     chains
 }
 
-/// A valid address of `chain` that belongs to no one: derived from a fixed
-/// string, so it is the same on every run and a clipper that checks the
-/// checksum takes the bait.
+/// A valid address of `chain` that belongs to no one, derived from a fixed
+/// string: the tests' proof that each shape's checksum is read right.
+#[cfg(test)]
 pub fn canary(chain: Chain) -> String {
     let mut h = sha256::Sha256::new();
     h.update(format!("wpantry clipboard canary {}", chain.name()).as_bytes());

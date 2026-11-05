@@ -17,7 +17,6 @@ use any::persistence::findings::persistence;
 use apps as apps_mod;
 use brew_vulns::brew;
 use catalog::TOOLS;
-use clipper as clipper_mod;
 use settings::posture;
 
 pub mod any;
@@ -62,7 +61,6 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
     std::thread::scope(|s| {
         let trust = s.spawn(ca_trust::check);
         let updates = s.spawn(apps_mod::macos_updates);
-        let clip = (!scan.opts.no_clipboard).then(|| s.spawn(clipper_mod::run_self_test));
         let home = scan.home.clone();
         let persist = s.spawn(move || {
             crate::checks::machine::any::persistence::gather(&crate::checks::machine::any::persistence::Roots::real(
@@ -81,7 +79,7 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
             posture(scan);
         }
         persistence(scan, joined(persist));
-        clipper::clipper(scan, clip.map(joined));
+        clipper::clipper(scan);
         Ok(found)
     })
 }

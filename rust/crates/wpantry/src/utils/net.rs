@@ -64,10 +64,24 @@ pub fn host_of(url: &str) -> Option<String> {
     if host.is_empty() { None } else { Some(host.to_ascii_lowercase()) }
 }
 
-/// `Ok` when `url` is https to a host in [`HOSTS`].
+/// Hosts of the user's own sources the user said yes to, for this run
+/// ([`allow`]); never one the user wasn't asked about.
+static ALLOWED: std::sync::LazyLock<std::sync::RwLock<Vec<String>>> = std::sync::LazyLock::new(Default::default);
+
+/// Let [`Http`] connect to `host` for the rest of this run: a user source's
+/// host, after the user's yes (`crate::sources::user`).
+pub fn allow(host: &str) {
+    let host = host.to_ascii_lowercase();
+    let mut a = ALLOWED.write().expect("lock");
+    if !a.contains(&host) {
+        a.push(host);
+    }
+}
+
+/// `Ok` when `url` is https to a host in [`HOSTS`], or one [`allow`]ed.
 fn allowed(url: &str) -> Result<()> {
     match host_of(url) {
-        Some(h) if HOSTS.contains(&h.as_str()) => Ok(()),
+        Some(h) if HOSTS.contains(&h.as_str()) || ALLOWED.read().expect("lock").contains(&h) => Ok(()),
         _ => Err(Error::Invalid(format!("{url}: not a host wpantry asks (docs/public/checks-and-sources.md)"))),
     }
 }
@@ -438,6 +452,14 @@ mod tests {
         assert!(follow_redirects(&req, looping).unwrap_err().to_string().contains("redirects"));
         let not_a_redirect = |_: &Request| Ok((Response::ok("x"), Some("/ignored".to_string())));
         assert_eq!(follow_redirects(&req, not_a_redirect).unwrap().status, 200);
+    }
+
+    #[test]
+    fn a_users_host_is_allowed_only_once_allowed() {
+        assert!(allowed("https://t-allow.example/x").is_err());
+        allow("T-Allow.Example");
+        assert!(allowed("https://t-allow.example/x").is_ok());
+        assert!(allowed("https://other.t-allow.example/x").is_err(), "the host, not its subdomains");
     }
 
     #[test]

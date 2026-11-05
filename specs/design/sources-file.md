@@ -58,10 +58,22 @@ license = "CC0-1.0"
    - Nothing else in the file can make wpantry send data.
 4. **Fetched data is hostile input:**
    - `max_bytes` is enforced while reading.
-   - A failed pin or signature, or a parse error, keeps the last good copy and reports the source `unchecked`.
+   - A failed pin or signature, a parse error, or an answer with nothing in it is refused: the last good copy stays (the refusal shows in `wpantry sources`), and with no good copy the source is `unchecked`.
+   - Every reader is mutation-tested (`sources/mutate.rs`).
 5. **Visibility:**
    - `wpantry sources [--json]` lists every source: `id`, kind, tier, host, licence, `redistribute`, last fetch, freshness and last error.
    - The report names the user sources a scan used.
+
+## What a user's source may be (phase 3)
+
+| kind | format | used as |
+|---|---|---|
+| `yara` | `yara` | a rules file beside ours and YARA Forge's (`rules/user-<id>.yar`) |
+| `hashes`, `hosts`, `filenames` | `lines` (`value[;what]`, `regex;score` for file names) | indicators beside signature-base's (`rules/iocs/user-<id>.<kind>.txt`) |
+| `advisories` | `osv-api` | asked beside OSV.dev; with `osv` off, in its place |
+| `hash-lookup` | `circl` or `yaraify` | asked about flagged files after the hash-lookup consent and its own; `sends = "sha256"` is required |
+
+A bundled source's entry in the user's file may only set `tier`.
 
 ## The bundled sources (phase 3)
 

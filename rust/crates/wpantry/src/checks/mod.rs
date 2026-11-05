@@ -203,6 +203,9 @@ pub struct Options {
     pub deep: bool,
     /// Never look up a flagged file's hash online (`--no-online-hash`).
     pub no_online_hash: bool,
+    /// The user's sources file for this run (`--sources FILE`); None reads
+    /// `~/.config/wpantry/sources.toml` when it exists.
+    pub sources: Option<PathBuf>,
 }
 
 /// What a finished scan found.
@@ -268,6 +271,46 @@ impl<'a> Scan<'a> {
             kev: HashSet::new(),
             files: None,
             malware: None,
+        }
+    }
+
+    /// The sources this run uses: the bundled ones, and the user's file's
+    /// tiers and sources, each of the user's asked about once
+    /// ([`crate::sources::user`]). One that can't be used is unchecked; the
+    /// ones used are named in the counts.
+    fn use_sources(&mut self) {
+        use crate::sources::{file, user};
+        let path = self.opts.sources.clone().unwrap_or_else(file::user_file);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opts.sources.is_none() => None,
+            Err(e) => {
+                self.unchecked("your sources file", &format!("{}: {e}", path.display()));
+                None
+            }
+        };
+        if let Err(e) = file::configure(text.as_deref(), self.opts.deep) {
+            self.unchecked("your sources file", &e.to_string());
+        }
+        let effective = file::effective();
+        let ask = if self.opts.ask { self.asker } else { None };
+        for s in effective.sources.iter().filter(|s| effective.user.contains(&s.id) && file::active(&s.id)) {
+            match user::consent(&self.cache, ask, s) {
+                Ok(Ok(())) => {
+                    if let Some(h) = s.host() {
+                        crate::utils::net::allow(&h);
+                    }
+                    self.count(&format!("user source {}", s.id), 1);
+                }
+                Ok(Err(why)) => {
+                    file::turn_off(&s.id);
+                    self.unchecked(&format!("the source {} (your sources file)", s.id), &why);
+                }
+                Err(e) => {
+                    file::turn_off(&s.id);
+                    self.unchecked(&format!("the source {} (your sources file)", s.id), &e.to_string());
+                }
+            }
         }
     }
 
@@ -406,6 +449,7 @@ impl<'a> Scan<'a> {
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
         crate::utils::walk::forget_walks();
+        self.use_sources();
         self.status("Fetching CISA's known-exploited list");
         let kev = kev::kev(&self.cache, self.net, self.opts.offline);
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;

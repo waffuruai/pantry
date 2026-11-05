@@ -91,7 +91,8 @@ pub fn lookup(
     };
     let (mut absent, mut stale) = missing(cache)?;
     if !(absent.is_empty() && stale.is_empty()) && failure.is_none() {
-        let ids: Vec<(String, Option<String>)> = absent.iter().chain(&stale).map(|id| (id.clone(), None)).collect();
+        let first = endpoints().into_iter().next().unwrap_or_else(|| ("osv".into(), url("osv").to_string()));
+        let ids: Vec<Want> = absent.iter().chain(&stale).map(|id| (id.clone(), None, first.clone())).collect();
         match fetch_records(net, &ids, status) {
             Ok(got) => {
                 for (id, f) in got {
@@ -192,11 +193,46 @@ fn hits(v: &Value, what: &str) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+/// The OSV-compatible APIs in use, in order: OSV.dev (unless turned off)
+/// and any of the user's own (`format = "osv-api"`). Each is asked; the
+/// advisories they name are merged.
+fn endpoints() -> Vec<(String, String)> {
+    crate::sources::file::effective()
+        .sources
+        .iter()
+        .filter(|s| s.format == "osv-api" && crate::sources::file::active(&s.id))
+        .map(|s| (s.id.clone(), s.url.trim_end_matches('/').to_string()))
+        .collect()
+}
+
 fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -> Result<()> {
-    let mut answers: Vec<(Item, Vec<(String, String)>)> = Vec::new();
+    let endpoints = endpoints();
+    if endpoints.is_empty() {
+        return Err(Error::Offline("no advisory source is on (sources.toml)".into()));
+    }
+    let mut answers: Vec<(Item, Vec<(String, String)>)> = stale.iter().map(|it| (it.clone(), Vec::new())).collect();
+    // Which API named each advisory first: its record is downloaded there.
+    let mut named_by: BTreeMap<String, usize> = BTreeMap::new();
+    for (e, (sid, base)) in endpoints.iter().enumerate() {
+        for (vulns, it) in refresh_from(net, sid, base, stale)?.into_iter().zip(stale) {
+            let answer = &mut answers.iter_mut().find(|(i, _)| i == it).expect("every stale item").1;
+            for v in vulns {
+                named_by.entry(v.0.clone()).or_insert(e);
+                if !answer.iter().any(|(id, _)| *id == v.0) {
+                    answer.push(v);
+                }
+            }
+        }
+    }
+    finish_refresh(cache, net, &endpoints, &named_by, answers, status)
+}
+
+/// Each stale item's advisories `(id, modified)` from one OSV-compatible API.
+fn refresh_from(net: &dyn Net, sid: &str, base: &str, stale: &[Item]) -> Result<Vec<Vec<(String, String)>>> {
+    let mut answers: Vec<Vec<(String, String)>> = Vec::new();
     for chunk in stale.chunks(BATCH) {
         let body = json!({"queries": chunk.iter().map(query).collect::<Vec<_>>()});
-        let res = fetch::post_json(net, "osv", &format!("{}/querybatch", url("osv")), &body)?;
+        let res = fetch::post_json(net, sid, &format!("{base}/querybatch"), &body)?;
         let results = arr_at(&res, "results");
         if results.len() != chunk.len() {
             return Err(Error::Invalid(format!(
@@ -216,16 +252,29 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
                 // Rare: more than one page of advisories for one version.
                 let mut q = query(it);
                 q["page_token"] = Value::String(token);
-                let page = fetch::post_json(net, "osv", &format!("{}/query", url("osv")), &q)?;
+                let page = fetch::post_json(net, sid, &format!("{base}/query"), &q)?;
                 if !page.is_object() {
                     return Err(Error::Invalid(format!("OSV answered {page} for a page of {what}")));
                 }
                 vulns.extend(hits(&page, &what)?);
                 token = str_at(&page, "next_page_token").to_string();
             }
-            answers.push((it.clone(), vulns));
+            answers.push(vulns);
         }
     }
+    Ok(answers)
+}
+
+/// Download the records named that aren't stored at their revision, each
+/// from the API that named it, and keep every item's answer.
+fn finish_refresh(
+    cache: &Cache,
+    net: &dyn Net,
+    endpoints: &[(String, String)],
+    named_by: &BTreeMap<String, usize>,
+    answers: Vec<(Item, Vec<(String, String)>)>,
+    status: Status,
+) -> Result<()> {
     // The revision OSV reports for each advisory named; a record stored at
     // another revision is downloaded again.
     let mut wanted: BTreeMap<String, String> = BTreeMap::new();
@@ -236,8 +285,13 @@ fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -
             }
         }
     }
-    let etags: Vec<(String, Option<String>)> =
-        wanted.keys().map(|id| Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?))).collect::<Result<_>>()?;
+    let etags: Vec<(String, Option<String>, (String, String))> = wanted
+        .keys()
+        .map(|id| {
+            let ep = endpoints[named_by.get(id).copied().unwrap_or(0)].clone();
+            Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?, ep))
+        })
+        .collect::<Result<_>>()?;
     for (id, fetched) in fetch_records(net, &etags, status)? {
         keep(cache, &id, fetched, wanted.get(&id).map(String::as_str))?;
     }
@@ -260,8 +314,10 @@ enum Fetched {
 }
 
 /// GET /v1/vulns/{id} for each id, at most [`PARALLEL`] in flight, each
-/// with its stored ETag.
-fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)], status: Status) -> Result<Vec<(String, Fetched)>> {
+/// with its stored ETag, from the API `(source, base)` that named it.
+type Want = (String, Option<String>, (String, String));
+
+fn fetch_records(net: &dyn Net, ids: &[Want], status: Status) -> Result<Vec<(String, Fetched)>> {
     let queue = Mutex::new(ids.iter());
     let results = Mutex::new(Vec::new());
     let first_error = Mutex::new(None);
@@ -272,9 +328,9 @@ fn fetch_records(net: &dyn Net, ids: &[(String, Option<String>)], status: Status
                     if first_error.lock().expect("lock").is_some() {
                         return;
                     }
-                    let Some((id, etag)) = queue.lock().expect("lock").next() else { return };
-                    let url = format!("{}/vulns/{id}", url("osv"));
-                    let got = fetch::request(net, "osv", &url, None, &[], etag.as_deref()).map(|r| match r.status {
+                    let Some((id, etag, (sid, base))) = queue.lock().expect("lock").next() else { return };
+                    let url = format!("{base}/vulns/{id}");
+                    let got = fetch::request(net, sid, &url, None, &[], etag.as_deref()).map(|r| match r.status {
                         200 => match json::parse(&r.body, json::MAX_DOCUMENT) {
                             Ok(rec) if str_at(&rec, "id") == id => Fetched::Record(rec, r.etag),
                             _ => Fetched::Missing,
@@ -565,6 +621,20 @@ pub fn tags(cache: &Cache, repo: &str, offline: bool) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_osv_compatible_api_is_asked_the_same_way() {
+        let net = Fake::new(|r| {
+            assert!(r.url.starts_with("https://mirror.example/v1/"), "{}", r.url);
+            Ok(Response::ok(
+                json!({"results": [{"vulns": [{"id": "MIRROR-1", "modified": "2026-01-01T00:00:00Z"}]}]}).to_string(),
+            ))
+        });
+        let items = [("npm".to_string(), "x".to_string(), "1.0.0".to_string())];
+        let got = refresh_from(&net, "osv", "https://mirror.example/v1", &items).unwrap();
+        assert_eq!(got, vec![vec![("MIRROR-1".to_string(), "2026-01-01T00:00:00Z".to_string())]]);
+        assert!(net.requests()[0].url.ends_with("/querybatch"));
+    }
     use crate::utils::net::{Fake, Response};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

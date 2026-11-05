@@ -21,3 +21,4 @@ pub mod package_licenses;
 pub mod releases;
 #[cfg(test)]
 pub(crate) mod testing;
+pub mod user;

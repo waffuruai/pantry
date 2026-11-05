@@ -6,7 +6,8 @@
 
 use crate::error::{Error, Result};
 use crate::utils::toml::{self, Table, Val};
-use std::sync::LazyLock;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, RwLock};
 
 /// When a source is used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,14 +100,19 @@ fn raw(t: &Table, key: &str) -> Option<String> {
 
 /// The sources in a file's text: every `[[source]]` table, checked.
 pub fn parse(text: &str) -> Result<Vec<Source>> {
-    let mut out: Vec<Source> = Vec::new();
+    Ok(entries(text)?.into_iter().map(|(s, _)| s).collect())
+}
+
+/// Each source in a file's text, with the keys its entry set.
+fn entries(text: &str) -> Result<Vec<(Source, Vec<String>)>> {
+    let mut out: Vec<(Source, Vec<String>)> = Vec::new();
     for t in toml::parse(text)?.into_iter().filter(|t| t.array && t.name == "source") {
         let id = t.str("id").to_string();
         let bad = |why: &str| Error::Invalid(format!("source {:?}: {why}", id));
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
             return Err(bad("an id is kebab-case"));
         }
-        if out.iter().any(|s| s.id == id) {
+        if out.iter().any(|(s, _)| s.id == id) {
             return Err(bad("listed twice"));
         }
         let transport = match t.str("transport") {
@@ -121,7 +127,11 @@ pub fn parse(text: &str) -> Result<Vec<Source>> {
             other => return Err(bad(&format!("unknown tier {other:?}"))),
         };
         let url = t.str("url").to_string();
-        if transport == Transport::Https && crate::utils::net::host_of(&url).is_none() {
+        let keys: Vec<String> = t.entries.iter().map(|(k, _)| k.clone()).collect();
+        if transport == Transport::Https
+            && (keys.contains(&"url".to_string()) || !url.is_empty())
+            && crate::utils::net::host_of(&url).is_none()
+        {
             return Err(bad("an https source needs an https URL"));
         }
         let pin = t.str("sha256");
@@ -145,28 +155,160 @@ pub fn parse(text: &str) -> Result<Vec<Source>> {
             Some(Val::Raw(r)) => toml::strings(r),
             _ => Vec::new(),
         };
-        out.push(Source {
-            id: id.clone(),
-            kind: t.str("kind").to_string(),
-            format: t.str("format").to_string(),
-            url,
-            transport,
-            redirects,
-            tier,
-            refresh,
-            license: t.str("license").to_string(),
-            redistribute,
-            max_bytes,
-            sends: t.str("sends").to_string(),
-            consent: t.str("consent").to_string(),
-            sha256: t.str("sha256").to_ascii_lowercase(),
-        });
+        out.push((
+            Source {
+                id: id.clone(),
+                kind: t.str("kind").to_string(),
+                format: t.str("format").to_string(),
+                url,
+                transport,
+                redirects,
+                tier,
+                refresh,
+                license: t.str("license").to_string(),
+                redistribute,
+                max_bytes,
+                sends: t.str("sends").to_string(),
+                consent: t.str("consent").to_string(),
+                sha256: t.str("sha256").to_ascii_lowercase(),
+            },
+            keys,
+        ));
     }
     Ok(out)
 }
 
 static BUNDLED: LazyLock<Vec<Source>> =
     LazyLock::new(|| parse(crate::defaults::SOURCES).expect("the bundled sources file reads (tested)"));
+
+/// The user's sources file: `$XDG_CONFIG_HOME/wpantry/sources.toml`, or
+/// `~/.config/wpantry/sources.toml`.
+pub fn user_file() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::utils::files::home().join(".config"))
+        .join("wpantry/sources.toml")
+}
+
+/// The kinds and formats a user's source may have: what wpantry can read
+/// and use with no code of the user's own.
+const USER_FORMATS: &[(&str, &[&str])] = &[
+    ("yara", &["yara"]),
+    ("hashes", &["lines"]),
+    ("hosts", &["lines"]),
+    ("filenames", &["lines"]),
+    ("advisories", &["osv-api"]),
+    ("hash-lookup", &["circl", "yaraify"]),
+];
+
+/// The sources in effect: the bundled ones with the user's tiers, then the
+/// user's own, checked against what a user's source may be and do.
+pub fn merged(user_text: &str) -> Result<Vec<Source>> {
+    let mut all: Vec<Source> = bundled().to_vec();
+    for (mut s, keys) in entries(user_text)? {
+        let bad = |why: &str| Error::Invalid(format!("your sources file, source {:?}: {why}", s.id));
+        if let Some(b) = all.iter_mut().find(|b| b.id == s.id) {
+            if keys.iter().any(|k| k != "id" && k != "tier") {
+                return Err(bad(
+                    "a bundled source's only setting is its tier; a different URL is a different source, with its own id",
+                ));
+            }
+            b.tier = s.tier;
+            continue;
+        }
+        let formats = USER_FORMATS.iter().find(|(k, _)| *k == s.kind).map(|(_, f)| *f);
+        match formats {
+            None => {
+                return Err(bad(&format!(
+                    "kind {:?} can't be a source of yours (yara, hashes, hosts, filenames, advisories, hash-lookup)",
+                    s.kind
+                )));
+            }
+            Some(f) if !f.contains(&s.format.as_str()) => {
+                return Err(bad(&format!("a {} source's format is {}", s.kind, f.join(" or "))));
+            }
+            _ => {}
+        }
+        if s.transport != Transport::Https || s.host().is_none() {
+            return Err(bad("a source of yours is fetched over https"));
+        }
+        match (s.kind.as_str(), s.sends.as_str()) {
+            ("hash-lookup", "sha256") => s.consent = format!("source:{}", s.id),
+            ("hash-lookup", _) => {
+                return Err(bad("a hash lookup of yours sends a SHA-256 and nothing else: sends = \"sha256\""));
+            }
+            (_, "") => {}
+            _ => return Err(bad("only a hash lookup sends anything, and only a SHA-256")),
+        }
+        if s.max_bytes == 0 || s.max_bytes > crate::utils::net::MAX_BODY {
+            s.max_bytes = crate::utils::net::MAX_BODY;
+        }
+        s.redistribute = false;
+        s.redirects.clear();
+        all.push(s);
+    }
+    Ok(all)
+}
+
+/// The sources in effect for this run, and the ids of the user's own.
+#[derive(Clone, Debug, Default)]
+pub struct Effective {
+    pub sources: Vec<Source>,
+    pub user: Vec<String>,
+    pub deep: bool,
+}
+
+static EFFECTIVE: LazyLock<RwLock<Arc<Effective>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(Effective { sources: bundled().to_vec(), user: Vec::new(), deep: false })));
+
+/// Use the user's sources (`user_text`, the file's text) and `deep` for
+/// this run. A file that can't be used leaves the bundled sources in effect
+/// and says why.
+pub fn configure(user_text: Option<&str>, deep: bool) -> Result<()> {
+    let merged = match user_text {
+        Some(t) => merged(t),
+        None => Ok(bundled().to_vec()),
+    };
+    let (sources, err) = match merged {
+        Ok(s) => (s, None),
+        Err(e) => (bundled().to_vec(), Some(e)),
+    };
+    let user = sources.iter().filter(|s| !bundled().iter().any(|b| b.id == s.id)).map(|s| s.id.clone()).collect();
+    *EFFECTIVE.write().expect("lock") = Arc::new(Effective { sources, user, deep });
+    err.map_or(Ok(()), Err)
+}
+
+/// Turn `id` off for the rest of this run (a source of the user's that
+/// wasn't said yes to).
+pub fn turn_off(id: &str) {
+    let mut e = EFFECTIVE.write().expect("lock");
+    let mut next = (**e).clone();
+    if let Some(s) = next.sources.iter_mut().find(|s| s.id == id) {
+        s.tier = Tier::Off;
+    }
+    *e = Arc::new(next);
+}
+
+/// The sources in effect.
+pub fn effective() -> Arc<Effective> {
+    EFFECTIVE.read().expect("lock").clone()
+}
+
+/// A source in effect by id.
+pub fn find(id: &str) -> Option<Source> {
+    effective().sources.iter().find(|s| s.id == id).cloned()
+}
+
+/// Whether a source is used this run: its tier is default, or deep with `--deep`.
+pub fn active(id: &str) -> bool {
+    let e = effective();
+    e.sources.iter().find(|s| s.id == id).is_some_and(|s| match s.tier {
+        Tier::Default => true,
+        Tier::Deep => e.deep,
+        Tier::Off => false,
+    })
+}
 
 /// The sources wpantry ships with.
 pub fn bundled() -> &'static [Source] {
@@ -241,6 +383,58 @@ mod tests {
             named += 1;
         }
         assert!(named >= 20, "{named}");
+    }
+
+    #[test]
+    fn a_users_file_sets_tiers_and_adds_what_a_user_may_add() {
+        let one = |body: &str| merged(&format!("[[source]]\n{body}\n"));
+        let off = one("id = \"cisa-kev\"\ntier = \"off\"").unwrap();
+        assert_eq!(off.iter().find(|s| s.id == "cisa-kev").unwrap().tier, Tier::Off);
+        assert_eq!(off.len(), bundled().len());
+        let moved = one("id = \"cisa-kev\"\nurl = \"https://evil.example/kev.json\"").unwrap_err().to_string();
+        assert!(moved.contains("only setting is its tier"), "{moved}");
+        let rules = one("id = \"team\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example/t.yar\"\nredistribute = true").unwrap();
+        let team = rules.last().unwrap();
+        assert_eq!((team.id.as_str(), team.redistribute, team.max_bytes), ("team", false, crate::utils::net::MAX_BODY));
+        assert!(
+            one("id = \"x\"\nkind = \"kev\"\nformat = \"kev\"\nurl = \"https://a.b/\"")
+                .unwrap_err()
+                .to_string()
+                .contains("can't be a source of yours")
+        );
+        assert!(
+            one("id = \"x\"\nkind = \"yara\"\nformat = \"zip\"\nurl = \"https://a.b/\"")
+                .unwrap_err()
+                .to_string()
+                .contains("format is yara")
+        );
+        assert!(
+            one("id = \"x\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"\"")
+                .unwrap_err()
+                .to_string()
+                .contains("https")
+        );
+        assert!(
+            one("id = \"x\"\nkind = \"hosts\"\nformat = \"lines\"\nurl = \"https://a.b/\"\nsends = \"email\"")
+                .unwrap_err()
+                .to_string()
+                .contains("only a hash lookup sends")
+        );
+        assert!(
+            one("id = \"x\"\nkind = \"hash-lookup\"\nformat = \"circl\"\nurl = \"https://a.b/\"\nsends = \"path\"")
+                .unwrap_err()
+                .to_string()
+                .contains("SHA-256 and nothing else")
+        );
+        let lookup =
+            one("id = \"x\"\nkind = \"hash-lookup\"\nformat = \"circl\"\nurl = \"https://a.b/\"\nsends = \"sha256\"")
+                .unwrap();
+        assert_eq!(lookup.last().unwrap().consent, "source:x", "its own consent");
+        assert!(
+            merged("[[source]]\nid = \"osv\"\ntier = \"deep\"\n[[source]]\nid = \"osv\"\ntier = \"off\"\n").is_err(),
+            "twice"
+        );
+        assert!(user_file().ends_with("wpantry/sources.toml"));
     }
 
     #[test]

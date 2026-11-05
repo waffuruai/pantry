@@ -9,7 +9,7 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
-use crate::sources::file::{Source, source};
+use crate::sources::file::{self, Source, source};
 use crate::utils::json;
 use crate::utils::net::{self, Net, Response};
 use rusqlite::params;
@@ -83,6 +83,18 @@ fn kept<T>(id: &str, result: Result<T>, bytes: impl Fn(&T) -> u64) -> Result<T> 
     result
 }
 
+/// Source `id` as in effect: the user's own, or a bundled one with the
+/// user's tier.
+fn in_effect(id: &str) -> Source {
+    file::find(id).unwrap_or_else(|| source(id).clone())
+}
+
+/// `Offline` when `id` isn't used this run (its tier is `off`, or `deep`
+/// without `--deep`): nothing is asked, and what needs it is unchecked.
+pub fn on(id: &str) -> Result<()> {
+    if file::active(id) { Ok(()) } else { Err(Error::Offline(format!("{id} is turned off (sources.toml tier)"))) }
+}
+
 /// [`net::request`] for source `id`: its cap, its outcome kept.
 pub fn request(
     net: &dyn Net,
@@ -92,7 +104,8 @@ pub fn request(
     headers: &[(&str, &str)],
     etag: Option<&str>,
 ) -> Result<Response> {
-    let s = source(id);
+    on(id)?;
+    let s = in_effect(id);
     kept(id, net::request_capped(net, url, data, headers, etag, s.max_bytes), |r| r.body.len() as u64)
 }
 
@@ -124,7 +137,8 @@ pub fn post_json(net: &dyn Net, id: &str, url: &str, data: &Value) -> Result<Val
 /// and when the source can't be reached (the last copy stays). `key` names
 /// the copy's freshness in the cache.
 pub fn file(cache: &Cache, net: &dyn Net, id: &str, key: &str, offline: bool) -> Result<Option<Vec<u8>>> {
-    file_of(cache, net, source(id), key, offline)
+    on(id)?;
+    file_of(cache, net, &in_effect(id), key, offline)
 }
 
 pub(crate) fn file_of(cache: &Cache, net: &dyn Net, s: &Source, key: &str, offline: bool) -> Result<Option<Vec<u8>>> {
@@ -166,13 +180,15 @@ pub fn memo(
     refresh: bool,
     offline: bool,
 ) -> Result<Value> {
-    cache.memo(key, compute, source(id).refresh, fingerprint, refresh, offline)
+    on(id)?;
+    cache.memo(key, compute, in_effect(id).refresh, fingerprint, refresh, offline)
 }
 
 /// Write this process's outcomes for the sources the file declares into the
 /// cache: an attempt that failed keeps the last success it had.
 pub fn save(cache: &Cache) -> Result<()> {
-    save_matching(cache, |id| crate::sources::file::bundled().iter().any(|s| s.id == id))
+    let e = file::effective();
+    save_matching(cache, |id| e.sources.iter().any(|s| s.id == id))
 }
 
 /// [`save`], for the ids `keep` picks.
@@ -206,7 +222,7 @@ pub struct Listed {
 
 /// Every source, in the file's order, with its kept state.
 pub fn listing(cache: &Cache) -> Result<Vec<Listed>> {
-    listing_of(cache, crate::sources::file::bundled())
+    listing_of(cache, &file::effective().sources)
 }
 
 pub(crate) fn listing_of(cache: &Cache, sources: &[Source]) -> Result<Vec<Listed>> {

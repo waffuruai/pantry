@@ -100,6 +100,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         no_malware: a.no_malware,
         deep: a.deep,
         no_online_hash: a.no_online_hash,
+        sources: a.sources.clone(),
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
@@ -1061,7 +1062,22 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
 }
 
 /// `sources`: every outside source and what its fetches came to.
-fn cmd_sources(json: bool) -> Result<i32> {
+fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+    use wpantry::sources::file as sources;
+    let path = file.clone().unwrap_or_else(sources::user_file);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && file.is_none() => None,
+        Err(e) => {
+            eprintln!("wpantry: error: {}: {e}", path.display());
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if let Err(e) = sources::configure(text.as_deref(), false) {
+        eprintln!("wpantry: error: {e}");
+        return Ok(EXIT_USAGE);
+    }
+    let user = sources::effective().user.clone();
     let cache = Cache::open(None)?;
     let all = wpantry::sources::fetch::listing(&cache)?;
     cache.close()?;
@@ -1082,6 +1098,7 @@ fn cmd_sources(json: bool) -> Result<i32> {
                         "transport",
                         if s.transport == wpantry::sources::file::Transport::Git { "git" } else { "https" }.into(),
                     ),
+                    ("user", J::Bool(user.contains(&s.id))),
                     ("license", s.license.as_str().into()),
                     ("redistribute", J::Bool(s.redistribute)),
                     ("refresh_seconds", J::Float(s.refresh)),
@@ -1108,6 +1125,7 @@ fn cmd_sources(json: bool) -> Result<i32> {
             "never fetched".to_string()
         };
         let host = s.host().unwrap_or_else(|| "git".into());
+        let host = if user.contains(&s.id) { format!("{host} (yours)") } else { host };
         show(&format!("{:<28} {:<18} {:<7} {:<34} {}", s.id, s.kind, s.tier.as_str(), host, fetched));
         show(&format!(
             "{:<28} licence: {}{}",
@@ -1211,7 +1229,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
-        Command::Sources { json } => cmd_sources(json),
+        Command::Sources { json, file } => cmd_sources(json, file),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),

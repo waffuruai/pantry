@@ -42,7 +42,7 @@ wpantry help [COMMAND]
 
 Deprecated, kept for scripts written before 2026-11-02 and left out of `--help`: `scan --fix` and `check --fix` (`--update` is the same flag) behave exactly as `fix`, taking `--dryrun` and `--yes` as `fix` does, and `scan --dryrun` as `fix --dryrun`; options given with no subcommand (`wpantry --fix`, `wpantry --json`) are `scan`'s. New callers use `scan` and `fix`.
 
-Removed 2026-11-05: wpantry scans files and never touches the clipboard. The `clipboard` command (the self-test and `--watch`, the resident guard) and `schedule install --clipboard-guard` are usage errors (2), and `WPANTRY_CLIPBOARD_FAKE` is ignored; watching the clipboard live belongs to a resident watchdog. `scan --no-clipboard` still parses, does nothing and is left out of `--help`. `schedule install` and `uninstall` take out a guard an earlier version installed. No finding is `CLIPPER-ACTIVE` any more; `CLIPPER-PERSISTENCE` and `CLIPPER-EXTENSION` are unchanged.
+Removed 2026-11-05: wpantry scans files and never touches the clipboard. The `clipboard` command (the self-test and `--watch`, the resident guard), `scan --no-clipboard`, `schedule install --clipboard-guard` and `WPANTRY_CLIPBOARD_FAKE` are gone, and no finding is `CLIPPER-ACTIVE`; `CLIPPER-PERSISTENCE` and `CLIPPER-EXTENSION` are unchanged. Watching the clipboard live belongs to a resident watchdog. No compatibility was kept: nothing depends on wpantry yet.
 
 | Subcommand / flag | Meaning |
 |---|---|

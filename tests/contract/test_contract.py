@@ -509,16 +509,14 @@ class Contract(unittest.TestCase):
         self.assertTrue(self.db.exists())
 
     def test_the_clipboard_is_not_wpantrys(self):
-        """wpantry scans files; it never reads or writes the clipboard. The clipboard command and its
-        guard are gone (a resident watchdog's job), so each is a usage error; `--no-clipboard` still
-        parses, does nothing and stays out of --help; `schedule status` says nothing of a guard that
-        isn't installed."""
+        """wpantry scans files; it never reads or writes the clipboard. The clipboard command, its
+        guard and the scan's self-test are gone (a resident watchdog's job): each is a usage error,
+        and neither --help nor `schedule status` mentions the clipboard."""
         self.assertEqual(self.run_bin("clipboard")[0], 2)
         self.assertEqual(self.run_bin("clipboard", "--watch")[0], 2)
-        code, _, err = self.run_bin("scan", "--no-clipboard", "--no-machine", "--offline", "--no-input", "--path", str(self.home))
-        self.assertIn(code, (0, 1), err)
-        self.assertNotIn("clipboard", self.run_bin("scan", "--help")[1])
+        self.assertEqual(self.run_bin("scan", "--no-clipboard")[0], 2)
         self.assertEqual(self.run_bin("schedule", "install", "--clipboard-guard", "--dry-run")[0], 2)
+        self.assertNotIn("clipboard", self.run_bin("scan", "--help")[1])
         code, out, err = self.run_bin("schedule", "status", env=dict(self.env, XDG_STATE_HOME=str(self.home / "state")))
         self.assertEqual(code, 0, err)
         self.assertNotIn("clipboard", out)

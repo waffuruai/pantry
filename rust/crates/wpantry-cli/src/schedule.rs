@@ -16,13 +16,6 @@ use wpantry::utils::process::exec;
 use wpantry::utils::process::which;
 
 pub const LABEL: &str = "ai.waffuru.wpantry";
-/// The launch agent of the clipboard guard earlier versions could install
-/// (`schedule install --clipboard-guard`, since removed: the guard belongs in
-/// a resident watchdog, not a file scanner). `schedule install` and
-/// `uninstall` take it out when they find it.
-pub const GUARD_LABEL: &str = "ai.waffuru.wpantry.clipboard";
-/// Its systemd user service.
-const GUARD_UNIT: &str = "wpantry-clipboard.service";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Every {
@@ -81,10 +74,6 @@ fn plist_path() -> PathBuf {
     home().join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
 }
 
-fn guard_plist_path() -> PathBuf {
-    home().join("Library/LaunchAgents").join(format!("{GUARD_LABEL}.plist"))
-}
-
 fn unit_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
@@ -114,9 +103,6 @@ fn program() -> Result<PathBuf> {
 }
 
 pub fn install(every: Every, at: (u32, u32), dry_run: bool) -> Result<i32> {
-    if !dry_run {
-        remove_old_guard();
-    }
     install_with(every, at, dry_run, backend(), &real_run)
 }
 
@@ -208,7 +194,6 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
 }
 
 pub fn uninstall() -> Result<i32> {
-    remove_old_guard();
     uninstall_with(backend(), &real_run)
 }
 
@@ -258,66 +243,6 @@ fn uninstall_with(backend: Backend, run: Run) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-/// Whether an earlier version's clipboard guard is installed.
-fn guard_installed() -> bool {
-    match backend() {
-        Backend::Launchd => guard_plist_path().exists(),
-        Backend::Systemd => unit_dir().join(GUARD_UNIT).exists(),
-        Backend::Cron => false,
-    }
-}
-
-/// Take out an earlier version's clipboard guard, when there is one: its
-/// job runs `wpantry clipboard --watch`, which this version doesn't have.
-fn remove_old_guard() {
-    if !guard_installed() {
-        return;
-    }
-    match backend() {
-        Backend::Launchd => {
-            let _ = exec(
-                &[
-                    OsStr::new("launchctl"),
-                    OsStr::new("bootout"),
-                    OsStr::new(&format!("gui/{}/{GUARD_LABEL}", uid(&real_run))),
-                ],
-                &[],
-                Duration::from_secs(30),
-            );
-            let f = guard_plist_path();
-            let was = f.exists();
-            let _ = std::fs::remove_file(&f);
-            if was {
-                say(
-                    "✓ removed the clipboard guard an earlier version installed (it now belongs in a watchdog, not wpantry)",
-                );
-            }
-        }
-        Backend::Systemd => {
-            let _ = exec(
-                &[
-                    OsStr::new("systemctl"),
-                    OsStr::new("--user"),
-                    OsStr::new("disable"),
-                    OsStr::new("--now"),
-                    OsStr::new(GUARD_UNIT),
-                ],
-                &[],
-                Duration::from_secs(30),
-            );
-            let f = unit_dir().join(GUARD_UNIT);
-            let was = f.exists();
-            let _ = std::fs::remove_file(&f);
-            if was {
-                say(
-                    "✓ removed the clipboard guard an earlier version installed (it now belongs in a watchdog, not wpantry)",
-                );
-            }
-        }
-        Backend::Cron => {}
-    }
-}
-
 pub fn status() -> Result<i32> {
     status_with(backend(), &real_run)
 }
@@ -330,9 +255,6 @@ fn status_with(backend: Backend, run: Run) -> Result<i32> {
         Backend::Cron => crontab(run).contains(CRON_MARK),
     };
     say(&format!("scheduled: {}", if installed { "yes" } else { "no (wpantry schedule install)" }));
-    if guard_installed() {
-        say("  an earlier version's clipboard guard is still installed: wpantry schedule uninstall takes it out");
-    }
     match std::fs::metadata(&p.last) {
         Ok(m) => {
             let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);

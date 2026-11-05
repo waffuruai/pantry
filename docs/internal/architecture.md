@@ -2,7 +2,7 @@
 
 The short version, with the picture, is [docs/architecture.md](../architecture.md). wpantry is one Rust binary that inventories a computer and its git repos, asks a few public sources about exactly those versions, and reports what has a known fix, is past end of life, is malicious, is a leaked secret, or is a setting that leaves the machine open. This page is how it is put together. What it checks and which sources it asks are in [public/checks-and-sources.md](../public/checks-and-sources.md); how to run it is [public/usage.md](../public/usage.md); the surface it promises to keep is [specs/cli-contract.md](../../specs/cli-contract.md); the source files are mapped in [rust/README.md](../../rust/README.md).
 
-![How Pantry checks your computer: this computer and its repos are read by wpantry, which asks OSV.dev and the feeds, keeps one SQLite cache, and writes the terminal report, JSON, exports, logs and an HTML report; releases come from GitHub](../images/architecture.png)
+![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; it writes terminal text, JSON, JSON Lines, CSV, HTML and Markdown reports. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](../images/architecture.png)
 
 [Full size](../images/architecture.png) · [SVG source](../images/architecture.svg)
 

@@ -2,7 +2,7 @@
 
 Waffuru's security vulnerability scanner, built on the OSV database and other CVE sources. Its command is `wpantry`.
 
-![How Pantry checks your computer: this computer and its repos are read, asked about at OSV.dev and the feeds, judged, cached in SQLite, and reported as a terminal report, JSON, exports, logs and an HTML report; releases come from GitHub](docs/images/architecture.png)
+![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; it writes terminal text, JSON, JSON Lines, CSV, HTML and Markdown reports. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](docs/images/architecture.png)
 
 [Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/architecture.md)
 

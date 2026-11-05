@@ -2,7 +2,9 @@
 
 wpantry is one Rust binary that reads what is installed on this computer and what its git repos lock, asks a few public sources about exactly those versions, judges the answers against each ecosystem's own version rules, and says what applies. Answers live in one SQLite cache, so a second run the same day takes seconds, and a source it can't reach is reported "not checked", never clean.
 
-![How Pantry checks your computer: this computer and its repos are read by wpantry's readers, judged, and reported; the cache talks to OSV.dev and the feeds; releases come from GitHub; the outputs are the terminal report, JSON, CSV and JSON Lines exports, the exposure, remediation and audit logs, and an HTML report](images/architecture.png)
+Pantry is three things in a line: verified sources of CVEs, IOCs, YARA malware rules and other known attack vectors; wpantry, a fast file scanner that runs on a schedule or when triggered and keeps in its cache the sources it checked, the files it checked, the exposures it found and how and when each was mitigated; and the reports it writes (terminal text, JSON, JSON Lines, CSV, HTML, Markdown). It watches nothing live and needs no permission beyond reading files. Live telemetry, the clipboard included, belongs to a resident watchdog or sidecar beside it, which can trigger a scan; JSON reports can go to an external reporting service that shows many machines in aggregate.
+
+![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; it writes terminal text, JSON, JSON Lines, CSV, HTML and Markdown reports. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](images/architecture.png)
 
 [Full size](images/architecture.png) · [SVG source](images/architecture.svg)
 

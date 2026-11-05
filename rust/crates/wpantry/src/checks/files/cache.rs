@@ -41,6 +41,7 @@ fn name(check: Check) -> &'static str {
         Check::Malware(Scope::Programs) => "malware:programs",
         Check::Malware(Scope::All) => "malware:all",
         Check::Malware(Scope::File) => "malware:file",
+        Check::Blobs => "blobs",
     }
 }
 
@@ -58,7 +59,7 @@ fn sources(check: Check) -> &'static [&'static str] {
             include_str!("../hidden/unicode.rs"),
             include_str!("../../../assets/defaults/bait.toml"),
         ],
-        Check::Suspects(_) => &[
+        Check::Suspects(_) | Check::Blobs => &[
             include_str!("../suspects/mod.rs"),
             include_str!("../suspects/blobs.rs"),
             include_str!("../suspects/cardholder.rs"),
@@ -221,6 +222,8 @@ pub(super) struct Store {
     new: HashMap<PathBuf, Record>,
     /// The checks each root ran this time.
     ran: HashMap<PathBuf, HashSet<String>>,
+    /// The roots whose record holds just what this time found.
+    unchanged: HashSet<PathBuf>,
 }
 
 impl Store {
@@ -245,7 +248,25 @@ impl Store {
             let record = Record::parse(&text);
             old.insert(job.root.clone(), (text, record));
         }
-        Store { salt: salt.to_string(), old, new: HashMap::new(), ran }
+        Store { salt: salt.to_string(), old, new: HashMap::new(), ran, unchanged: HashSet::new() }
+    }
+
+    /// How many results `root`'s record holds for the checks it ran this
+    /// time.
+    pub fn old_count(&self, root: &Path) -> usize {
+        let (Some((_, record)), Some(ran)) = (self.old.get(root), self.ran.get(root)) else { return 0 };
+        record
+            .files
+            .values()
+            .flat_map(|f| f.values())
+            .flat_map(|e| &e.results)
+            .filter(|(c, _, _)| ran.contains(c))
+            .count()
+    }
+
+    /// `root`'s record holds just what this time found: keep it.
+    pub fn unchanged(&mut self, root: &Path) {
+        self.unchanged.insert(root.to_path_buf());
     }
 
     /// `read`'s cached result in `job`, while the file and the check are
@@ -262,6 +283,17 @@ impl Store {
             return None;
         }
         let (_, _, result) = entry.results.iter().find(|(c, r, _)| c == check && *r == read.role)?;
+        // Most files' results: nothing found, read without a JSON parser.
+        match (job.check, result.as_str()) {
+            (Check::Malware(_), "false" | "true") => {
+                return Some(Out::Malware(Scanned { target: result == "true", hits: Vec::new() }));
+            }
+            (Check::Hidden, "[]") => return Some(Out::Hidden(Vec::new())),
+            (Check::Documents, "[]") => return Some(Out::Documents(Vec::new())),
+            (Check::Mptcp, "null") => return Some(Out::Mptcp(None)),
+            (Check::Blobs, "null") => return Some(Out::Blob(None)),
+            _ => {}
+        }
         from_json(job.check, &serde_json::from_str(result).ok()?, &read.path)
     }
 
@@ -285,6 +317,12 @@ impl Store {
     /// seen for [`KEEP`] is dropped.
     pub fn save(mut self, cache: &Cache, started: f64) {
         for (root, (text, old)) in self.old {
+            if self.unchanged.contains(&root) && !self.new.contains_key(&root) {
+                let _ = cache
+                    .conn
+                    .execute("UPDATE file_cache SET seen=? WHERE root=?", params![started, root.to_string_lossy()]);
+                continue;
+            }
             let mut record = self.new.remove(&root).unwrap_or_default();
             let ran = self.ran.get(&root).cloned().unwrap_or_default();
             for (check, v) in &old.versions {
@@ -419,6 +457,7 @@ fn to_json(out: &Out) -> Value {
         }),
         Out::Documents(v) => Value::Array(v.iter().map(doc_json).collect()),
         // Nearly every file: the bare `target`, nothing found.
+        Out::Blob(why) => json!(why),
         Out::Malware(s) if s.hits.is_empty() => Value::Bool(s.target),
         Out::Malware(s) => json!({
             "target": s.target,
@@ -450,6 +489,7 @@ fn from_json(check: Check, v: &Value, path: &std::path::Path) -> Option<Out> {
             listen: found_of(v.get("listen")),
         })),
         Check::Documents => Out::Documents(v.as_array()?.iter().map(doc_of).collect()),
+        Check::Blobs => Out::Blob(v.as_str().map(str::to_string)),
         Check::Malware(_) if v.is_boolean() => Out::Malware(Scanned { target: v.as_bool()?, hits: Vec::new() }),
         Check::Malware(_) => Out::Malware(Scanned {
             target: v.get("target")?.as_bool()?,

@@ -33,7 +33,7 @@
 use crate::checks::files::{Contents, Read, Stats, When};
 use std::path::{Path, PathBuf};
 
-mod blobs;
+pub(crate) mod blobs;
 mod cardholder;
 mod clipper;
 mod credentials;

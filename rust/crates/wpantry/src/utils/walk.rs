@@ -35,30 +35,48 @@ pub fn skip(parent: &str, name: &str) -> bool {
         || DISCOVER_PRUNE_PAIRS.contains(&(parent, name))
 }
 
-/// (dir, files) under root, skipping build output and dependency dirs.
-/// Memoised for the process: the lockfile, install-script and image
-/// checks each want the same listing of every repo; [`forget_walks`]
-/// drops the memo between scans.
+/// How deep a root is walked, whatever depth is asked: the deepest any
+/// check reads (the malware scan's repo programs). A shallower walk is
+/// this one cut short, so every check of a root shares one walk.
+pub const DEEPEST: usize = 12;
+
+/// (dir, files) under root, `depth` levels down, skipping build output and
+/// dependency dirs. Memoised for the process: every repo check wants the
+/// same listing of every repo; [`forget_walks`] drops the memo between
+/// scans.
 pub fn walk(root: &Path, depth: usize) -> Vec<(PathBuf, Vec<String>)> {
-    let key = (root.to_path_buf(), depth);
-    if let Some(hit) = WALKS.lock().expect("lock").get(&key).cloned() {
-        return (*hit).clone();
-    }
-    let out = Arc::new(walk_uncached(root, depth));
-    WALKS.lock().expect("lock").insert(key, out.clone());
-    (*out).clone()
+    let hit = WALKS.lock().expect("lock").get(root).cloned();
+    let walked = match hit {
+        Some(w) if w.0 >= depth => w,
+        _ => {
+            let deep = depth.max(DEEPEST);
+            let w = Arc::new((deep, walk_uncached(root, deep)));
+            WALKS.lock().expect("lock").insert(root.to_path_buf(), w.clone());
+            w
+        }
+    };
+    walked.1.iter().filter(|(_, level, _)| *level <= depth).map(|(d, _, f)| (d.clone(), f.clone())).collect()
 }
 
-type Walks = HashMap<(PathBuf, usize), Arc<Vec<(PathBuf, Vec<String>)>>>;
+/// Each root's walk: how deep, and each directory with its level.
+type Walks = HashMap<PathBuf, Arc<(usize, Vec<(PathBuf, usize, Vec<String>)>)>>;
 static WALKS: std::sync::LazyLock<Mutex<Walks>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Walk `roots` side by side into the memo, so the checks that ask next
+/// find them walked.
+pub fn prewalk(roots: &[PathBuf]) {
+    crate::utils::parallel::par_map(roots, crate::utils::parallel::cores(), |r| {
+        walk(r, DEEPEST);
+    });
+}
 
 /// Drop the memoised listings: a new scan may see changed files.
 pub fn forget_walks() {
     WALKS.lock().expect("lock").clear();
 }
 
-fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, Vec<String>)> {
-    fn visit(d: &Path, level: usize, depth: usize, out: &mut Vec<(PathBuf, Vec<String>)>) {
+fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, usize, Vec<String>)> {
+    fn visit(d: &Path, level: usize, depth: usize, out: &mut Vec<(PathBuf, usize, Vec<String>)>) {
         let Ok(rd) = std::fs::read_dir(d) else { return };
         let (mut dirs, mut files) = (Vec::new(), Vec::new());
         for e in rd.filter_map(|e| e.ok()) {
@@ -75,7 +93,7 @@ fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, Vec<String>)> {
         }
         files.sort();
         dirs.sort();
-        out.push((d.to_path_buf(), files));
+        out.push((d.to_path_buf(), level, files));
         for sub in dirs {
             visit(&sub, level + 1, depth, out);
         }

@@ -7,6 +7,7 @@
 //! skipped.
 
 use super::{Policy, Suspect, apply_policy};
+use crate::checks::files::{Contents, Read, When};
 use std::path::{Path, PathBuf};
 
 const BLOB_EXTS: &[&str] = &["node", "wasm", "so", "dylib", "dll", "exe"];
@@ -171,14 +172,6 @@ pub(super) fn native_source_name(name: &str) -> bool {
 /// Why a file named like a binary isn't one: its first bytes are not an
 /// executable or WebAssembly header. `None` when they are, or the file is
 /// too short to say.
-fn wrong_magic(path: &Path) -> Option<String> {
-    use std::io::Read;
-    let mut head = [0u8; HEAD];
-    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
-    wrong_magic_in(&path.file_name()?.to_string_lossy(), &head[..n])
-}
-
-/// [`wrong_magic`], from the file's name and first bytes.
 pub(super) fn wrong_magic_in(name: &str, head: &[u8]) -> Option<String> {
     let name = name.to_ascii_lowercase();
     let ext = blob_ext(&name)?;
@@ -206,7 +199,7 @@ pub(super) fn wrong_magic_in(name: &str, head: &[u8]) -> Option<String> {
 /// repo's own tree, "ships" for a dependency); one that isn't a binary at
 /// all fails.
 /// `blobs` are each file's path in the repo and, when its first bytes
-/// aren't a binary's, why ([`wrong_magic`]).
+/// aren't a binary's, why ([`wrong_magic_in`]).
 pub(super) fn findings(blobs: &[(String, Option<String>)], sources: bool, verb: &str) -> Vec<Suspect> {
     let mut out = Vec::new();
     for (rel, why) in blobs {
@@ -290,33 +283,71 @@ fn packages(nm: &Path) -> Vec<PathBuf> {
 /// Native and WebAssembly binaries the repo's npm dependencies ship with
 /// nothing to build them from (`node_modules/*`, `node_modules/@*/*`), after
 /// the policy. Well-known native publishers are skipped; a file named like
-/// a binary that isn't one fails.
+/// a binary that isn't one fails. One job of the files pass
+/// ([`crate::checks::files::pass`]).
 pub fn dependency_blobs(root: &Path, policy: &Policy) -> Vec<Suspect> {
-    let mut out = Vec::new();
+    let mut out = crate::checks::files::Results::default().blobs(root);
+    apply_policy(&mut out, policy);
+    out
+}
+
+/// The first bytes a repo's dependency check reads: each package's files
+/// named like binaries, and whether the package has sources to build them.
+#[derive(Debug)]
+pub struct Plan {
+    pub reads: Vec<Read>,
+    /// Per package: its reads (a range of `reads`) and whether it has sources.
+    packages: Vec<(std::ops::Range<usize>, bool)>,
+}
+
+/// The packages under `root`'s `node_modules` and their files, walked here
+/// rather than on the shared walk: prebuilt binaries live in `build/`,
+/// `prebuilds/` and `dist/`, which that walk prunes as output.
+pub fn plan(root: &Path) -> Plan {
+    let mut plan = Plan { reads: Vec::new(), packages: Vec::new() };
     let nm = root.join("node_modules");
-    for pkg in packages(&nm).iter().take(MAX_PACKAGES) {
-        let pkg_name = pkg.strip_prefix(&nm).unwrap_or(pkg).to_string_lossy().replace('\\', "/");
-        if known_native(&pkg_name) {
-            continue;
-        }
-        // Not utils::walk: prebuilt binaries live in `build/`, `prebuilds/` and
-        // `dist/`, which it prunes as output.
+    let pkgs: Vec<PathBuf> = packages(&nm)
+        .into_iter()
+        .take(MAX_PACKAGES)
+        .filter(|pkg| !known_native(&pkg.strip_prefix(&nm).unwrap_or(pkg).to_string_lossy().replace('\\', "/")))
+        .collect();
+    // Listed side by side: a large node_modules is tens of thousands of directories.
+    let listed = crate::utils::parallel::par_map(&pkgs, crate::utils::parallel::cores(), |pkg| {
         let mut files = Vec::new();
         package_files(pkg, 0, &mut files);
-        let (mut blobs, mut sources) = (Vec::new(), false);
+        files
+    });
+    for files in listed {
+        let (start, mut sources) = (plan.reads.len(), false);
         for path in files {
             let f = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if is_blob_name(&f) {
                 let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-                blobs.push((rel, wrong_magic(&path)));
+                plan.reads.push(Read { path, rel, cap: 0, role: 0, when: When::Always });
             }
             if native_source_name(&f) {
                 sources = true;
             }
         }
-        out.extend(findings(&blobs, sources, "ships"));
+        plan.packages.push((start..plan.reads.len(), sources));
     }
-    apply_policy(&mut out, policy);
+    plan
+}
+
+/// Why one file named like a binary isn't one.
+pub fn file(read: &Read, c: &Contents) -> Option<String> {
+    let name = read.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    wrong_magic_in(&name, c.head)
+}
+
+/// The repo's dependency findings, before the policy, sorted.
+pub fn finish(plan: &Plan, files: &[Option<&Option<String>>]) -> Vec<Suspect> {
+    let mut out = Vec::new();
+    for (range, sources) in &plan.packages {
+        let blobs: Vec<(String, Option<String>)> =
+            range.clone().map(|i| (plan.reads[i].rel.clone(), files[i].cloned().flatten())).collect();
+        out.extend(findings(&blobs, *sources, "ships"));
+    }
     out.sort_by(|a, b| (a.file.as_str(), a.id).cmp(&(b.file.as_str(), b.id)));
     out
 }

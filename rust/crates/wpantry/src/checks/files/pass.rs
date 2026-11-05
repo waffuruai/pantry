@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A root's walk: each directory and its files.
+type Walk = Vec<(PathBuf, Vec<String>)>;
+
 /// A check that reads file contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Check {
@@ -22,6 +25,8 @@ pub enum Check {
     Mptcp,
     Documents,
     Malware(Scope),
+    /// The prebuilt binaries a repo's npm dependencies ship.
+    Blobs,
 }
 
 /// One check over one root, `depth` levels down.
@@ -47,6 +52,7 @@ pub enum Found {
     Documents(Vec<Doc>),
     /// The files the scan counts, each with its hits.
     Malware(Vec<(PathBuf, Vec<Hit>)>),
+    Blobs(Vec<Suspect>),
 }
 
 /// What a check reads of one root, and what it knows without reading.
@@ -56,6 +62,7 @@ enum Plan {
     Mptcp(mptcp::Plan),
     Documents(documents::Plan),
     Malware(targets::Plan),
+    Blobs(suspects::blobs::Plan),
 }
 
 impl Plan {
@@ -66,6 +73,7 @@ impl Plan {
             Plan::Mptcp(p) => &p.reads,
             Plan::Documents(p) => &p.reads,
             Plan::Malware(p) => &p.reads,
+            Plan::Blobs(p) => &p.reads,
         }
     }
 }
@@ -78,6 +86,7 @@ pub(crate) enum Out {
     Mptcp(Option<mptcp::Facts>),
     Documents(Vec<Doc>),
     Malware(targets::Scanned),
+    Blob(Option<String>),
 }
 
 fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats) -> Plan {
@@ -87,6 +96,7 @@ fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats) -> Plan 
         Check::Mptcp => Plan::Mptcp(mptcp::plan(&job.root, walk, stat)),
         Check::Documents => Plan::Documents(documents::plan(&job.root, walk, stat)),
         Check::Malware(scope) => Plan::Malware(targets::plan(scope, &job.root, walk, stat)),
+        Check::Blobs => Plan::Blobs(suspects::blobs::plan(&job.root)),
     }
 }
 
@@ -97,6 +107,7 @@ fn file(job: &Job, rules: Option<&Loaded>, read: &Read, c: &Contents) -> Out {
         Check::Mptcp => Out::Mptcp(mptcp::file(read, c)),
         Check::Documents => Out::Documents(documents::file(read, c)),
         Check::Malware(scope) => Out::Malware(targets::file(scope, rules, read, c)),
+        Check::Blobs => Out::Blob(suspects::blobs::file(read, c)),
     }
 }
 
@@ -112,6 +123,7 @@ fn finish(job: &Job, plan: &Plan, outs: &[Option<Out>]) -> Found {
         Plan::Mptcp(p) => Found::Mptcp(mptcp::finish(p, &of!(Mptcp))),
         Plan::Documents(p) => Found::Documents(documents::finish(p, &of!(Documents))),
         Plan::Malware(p) => Found::Malware(targets::finish(p, &of!(Malware))),
+        Plan::Blobs(p) => Found::Blobs(suspects::blobs::finish(p, &of!(Blob))),
     }
 }
 
@@ -163,6 +175,14 @@ impl Results {
         }
     }
 
+    /// The binaries a repo's npm dependencies ship, before the policy.
+    pub fn blobs(&self, root: &Path) -> Vec<Suspect> {
+        match self.get(&Job::new(Check::Blobs, root, 0)) {
+            Found::Blobs(v) => v,
+            _ => unreachable!("a blobs job finds blobs"),
+        }
+    }
+
     /// A malware job's files, each with its hits.
     pub fn malware(&self, job: &Job) -> Vec<(PathBuf, Vec<Hit>)> {
         match self.get(job) {
@@ -193,16 +213,29 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
         }
     }
     let jobs = uniq;
-    let walks: Vec<Vec<(PathBuf, Vec<String>)>> =
-        jobs.iter().map(|j| crate::utils::walk::walk(&j.root, j.depth)).collect();
+    let walks: Vec<Walk> = jobs.iter().map(|j| crate::utils::walk::walk(&j.root, j.depth)).collect();
+    // One view per file, from each root's deepest walk (the others are
+    // that walk cut short).
+    let mut deepest: HashMap<&Path, usize> = HashMap::new();
+    for (j, job) in jobs.iter().enumerate() {
+        let d = deepest.entry(job.root.as_path()).or_insert(j);
+        if jobs[*d].depth < job.depth {
+            *d = j;
+        }
+    }
     let mut index: HashMap<PathBuf, usize> = HashMap::new();
     let mut views: Vec<FileView> = Vec::new();
-    for (dir, files) in walks.iter().flatten() {
-        for f in files {
-            let p = dir.join(f);
-            if !index.contains_key(&p) {
-                index.insert(p.clone(), views.len());
-                views.push(FileView::new(p));
+    for (j, w) in walks.iter().enumerate() {
+        if deepest.get(jobs[j].root.as_path()) != Some(&j) {
+            continue;
+        }
+        for (dir, files) in w {
+            for f in files {
+                let p = dir.join(f);
+                if let std::collections::hash_map::Entry::Vacant(e) = index.entry(p) {
+                    views.push(FileView::new(e.key().clone()));
+                    e.insert(views.len() - 1);
+                }
             }
         }
     }
@@ -214,10 +247,16 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
                 None => FileView::new(p.to_path_buf()).stat(),
             }
         };
-        jobs.iter().zip(&walks).map(|(j, w)| plan(j, w, &stat)).collect()
+        // Side by side: a plan stats nothing new, but names every file, and
+        // the dependency check lists node_modules.
+        let items: Vec<(&Job, &Walk)> = jobs.iter().zip(&walks).collect();
+        parallel::par_map(&items, parallel::cores(), |(j, w)| plan(j, w, &stat))
     };
+    // Each read's view, found once.
     let mut users: Vec<Vec<(usize, usize)>> = vec![Vec::new(); views.len()];
+    let mut view_of: Vec<Vec<usize>> = Vec::with_capacity(plans.len());
     for (j, p) in plans.iter().enumerate() {
+        let mut of = Vec::with_capacity(p.reads().len());
         for (r, read) in p.reads().iter().enumerate() {
             let i = *index.entry(read.path.clone()).or_insert_with(|| {
                 views.push(FileView::new(read.path.clone()));
@@ -225,16 +264,21 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
                 views.len() - 1
             });
             users[i].push((j, r));
+            of.push(i);
         }
+        view_of.push(of);
     }
+    drop(index);
     let mut outs: Vec<Vec<Option<Out>>> = plans.iter().map(|p| p.reads().iter().map(|_| None).collect()).collect();
-    let stat_of = |read: &Read| index.get(&read.path).and_then(|&i| views[i].stat());
+    let stat_of = |j: usize, r: usize| views[view_of[j][r]].stat();
     let mut store = cache.map(|c| super::cache::Store::load(c, &jobs, &salt));
+    let mut hits: HashMap<&Path, usize> = HashMap::new();
     if let Some(s) = &store {
         for (j, p) in plans.iter().enumerate() {
             for (r, read) in p.reads().iter().enumerate() {
-                if let Some(st) = stat_of(read) {
+                if let Some(st) = stat_of(j, r) {
                     outs[j][r] = s.get(&jobs[j], read, &st);
+                    *hits.entry(jobs[j].root.as_path()).or_default() += usize::from(outs[j][r].is_some());
                 }
             }
         }
@@ -259,13 +303,28 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
             })
             .collect()
     });
+    let mut missed: std::collections::HashSet<&Path> = std::collections::HashSet::new();
     for (j, r, o) in done.into_iter().flatten() {
+        missed.insert(jobs[j].root.as_path());
         outs[j][r] = Some(o);
     }
     if let (Some(c), Some(mut s)) = (cache, store.take()) {
+        // A root whose every result came from its record, and that lost
+        // none, keeps its record as it is.
+        let roots: std::collections::HashSet<&Path> = jobs.iter().map(|j| j.root.as_path()).collect();
+        let unchanged: std::collections::HashSet<&Path> = roots
+            .into_iter()
+            .filter(|root| !missed.contains(root) && hits.get(root).copied().unwrap_or(0) == s.old_count(root))
+            .collect();
+        for root in &unchanged {
+            s.unchanged(root);
+        }
         for (j, p) in plans.iter().enumerate() {
+            if unchanged.contains(jobs[j].root.as_path()) {
+                continue;
+            }
             for (r, read) in p.reads().iter().enumerate() {
-                if let (Some(o), Some(st)) = (&outs[j][r], stat_of(read)) {
+                if let (Some(o), Some(st)) = (&outs[j][r], stat_of(j, r)) {
                     s.put(&jobs[j], read, &st, o);
                 }
             }

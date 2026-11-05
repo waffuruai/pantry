@@ -297,6 +297,7 @@ impl<'a> Scan<'a> {
             if repos::is_git(root) {
                 jobs.push(Job::new(Check::Hidden, root, hidden::DEPTH));
                 jobs.push(Job::new(Check::Suspects(suspects::Kind::Repo), root, suspects::DEPTH));
+                jobs.push(Job::new(Check::Blobs, root, 0));
             }
             jobs.push(Job::new(Check::Mptcp, root, supply_chain::mptcp::DEPTH));
             jobs.push(Job::new(Check::Documents, root, 6));
@@ -412,6 +413,8 @@ impl<'a> Scan<'a> {
         self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
+        self.status("Listing the repos' files");
+        crate::utils::walk::prewalk(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>());
         let found: Vec<Component> = if self.opts.machine { machine::run(&mut self)? } else { Vec::new() };
         supply_chain::run(&mut self, &found)?;
         if !self.opts.no_malware {

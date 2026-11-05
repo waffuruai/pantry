@@ -1190,4 +1190,5 @@ fn requires_match(e: &Expr) -> bool {
 }
 
 #[cfg(test)]
+#[path = "compile_tests.rs"]
 mod tests;

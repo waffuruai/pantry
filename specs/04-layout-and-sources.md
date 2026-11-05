@@ -25,7 +25,7 @@ flowchart LR
     T["Targets: default, --deep, --path"] --> W["One walk (utils/walk)"]
     W --> V["FileView: bytes, text, sha256, each read once (new)"]
     V --> A["Analyzers: malware, suspect, hidden, documents (table)"]
-    I["Inventory: machine, supply_chain, posture"] --> J["Judge against sources"]
+    I["Inventory: machine, supply_chain"] --> J["Judge against sources"]
   end
   S --> A
   S --> J
@@ -66,7 +66,7 @@ A reader should be able to tell what wpantry does from its tree. Today that take
 
 ### Functionality
 
-- F1. The tree is the one in [design/source-layout.md](design/source-layout.md): `sources/`, `checks/`, `reporters/`, `remediation/`, `utils/`, and core files at `src/`; `breach` is `email`, `compare` is `checks/package_managers`. A test lists `src/` and fails on a file outside them. Evidence: `rust/crates/wpantry/tests/layout.rs`. Issue: #138.
+- F1. The tree is the one in [design/source-layout.md](design/source-layout.md): `sources/`, `checks/`, `reporters/`, `remediation/`, `utils/`, and core files at `src/`; `breach` is `email`, `compare` is `checks/ecosystems`, `posture` is part of `checks/machine`. A test lists `src/` and fails on a file outside them. Evidence: `rust/crates/wpantry/tests/layout.rs`. Issue: #138.
 - F2. The moves change no behaviour: the contract suite passes unchanged, and a scan of the test fixtures gives byte-identical `--json` before and after. Evidence: each phase-1 PR (#146, #147, #148 and 1d) compares the previous build's scan with its own, from copies of one warm cache. Issue: #138.
 - F3. Every check that reads file contents (malware, suspect code, hidden text, documents) runs on one walk and one FileView per file; a counting test shows each file opened once per scan. Evidence: not evidence yet. Issue: pending.
 - F4. One per-file cache, keyed by (device, inode, size, mtime) and each analyzer's version, serves every analyzer, so an unchanged file is not re-read by any of them. Evidence: not evidence yet. Issue: pending.
@@ -94,8 +94,8 @@ A reader should be able to tell what wpantry does from its tree. Today that take
 
 | Phase | Scope | Done when | Issue |
 |---|---|---|---|
-| 1 | Moves and renames, no behaviour change: `utils/` and core types, then `checks/`, then `sources/`, then `reporters/` and `remediation/` (four PRs) | F1, F2 | pending |
-| 2 | One walk, FileView, the shared per-file cache, analyzer tables (`suspect/` rules as one `Rule` table) | F3, F4, P1 | pending |
+| 1 | Moves and renames, no behaviour change: `utils/` and core types, then `checks/`, then `sources/`, then `reporters/` and `remediation/`, then consolidation (five PRs) | F1, F2 | pending |
+| 2 | One walk, FileView, the shared per-file cache, analyzer tables (`suspects/` rules as one `Rule` table) | F3, F4, P1 | pending |
 | 3 | `sources.toml`, the fetcher, HOSTS from the file, `wpantry sources`, user sources with consent; every current source declared | F5, F6, S1–S3 | pending |
 | 4 | Indicator store and lookup matching; trails and the tiers | F7, P2 | pending |
 | 5 | Reporters in the library; CSV and YARA added | F9 | pending |
@@ -117,10 +117,11 @@ Phases 2–7 depend on 1; 4 depends on 3; 6 depends on 3. Phase 7 can follow 2 d
 
 | Date | Decision | Why | Who |
 |---|---|---|---|
-| 2026-11-04 | Top-level `sources/`, `reporters/`, `utils/`, `remediation/`, `checks/` (with subfolders such as `package_managers/`, `documents/`, `lockfiles/`); core files stay at `src/` | The tree should say what the code does; similar code sits together | Eric |
+| 2026-11-04 | Top-level `sources/`, `reporters/`, `utils/`, `remediation/`, `checks/` (with subfolders such as `ecosystems/`, `documents/`, `lockfiles/`); core files stay at `src/` | The tree should say what the code does; similar code sits together | Eric |
 | 2026-11-04 | `breach` becomes `email` | Says what it checks | Eric |
 | 2026-11-04 | The CVE sources join the sources file, not only the malware ones | One way to declare, inspect and replace any source | Eric |
 | 2026-11-04 | The sources file is TOML, read by the in-tree TOML reader (`lockfiles/toml.rs`, moved to `utils/` and given integers, booleans and arrays) | Reads best for people; no new dependency | Eric |
 | 2026-11-04 | Sources are config, but a user source's host needs a yes and can never receive data without its own consent | HOSTS is what lets pantry promise where it talks to | Eric |
 | 2026-11-04 | Indicators are data matched by lookup, not YARA strings | Scales to millions of indicators | Eric |
 | 2026-11-04 | Default malware scope by file type across `~`; `--deep` covers `/` | Catches things in odd places without reading every source file | Eric |
+| 2026-11-04 | `posture/` merges into `machine/` (`any/`, `macos/`, `linux/`; `windows/` with its first check); `suspect/` becomes `suspects/`; `deps_dev` becomes `package_licenses`; `package_managers/` becomes `ecosystems/`, with one `Ecosystem` table | Machine inventory and settings are both "this machine"; plural folders; name a source by what it provides; one place knows each ecosystem | Eric |

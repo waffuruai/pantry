@@ -18,7 +18,7 @@
 //! The browser-extension side is the `SUSPECT-CLIPBOARD-SWAP` rule over
 //! installed code.
 
-use crate::checks::posture::any::persistence::units::{command_of, item_dirs_for};
+use crate::checks::machine::any::persistence::units::{command_of, item_dirs_for};
 use crate::utils::addresses::{self, Chain};
 use crate::utils::{files, process};
 use std::ffi::OsStr;
@@ -388,7 +388,7 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
                 continue;
             }
             let chains = addresses::chains_in(&text);
-            let patterns = crate::checks::suspect::ADDRESS_PATTERNS.iter().any(|p| text.contains(p));
+            let patterns = crate::checks::suspects::ADDRESS_PATTERNS.iter().any(|p| text.contains(p));
             let shown_program =
                 program.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| argv[0].clone());
             let odd = program.as_ref().is_some_and(|p| odd_place(home, p));

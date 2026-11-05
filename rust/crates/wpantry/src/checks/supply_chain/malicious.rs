@@ -3,10 +3,9 @@
 //! check whether the version here is affected. This is what catches packages
 //! known only by name (an unpinned `npx some-mcp-server`).
 
-use crate::checks::package_managers::Comparator;
+use crate::checks::ecosystems::{self, normalize, openssf};
 use crate::db::Cache;
 use crate::error::Result;
-use crate::sources::malicious_packages::{dir_for, norm};
 use crate::utils::json::{self, arr_at};
 use crate::utils::net::{self, Net};
 use rusqlite::params;
@@ -27,10 +26,11 @@ pub struct Reports {
 /// a report OSV actually served is cached; one that couldn't be fetched is
 /// `unknown`, and asked again next time.
 pub fn reports(cache: &Cache, net: &dyn Net, eco: &str, name: &str, version: &str, offline: bool) -> Result<Reports> {
-    let Some(dir) = dir_for(eco) else { return Ok(Reports::default()) };
+    let Some(dir) = openssf(eco) else { return Ok(Reports::default()) };
     let ids: Vec<String> = {
         let mut stmt = cache.conn.prepare("SELECT id FROM malicious WHERE ecosystem = ? AND name = ?")?;
-        stmt.query_map(params![dir, norm(eco, name)], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?
+        stmt.query_map(params![dir, normalize(eco, name)], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?
     };
     let mut out = Reports::default();
     for id in ids {
@@ -79,7 +79,7 @@ pub fn applies(rec: &Value, version: &str) -> bool {
             return true;
         }
         let eco = a.get("package").map(|p| json::str_at(p, "ecosystem")).unwrap_or("");
-        let order = Comparator::for_ecosystem(eco);
+        let order = ecosystems::order(eco);
         let lt = |x: &str, y: &str| order.cmp(x, y) == Ordering::Less;
         for r in arr_at(a, "ranges") {
             let mut start: Option<&str> = None;
@@ -117,7 +117,6 @@ pub fn applies(rec: &Value, version: &str) -> bool {
 mod tests {
     use super::*;
     use crate::error::Error;
-    use crate::sources::malicious_packages::{dir_for, norm};
     use crate::utils::net::Fake;
     use serde_json::json;
 
@@ -141,9 +140,9 @@ mod tests {
         ] {
             assert_eq!(reports(&c, &net, eco, "x", "1.0.0", false).unwrap(), Reports::default(), "{eco}");
         }
-        assert_eq!(dir_for("Hex"), None);
-        assert_eq!(norm("PyPI", "trailing_"), "trailing-");
-        assert_eq!(norm("npm", "Trailing_"), "trailing_");
+        assert_eq!(openssf("Hex"), None);
+        assert_eq!(normalize("PyPI", "trailing_"), "trailing-");
+        assert_eq!(normalize("npm", "Trailing_"), "trailing_");
     }
 
     #[test]
@@ -190,7 +189,7 @@ mod tests {
         assert_eq!(ids(reports(&c, &net, "PyPI", "Evil_Pkg", "", false).unwrap()), ["MAL-1"]);
         assert_eq!(ids(reports(&c, &net, "npm", "@bad/scope", "1.0.0", false).unwrap()), ["MAL-2"]);
         assert_eq!(reports(&c, &net, "npm", "@bad/scope", "2.0.0", false).unwrap(), Reports::default());
-        assert_eq!(norm("PyPI", "Foo__Bar.baz"), "foo-bar-baz");
+        assert_eq!(normalize("PyPI", "Foo__Bar.baz"), "foo-bar-baz");
     }
 
     #[test]

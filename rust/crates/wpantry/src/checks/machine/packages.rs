@@ -176,7 +176,7 @@ pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
             if n.is_empty() || v.is_empty() {
                 let field = if v.is_empty() { "Version" } else { "Name" };
                 gaps.push(format!("{}: no {field} in its metadata", meta.display()));
-            } else if seen.insert(crate::sources::malicious_packages::norm("PyPI", &n)) {
+            } else if seen.insert(crate::checks::ecosystems::pypi::normalize(&n)) {
                 out.push((n, v));
             }
         }

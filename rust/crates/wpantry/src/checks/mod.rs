@@ -10,15 +10,14 @@
 //! isn't installed is reported.
 
 pub mod documents;
+pub mod ecosystems;
 pub mod email;
 pub mod hidden;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
-pub mod package_managers;
-pub mod posture;
 pub mod supply_chain;
-pub mod suspect;
+pub mod suspects;
 
 use crate::component::Component;
 use crate::component::Status;
@@ -30,8 +29,7 @@ use crate::sources::kev;
 use crate::sources::osv::{self, Item};
 use crate::utils::json::str_at;
 use crate::utils::net::Net;
-use package_managers::Comparator;
-use package_managers::versions;
+use ecosystems::versions;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -68,8 +66,8 @@ impl Policy {
         listed(self.licenses.as_deref(), crate::defaults::LICENSES)
     }
 
-    pub fn suspect_policy(&self) -> crate::checks::suspect::Policy {
-        crate::checks::suspect::Policy::parse(&match &self.suspect {
+    pub fn suspect_policy(&self) -> crate::checks::suspects::Policy {
+        crate::checks::suspects::Policy::parse(&match &self.suspect {
             Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
             None => crate::defaults::SUSPECT.to_string(),
         })
@@ -396,7 +394,7 @@ impl<'a> Scan<'a> {
         groups: Option<Vec<Vec<Value>>>,
     ) -> bool {
         let (eco, pkg, qver) = c.osv.clone().unwrap_or_default();
-        let order = Comparator::for_ecosystem(&eco);
+        let order = ecosystems::order(&eco);
         let groups = groups.unwrap_or_else(|| recs.iter().map(|r| vec![r.clone()]).collect());
         let mut failing = false;
         let mut seen = HashSet::new();

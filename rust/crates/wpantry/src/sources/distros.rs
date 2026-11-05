@@ -196,7 +196,7 @@ fn arch_advisories_with(
         listing.stdout.lines().filter_map(|l| l.split_once(' ')).map(|(n, v)| (n.to_string(), v.to_string())).collect();
     let older = |a: &str, b: &str| -> bool {
         match &vercmp {
-            None => crate::checks::package_managers::versions::lt(a, b),
+            None => crate::checks::ecosystems::versions::lt(a, b),
             Some(v) => {
                 run(&[v.as_os_str(), a.as_ref(), b.as_ref()], 15)
                     .ok()

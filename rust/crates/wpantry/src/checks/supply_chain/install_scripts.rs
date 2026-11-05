@@ -6,7 +6,7 @@
 //! but nothing else reads what an allowed script does, so a version outside
 //! its entry warns until someone reads the new script and widens the entry.
 
-use crate::checks::package_managers::semver;
+use crate::checks::ecosystems::semver;
 
 /// A version's numeric core, padded to three parts.
 type Core = [u64; 3];

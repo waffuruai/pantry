@@ -5,7 +5,7 @@
 //! identifiable license is only counted. deps.dev's `non-standard` (custom
 //! terms, such as a license that needs a company licence) is a license no
 //! allowlist holds, so it is reported, not counted as unknown.
-//! The declared licenses come from [`crate::sources::deps_dev`].
+//! The declared licenses come from [`crate::sources::package_licenses`].
 
 /// Whether an SPDX license expression can be satisfied with `allowed` ids:
 /// OR needs one side, AND both; `X WITH exception` is judged as X; ids

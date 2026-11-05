@@ -4,8 +4,8 @@
 //! record of what was asked (`queries`): every package version whose
 //! answer named the advisory is asked again and the record is re-read.
 
-use crate::checks::package_managers::Comparator;
-use crate::checks::package_managers::versions;
+use crate::checks::ecosystems;
+use crate::checks::ecosystems::versions;
 use crate::checks::{display_id, mitigation};
 use crate::component::Status;
 use crate::db::Cache;
@@ -92,7 +92,7 @@ pub fn run(cache: &Cache, net: &dyn Net, offline: bool, status: Status) -> Resul
             let Some(rec) = recs.iter().find(|r| osv::ids_of(r).contains(&id) || display_id(r) == id) else {
                 continue;
             };
-            let order = Comparator::for_ecosystem(&item.0);
+            let order = ecosystems::order(&item.0);
             let fixes = osv::fixed_versions(rec, &item.0, &item.1, None);
             let fixed = versions::pick_safe_by(&item.2, &fixes, |a, b| order.cmp(a, b));
             out.push(Watched {

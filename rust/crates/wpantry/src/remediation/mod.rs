@@ -8,7 +8,7 @@ pub mod ca_trust;
 pub mod editors;
 pub mod mitigate;
 
-use crate::checks::package_managers::versions;
+use crate::checks::ecosystems::versions;
 use crate::finding::Finding;
 
 pub const MISE_FIX: &str = "mise: manual, update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it";

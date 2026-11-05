@@ -1,7 +1,8 @@
 //! The OpenSSF malicious-packages index: a blob-less clone of
 //! github.com/ossf/malicious-packages beside the cache, kept current with
 //! `git fetch`, its report paths (osv/malicious/<ecosystem>/<package>/MAL-….json)
-//! read into the cache as names. Works offline once cloned.
+//! read into the cache as names. Works offline once cloned. Each
+//! ecosystem's directory is [`crate::checks::ecosystems::openssf`].
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
@@ -11,48 +12,6 @@ use std::ffi::OsStr;
 use std::time::Duration;
 
 pub const REPO: &str = "https://github.com/ossf/malicious-packages.git";
-
-/// The index's directory for an OSV ecosystem.
-pub(crate) fn dir_for(eco: &str) -> Option<&'static str> {
-    Some(match eco {
-        "npm" => "npm",
-        "PyPI" => "pypi",
-        "RubyGems" => "rubygems",
-        "crates.io" => "crates.io",
-        "Go" => "go",
-        "NuGet" => "nuget",
-        "Maven" => "maven",
-        "Packagist" => "packagist",
-        "VSCode" => "vscode",
-        "VSCode:https://open-vsx.org" => "vscode:open-vsx.org",
-        _ => return None,
-    })
-}
-
-/// A package name as the index keys it (PyPI: PEP 503).
-pub fn norm(eco: &str, name: &str) -> String {
-    if eco != "PyPI" {
-        return name.to_lowercase();
-    }
-    // PEP 503: runs of -, _ and . are one -.
-    let mut out = String::new();
-    let mut sep = false;
-    for c in name.chars() {
-        if matches!(c, '-' | '_' | '.') {
-            sep = true;
-        } else {
-            if sep {
-                out.push('-');
-                sep = false;
-            }
-            out.push(c.to_ascii_lowercase());
-        }
-    }
-    if sep {
-        out.push('-');
-    }
-    out
-}
 
 fn git(args: &[&OsStr], timeout: u64) -> Result<String> {
     let mut argv: Vec<&OsStr> = vec![OsStr::new("git")];

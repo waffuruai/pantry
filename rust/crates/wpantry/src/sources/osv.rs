@@ -5,7 +5,7 @@
 //! second run the same day makes no OSV calls at all. Failures are never
 //! cached.
 
-use crate::checks::package_managers::versions;
+use crate::checks::ecosystems::versions;
 use crate::component::Status;
 use crate::db::Cache;
 use crate::error::{Error, Result};

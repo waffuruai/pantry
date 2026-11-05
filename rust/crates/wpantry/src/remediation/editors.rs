@@ -1,11 +1,11 @@
 //! `wpantry harden extension-cooldown`: the one posture fix that edits
 //! files, setting the extension install cooldown in every editor's settings.
-//! The check is [`crate::checks::posture::any::tools`].
+//! The check is [`crate::checks::machine::any::dev_settings`].
 
-use crate::checks::posture::any::tools::editor_settings;
+use crate::checks::machine::any::dev_settings::editor_settings;
 
 /// Set `extensions.installCooldownHours` in every editor's settings.json
-/// (the fix for the cooldown check in [`crate::checks::posture::any::tools`]);
+/// (the fix for the cooldown check in [`crate::checks::machine::any::dev_settings`]);
 /// returns what was changed. The key is replaced where present and inserted
 /// after the opening brace otherwise, so comments and formatting stay.
 pub fn set_extension_cooldown(hours: u32) -> crate::error::Result<Vec<String>> {
@@ -61,7 +61,7 @@ pub fn with_cooldown(text: &str, hours: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checks::posture::any::tools::extension_policy;
+    use crate::checks::machine::any::dev_settings::extension_policy;
 
     #[test]
     fn cooldown_is_inserted_or_replaced_keeping_the_rest() {

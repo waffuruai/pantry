@@ -14,7 +14,7 @@ Where every file in `rust/crates/wpantry/src/` and `rust/crates/wpantry-cli/src/
 - **A file in `sources/` knows a remote API or a format.** A file in `checks/` knows what to look at on this machine or in a repo and how to judge it. When one file does both today (`breach.rs`, `licenses.rs`, `malicious.rs`), it splits along that line.
 - **Inside a check, it's one file per behaviour,** with `mod.rs` as the index, as in `suspects/` and `machine/`. A behaviour that differs by OS goes in `os/behaviour` folders (`macos/`, `linux/`, `any/`), as the posture checks and the YARA rules do.
 - **Module names are snake_case nouns.** No `check_` prefixes: the folder already says it.
-- **Tests stay beside their code.** Test helpers a folder shares go in its `#[cfg(test)] mod testing`, as `machine/testing.rs` does.
+- **Tests stay beside their code, in a file of their own.** `foo.rs`'s tests are `foo_tests.rs` beside it (`#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` at the end of `foo.rs`), and `foo/mod.rs`'s are `foo/tests.rs`, as in Syrup: a source file holds only the code, and its tests are one file away. `tests/layout.rs` fails on an inline `mod tests {` or a test file with no source beside it. Test helpers a folder shares go in its `#[cfg(test)] mod testing`, as `machine/testing.rs` does.
 
 ## Target tree
 

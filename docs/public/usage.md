@@ -379,7 +379,7 @@ Refresh the cache: the feeds, end-of-life dates and OSV answers for what was sca
 usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] {install,status,uninstall,run}
 ```
 
-Run sync and scan on a schedule (launchd, a systemd user timer, or cron); a scheduled run never fixes anything (that is `wpantry fix`). `install` sets it up, `status` says whether it is installed and what the last run found, `uninstall` takes it away, `run` is what the scheduler runs. `install` and `uninstall` also take out the clipboard guard an earlier version could install.
+Run sync and scan on a schedule (launchd, a systemd user timer, or cron); a scheduled run never fixes anything (that is `wpantry fix`). `install` sets it up, `status` says whether it is installed and what the last run found, `uninstall` takes it away, `run` is what the scheduler runs.
 
 | Option | Effect |
 |---|---|

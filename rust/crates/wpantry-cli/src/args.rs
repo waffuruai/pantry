@@ -302,8 +302,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
     match cmd {
         // The scan's, with `fix`'s hidden in front: `scan --fix` (and
         // `--update`) still parse, undocumented, for scripts older than `fix`.
-        // `--no-clipboard` parses and does nothing, for scripts older than
-        // the clipboard self-test's removal (2026-11-05).
         "scan" | "check" => &[
             ("--help", false),
             ("--fix", false),
@@ -329,7 +327,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--deep", false),
             ("--no-online-hash", false),
             ("--sources", true),
-            ("--no-clipboard", false),
         ],
         "fix" => &[
             ("--help", false),
@@ -355,7 +352,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--deep", false),
             ("--no-online-hash", false),
             ("--sources", true),
-            ("--no-clipboard", false),
         ],
         "rules" => &[
             ("--help", false),

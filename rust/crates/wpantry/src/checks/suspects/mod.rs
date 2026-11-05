@@ -317,18 +317,45 @@ pub fn apply_policy(out: &mut [Suspect], policy: &Policy) {
 pub fn scan_text(file: &str, text: &str, kind: Kind) -> Vec<Suspect> {
     let ctx = context(file);
     let mut out = Vec::new();
-    obfuscation::scan(file, text, ctx, &mut out);
-    escalation::scan(file, text, ctx, kind, &mut out);
-    credentials::scan(file, text, ctx, kind, &mut out);
-    wallet::scan(file, text, ctx, kind, &mut out);
-    clipper::scan(file, text, ctx, kind, &mut out);
-    network::scan(file, text, ctx, &mut out);
-    profiling::scan(file, text, ctx, kind, &mut out);
-    cardholder::scan(file, text, ctx, &mut out);
-    secrets_weak::scan(file, text, ctx, &mut out);
-    keylogger::scan(file, text, ctx, kind, &mut out);
+    for rule in RULES {
+        (rule.scan)(file, text, ctx, kind, &mut out);
+    }
     out
 }
+
+/// One rule: its name (its file), how it scans one file, and its source,
+/// which versions the files pass's kept results ([`crate::checks::files::cache`]).
+pub struct Rule {
+    pub name: &'static str,
+    pub scan: fn(&str, &str, Context, Kind, &mut Vec<Suspect>),
+    pub source: &'static str,
+}
+
+/// The rules, in [`scan_text`]'s order.
+pub static RULES: &[Rule] = &[
+    Rule {
+        name: "obfuscation",
+        scan: |f, t, c, _, o| obfuscation::scan(f, t, c, o),
+        source: include_str!("obfuscation.rs"),
+    },
+    Rule { name: "escalation", scan: escalation::scan, source: include_str!("escalation.rs") },
+    Rule { name: "credentials", scan: credentials::scan, source: include_str!("credentials.rs") },
+    Rule { name: "wallet", scan: wallet::scan, source: include_str!("wallet.rs") },
+    Rule { name: "clipper", scan: clipper::scan, source: include_str!("clipper.rs") },
+    Rule { name: "network", scan: |f, t, c, _, o| network::scan(f, t, c, o), source: include_str!("network.rs") },
+    Rule { name: "profiling", scan: profiling::scan, source: include_str!("profiling.rs") },
+    Rule {
+        name: "cardholder",
+        scan: |f, t, c, _, o| cardholder::scan(f, t, c, o),
+        source: include_str!("cardholder.rs"),
+    },
+    Rule {
+        name: "secrets_weak",
+        scan: |f, t, c, _, o| secrets_weak::scan(f, t, c, o),
+        source: include_str!("secrets_weak.rs"),
+    },
+    Rule { name: "keylogger", scan: keylogger::scan, source: include_str!("keylogger.rs") },
+];
 
 // --- Shared by the rules --------------------------------------------------
 
@@ -360,6 +387,15 @@ fn ids(v: &[Suspect]) -> Vec<(&str, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_rule_is_listed_once_by_its_file() {
+        for (i, r) in RULES.iter().enumerate() {
+            assert!(RULES[..i].iter().all(|o| o.name != r.name), "{} twice", r.name);
+            assert!(r.source.contains("pub(super) fn scan("), "{}'s source is its file", r.name);
+        }
+        assert_eq!(RULES.len(), 10);
+    }
 
     #[test]
     fn contexts() {

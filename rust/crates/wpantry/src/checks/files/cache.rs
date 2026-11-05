@@ -46,10 +46,11 @@ fn name(check: Check) -> &'static str {
 }
 
 /// The source a check's per-file step is built from: a change to any of
-/// it changes the check's version, and with it every cached result.
-fn sources(check: Check) -> &'static [&'static str] {
+/// it changes the check's version, and with it every kept result. Suspect
+/// code's comes from its rule table ([`crate::checks::suspects::RULES`]).
+fn sources(check: Check) -> Vec<&'static str> {
     match check {
-        Check::Hidden => &[
+        Check::Hidden => vec![
             include_str!("../hidden/mod.rs"),
             include_str!("../hidden/bait.rs"),
             include_str!("../hidden/html.rs"),
@@ -59,25 +60,19 @@ fn sources(check: Check) -> &'static [&'static str] {
             include_str!("../hidden/unicode.rs"),
             include_str!("../../../assets/defaults/bait.toml"),
         ],
-        Check::Suspects(_) | Check::Blobs => &[
-            include_str!("../suspects/mod.rs"),
-            include_str!("../suspects/blobs.rs"),
-            include_str!("../suspects/cardholder.rs"),
-            include_str!("../suspects/clipper.rs"),
-            include_str!("../suspects/credentials.rs"),
-            include_str!("../suspects/escalation.rs"),
-            include_str!("../suspects/keylogger.rs"),
-            include_str!("../suspects/network.rs"),
-            include_str!("../suspects/obfuscation.rs"),
-            include_str!("../suspects/profiling.rs"),
-            include_str!("../suspects/scripts.rs"),
-            include_str!("../suspects/secrets_weak.rs"),
-            include_str!("../suspects/wallet.rs"),
-            include_str!("../../utils/addresses.rs"),
-            include_str!("../../../assets/defaults/weak-passwords.txt"),
-        ],
-        Check::Mptcp => &[include_str!("../supply_chain/mptcp.rs")],
-        Check::Documents => &[
+        Check::Suspects(_) | Check::Blobs => crate::checks::suspects::RULES
+            .iter()
+            .map(|r| r.source)
+            .chain([
+                include_str!("../suspects/mod.rs"),
+                include_str!("../suspects/blobs.rs"),
+                include_str!("../suspects/scripts.rs"),
+                include_str!("../../utils/addresses.rs"),
+                include_str!("../../../assets/defaults/weak-passwords.txt"),
+            ])
+            .collect(),
+        Check::Mptcp => vec![include_str!("../supply_chain/mptcp.rs")],
+        Check::Documents => vec![
             include_str!("../documents/mod.rs"),
             include_str!("../documents/image.rs"),
             include_str!("../documents/ole.rs"),
@@ -89,7 +84,7 @@ fn sources(check: Check) -> &'static [&'static str] {
             include_str!("../../utils/archive/zip.rs"),
             include_str!("../../utils/archive/deflate.rs"),
         ],
-        Check::Malware(_) => &[include_str!("../malware/targets.rs"), include_str!("../malware/yara.rs")],
+        Check::Malware(_) => vec![include_str!("../malware/targets.rs"), include_str!("../malware/yara.rs")],
     }
 }
 

@@ -5,7 +5,7 @@
 use crate::checks::supply_chain::repos::Repo;
 use crate::checks::{Scan, suspects};
 use crate::finding::Finding;
-use crate::utils::{files, os, parallel};
+use crate::utils::{files, os};
 use std::path::{Path, PathBuf};
 
 /// Code that behaves like an attack (decoded-then-executed strings,
@@ -26,17 +26,19 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
     }
     scan.status("Looking for code that behaves like an attack");
     let results = scan.read_files();
-    let read: Vec<Vec<suspects::Suspect>> =
-        targets.iter().map(|(_, root, kind)| results.suspects(root, *kind)).collect();
-    let found: Vec<Vec<suspects::Suspect>> =
-        parallel::par_map(&targets.iter().zip(read).collect::<Vec<_>>(), parallel::PROBES, |((_, root, kind), s)| {
-            let mut s = s.clone();
+    let found: Vec<Vec<suspects::Suspect>> = targets
+        .iter()
+        .map(|(_, root, kind)| {
+            let mut s = results.suspects(root, *kind);
             suspects::apply_policy(&mut s, &policy);
             if *kind == suspects::Kind::Repo {
-                s.extend(suspects::dependency_blobs(root, &policy));
+                let mut blobs = results.blobs(root);
+                suspects::apply_policy(&mut blobs, &policy);
+                s.extend(blobs);
             }
             s
-        });
+        })
+        .collect();
     for ((name, dir, kind), hits) in targets.iter().zip(found) {
         scan.count(
             if *kind == suspects::Kind::Repo {

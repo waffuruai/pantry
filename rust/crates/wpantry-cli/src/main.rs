@@ -1017,14 +1017,14 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
         let net = wpantry::utils::net::Http::new();
         let progress = progress::Progress::start();
         progress.set("Fetching YARA Forge's rules");
-        if let Err(e) = malware::update(&cache, &net, true) {
+        if let Err(e) = malware::yara::update(&cache, &net, true) {
             failed = Some(e.to_string());
         }
         progress.finish();
     }
-    let dir = malware::rules_dir(&cache);
-    let loaded = malware::load(&dir, false);
-    let all = malware::load(&dir, true);
+    let dir = malware::yara::rules_dir(&cache);
+    let loaded = malware::yara::load(&dir, false);
+    let all = malware::yara::load(&dir, true);
     cache.close()?;
     let stats = all.rules.stats();
     if json {

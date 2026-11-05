@@ -11,6 +11,7 @@ pub mod cache;
 pub mod pass;
 pub mod view;
 
+pub use crate::checks::malware::targets::Scope;
 pub use pass::{Check, Job, Results};
 pub use view::{FileView, Stat};
 
@@ -35,6 +36,17 @@ pub struct Read {
     pub cap: u64,
     /// What the file is to its check, in the check's own numbering.
     pub role: u8,
+    /// When it is read whole (a `cap` over 0).
+    pub when: When,
+}
+
+/// When a check reads a file whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum When {
+    Always,
+    /// Only when its first bytes say it is a program (the malware scan of
+    /// a repo): the same open reads on.
+    Program,
 }
 
 /// One file as a check's per-file step sees it.

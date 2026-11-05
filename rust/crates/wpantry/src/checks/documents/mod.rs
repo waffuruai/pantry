@@ -27,7 +27,7 @@ mod pdf;
 mod rtf;
 mod svg;
 
-use crate::checks::files::{Contents, Read, Stats};
+use crate::checks::files::{Contents, Read, Stats, When};
 pub use crate::utils::archive::deflate::inflate;
 use crate::utils::archive::zip;
 use crate::utils::archive::{MAX_MEMBER, rfind};
@@ -118,7 +118,7 @@ pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
             continue;
         }
         budget -= size;
-        plan.reads.push(Read { path, rel, cap: MAX_FILE, role: 0 });
+        plan.reads.push(Read { path, rel, cap: MAX_FILE, role: 0, when: When::Always });
     }
     plan
 }

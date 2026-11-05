@@ -15,7 +15,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// A scan over a temporary cache. The malware scan is off: it would
+/// fetch its rules before reading the files, and its tests are its own.
 pub(crate) fn scan<'a>(net: &'a Fake, d: &TempDir, opts: Options) -> Scan<'a> {
+    let opts = Options { no_malware: true, ..opts };
     Scan::new(opts, Cache::open(Some(&d.path().join("w.db"))).unwrap(), net, &|_| {}, &|_| {})
 }
 

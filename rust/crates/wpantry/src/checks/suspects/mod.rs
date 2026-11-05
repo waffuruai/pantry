@@ -30,10 +30,10 @@
 //! contexts a path falls into, the policy, the size limits, the walk and
 //! the dispatch over one file's text, and the helpers the rules share.
 
-use crate::checks::files::{Contents, Read, Stats};
+use crate::checks::files::{Contents, Read, Stats, When};
 use std::path::{Path, PathBuf};
 
-mod blobs;
+pub(crate) mod blobs;
 mod cardholder;
 mod clipper;
 mod credentials;
@@ -221,7 +221,13 @@ pub fn plan(root: &Path, kind: Kind, walk: &[(PathBuf, Vec<String>)], stat: Stat
             let rel = rel_path.strip_prefix(root).unwrap_or(&rel_path).to_string_lossy().into_owned();
             if kind == Kind::Repo {
                 if blobs::is_blob_name(name) && !generated_path(&rel) && !test_path(&rel) {
-                    plan.reads.push(Read { path: rel_path.clone(), rel: rel.clone(), cap: 0, role: BLOB });
+                    plan.reads.push(Read {
+                        path: rel_path.clone(),
+                        rel: rel.clone(),
+                        cap: 0,
+                        role: BLOB,
+                        when: When::Always,
+                    });
                 }
                 if blobs::native_source_name(name) {
                     plan.native_sources = true;
@@ -236,7 +242,7 @@ pub fn plan(root: &Path, kind: Kind, walk: &[(PathBuf, Vec<String>)], stat: Stat
                 continue;
             }
             budget -= s.size;
-            plan.reads.push(Read { path: rel_path, rel, cap: MAX_FILE, role: CODE });
+            plan.reads.push(Read { path: rel_path, rel, cap: MAX_FILE, role: CODE, when: When::Always });
         }
     }
     plan

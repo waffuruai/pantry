@@ -20,7 +20,7 @@
 //! `go 1.22` built with a 1.24 toolchain keeps MPTCP off.
 
 use crate::checks::Scan;
-use crate::checks::files::{Contents, Read, Stats};
+use crate::checks::files::{Contents, Read, Stats, When};
 use crate::checks::supply_chain::repos::Repo;
 use crate::finding::Finding;
 use std::collections::BTreeMap;
@@ -183,7 +183,7 @@ pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
                 continue;
             };
             if stat(&path).is_some_and(|s| s.file && s.size <= MAX_FILE) {
-                reads.push(Read { path, rel, cap: MAX_FILE, role });
+                reads.push(Read { path, rel, cap: MAX_FILE, role, when: When::Always });
             }
         }
     }

@@ -4,16 +4,15 @@
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
 use crate::sources::fetch::etag_fetch;
+use crate::sources::file::url;
 use crate::utils::json::{self, str_at};
 use crate::utils::net::Net;
 use rusqlite::params;
 use std::collections::HashSet;
 
-pub const KEV_URL: &str = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
-
 /// The CVE ids in CISA's Known Exploited Vulnerabilities list.
 pub fn kev(cache: &Cache, net: &dyn Net, offline: bool) -> Result<HashSet<String>> {
-    if let Some(body) = etag_fetch(cache, net, KEV_URL, "kev", DAY, offline)? {
+    if let Some(body) = etag_fetch(cache, net, url("cisa-kev"), "kev", DAY, offline)? {
         let data = json::parse(&body, json::MAX_DOCUMENT)?;
         cache.conn.execute("DELETE FROM kev", [])?;
         let mut stmt = cache.conn.prepare("INSERT OR REPLACE INTO kev VALUES (?, ?, ?)")?;

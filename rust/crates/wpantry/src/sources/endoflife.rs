@@ -3,6 +3,7 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::sources::file::url;
 use crate::utils::dates::{parse_date, today};
 use crate::utils::net::{self, Net};
 use rusqlite::params;
@@ -32,9 +33,8 @@ pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: 
             stale.push(p.clone());
         }
     }
-    let fetched = crate::utils::parallel::par_map(&stale, 8, |p| {
-        net::get_json(net, &format!("https://endoflife.date/api/{p}.json"), &[])
-    });
+    let fetched =
+        crate::utils::parallel::par_map(&stale, 8, |p| net::get_json(net, &url("endoflife").replace("{}", p), &[]));
     for (p, r) in stale.iter().zip(fetched) {
         match r {
             Ok(data) => eol_store(cache, p, data.as_ref())?,
@@ -69,7 +69,7 @@ fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
 /// know the cycle.
 pub fn eol(cache: &Cache, net: &dyn Net, product: &str, cycle: &str, offline: bool) -> Result<Option<Eol>> {
     if !(offline || cache.fresh(&format!("eol_at:{product}"), 7.0 * DAY)?) {
-        match net::get_json(net, &format!("https://endoflife.date/api/{product}.json"), &[]) {
+        match net::get_json(net, &url("endoflife").replace("{}", product), &[]) {
             Ok(data) => eol_store(cache, product, data.as_ref())?,
             Err(e) if e.is_source() => {}
             Err(e) => return Err(e),

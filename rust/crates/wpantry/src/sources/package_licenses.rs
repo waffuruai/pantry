@@ -6,12 +6,12 @@ use crate::checks::ecosystems::deps_dev;
 use crate::component::Status;
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::sources::file::url;
 use crate::utils::json;
 use crate::utils::net::{self, Net};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
-pub const API: &str = "https://api.deps.dev/v3/systems";
 pub const TTL: f64 = 30.0 * DAY;
 
 /// A path segment, percent-encoded (`@scope/name` → `%40scope%2Fname`).
@@ -31,7 +31,7 @@ const PARALLEL: usize = 16;
 /// The licenses deps.dev declares for one package version (empty when
 /// unknown), cached.
 fn fetch(net: &dyn Net, sys: &str, name: &str, version: &str) -> Result<Vec<String>> {
-    let url = format!("{API}/{sys}/packages/{}/versions/{}", segment(name), segment(version));
+    let url = format!("{}/{sys}/packages/{}/versions/{}", url("deps-dev"), segment(name), segment(version));
     let Some(v) = net::get_json(net, &url, &[])? else { return Ok(Vec::new()) };
     Ok(json::strs_at(&v, "licenses").into_iter().filter(|l| !l.is_empty()).collect())
 }

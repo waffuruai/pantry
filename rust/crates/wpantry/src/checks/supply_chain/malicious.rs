@@ -46,7 +46,7 @@ pub fn reports(cache: &Cache, net: &dyn Net, eco: &str, name: &str, version: &st
                 out.unknown.push(id);
                 continue;
             }
-            None => match net::get_json(net, &format!("https://api.osv.dev/v1/vulns/{id}"), &[]) {
+            None => match net::get_json(net, &format!("{}/vulns/{id}", crate::sources::file::url("osv")), &[]) {
                 Ok(Some(r)) if json::str_at(&r, "id") == id => {
                     cache.put_vuln(&r)?;
                     r

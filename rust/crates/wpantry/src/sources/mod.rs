@@ -9,6 +9,7 @@ pub mod distros;
 pub mod endoflife;
 pub mod extensions;
 pub mod fetch;
+pub mod file;
 pub mod hash_lookups;
 pub mod indicator_lists;
 pub mod kev;

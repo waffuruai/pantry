@@ -5,6 +5,7 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::sources::file::url;
 use crate::utils::json::{self, str_at};
 use crate::utils::net::{self, Net};
 use crate::utils::process::exec;
@@ -243,11 +244,9 @@ fn arch_advisories_with(
     Ok(out)
 }
 
-pub const ARCH_URL: &str = "https://security.archlinux.org/issues/all.json";
-
 /// The Arch Linux security tracker's advisory groups.
 pub fn arch(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Value> {
-    let fetch = || match net::get_json(net, ARCH_URL, &[])? {
+    let fetch = || match net::get_json(net, url("arch-security"), &[])? {
         Some(Value::Array(groups)) if !groups.is_empty() => Ok(Value::Array(groups)),
         _ => Err(Error::Offline("the Arch security tracker returned nothing".into())),
     };

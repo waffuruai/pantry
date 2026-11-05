@@ -25,13 +25,18 @@ pub fn suspect_code(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for code that behaves like an attack");
-    let found: Vec<Vec<suspects::Suspect>> = parallel::par_map(&targets, parallel::PROBES, |(_, root, kind)| {
-        let mut s = suspects::scan_dir(root, *kind, &policy);
-        if *kind == suspects::Kind::Repo {
-            s.extend(suspects::dependency_blobs(root, &policy));
-        }
-        s
-    });
+    let results = scan.read_files();
+    let read: Vec<Vec<suspects::Suspect>> =
+        targets.iter().map(|(_, root, kind)| results.suspects(root, *kind)).collect();
+    let found: Vec<Vec<suspects::Suspect>> =
+        parallel::par_map(&targets.iter().zip(read).collect::<Vec<_>>(), parallel::PROBES, |((_, root, kind), s)| {
+            let mut s = s.clone();
+            suspects::apply_policy(&mut s, &policy);
+            if *kind == suspects::Kind::Repo {
+                s.extend(suspects::dependency_blobs(root, &policy));
+            }
+            s
+        });
     for ((name, dir, kind), hits) in targets.iter().zip(found) {
         scan.count(
             if *kind == suspects::Kind::Repo {
@@ -104,7 +109,7 @@ fn extension_clipboard(scan: &mut Scan, name: &str, dir: &Path, hits: &[suspects
 
 /// Code on this machine that came from somewhere else and runs with the
 /// user's rights: editor extensions, agent plugins and browser extensions.
-fn installed_code() -> Vec<(String, PathBuf)> {
+pub(crate) fn installed_code() -> Vec<(String, PathBuf)> {
     let home = files::home();
     let mut out = Vec::new();
     let mut add_children = |label: &str, dir: PathBuf| {

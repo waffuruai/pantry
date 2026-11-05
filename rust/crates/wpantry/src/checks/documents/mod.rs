@@ -27,6 +27,7 @@ mod pdf;
 mod rtf;
 mod svg;
 
+use crate::checks::files::{Contents, Read, Stats};
 pub use crate::utils::archive::deflate::inflate;
 use crate::utils::archive::zip;
 use crate::utils::archive::{MAX_MEMBER, rfind};
@@ -80,35 +81,57 @@ pub fn wanted(name: &str) -> bool {
 /// `~/Downloads`), one per (file, id). Build output and dependency
 /// directories are skipped as everywhere else. Files are read smallest
 /// first, so a directory over the 512 MiB budget loses its largest files,
-/// which one finding names, not its many small ones.
+/// which one finding names, not its many small ones. One job of the files
+/// pass ([`crate::checks::files::pass`]).
 pub fn scan_dir(root: &Path, depth: usize) -> Vec<Doc> {
-    let mut out = Vec::new();
+    crate::checks::files::Results::default().documents(root, depth)
+}
+
+/// The documents and images a root's check reads (smallest first, at most
+/// [`MAX_FILE`] each and [`MAX_ROOT`] in all), and the ones it leaves.
+#[derive(Debug)]
+pub struct Plan {
+    pub reads: Vec<Read>,
+    skipped: Vec<(String, u64)>,
+}
+
+pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
     let mut files: Vec<(PathBuf, u64)> = Vec::new();
-    for (dir, names) in walk(root, depth) {
+    for (dir, names) in walk {
         for name in names {
-            if !wanted(&name) {
+            if !wanted(name) {
                 continue;
             }
-            let path = dir.join(&name);
-            let Ok(meta) = std::fs::metadata(&path) else { continue };
-            if meta.is_file() {
-                files.push((path, meta.len()));
+            let path = dir.join(name);
+            if let Some(s) = stat(&path).filter(|s| s.file) {
+                files.push((path, s.size));
             }
         }
     }
     files.sort_by_key(|(_, size)| *size);
     let mut budget = MAX_ROOT;
-    let mut skipped: Vec<(String, u64)> = Vec::new();
+    let mut plan = Plan { reads: Vec::new(), skipped: Vec::new() };
     for (path, size) in files {
         let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
         if size > MAX_FILE || size > budget {
-            skipped.push((rel, size));
+            plan.skipped.push((rel, size));
             continue;
         }
         budget -= size;
-        let Ok(bytes) = std::fs::read(&path) else { continue };
-        out.extend(scan_bytes(&rel, &bytes));
+        plan.reads.push(Read { path, rel, cap: MAX_FILE, role: 0 });
     }
+    plan
+}
+
+/// One file's findings.
+pub fn file(read: &Read, c: &Contents) -> Vec<Doc> {
+    c.bytes.map(|b| scan_bytes(&read.rel, b)).unwrap_or_default()
+}
+
+/// The root's findings, one per (file, id).
+pub fn finish(plan: &Plan, files: &[Option<&Vec<Doc>>]) -> Vec<Doc> {
+    let mut out: Vec<Doc> = files.iter().flatten().flat_map(|f| f.iter().cloned()).collect();
+    let skipped = &plan.skipped;
     if !skipped.is_empty() {
         let total: u64 = skipped.iter().map(|(_, s)| s).sum();
         let shown: Vec<&str> = skipped.iter().take(3).map(|(r, _)| r.as_str()).collect();

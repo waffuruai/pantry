@@ -6,7 +6,6 @@ use crate::checks::supply_chain::repos::Repo;
 use crate::checks::{Scan, documents};
 use crate::finding::Finding;
 use crate::utils::files::short;
-use crate::utils::parallel;
 use std::path::PathBuf;
 
 /// PDFs, Office documents, RTF and images in the repos, read for the shapes
@@ -17,8 +16,8 @@ pub fn documents_pass(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Reading documents and images for the shapes malware takes");
-    let found: Vec<Vec<documents::Doc>> =
-        parallel::par_map(repos, parallel::PROBES, |(_, root)| documents::scan_dir(root, 6));
+    let results = scan.read_files();
+    let found: Vec<Vec<documents::Doc>> = repos.iter().map(|(_, root)| results.documents(root, 6)).collect();
     let mut files: Vec<PathBuf> = Vec::new();
     for ((name, root), docs) in repos.iter().zip(found) {
         scan.count("repos checked for documents and images", 1);

@@ -237,6 +237,8 @@ pub struct Scan<'a> {
     pub unfixed: i64,
     pub unknown_licenses: i64,
     pub kev: HashSet<String>,
+    /// The files pass's findings ([`Scan::read_files`]).
+    pub(crate) files: Option<files::Results>,
 }
 
 impl<'a> Scan<'a> {
@@ -262,7 +264,43 @@ impl<'a> Scan<'a> {
             unfixed: 0,
             unknown_licenses: 0,
             kev: HashSet::new(),
+            files: None,
         }
+    }
+
+    /// The content checks' findings (hidden text, suspect code, MPTCP,
+    /// documents, the repos' programs): one files pass over every repo and,
+    /// on a machine scan, the installed extensions and plugins, run the
+    /// first time a check asks.
+    pub(crate) fn read_files(&mut self) -> &files::Results {
+        if self.files.is_none() {
+            self.status("Reading the repos' files");
+            let jobs = self.file_jobs();
+            self.files = Some(files::pass::run(&jobs));
+        }
+        self.files.as_ref().expect("the files pass just ran")
+    }
+
+    fn file_jobs(&self) -> Vec<files::Job> {
+        use files::{Check, Job};
+        let mut jobs = Vec::new();
+        for (_, root) in &self.repos {
+            if repos::is_git(root) {
+                jobs.push(Job::new(Check::Hidden, root, hidden::DEPTH));
+                jobs.push(Job::new(Check::Suspects(suspects::Kind::Repo), root, suspects::DEPTH));
+            }
+            jobs.push(Job::new(Check::Mptcp, root, supply_chain::mptcp::DEPTH));
+            jobs.push(Job::new(Check::Documents, root, 6));
+            if !self.opts.no_malware {
+                jobs.push(Job::new(Check::Programs, root, malware::DEEP));
+            }
+        }
+        if self.opts.machine {
+            for (_, dir) in supply_chain::suspect_code::installed_code() {
+                jobs.push(Job::new(Check::Suspects(suspects::Kind::Installed), &dir, suspects::DEPTH));
+            }
+        }
+        jobs
     }
 
     /// Report each step, directory and file as the scan reaches it (the

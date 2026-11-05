@@ -33,14 +33,14 @@ mod links;
 mod names;
 mod unicode;
 
-use crate::utils::walk::walk;
+use crate::checks::files::{Contents, Read, Stats};
 use bait::bait_identifiers;
 use commits::commit_messages;
 use html::{hidden_elements, html_comments};
 use instructions::{addresses_agents, agent_instruction, first_agent_instruction, instructable};
 use links::{confusable_domain, dangerous_uri, exfil_link};
 use names::name_findings;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use unicode::{BLACK_FLAG, excerpt, first_mixed_script_word, is_rtl, without_subdivision_flags};
 
 /// One file's hidden-text finding.
@@ -156,39 +156,82 @@ const EXTENSIONS: &[&str] = &[
 const MAX_FILE: u64 = 1 << 20;
 const MAX_REPO: u64 = 64 << 20;
 
+/// How deep a repo is walked.
+pub const DEPTH: usize = 6;
+
 /// Every hidden-text finding in the repo, one per (file, id): the files'
-/// text, their names, and the commit messages.
+/// text, their names, and the commit messages. One job of the files pass
+/// ([`crate::checks::files::pass`]).
 pub fn scan_repo(root: &Path) -> Vec<Hidden> {
-    let mut out = Vec::new();
+    crate::checks::files::Results::default().hidden(root)
+}
+
+/// One step of a repo's findings, in walk order: a name's finding, or a
+/// file's (by its read).
+#[derive(Debug)]
+enum Step {
+    Name(Hidden),
+    Read(usize),
+}
+
+/// The text files a repo's check reads (at most [`MAX_FILE`] each and
+/// [`MAX_REPO`] in all, in walk order), and its names' findings.
+#[derive(Debug)]
+pub struct Plan {
+    pub reads: Vec<Read>,
+    steps: Vec<Step>,
+}
+
+pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
+    let mut plan = Plan { reads: Vec::new(), steps: Vec::new() };
     let mut budget = MAX_REPO;
-    for (dir, files) in walk(root, 6) {
+    for (dir, files) in walk {
         if let Some(h) = dir
             .strip_prefix(root)
             .ok()
             .filter(|r| !r.as_os_str().is_empty())
             .and_then(|r| name_findings(&r.to_string_lossy()))
         {
-            out.push(h);
+            plan.steps.push(Step::Name(h));
         }
         for name in files {
-            let path = dir.join(&name);
+            let path = dir.join(name);
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
             if let Some(h) = name_findings(&rel) {
-                out.push(h);
+                plan.steps.push(Step::Name(h));
             }
-            if !wanted(&name) {
+            if !wanted(name) {
                 continue;
             }
-            let Ok(meta) = std::fs::metadata(&path) else { continue };
-            if !meta.is_file() || meta.len() > MAX_FILE || meta.len() > budget {
+            let Some(s) = stat(&path) else { continue };
+            if !s.file || s.size > MAX_FILE || s.size > budget {
                 continue;
             }
-            budget -= meta.len();
-            let Ok(text) = crate::utils::files::read_capped(&path, MAX_FILE) else { continue };
-            if looks_minified(&text) {
-                continue; // a bundle: not something a person reads, and full of escapes
-            }
-            out.extend(scan_text(&rel, &text));
+            budget -= s.size;
+            plan.steps.push(Step::Read(plan.reads.len()));
+            plan.reads.push(Read { path, rel, cap: MAX_FILE, role: 0 });
+        }
+    }
+    plan
+}
+
+/// One file's findings.
+pub fn file(read: &Read, c: &Contents) -> Vec<Hidden> {
+    let Some(text) = c.text() else { return Vec::new() };
+    if looks_minified(&text) {
+        return Vec::new(); // a bundle: not something a person reads, and full of escapes
+    }
+    scan_text(&read.rel, &text)
+}
+
+/// The repo's findings: its names' and files', in walk order, and its
+/// commit messages', one per (file, id).
+pub fn finish(root: &Path, plan: &Plan, files: &[Option<&Vec<Hidden>>]) -> Vec<Hidden> {
+    let mut out = Vec::new();
+    for step in &plan.steps {
+        match step {
+            Step::Name(h) => out.push(h.clone()),
+            Step::Read(i) => out.extend(files[*i].into_iter().flatten().cloned()),
         }
     }
     out.extend(commit_messages(root));

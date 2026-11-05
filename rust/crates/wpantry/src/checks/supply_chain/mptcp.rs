@@ -20,10 +20,9 @@
 //! `go 1.22` built with a 1.24 toolchain keeps MPTCP off.
 
 use crate::checks::Scan;
+use crate::checks::files::{Contents, Read, Stats};
 use crate::checks::supply_chain::repos::Repo;
 use crate::finding::Finding;
-use crate::utils::parallel;
-use crate::utils::walk::walk;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -39,7 +38,7 @@ pub const OPT_IN_FIX: &str = "Until the kernel it runs on has the fix for CVE-20
 const UNFIXED: &str = "a remote use-after-free in the IPv4 TCP handshake, kernels 4.4 and later; no fixed kernel released for Ubuntu or RHEL yet";
 
 /// How deep a repo is walked, as the suspicious-code scan walks it.
-const WALK_DEPTH: usize = 6;
+pub const DEPTH: usize = 6;
 /// The most of one file read.
 const MAX_FILE: u64 = 1 << 20;
 /// The Go release that turned MPTCP on for listeners.
@@ -147,67 +146,107 @@ fn opt_in(text: &str) -> Option<(&'static str, usize)> {
     None
 }
 
-fn read(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    (meta.is_file() && meta.len() <= MAX_FILE).then(|| crate::utils::files::read_capped(path, MAX_FILE).ok())?
+/// Every program under `root` exposed through MPTCP, sorted by file. One
+/// job of the files pass ([`crate::checks::files::pass`]).
+pub fn scan_repo(root: &Path) -> Vec<Exposure> {
+    crate::checks::files::Results::default().mptcp(root)
 }
 
-/// Every program under `root` exposed through MPTCP, sorted by file.
-pub fn scan_repo(root: &Path) -> Vec<Exposure> {
-    let mut modules: BTreeMap<PathBuf, (u64, u64, String)> = BTreeMap::new();
-    let mut sources: Vec<(String, PathBuf)> = Vec::new();
-    let mut env_opt_out = false;
-    for (dir, files) in walk(root, WALK_DEPTH) {
+/// A module file (go.mod), an environment file, or a source file.
+const GO_MOD: u8 = 0;
+const ENV: u8 = 1;
+const SOURCE: u8 = 2;
+
+/// The files a repo's check reads: each go.mod, environment file and
+/// source file at most [`MAX_FILE`].
+#[derive(Debug)]
+pub struct Plan {
+    pub reads: Vec<Read>,
+}
+
+pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
+    let mut reads = Vec::new();
+    for (dir, files) in walk {
         for name in files {
-            let path = dir.join(&name);
+            let path = dir.join(name);
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
             if skipped(&rel) {
                 continue;
             }
-            if name == "go.mod" {
-                if let Some(text) = read(&path) {
-                    if godebug_opts_out(&text) {
-                        env_opt_out = true;
-                    }
-                    if let Some((major, minor, line)) = go_version(&text) {
-                        modules.insert(dir.clone(), (major, minor, line));
-                    }
-                }
+            let role = if name == "go.mod" {
+                GO_MOD
+            } else if env_file(name) {
+                ENV
+            } else if SOURCE_EXTS.contains(&name.rsplit_once('.').map(|(_, e)| e).unwrap_or("")) {
+                SOURCE
+            } else {
                 continue;
+            };
+            if stat(&path).is_some_and(|s| s.file && s.size <= MAX_FILE) {
+                reads.push(Read { path, rel, cap: MAX_FILE, role });
             }
-            if env_file(&name) {
-                if read(&path).is_some_and(|t| godebug_opts_out(&t)) {
-                    env_opt_out = true;
-                }
-                continue;
-            }
-            let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-            if SOURCE_EXTS.contains(&ext) {
-                sources.push((rel, path));
-            }
+        }
+    }
+    Plan { reads }
+}
+
+/// What one file says: a go.mod's `go` line and whether it opts out; an
+/// environment file's opt-out; a source file's opt-in, its Go opt-out and
+/// its Go listener.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Facts {
+    pub opts_out: bool,
+    pub go: Option<(u64, u64, String)>,
+    pub opt_in: Option<(&'static str, usize)>,
+    pub listen: Option<(&'static str, usize)>,
+}
+
+pub fn file(read: &Read, c: &Contents) -> Option<Facts> {
+    let text = c.text()?;
+    let go_source = read.path.extension().is_some_and(|e| e == "go");
+    Some(match read.role {
+        GO_MOD => Facts { opts_out: godebug_opts_out(&text), go: go_version(&text), ..Default::default() },
+        ENV => Facts { opts_out: godebug_opts_out(&text), ..Default::default() },
+        _ => Facts {
+            opts_out: go_source && go_opts_out(&text),
+            opt_in: opt_in(&text),
+            listen: if go_source { go_listen(&text) } else { None },
+            go: None,
+        },
+    })
+}
+
+/// The repo's exposures, sorted by file.
+pub fn finish(plan: &Plan, files: &[Option<&Option<Facts>>]) -> Vec<Exposure> {
+    let read: Vec<(&Read, &Facts)> =
+        plan.reads.iter().zip(files).filter_map(|(r, f)| f.and_then(Option::as_ref).map(|f| (r, f))).collect();
+    let mut modules: BTreeMap<PathBuf, (u64, u64, String)> = BTreeMap::new();
+    let mut env_opt_out = false;
+    for (r, f) in read.iter().filter(|(r, _)| r.role != SOURCE) {
+        env_opt_out |= f.opts_out;
+        if let (Some(go), Some(dir)) = (&f.go, r.path.parent()) {
+            modules.insert(dir.to_path_buf(), go.clone());
         }
     }
     // Which module a Go file belongs to: the nearest go.mod above it.
     let module_of = |path: &Path| -> Option<(&PathBuf, &(u64, u64, String))> {
         modules.iter().filter(|(dir, _)| path.starts_with(dir)).max_by_key(|(dir, _)| dir.as_os_str().len())
     };
+    let sources: Vec<&(&Read, &Facts)> = read.iter().filter(|(r, _)| r.role == SOURCE).collect();
     // A module opts out when any of its own files does (one helper may wrap every listener).
     let mut module_opt_out: BTreeMap<&PathBuf, bool> = BTreeMap::new();
-    let texts: Vec<(String, PathBuf, String)> =
-        sources.into_iter().filter_map(|(rel, path)| read(&path).map(|t| (rel, path, t))).collect();
-    for (_, path, text) in &texts {
-        if path.extension().is_some_and(|e| e == "go")
-            && go_opts_out(text)
-            && let Some((dir, _)) = module_of(path)
+    for (r, f) in &sources {
+        if f.opts_out
+            && let Some((dir, _)) = module_of(&r.path)
         {
             module_opt_out.insert(dir, true);
         }
     }
     let mut out = Vec::new();
-    for (rel, path, text) in &texts {
-        if let Some((needle, line)) = opt_in(text) {
+    for (r, f) in &sources {
+        if let Some((needle, line)) = f.opt_in {
             out.push(Exposure {
-                file: rel.clone(),
+                file: r.rel.clone(),
                 line,
                 go: String::new(),
                 note: format!(
@@ -217,16 +256,16 @@ pub fn scan_repo(root: &Path) -> Vec<Exposure> {
             });
             continue;
         }
-        if env_opt_out || path.extension().is_none_or(|e| e != "go") {
+        if env_opt_out || r.path.extension().is_none_or(|e| e != "go") {
             continue;
         }
-        let Some((dir, (major, minor, go_line))) = module_of(path) else { continue };
+        let Some((dir, (major, minor, go_line))) = module_of(&r.path) else { continue };
         if (*major, *minor) < MPTCP_DEFAULT_SINCE || module_opt_out.contains_key(dir) {
             continue;
         }
-        let Some((needle, line)) = go_listen(text) else { continue };
+        let Some((needle, line)) = f.listen else { continue };
         out.push(Exposure {
-            file: rel.clone(),
+            file: r.rel.clone(),
             line,
             go: go_line.clone(),
             note: format!(
@@ -249,7 +288,8 @@ pub fn mptcp_listeners(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for programs that listen with Multipath TCP on");
-    let found: Vec<Vec<Exposure>> = parallel::par_map(repos, parallel::PROBES, |(_, root)| scan_repo(root));
+    let results = scan.read_files();
+    let found: Vec<Vec<Exposure>> = repos.iter().map(|(_, root)| results.mptcp(root)).collect();
     let kev = scan.kev.contains(ID);
     for ((name, _), hits) in repos.iter().zip(found) {
         scan.count("repos checked for programs listening with MPTCP on", 1);

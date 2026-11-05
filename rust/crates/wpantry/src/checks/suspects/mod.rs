@@ -30,7 +30,7 @@
 //! contexts a path falls into, the policy, the size limits, the walk and
 //! the dispatch over one file's text, and the helpers the rules share.
 
-use crate::utils::walk::walk;
+use crate::checks::files::{Contents, Read, Stats};
 use std::path::{Path, PathBuf};
 
 mod blobs;
@@ -177,66 +177,120 @@ impl Policy {
 const MAX_FILE: u64 = 1 << 20;
 const MAX_TARGET: u64 = 64 << 20;
 /// How deep a target is walked.
-const WALK_DEPTH: usize = 6;
+pub const DEPTH: usize = 6;
 
 /// What was scanned: a repo (its own source, every rule) or code installed
 /// from elsewhere (an extension or plugin: the rules about behaviour, not
 /// about style).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Repo,
     Installed,
 }
 
-/// Every suspicious thing under `root`, one per (file, id), after the policy.
+/// Every suspicious thing under `root`, one per (file, id), after the
+/// policy. One job of the files pass ([`crate::checks::files::pass`]).
 pub fn scan_dir(root: &Path, kind: Kind, policy: &Policy) -> Vec<Suspect> {
-    let mut out = Vec::new();
+    let mut out = crate::checks::files::Results::default().suspects(root, kind);
+    apply_policy(&mut out, policy);
+    out
+}
+
+/// What a check of `root` reads: its code files (at most [`MAX_FILE`] each
+/// and [`MAX_TARGET`] in all, in walk order) and, in a repo, the first
+/// bytes of the files named like binaries.
+#[derive(Debug)]
+pub struct Plan {
+    pub reads: Vec<Read>,
+    kind: Kind,
+    /// The repo has the sources a native addon is built from.
+    native_sources: bool,
+}
+
+/// A code file, read whole.
+const CODE: u8 = 0;
+/// A file named like a binary: its first bytes.
+const BLOB: u8 = 1;
+
+pub fn plan(root: &Path, kind: Kind, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
+    let mut plan = Plan { reads: Vec::new(), kind, native_sources: false };
     let mut budget = MAX_TARGET;
-    let mut wallet_anywhere = false;
-    let mut pages: Vec<(String, String)> = Vec::new();
-    let mut tree_blobs: Vec<(String, PathBuf)> = Vec::new();
-    let mut native_sources = false;
-    for (dir, files) in walk(root, WALK_DEPTH) {
+    for (dir, files) in walk {
         for name in files {
-            let rel_path = dir.join(&name);
+            let rel_path = dir.join(name);
             let rel = rel_path.strip_prefix(root).unwrap_or(&rel_path).to_string_lossy().into_owned();
             if kind == Kind::Repo {
-                if blobs::is_blob_name(&name) && !generated_path(&rel) && !test_path(&rel) {
-                    tree_blobs.push((rel.clone(), rel_path.clone()));
+                if blobs::is_blob_name(name) && !generated_path(&rel) && !test_path(&rel) {
+                    plan.reads.push(Read { path: rel_path.clone(), rel: rel.clone(), cap: 0, role: BLOB });
                 }
-                if blobs::native_source_name(&name) {
-                    native_sources = true;
+                if blobs::native_source_name(name) {
+                    plan.native_sources = true;
                 }
             }
             let ctx = context(&rel);
             if ctx == Context::Other || (kind == Kind::Repo && generated_path(&rel)) {
                 continue;
             }
-            let Ok(meta) = std::fs::metadata(&rel_path) else { continue };
-            if !meta.is_file() || meta.len() > MAX_FILE || meta.len() > budget {
+            let Some(s) = stat(&rel_path) else { continue };
+            if !s.file || s.size > MAX_FILE || s.size > budget {
                 continue;
             }
-            budget -= meta.len();
-            let Ok(text) = crate::utils::files::read_capped(&rel_path, MAX_FILE) else { continue };
-            let found = scan_text(&rel, &text, kind);
-            if found.iter().any(|s| s.id == wallet::ID) {
-                wallet_anywhere = true;
-            }
-            if ctx == Context::Markup || ctx == Context::Web {
-                pages.push((rel.clone(), text));
-            }
-            out.extend(found);
+            budget -= s.size;
+            plan.reads.push(Read { path: rel_path, rel, cap: MAX_FILE, role: CODE });
         }
     }
-    // A page that signs transactions and loads an unpinned third-party
-    // script is the drainer pattern: the script decides what gets signed.
-    for (rel, text) in &pages {
-        out.extend(third_party_scripts(rel, text, wallet_anywhere));
+    plan
+}
+
+/// What one file holds: its findings, whether it signs with a wallet, and
+/// for a page the unpinned third-party scripts it loads (as findings when
+/// a wallet signs somewhere in the target, and when none does); for a file
+/// named like a binary, why it isn't one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileResult {
+    pub found: Vec<Suspect>,
+    pub wallet: bool,
+    pub scripts: Option<(Vec<Suspect>, Vec<Suspect>)>,
+    pub not_binary: Option<String>,
+}
+
+pub fn file(kind: Kind, read: &Read, c: &Contents) -> FileResult {
+    if read.role == BLOB {
+        let name = read.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return FileResult { not_binary: blobs::wrong_magic_in(&name, c.head), ..Default::default() };
     }
-    if kind == Kind::Repo {
-        out.extend(blobs::findings(&tree_blobs, native_sources, "commits"));
+    let Some(text) = c.text() else { return FileResult::default() };
+    let found = scan_text(&read.rel, &text, kind);
+    let ctx = context(&read.rel);
+    FileResult {
+        wallet: found.iter().any(|s| s.id == wallet::ID),
+        // A page that signs transactions and loads an unpinned third-party
+        // script is the drainer pattern: the script decides what gets signed.
+        scripts: (ctx == Context::Markup || ctx == Context::Web)
+            .then(|| (third_party_scripts(&read.rel, &text, false), third_party_scripts(&read.rel, &text, true))),
+        found,
+        not_binary: None,
     }
-    apply_policy(&mut out, policy);
+}
+
+/// The target's findings, one per (file, id), before the policy.
+pub fn finish(plan: &Plan, files: &[Option<&FileResult>]) -> Vec<Suspect> {
+    let code = || plan.reads.iter().zip(files).filter(|(r, _)| r.role == CODE).filter_map(|(_, f)| *f);
+    let mut out: Vec<Suspect> = code().flat_map(|f| f.found.iter().cloned()).collect();
+    let wallet_anywhere = code().any(|f| f.wallet);
+    for (without, with) in code().filter_map(|f| f.scripts.as_ref()) {
+        out.extend(if wallet_anywhere { with } else { without }.iter().cloned());
+    }
+    if plan.kind == Kind::Repo {
+        let tree_blobs: Vec<(String, Option<String>)> = plan
+            .reads
+            .iter()
+            .zip(files)
+            .filter(|(r, _)| r.role == BLOB)
+            .map(|(r, f)| (r.rel.clone(), f.and_then(|f| f.not_binary.clone())))
+            .collect();
+        out.extend(blobs::findings(&tree_blobs, plan.native_sources, "commits"));
+    }
     out.sort_by(|a, b| (a.file.as_str(), a.id).cmp(&(b.file.as_str(), b.id)));
     out
 }

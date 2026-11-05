@@ -4,7 +4,6 @@
 use crate::checks::supply_chain::repos::Repo;
 use crate::checks::{Scan, hidden};
 use crate::finding::Finding;
-use crate::utils::parallel;
 
 /// Text that reads one way and runs another, or is written to fool a
 /// reader or a model: bidi overrides and tag characters fail, zero-width
@@ -14,8 +13,8 @@ pub fn hidden_text(scan: &mut Scan, repos: &[Repo]) {
         return;
     }
     scan.status("Looking for hidden or misleading text in the repos");
-    let found: Vec<Vec<hidden::Hidden>> =
-        parallel::par_map(repos, parallel::PROBES, |(_, root)| hidden::scan_repo(root));
+    let results = scan.read_files();
+    let found: Vec<Vec<hidden::Hidden>> = repos.iter().map(|(_, root)| results.hidden(root)).collect();
     for ((name, _), hits) in repos.iter().zip(found) {
         scan.count("repos checked for hidden text", 1);
         for h in hits {

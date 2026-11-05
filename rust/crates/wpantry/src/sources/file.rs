@@ -60,6 +60,8 @@ pub struct Source {
     pub sends: String,
     /// The consent it is asked under, "" when none is needed.
     pub consent: String,
+    /// A pin: the SHA-256 a fixed file must have, "" for none.
+    pub sha256: String,
 }
 
 impl Source {
@@ -122,6 +124,10 @@ pub fn parse(text: &str) -> Result<Vec<Source>> {
         if transport == Transport::Https && crate::utils::net::host_of(&url).is_none() {
             return Err(bad("an https source needs an https URL"));
         }
+        let pin = t.str("sha256");
+        if !pin.is_empty() && !(pin.len() == 64 && pin.chars().all(|c| c.is_ascii_hexdigit())) {
+            return Err(bad("a sha256 pin is 64 hex digits"));
+        }
         let refresh = match t.str("refresh") {
             "" => 86_400.0,
             r => duration(r).ok_or_else(|| bad(&format!("unreadable refresh {r:?}")))?,
@@ -153,6 +159,7 @@ pub fn parse(text: &str) -> Result<Vec<Source>> {
             max_bytes,
             sends: t.str("sends").to_string(),
             consent: t.str("consent").to_string(),
+            sha256: t.str("sha256").to_ascii_lowercase(),
         });
     }
     Ok(out)

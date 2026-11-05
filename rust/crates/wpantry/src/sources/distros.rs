@@ -5,9 +5,10 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::utils::json::{self, str_at};
-use crate::utils::net::{self, Net};
+use crate::utils::net::Net;
 use crate::utils::process::exec;
 use crate::utils::process::which;
 use crate::utils::sha256;
@@ -246,11 +247,11 @@ fn arch_advisories_with(
 
 /// The Arch Linux security tracker's advisory groups.
 pub fn arch(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Value> {
-    let fetch = || match net::get_json(net, url("arch-security"), &[])? {
+    let fetch = || match fetch::get_json(net, "arch-security", url("arch-security"), &[])? {
         Some(Value::Array(groups)) if !groups.is_empty() => Ok(Value::Array(groups)),
         _ => Err(Error::Offline("the Arch security tracker returned nothing".into())),
     };
-    cache.memo("arch-tracker", fetch, DAY, "", false, offline)
+    fetch::memo(cache, "arch-security", "arch-tracker", fetch, "", false, offline)
 }
 
 #[cfg(test)]

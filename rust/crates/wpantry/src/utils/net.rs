@@ -78,6 +78,8 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
+    /// The most of the response body read; more is `Invalid`. At most [`MAX_BODY`].
+    pub limit: u64,
 }
 
 impl Request {
@@ -115,6 +117,18 @@ pub fn request(
     headers: &[(&str, &str)],
     etag: Option<&str>,
 ) -> Result<Response> {
+    request_capped(net, url, data, headers, etag, MAX_BODY)
+}
+
+/// [`request`], reading at most `limit` bytes of the body.
+pub fn request_capped(
+    net: &dyn Net,
+    url: &str,
+    data: Option<&Value>,
+    headers: &[(&str, &str)],
+    etag: Option<&str>,
+    limit: u64,
+) -> Result<Response> {
     let mut h: Vec<(String, String)> =
         vec![("User-Agent".into(), USER_AGENT.into()), ("Accept".into(), "application/json".into())];
     for (k, v) in headers {
@@ -128,7 +142,13 @@ pub fn request(
     if let Some(e) = etag {
         h.push(("If-None-Match".into(), e.to_string()));
     }
-    let req = Request { method: if body.is_some() { "POST" } else { "GET" }, url: url.to_string(), headers: h, body };
+    let req = Request {
+        method: if body.is_some() { "POST" } else { "GET" },
+        url: url.to_string(),
+        headers: h,
+        body,
+        limit: limit.min(MAX_BODY),
+    };
     let resp = net.send(&req)?;
     match resp.status {
         200..=299 | 404 => Ok(resp),
@@ -244,6 +264,7 @@ fn follow_redirects(req: &Request, send: impl Fn(&Request) -> Result<(Response, 
                 .collect(),
             url: next,
             body: None,
+            limit: req.limit,
         };
     }
     Err(Error::Invalid(format!("{}: more than {MAX_REDIRECTS} redirects", req.url)))
@@ -304,7 +325,9 @@ impl Http {
         let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
         let retry_after = retry_after(resp.headers().get("retry-after").and_then(|v| v.to_str().ok()));
         let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string);
-        let body = resp.body_mut().with_config().limit(MAX_BODY).read_to_vec().map_err(|e| body_error(&req.url, e))?;
+        let limit = req.limit.min(MAX_BODY);
+        let body =
+            resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| body_error(&req.url, limit, e))?;
         Ok((Response { status, body, etag }, retry_after, location))
     }
 }
@@ -316,9 +339,9 @@ fn retry_after(header: Option<&str>) -> Option<std::time::Duration> {
 
 /// A body that couldn't be read: over the cap is `Invalid`, anything else
 /// (a dropped connection) `Offline`.
-fn body_error(url: &str, e: ureq::Error) -> Error {
+fn body_error(url: &str, limit: u64, e: ureq::Error) -> Error {
     match e {
-        ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{url}: response over {MAX_BODY} bytes")),
+        ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{url}: response over {limit} bytes")),
         e => Error::Offline(format!("{url}: {e}")),
     }
 }
@@ -347,9 +370,14 @@ impl Fake {
 }
 
 impl Net for Fake {
+    /// The handler's answer, with the request's `limit` enforced as [`Http`] enforces it.
     fn send(&self, req: &Request) -> Result<Response> {
         self.log.lock().expect("fake net log").push(req.clone());
-        (self.handler)(req)
+        let resp = (self.handler)(req)?;
+        if resp.body.len() as u64 > req.limit {
+            return Err(Error::Invalid(format!("{}: response over {} bytes", req.url, req.limit)));
+        }
+        Ok(resp)
     }
 }
 
@@ -374,6 +402,7 @@ mod tests {
             url: "https://api.github.com/a".into(),
             headers: vec![("Authorization".into(), "Bearer t".into()), ("Accept".into(), "x".into())],
             body: None,
+            limit: MAX_BODY,
         };
         let seen = Mutex::new(Vec::new());
         let send = |r: &Request| {
@@ -437,7 +466,7 @@ mod tests {
         let http = Http::new();
         for url in ["https://evil.example/", "https://api.osv.dev.evil.example/v1", "http://api.osv.dev/v1", "ftp://x/"]
         {
-            let req = Request { method: "GET", url: url.into(), headers: Vec::new(), body: None };
+            let req = Request { method: "GET", url: url.into(), headers: Vec::new(), body: None, limit: MAX_BODY };
             assert!(matches!(http.send(&req), Err(Error::Invalid(_))), "{url}");
         }
     }
@@ -527,9 +556,9 @@ mod tests {
         assert_eq!(retry_after(Some("600")), Some(Duration::from_secs(10)), "capped");
         assert_eq!(retry_after(Some("Wed, 21 Oct 2026 07:28:00 GMT")), None);
         assert_eq!(retry_after(None), None);
-        let big = body_error("https://x/", ureq::Error::BodyExceedsLimit(MAX_BODY));
+        let big = body_error("https://x/", MAX_BODY, ureq::Error::BodyExceedsLimit(MAX_BODY));
         assert!(matches!(big, Error::Invalid(m) if m == format!("https://x/: response over {MAX_BODY} bytes")));
-        let cut = body_error("https://x/", ureq::Error::Io(std::io::Error::other("reset")));
+        let cut = body_error("https://x/", MAX_BODY, ureq::Error::Io(std::io::Error::other("reset")));
         assert!(matches!(cut, Error::Offline(m) if m.starts_with("https://x/: ")));
     }
 
@@ -544,6 +573,7 @@ mod tests {
                 url: "https://127.0.0.1:1/".into(),
                 headers: vec![("Accept".into(), "application/json".into())],
                 body,
+                limit: MAX_BODY,
             };
             assert!(matches!(http.send_once(&req), Err(Error::Offline(m)) if m.starts_with("https://127.0.0.1:1/")));
         }

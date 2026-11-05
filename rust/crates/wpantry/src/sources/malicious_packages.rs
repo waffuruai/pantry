@@ -6,12 +6,11 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
+use crate::sources::file::url;
 use crate::utils::process::exec;
 use rusqlite::params;
 use std::ffi::OsStr;
 use std::time::Duration;
-
-pub const REPO: &str = "https://github.com/ossf/malicious-packages.git";
 
 fn git(args: &[&OsStr], timeout: u64) -> Result<String> {
     let mut argv: Vec<&OsStr> = vec![OsStr::new("git")];
@@ -19,7 +18,11 @@ fn git(args: &[&OsStr], timeout: u64) -> Result<String> {
     let out = exec(&argv, &[("GIT_TERMINAL_PROMPT", "0")], Duration::from_secs(timeout))
         .map_err(|e| Error::Offline(e.to_string()))?;
     if out.code != Some(0) {
-        return Err(Error::Offline(format!("couldn't fetch {REPO}: {}", out.stderr.trim())));
+        return Err(Error::Offline(format!(
+            "couldn't fetch {}: {}",
+            url("openssf-malicious-packages"),
+            out.stderr.trim()
+        )));
     }
     Ok(out.stdout)
 }
@@ -62,7 +65,7 @@ pub fn sync(cache: &Cache, offline: bool) -> Result<i64> {
                 "--no-checkout".as_ref(),
                 "--depth".as_ref(),
                 "1".as_ref(),
-                REPO.as_ref(),
+                url("openssf-malicious-packages").as_ref(),
                 c,
             ],
             300,
@@ -185,7 +188,7 @@ mod tests {
         std::fs::remove_dir_all(d.path().join("origin")).unwrap();
         assert_eq!(sync(&c, false).unwrap(), 3);
         c.conn.execute("DELETE FROM malicious", []).unwrap();
-        assert!(matches!(sync(&c, false), Err(Error::Offline(m)) if m.contains(REPO)));
+        assert!(matches!(sync(&c, false), Err(Error::Offline(m)) if m.contains(url("openssf-malicious-packages"))));
     }
 
     #[test]

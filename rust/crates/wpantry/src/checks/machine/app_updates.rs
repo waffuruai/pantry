@@ -259,7 +259,7 @@ mod tests {
     fn browser_feeds_down_are_unchecked_and_no_apps_is_nothing() {
         let d = crate::utils::temp::TempDir::new("browsers").unwrap();
         let net = Fake::new(|r| {
-            if r.url == releases::CASKS_URL {
+            if r.url == crate::sources::file::url("homebrew-casks") {
                 return Ok(crate::utils::net::Response::ok(testing::casks_body()));
             }
             Err(Error::Offline("down".into()))
@@ -282,7 +282,7 @@ mod tests {
     fn cask_catalog_down_still_checks_electron() {
         let d = crate::utils::temp::TempDir::new("casks").unwrap();
         let net = Fake::new(|r| {
-            if r.url == releases::CASKS_URL {
+            if r.url == crate::sources::file::url("homebrew-casks") {
                 return Err(Error::Offline("down".into()));
             }
             testing::app_net(r)

@@ -7,17 +7,12 @@
 use crate::db::{Cache, DAY};
 use crate::error::{Error, Result};
 use crate::sources::fetch::etag_fetch;
+use crate::sources::file::url;
 use crate::utils::dates::epoch;
 use crate::utils::json::{self, str_at};
 use crate::utils::net::{self, Net};
 use rusqlite::params;
 use serde_json::Value;
-
-pub const CASKS_URL: &str = "https://formulae.brew.sh/api/cask.json";
-pub const CHROME_URL: &str = "https://versionhistory.googleapis.com/v1/chrome/platforms/{}/channels/stable/versions/all/releases?filter=endtime=none";
-pub const FIREFOX: &str = "https://product-details.mozilla.org/1.0/";
-pub const POSTGRES_URL: &str = "https://www.postgresql.org/support/security/";
-pub const GITHUB_LATEST: &str = "https://api.github.com/repos/{}/releases/latest";
 
 /// {app bundle name: (cask token, latest version)} from the public cask
 /// catalog, refreshed weekly.
@@ -26,7 +21,7 @@ pub fn casks(
     net: &dyn Net,
     offline: bool,
 ) -> Result<std::collections::BTreeMap<String, (String, String)>> {
-    if let Some(body) = etag_fetch(cache, net, CASKS_URL, "casks", 7.0 * DAY, offline)? {
+    if let Some(body) = etag_fetch(cache, net, url("homebrew-casks"), "casks", 7.0 * DAY, offline)? {
         let data = json::parse(&body, json::MAX_DOCUMENT)?;
         let mut rows: Vec<(String, String, String)> = Vec::new();
         for c in data.as_array().map(Vec::as_slice).unwrap_or(&[]) {
@@ -81,7 +76,7 @@ pub fn casks(
 /// [(version, serving since epoch)] currently served on Chrome's stable channel.
 pub fn chrome(cache: &Cache, net: &dyn Net, platform: &str, offline: bool) -> Result<Vec<(String, f64)>> {
     let fetch = || -> Result<Value> {
-        let data = net::get_json(net, &CHROME_URL.replace("{}", platform), &[])?.unwrap_or(Value::Null);
+        let data = net::get_json(net, &url("chrome-releases").replace("{}", platform), &[])?.unwrap_or(Value::Null);
         let rows: Vec<Value> = json::arr_at(&data, "releases")
             .iter()
             .map(|r| {
@@ -106,10 +101,11 @@ pub struct Firefox {
 
 pub fn firefox(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Firefox> {
     let fetch = || -> Result<Value> {
-        let v = net::get_json(net, &format!("{FIREFOX}firefox_versions.json"), &[])?.unwrap_or(Value::Null);
+        let v = net::get_json(net, &format!("{}firefox_versions.json", url("firefox-releases")), &[])?
+            .unwrap_or(Value::Null);
         let mut dates = serde_json::Map::new();
         for name in ["firefox_history_major_releases.json", "firefox_history_stability_releases.json"] {
-            if let Some(Value::Object(m)) = net::get_json(net, &format!("{FIREFOX}{name}"), &[])? {
+            if let Some(Value::Object(m)) = net::get_json(net, &format!("{}{name}", url("firefox-releases")), &[])? {
                 for (ver, day) in m {
                     dates.insert(ver, serde_json::json!(epoch(day.as_str().unwrap_or(""))));
                 }
@@ -144,7 +140,7 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
     let fetch = || -> Result<Value> {
         let headers = net::github_headers();
         let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let data = net::get_json(net, &GITHUB_LATEST.replace("{}", repo), &h)?.unwrap_or(Value::Null);
+        let data = net::get_json(net, &url("github-releases").replace("{}", repo), &h)?.unwrap_or(Value::Null);
         let tag = str_at(&data, "tag_name");
         if tag.is_empty() {
             return Err(Error::Offline(format!("{repo} has no latest release")));
@@ -239,7 +235,7 @@ pub fn parse_postgres(page: &str) -> Vec<PgAdvisory> {
 /// release data) for every supported major.
 pub fn postgres(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Vec<PgAdvisory>> {
     let fetch = || -> Result<Value> {
-        let resp = net::request(net, POSTGRES_URL, None, &[("Accept", "text/html")], None)?;
+        let resp = net::request(net, url("postgresql-security"), None, &[("Accept", "text/html")], None)?;
         let rows: Vec<Value> = parse_postgres(&String::from_utf8_lossy(&resp.body))
             .into_iter()
             .map(|a| serde_json::json!({"cve": a.cve, "majors": a.majors, "fixed": a.fixed, "component": a.component, "score": a.score, "vector": a.vector, "summary": a.summary}))

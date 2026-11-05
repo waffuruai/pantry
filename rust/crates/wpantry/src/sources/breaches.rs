@@ -4,6 +4,7 @@
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::file::url;
 use crate::utils::json;
 use crate::utils::net::{self, Net};
 use crate::utils::os::now;
@@ -73,7 +74,7 @@ fn lookup_with(net: &dyn Net, email: &str, key: Option<String>) -> Result<Vec<St
     if let Some(key) = key {
         let r = net::request(
             net,
-            &format!("https://haveibeenpwned.com/api/v3/breachedaccount/{}", quote(email)),
+            &url("haveibeenpwned").replace("{}", &quote(email)),
             None,
             &[("hibp-api-key", &key)],
             None,
@@ -87,8 +88,7 @@ fn lookup_with(net: &dyn Net, email: &str, key: Option<String>) -> Result<Vec<St
             .map(|a| a.iter().map(|b| json::str_at(b, "Name").to_string()).collect())
             .unwrap_or_default());
     }
-    let r =
-        net::request(net, &format!("https://api.xposedornot.com/v1/check-email/{}", quote(email)), None, &[], None)?;
+    let r = net::request(net, &url("xposedornot").replace("{}", &quote(email)), None, &[], None)?;
     if r.status == 404 {
         return Ok(Vec::new());
     }

@@ -1,0 +1,290 @@
+# Every outside source wpantry reads (specs/design/sources-file.md). The
+# hosts here are the only ones wpantry connects to: `net::HOSTS` is
+# compiled from this file's, and a test fails when they disagree.
+#
+#   id            unique, kebab-case: names the source in findings and `wpantry sources`
+#   kind          what it gives: advisories | kev | eol | releases | malicious-packages
+#                 | licenses | breaches | yara | hashes | hosts | filenames | hash-lookup
+#   format        how it is read
+#   url           the file, or the API's base; `{}` marks where a request puts its part
+#   transport     https (the default, through the host allowlist) or git (cloned or listed by git)
+#   redirects     other hosts the source sends its downloads to
+#   tier          default | deep | off
+#   refresh       how stale a copy may be before it is fetched again
+#   license       the data's licence, as far as known ("unspecified" otherwise)
+#   redistribute  whether it may be put in a bundle wpantry ships (never, unless true)
+#   max_bytes     the most of one answer read
+#   sends         what a lookup sends about this machine (`sha256` is the only value a user source may use)
+#   consent       the consent it is asked under, once
+
+[[source]]
+id = "osv"
+kind = "advisories"
+format = "osv-api"
+url = "https://api.osv.dev/v1"
+tier = "default"
+refresh = "1d"
+license = "CC-BY-4.0 (varies by advisory source)"
+redistribute = false
+max_bytes = 134217728
+sends = "package"
+
+[[source]]
+id = "osv-git-tags"
+kind = "advisories"
+format = "git-tags"
+url = ""
+transport = "git"
+tier = "default"
+refresh = "7d"
+license = "unspecified"
+redistribute = false
+sends = "repository"
+
+[[source]]
+id = "cisa-kev"
+kind = "kev"
+format = "kev"
+url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+tier = "default"
+refresh = "1d"
+license = "public-domain"
+redistribute = true
+max_bytes = 134217728
+
+[[source]]
+id = "endoflife"
+kind = "eol"
+format = "endoflife"
+url = "https://endoflife.date/api/{}.json"
+tier = "default"
+refresh = "7d"
+license = "MIT"
+redistribute = true
+max_bytes = 134217728
+sends = "product"
+
+[[source]]
+id = "homebrew-casks"
+kind = "releases"
+format = "homebrew-casks"
+url = "https://formulae.brew.sh/api/cask.json"
+tier = "default"
+refresh = "7d"
+license = "BSD-2-Clause"
+redistribute = true
+max_bytes = 134217728
+
+[[source]]
+id = "chrome-releases"
+kind = "releases"
+format = "chrome-versionhistory"
+url = "https://versionhistory.googleapis.com/v1/chrome/platforms/{}/channels/stable/versions/all/releases?filter=endtime=none"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+sends = "platform"
+
+[[source]]
+id = "firefox-releases"
+kind = "releases"
+format = "firefox-product-details"
+url = "https://product-details.mozilla.org/1.0/"
+tier = "default"
+refresh = "1d"
+license = "MPL-2.0"
+redistribute = true
+max_bytes = 134217728
+
+[[source]]
+id = "postgresql-security"
+kind = "releases"
+format = "postgresql-page"
+url = "https://www.postgresql.org/support/security/"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
+id = "github-releases"
+kind = "releases"
+format = "github-latest"
+url = "https://api.github.com/repos/{}/releases/latest"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+sends = "repository"
+
+[[source]]
+id = "arch-security"
+kind = "advisories"
+format = "arch-tracker"
+url = "https://security.archlinux.org/issues/all.json"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
+id = "vscode-extension-lists"
+kind = "malicious-packages"
+format = "vscode-lists"
+url = "https://main.vscode-cdn.net/extensions/marketplace.json"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
+id = "vscode-marketplace"
+kind = "releases"
+format = "vscode-gallery"
+url = "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+sends = "extension"
+
+[[source]]
+id = "open-vsx"
+kind = "releases"
+format = "open-vsx"
+url = "https://open-vsx.org/api/{}/{}/latest"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+sends = "extension"
+
+[[source]]
+id = "deps-dev"
+kind = "licenses"
+format = "deps-dev-api"
+url = "https://api.deps.dev/v3/systems"
+tier = "default"
+refresh = "30d"
+license = "CC-BY-4.0"
+redistribute = false
+max_bytes = 134217728
+sends = "package"
+
+[[source]]
+id = "openssf-malicious-packages"
+kind = "malicious-packages"
+format = "ossf"
+url = "https://github.com/ossf/malicious-packages.git"
+transport = "git"
+tier = "default"
+refresh = "1d"
+license = "Apache-2.0"
+redistribute = true
+
+[[source]]
+id = "haveibeenpwned"
+kind = "breaches"
+format = "hibp"
+url = "https://haveibeenpwned.com/api/v3/breachedaccount/{}"
+tier = "default"
+refresh = "7d"
+license = "CC-BY-4.0"
+redistribute = false
+max_bytes = 134217728
+sends = "email"
+consent = "breach"
+
+[[source]]
+id = "xposedornot"
+kind = "breaches"
+format = "xposedornot"
+url = "https://api.xposedornot.com/v1/check-email/{}"
+tier = "default"
+refresh = "7d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+sends = "email"
+consent = "breach"
+
+[[source]]
+id = "yara-forge-full"
+kind = "yara"
+format = "yara-forge"
+url = "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
+redirects = ["release-assets.githubusercontent.com", "objects.githubusercontent.com"]
+tier = "default"
+refresh = "1d"
+license = "mixed (per rule; some sources unlicensed)"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
+id = "signature-base"
+kind = "hashes"
+format = "signature-base"
+url = "https://api.github.com/repos/Neo23x0/signature-base/contents/iocs/"
+tier = "default"
+refresh = "1d"
+license = "DRL-1.1"
+redistribute = true
+max_bytes = 134217728
+
+[[source]]
+id = "feodo"
+kind = "hosts"
+format = "abusech-json"
+url = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
+tier = "default"
+refresh = "1d"
+license = "CC0-1.0"
+redistribute = true
+max_bytes = 134217728
+
+[[source]]
+id = "yaraify"
+kind = "hash-lookup"
+format = "yaraify"
+url = "https://yaraify-api.abuse.ch/api/v1/"
+tier = "default"
+refresh = "1d"
+license = "CC0-1.0"
+redistribute = false
+max_bytes = 134217728
+sends = "sha256"
+consent = "hash-lookups"
+
+[[source]]
+id = "circl-hashlookup"
+kind = "hash-lookup"
+format = "circl"
+url = "https://hashlookup.circl.lu/lookup/sha256/"
+tier = "default"
+refresh = "1d"
+license = "unspecified"
+redistribute = false
+max_bytes = 134217728
+sends = "sha256"
+consent = "hash-lookups"
+
+[[source]]
+id = "malwarebazaar"
+kind = "hash-lookup"
+format = "malwarebazaar"
+url = "https://mb-api.abuse.ch/api/v1/"
+tier = "default"
+refresh = "1d"
+license = "abuse.ch terms"
+redistribute = false
+max_bytes = 134217728
+sends = "sha256"
+consent = "hash-lookups"

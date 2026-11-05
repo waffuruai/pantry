@@ -50,4 +50,5 @@ pub mod defaults {
     pub const HOOKS: &str = include_str!("../assets/defaults/hooks.txt");
     pub const POPULAR: &str = include_str!("../assets/defaults/popular.txt");
     pub const BAIT: &str = include_str!("../assets/defaults/bait.toml");
+    pub const SOURCES: &str = include_str!("../assets/defaults/sources.toml");
 }

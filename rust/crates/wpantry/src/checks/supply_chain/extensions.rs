@@ -180,10 +180,10 @@ mod tests {
     fn extensions_against_the_lists_osv_and_the_marketplaces() {
         let d = TempDir::new("extensions").unwrap();
         let net = Fake::new(|r| {
-            if r.url == crate::sources::extensions::VSCODE_LISTS {
+            if r.url == crate::sources::file::url("vscode-extension-lists") {
                 return Ok(Response::ok(json!({"malicious": ["Evil.One"], "deprecated": {"Old.Two": {"extension": {"id": "New.Two"}}, "Plain.X": true}}).to_string()));
             }
-            if r.url == crate::sources::extensions::MARKETPLACE {
+            if r.url == crate::sources::file::url("vscode-marketplace") {
                 return Ok(Response::ok(json!({"results": [{"extensions": [
                     {"publisher": {"publisherName": "Old"}, "extensionName": "Two", "versions": [{"version": "2.0.0"}]},
                     {"publisher": {"publisherName": "Vuln"}, "extensionName": "Three", "versions": [{"version": "1.0.0"}]}]}]}).to_string()));

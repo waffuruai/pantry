@@ -8,7 +8,6 @@ use crate::checks::machine::settings::Runner;
 use crate::component::Component;
 use crate::db::Cache;
 use crate::error::Result;
-use crate::sources::releases;
 use crate::utils::net::Fake;
 use crate::utils::temp::TempDir;
 use serde_json::Value;
@@ -113,7 +112,7 @@ pub(crate) fn casks_body() -> String {
 pub(crate) fn app_net(r: &crate::utils::net::Request) -> Result<crate::utils::net::Response> {
     use crate::utils::net::Response;
     let url = r.url.as_str();
-    if url == releases::CASKS_URL {
+    if url == crate::sources::file::url("homebrew-casks") {
         return Ok(Response::ok(casks_body()));
     }
     if url.ends_with("/querybatch") {

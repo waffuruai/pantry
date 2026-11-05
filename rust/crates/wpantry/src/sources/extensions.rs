@@ -4,13 +4,10 @@
 
 use crate::db::{Cache, DAY};
 use crate::error::Result;
+use crate::sources::file::url;
 use crate::utils::json::{self, str_at};
 use crate::utils::net::{self, Net};
 use serde_json::Value;
-
-pub const VSCODE_LISTS: &str = "https://main.vscode-cdn.net/extensions/marketplace.json";
-pub const MARKETPLACE: &str = "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery";
-pub const OPENVSX: &str = "https://open-vsx.org/api/{}/{}/latest";
 
 /// The lists VS Code itself downloads: malicious extension ids and
 /// deprecated ones (id → replacement or ""), lowercased.
@@ -20,7 +17,8 @@ pub struct VscodeLists {
 }
 
 pub fn vscode_lists(cache: &Cache, net: &dyn Net, offline: bool) -> Result<VscodeLists> {
-    let fetch = || Ok(net::get_json(net, VSCODE_LISTS, &[])?.unwrap_or(Value::Object(serde_json::Map::new())));
+    let fetch =
+        || Ok(net::get_json(net, url("vscode-extension-lists"), &[])?.unwrap_or(Value::Object(serde_json::Map::new())));
     let data = cache.memo("vscode-lists", fetch, DAY, "", false, offline)?;
     let mut deprecated = std::collections::HashMap::new();
     if let Some(m) = data.get("deprecated").and_then(Value::as_object) {
@@ -57,7 +55,9 @@ pub fn latest_extensions(
         if openvsx {
             for i in &ids {
                 let (ns, name) = i.split_once('.').unwrap_or((i, ""));
-                if let Some(d) = net::get_json(net, &OPENVSX.replacen("{}", ns, 1).replacen("{}", name, 1), &[])? {
+                if let Some(d) =
+                    net::get_json(net, &url("open-vsx").replacen("{}", ns, 1).replacen("{}", name, 1), &[])?
+                {
                     let v = str_at(&d, "version");
                     if !v.is_empty() {
                         out.insert(i.clone(), Value::String(v.into()));
@@ -71,7 +71,7 @@ pub fn latest_extensions(
             let body = serde_json::json!({"filters": [{"criteria": criteria, "pageSize": 100}], "flags": 1 | 16});
             let resp = net::request(
                 net,
-                MARKETPLACE,
+                url("vscode-marketplace"),
                 Some(&body),
                 &[("Accept", "application/json;api-version=7.2-preview.1")],
                 None,

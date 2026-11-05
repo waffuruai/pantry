@@ -1,17 +1,14 @@
 //! Hash lookups for a flagged file, only after the user said yes once: the
-//! file's SHA-256, never the file, goes to YARAify (CC0, no key), CIRCL
+//! file's SHA-256, never the file, goes to YARAify (CC0, no key), url("circl-hashlookup")
 //! hashlookup (known-good software, no key) and, with the user's own
 //! `ABUSECH_AUTH_KEY`, MalwareBazaar. Answers are cached a day.
 
 use crate::db::Cache;
 use crate::error::{Error, Result};
+use crate::sources::file::url;
 use crate::sources::indicator_lists::MAX_AGE;
 use crate::utils::json;
 use crate::utils::net::{self, Net};
-
-pub const YARAIFY: &str = "https://yaraify-api.abuse.ch/api/v1/";
-pub const CIRCL: &str = "https://hashlookup.circl.lu/lookup/sha256/";
-pub const MALWAREBAZAAR: &str = "https://mb-api.abuse.ch/api/v1/";
 
 /// Whether the user lets flagged files' hashes be looked up: decided once,
 /// asked when someone can be asked, kept in the cache.
@@ -142,7 +139,8 @@ fn names_malware(sig: &str) -> bool {
 /// YARAify knows a file once anyone submitted it, so being known says
 /// nothing; the ClamAV signatures its analysis found are the verdict.
 fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
-    let resp = net::post_json(net, YARAIFY, &serde_json::json!({"query": "lookup_hash", "search_term": sha256}))?;
+    let resp =
+        net::post_json(net, url("yaraify"), &serde_json::json!({"query": "lookup_hash", "search_term": sha256}))?;
     match resp.get("query_status").and_then(|s| s.as_str()) {
         Some("ok") => Ok(match clamav_names(&resp).into_iter().find(|n| names_malware(n)) {
             Some(sig) => Verdict::Malware(sig),
@@ -154,7 +152,7 @@ fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
 }
 
 fn circl(net: &dyn Net, sha256: &str) -> Result<Verdict> {
-    let resp = net::request(net, &format!("{CIRCL}{sha256}"), None, &[], None)?;
+    let resp = net::request(net, &format!("{}{sha256}", url("circl-hashlookup")), None, &[], None)?;
     Ok(if resp.status == 200 { Verdict::KnownGood } else { Verdict::Unknown })
 }
 
@@ -162,7 +160,7 @@ fn malwarebazaar(net: &dyn Net, sha256: &str, key: &str) -> Result<Verdict> {
     // A form post with the key in its own header, as abuse.ch's API takes it.
     let req = net::Request {
         method: "POST",
-        url: MALWAREBAZAAR.into(),
+        url: url("malwarebazaar").into(),
         headers: vec![
             ("User-Agent".into(), net::USER_AGENT.into()),
             ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
@@ -207,7 +205,7 @@ mod tests {
         assert_eq!(consent(&cache, Some(&|q| Some(q.contains("Only the hash is sent"))), 2).unwrap(), Some(true));
         assert_eq!(consent(&cache, Some(&|_| panic!("asked once")), 2).unwrap(), Some(true));
         let net = Fake::new(|r| {
-            if r.url == YARAIFY {
+            if r.url == url("yaraify") {
                 let body: serde_json::Value = serde_json::from_slice(r.body.as_ref().unwrap()).unwrap();
                 return Ok(Response::ok(match body["search_term"].as_str() {
                     Some("aa") => {
@@ -220,7 +218,7 @@ mod tests {
                     _ => r#"{"query_status": "no_results"}"#,
                 }));
             }
-            if r.url == format!("{CIRCL}bb") {
+            if r.url == format!("{}bb", url("circl-hashlookup")) {
                 return Ok(Response::ok(r#"{"FileName": "ls"}"#));
             }
             Ok(Response { status: 404, body: br#"{"message": "Non existing SHA-256"}"#.to_vec(), etag: None })

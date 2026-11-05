@@ -18,9 +18,11 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest response body read; a bigger one is `Invalid`.
 pub const MAX_BODY: u64 = 128 << 20;
 
-/// Every host wpantry asks, and the only ones [`Http`] will connect to. A
-/// source that moves, or a new one, is added here and in
-/// `docs/public/checks-and-sources.md`, in the same change.
+/// Every host wpantry asks, and the only ones [`Http`] will connect to: the
+/// hosts of the bundled sources file (`assets/defaults/sources.toml`,
+/// [`crate::sources::file`]). A source that moves, or a new one, changes
+/// that file, this list and `docs/public/checks-and-sources.md` in the same
+/// change; a test fails when the file and this list disagree.
 pub const HOSTS: &[&str] = &[
     "api.osv.dev",
     "www.cisa.gov",
@@ -416,32 +418,15 @@ mod tests {
 
     #[test]
     fn every_source_is_on_the_host_list_and_nothing_else_is_asked() {
-        use crate::sources::{distros, extensions, kev, osv, package_licenses, releases};
-        let sources = [
-            kev::KEV_URL,
-            distros::ARCH_URL,
-            releases::CASKS_URL,
-            releases::CHROME_URL,
-            releases::FIREFOX,
-            releases::POSTGRES_URL,
-            extensions::VSCODE_LISTS,
-            extensions::MARKETPLACE,
-            extensions::OPENVSX,
-            releases::GITHUB_LATEST,
-            package_licenses::API,
-            osv::API,
-            "https://haveibeenpwned.com/api/v3/breachedaccount/x",
-            "https://api.xposedornot.com/v1/check-email/x",
-            crate::checks::malware::yara::FORGE_RELEASE,
-            crate::sources::indicator_lists::SIGNATURE_BASE,
-            crate::sources::indicator_lists::FEODO,
-            crate::sources::hash_lookups::YARAIFY,
-            crate::sources::hash_lookups::CIRCL,
-            crate::sources::hash_lookups::MALWAREBAZAAR,
-            "https://release-assets.githubusercontent.com/github-production-release-asset/x",
-            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/x",
-        ];
-        for url in sources {
+        // Every bundled https source, and the hosts its downloads redirect to.
+        let mut sources: Vec<String> = Vec::new();
+        for s in crate::sources::file::bundled() {
+            if s.transport == crate::sources::file::Transport::Https {
+                sources.push(s.url.replace("{}", "x"));
+                sources.extend(s.redirects.iter().map(|h| format!("https://{h}/x")));
+            }
+        }
+        for url in &sources {
             assert!(allowed(url).is_ok(), "{url}");
         }
         assert_eq!(host_of("https://API.OSV.DEV:443/v1/querybatch?x#y").as_deref(), Some("api.osv.dev"));

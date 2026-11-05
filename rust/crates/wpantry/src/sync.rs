@@ -98,10 +98,10 @@ mod tests {
     fn feeds(r: &Request) -> Result<Response> {
         let u = r.url.as_str();
         let ok = |v: serde_json::Value| Ok(Response::ok(v.to_string()));
-        if u == kev::KEV_URL {
+        if u == crate::sources::file::url("cisa-kev") {
             return ok(json!({"vulnerabilities": [{"cveID": "CVE-2026-1"}]}));
         }
-        if u == releases::CASKS_URL {
+        if u == crate::sources::file::url("homebrew-casks") {
             return ok(json!([{"token": "firefox", "version": "145.0", "artifacts": [{"app": ["Firefox.app"]}]}]));
         }
         if u.starts_with("https://versionhistory.googleapis.com/") {
@@ -110,10 +110,10 @@ mod tests {
         if u.ends_with("firefox_versions.json") {
             return ok(json!({"LATEST_FIREFOX_VERSION": "145.0"}));
         }
-        if u.starts_with(releases::FIREFOX) {
+        if u.starts_with(crate::sources::file::url("firefox-releases")) {
             return ok(json!({}));
         }
-        if u == extensions::VSCODE_LISTS {
+        if u == crate::sources::file::url("vscode-extension-lists") {
             return ok(json!({"malicious": []}));
         }
         if u.starts_with("https://api.github.com/") {
@@ -171,7 +171,7 @@ mod tests {
     fn a_bug_in_a_feed_is_internal_and_one_in_end_of_life_stops_the_sync() {
         let (_d, c) = cache();
         let bug = Fake::new(|r| {
-            if r.url == kev::KEV_URL {
+            if r.url == crate::sources::file::url("cisa-kev") {
                 return Err(Error::Missing("not a source failure".into()));
             }
             feeds(r)

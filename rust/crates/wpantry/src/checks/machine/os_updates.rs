@@ -211,7 +211,7 @@ mod tests {
     fn distros_without_a_source_are_unchecked() {
         let d = crate::utils::temp::TempDir::new("distro").unwrap();
         let net = Fake::new(|r| {
-            assert_eq!(r.url, distros::ARCH_URL);
+            assert_eq!(r.url, crate::sources::file::url("arch-security"));
             Ok(crate::utils::net::Response::ok(r#"[{"name": "ASA-1", "packages": ["x"]}]"#))
         });
         let mut s = testing::scan(&net, &d);

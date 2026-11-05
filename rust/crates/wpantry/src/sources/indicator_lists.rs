@@ -4,15 +4,14 @@
 
 use crate::db::Cache;
 use crate::error::Error;
+use crate::sources::file::url;
 use crate::utils::json;
 use crate::utils::net::{self, Net};
 use std::collections::HashMap;
 use std::path::Path;
 use wpantry_yara::pattern::{Node, Syntax, parse_regex};
 
-pub const SIGNATURE_BASE: &str = "https://api.github.com/repos/Neo23x0/signature-base/contents/iocs/";
 const SIGNATURE_BASE_FILES: &[&str] = &["hash-iocs.txt", "filename-iocs.txt", "c2-iocs.txt"];
-pub const FEODO: &str = "https://feodotracker.abuse.ch/downloads/ipblocklist.json";
 pub(crate) const MAX_AGE: f64 = 86_400.0;
 
 /// Fetch the lists into `dir` when older than a day (or `refresh`); each
@@ -34,7 +33,7 @@ pub fn update(cache: &Cache, net: &dyn Net, dir: &Path, refresh: bool) -> Vec<(&
         if fresh(&key, &file) {
             continue;
         }
-        match net::request(net, &format!("{SIGNATURE_BASE}{name}"), None, &h, None) {
+        match net::request(net, &format!("{}{name}", url("signature-base")), None, &h, None) {
             Ok(r) if r.status == 200 => {
                 if let Err(e) = std::fs::write(&file, &r.body).map_err(Error::from).and_then(|_| cache.touch(&key)) {
                     failed.push(("signature-base IOCs", e));
@@ -46,7 +45,7 @@ pub fn update(cache: &Cache, net: &dyn Net, dir: &Path, refresh: bool) -> Vec<(&
     }
     let feodo = dir.join("feodo-ipblocklist.json");
     if !fresh("iocs:feodo", &feodo) {
-        match net::request(net, FEODO, None, &[], None) {
+        match net::request(net, url("feodo"), None, &[], None) {
             Ok(r) if r.status == 200 => {
                 if let Err(e) =
                     std::fs::write(&feodo, &r.body).map_err(Error::from).and_then(|_| cache.touch("iocs:feodo"))

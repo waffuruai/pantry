@@ -44,7 +44,8 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 | `checks/lockfiles/` | One reader per lockfile format; `mod.rs` dispatches by name |
 | `checks/ecosystems/` | One `Ecosystem` table (OSV's name, version order, deps.dev's system, the OpenSSF directory, name normalisation), and the version order per ecosystem (semver, PyPI, Go, dpkg, apk, rpm, RubyGems, Maven, Packagist) with the generic order in `versions` |
 | `checks/documents/`, `checks/suspects/`, `checks/hidden/` | Office, PDF, RTF, SVG and image readers; suspect code, one file per behaviour; hidden Unicode |
-| `checks/malware/` | The YARA pass (`mod.rs`), `indicators` (matching the indicator lists), `rulegen` (the goodware database for `rules gen`) |
+| `checks/files/` | The files pass every content check shares: one walk per root, a `FileView` per file (stat once, open once), each check's plan, per-file step and finish (`pass`), and the per-file cache, one record per root (`cache`) |
+| `checks/malware/` | The YARA scan: `mod.rs` (the rules prepared before the files are read, and the pass), `targets` (what it reads, as files-pass jobs), `yara` (the rules, and what they find in one file), `verdict` (the finding and the hash lookups), `indicators`, `rulegen` (the goodware database for `rules gen`) |
 | `checks/email.rs` | The opt-in breach check of the user's email address: consent and which addresses |
 | `reporters/` | How a scan is shown: `text` (the grouped terminal report), `json` (the `--json` envelope), `jsonl` (`export`), `html` (the standalone report; its template and fonts are `assets/report/`) |
 | `remediation/` | Fixing: `mod.rs` (the update plan, its steps and shell quoting, `wpantry fix` applying it), `mitigate` (stopgaps while a fix is pending), `ca_trust` and `editors` (the `wpantry harden` fixes) |

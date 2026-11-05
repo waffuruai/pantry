@@ -28,7 +28,8 @@ wpantry/src/
     package_licenses.rs  malicious_packages.rs  breaches.rs  indicator_lists.rs  hash_lookups.rs
     formats/  yara.rs  signature_base.rs  maltrail.rs  abusech.rs  lists.rs
   checks/
-    mod.rs  files.rs
+    mod.rs
+    files/  mod.rs  view.rs  pass.rs  cache.rs  (one walk, one read per file, one cache, for every content check)
     machine/  mod.rs  tools.rs  catalog.rs  packages.rs  apps.rs  os_packages.rs
               cellar.rs  brew_vulns.rs  editors.rs  harnesses.rs  images.rs  ca_trust.rs  clipper.rs
               settings.rs  testing.rs
@@ -42,7 +43,7 @@ wpantry/src/
     documents/  (as today, less zip and deflate)
     suspects/  (as today)
     hidden/  mod.rs  unicode.rs  instructions.rs  html.rs  links.rs  bait.rs  names.rs  commits.rs
-    malware/  mod.rs  targets.rs  yara.rs  indicators.rs  verdict.rs  rulegen.rs
+    malware/  mod.rs  targets.rs  yara.rs  verdict.rs  indicators.rs  rulegen.rs
     email.rs
   reporters/
     mod.rs  text.rs  json.rs  jsonl.rs  html.rs  csv.rs  yara.rs
@@ -82,9 +83,9 @@ wpantry-cli/src/
 | `compare/`, `versions.rs` | `checks/ecosystems/`, with `versions.rs` beside the others (the generic order); `gover.rs` becomes `go.rs` and `pep440.rs` becomes `pypi.rs` | Named for the package manager, not the algorithm. `mod.rs` keeps `Comparator` |
 | `posture/` | `checks/machine/`: `mod.rs` becomes `settings.rs`, `any/`, `macos/` and `linux/` sit in `machine/`, and `any/tools.rs` becomes `any/dev_settings.rs` (1e) | Inventory and settings are both "this machine" |
 | `documents/` | `checks/documents/`; `zip.rs` and `deflate.rs` go to `utils/archive/`, with the byte helpers they share (`rfind`, `u16le`, `u32le`, `MAX_MEMBER`) in its `mod.rs` | The malware scan reads zips too |
-| `suspect/` | `checks/suspects/` (1e) | Each rule's `scan` becomes one `Rule` in a table (phase 2) |
+| `suspect/` | `checks/suspects/` (1e) | Each rule's `scan` is one `Rule` in a table (2e) |
 | `hidden.rs` | `checks/hidden.rs` (1b), then `checks/hidden/`, one file per behaviour (1f) | |
-| `malware.rs`, `malware/tests.rs` | `checks/malware/mod.rs` and `tests.rs` (1b); split into `targets.rs`, `yara.rs` (the analyzer) and `verdict.rs` (severity and lookups) in phase 2 | Phase 2 rewrites the walk and the cache, so the split lands with it. The per-file cache moves to `checks/files.rs` |
+| `malware.rs`, `malware/tests.rs` | `checks/malware/mod.rs` and `tests.rs` (1b); split into `targets.rs`, `yara.rs` (the analyzer) and `verdict.rs` (severity and lookups) in phase 2 | Phase 2 rewrote the walk and the cache, so the split landed with it (2d). The per-file cache is `checks/files/cache.rs` |
 | `iocs.rs` | `checks/malware/indicators.rs` whole (1b); then `sources/indicator_lists.rs` (fetching and reading signature-base and Feodo) and `sources/hash_lookups.rs` (YARAify, CIRCL, MalwareBazaar, and the consent to ask them) come out of it (1c) | `indicator_lists.rs` fetches and reads both lists in one function each; it splits into `sources/formats/signature_base.rs` and `abusech.rs` when phase 4 gives every list its own entry and reader |
 | `rulegen.rs` | `checks/malware/rulegen.rs` (the goodware database), with its output in `reporters/yara.rs` | Open decision 3 |
 | `breach.rs` | `checks/email.rs` whole (1b); then `sources/breaches.rs` (HIBP, XposedOrNot, and their week-long cache) comes out of it (1c) | Renamed: it checks the user's email address |

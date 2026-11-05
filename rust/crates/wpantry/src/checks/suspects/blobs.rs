@@ -173,14 +173,19 @@ pub(super) fn native_source_name(name: &str) -> bool {
 /// too short to say.
 fn wrong_magic(path: &Path) -> Option<String> {
     use std::io::Read;
-    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-    let ext = blob_ext(&name)?;
     let mut head = [0u8; HEAD];
     let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
-    if n < MIN_HEAD {
+    wrong_magic_in(&path.file_name()?.to_string_lossy(), &head[..n])
+}
+
+/// [`wrong_magic`], from the file's name and first bytes.
+pub(super) fn wrong_magic_in(name: &str, head: &[u8]) -> Option<String> {
+    let name = name.to_ascii_lowercase();
+    let ext = blob_ext(&name)?;
+    let head = &head[..head.len().min(HEAD)];
+    if head.len() < MIN_HEAD {
         return None;
     }
-    let head = &head[..n];
     let ok = if ext == "wasm" {
         head.starts_with(b"\0asm")
     } else {
@@ -200,10 +205,12 @@ fn wrong_magic(path: &Path) -> Option<String> {
 /// Binaries with nothing to build them from (`verb`: "commits" for the
 /// repo's own tree, "ships" for a dependency); one that isn't a binary at
 /// all fails.
-pub(super) fn findings(blobs: &[(String, PathBuf)], sources: bool, verb: &str) -> Vec<Suspect> {
+/// `blobs` are each file's path in the repo and, when its first bytes
+/// aren't a binary's, why ([`wrong_magic`]).
+pub(super) fn findings(blobs: &[(String, Option<String>)], sources: bool, verb: &str) -> Vec<Suspect> {
     let mut out = Vec::new();
-    for (rel, path) in blobs {
-        if let Some(why) = wrong_magic(path) {
+    for (rel, why) in blobs {
+        if let Some(why) = why {
             out.push(Suspect {
                 file: rel.clone(),
                 id: "SUSPECT-BINARY-BLOB",
@@ -301,7 +308,7 @@ pub fn dependency_blobs(root: &Path, policy: &Policy) -> Vec<Suspect> {
             let f = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if is_blob_name(&f) {
                 let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-                blobs.push((rel, path.clone()));
+                blobs.push((rel, wrong_magic(&path)));
             }
             if native_source_name(&f) {
                 sources = true;

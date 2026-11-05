@@ -69,6 +69,7 @@ class Contract(unittest.TestCase):
         self.home.mkdir()
         self.db = Path(self.tmp.name, "cache", "w.db")
         self.env = dict(os.environ, HOME=str(self.home), WPANTRY_DB=str(self.db), NO_COLOR="1")
+        self.env.pop("XDG_CONFIG_HOME", None)  # the user's own sources file stays out
         self.env.pop("XDG_CACHE_HOME", None)
 
     def run_bin(self, *argv, env=None, timeout=300):
@@ -128,8 +129,8 @@ class Contract(unittest.TestCase):
         for s in got["sources"]:
             self.assertEqual(
                 set(s),
-                {"id", "kind", "format", "tier", "host", "transport", "license", "redistribute", "refresh_seconds",
-                 "sends", "last_attempt", "last_success", "fresh", "error"},
+                {"id", "kind", "format", "tier", "host", "transport", "user", "license", "redistribute",
+                 "refresh_seconds", "sends", "last_attempt", "last_success", "fresh", "error"},
             )
             self.assertIn(s["tier"], ("default", "deep", "off"))
             self.assertIn(s["transport"], ("https", "git"))
@@ -137,6 +138,23 @@ class Contract(unittest.TestCase):
         code, out, _ = self.run_bin("sources")
         self.assertEqual(code, 0)
         self.assertIn("api.osv.dev", out)
+        self.assertFalse(any(s["user"] for s in got["sources"]))
+        # A user's file: a bundled source's tier, and a source of their own.
+        mine = os.path.join(self.home, "my-sources.toml")
+        with open(mine, "w") as f:
+            f.write('[[source]]\nid = "cisa-kev"\ntier = "off"\n\n'
+                    '[[source]]\nid = "team-rules"\nkind = "yara"\nformat = "yara"\nurl = "https://rules.example.com/t.yar"\n')
+        code, out, _ = self.run_bin("sources", "--sources", mine, "--json")
+        self.assertEqual(code, 0)
+        by_id = {s["id"]: s for s in json.loads(out)["sources"]}
+        self.assertEqual(by_id["cisa-kev"]["tier"], "off")
+        self.assertTrue(by_id["team-rules"]["user"])
+        self.assertEqual(by_id["team-rules"]["host"], "rules.example.com")
+        with open(mine, "w") as f:
+            f.write('[[source]]\nid = "cisa-kev"\nurl = "https://evil.example/kev.json"\n')
+        code, _, err = self.run_bin("sources", "--sources", mine)
+        self.assertEqual(code, 2)
+        self.assertIn("only setting is its tier", err)
 
     def test_skill(self):
         code, out, _ = self.run_bin("skill")

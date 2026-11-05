@@ -65,6 +65,8 @@ pub struct Check {
     pub deep: bool,
     /// `--no-online-hash`: never look up a flagged file's hash online.
     pub no_online_hash: bool,
+    /// `--sources FILE`: the user's sources file for this run.
+    pub sources: Option<PathBuf>,
 }
 
 /// What `mitigate` acts on.
@@ -110,6 +112,8 @@ pub enum Command {
     /// `sources`: every source wpantry reads and what its fetches came to.
     Sources {
         json: bool,
+        /// `--sources FILE`: the user's sources file to list with.
+        file: Option<PathBuf>,
     },
     Report {
         sections: Vec<String>,
@@ -202,7 +206,7 @@ const SCAN_USAGE: [&str; 4] = [
 ];
 
 /// The scan's options in its help, shared by `scan`, `check` and `fix`.
-const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)\n  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)";
+const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)\n  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)\n  --sources FILE        your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)";
 
 pub fn usage(cmd: &str) -> String {
     let line: &str = match cmd {
@@ -220,7 +224,7 @@ pub fn usage(cmd: &str) -> String {
         "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
         "version" => "usage: wpantry version [-h] [--json]",
         "tools" => "usage: wpantry tools [-h] [--json]",
-        "sources" => "usage: wpantry sources [-h] [--json]",
+        "sources" => "usage: wpantry sources [-h] [--json] [--sources FILE]",
         "skill" => "usage: wpantry skill [-h]",
         "rules" => {
             "usage: wpantry rules [-h] [--update] [--json]\n       wpantry rules gen [--category CAT] [--family NAME] [--name RULE] [--out FILE] SAMPLE [SAMPLE ...]\n       wpantry rules goodware"
@@ -284,7 +288,7 @@ fn help(cmd: &str) -> String {
         }
         "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
         "sources" => {
-            "every outside source wpantry reads (assets/defaults/sources.toml): its kind, tier, host and licence, when it was last fetched, whether that is fresh, and what last went wrong\n\noptions:\n  -h, --help  show this help message and exit\n  --json      the sources as JSON"
+            "every outside source wpantry reads (assets/defaults/sources.toml): its kind, tier, host and licence, when it was last fetched, whether that is fresh, and what last went wrong\n\noptions:\n  -h, --help      show this help message and exit\n  --json          the sources as JSON\n  --sources FILE  your sources file (default: ~/.config/wpantry/sources.toml when it exists)"
         }
         "rules" => {
             "the YARA rules the malware scan uses: ours, built in, and YARA Forge's, fetched into the cache directory; gen writes a rule from samples\n\npositional arguments:\n  gen SAMPLE ...   write a YARA rule matching what the samples share and this machine's programs don't (unreviewed: category suspicious, score 60)\n  goodware         rebuild the goodware database from this machine's system programs (gen builds it the first time)\n\noptions:\n  -h, --help       show this help message and exit\n  --update         fetch YARA Forge's latest package now\n  --json           the sources and counts as JSON\n  --category CAT   gen: the category you propose (default malware)\n  --family NAME    gen: the family's name (default: the first sample's file name)\n  --name RULE      gen: the rule's name (default Gen_<category>_<family>)\n  --out FILE       gen: write the rule there, and its test file beside it (default: stdout)"
@@ -355,6 +359,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-malware", false),
             ("--deep", false),
             ("--no-online-hash", false),
+            ("--sources", true),
         ],
         "fix" => &[
             ("--help", false),
@@ -380,6 +385,7 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-malware", false),
             ("--deep", false),
             ("--no-online-hash", false),
+            ("--sources", true),
         ],
         "rules" => &[
             ("--help", false),
@@ -394,7 +400,8 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
         "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
-        "version" | "tools" | "sources" => &[("--help", false), ("--json", false)],
+        "version" | "tools" => &[("--help", false), ("--json", false)],
+        "sources" => &[("--help", false), ("--json", false), ("--sources", true)],
         "report" => &[
             ("--help", false),
             ("--exposure", false),
@@ -567,6 +574,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 no_malware: flag("--no-malware"),
                 deep: flag("--deep"),
                 no_online_hash: flag("--no-online-hash"),
+                sources: value("--sources").map(|s| expand(&s)),
                 ..Default::default()
             };
             if let Some(v) = value("--html") {
@@ -834,7 +842,7 @@ pub fn parse(argv: &[String]) -> Parsed {
                 "watch" => Command::Watch { json: flag("--json"), offline: flag("--offline") },
                 "version" => Command::Version { json: flag("--json") },
                 "tools" => Command::Tools { json: flag("--json") },
-                "sources" => Command::Sources { json: flag("--json") },
+                "sources" => Command::Sources { json: flag("--json"), file: value("--sources").map(|s| expand(&s)) },
                 _ => Command::Skill,
             }
         }
@@ -891,8 +899,14 @@ mod tests {
         assert!(matches!(p(&["rules", "goodware", "x"]), Parsed::Usage(_)));
         assert!(usage("scan").contains("[--no-malware] [--deep]"));
         assert!(help("rules").contains("--update"));
-        assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false }));
-        assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true }));
+        assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false, file: None }));
+        assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true, file: None }));
+        assert_eq!(
+            p(&["sources", "--sources", "/s.toml"]),
+            Parsed::Run(Command::Sources { json: false, file: Some("/s.toml".into()) })
+        );
+        let Parsed::Run(Command::Scan(c)) = p(&["scan", "--sources", "/s.toml"]) else { panic!() };
+        assert_eq!(c.sources, Some("/s.toml".into()));
         assert!(matches!(p(&["sources", "extra"]), Parsed::Usage(_)));
         assert!(help("sources").contains("--json"));
     }

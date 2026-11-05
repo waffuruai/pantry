@@ -44,6 +44,18 @@ pub type Failures = Vec<(&'static str, String)>;
 /// A source to ask: its name and the question.
 type Source<'a> = (&'static str, Box<dyn Fn() -> Result<Verdict> + 'a>);
 
+/// A user lookup's id as the report names it: each allocated once.
+fn label(id: &str) -> &'static str {
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<Vec<&'static str>>> = std::sync::LazyLock::new(Default::default);
+    let mut seen = SEEN.lock().expect("lock");
+    if let Some(s) = seen.iter().find(|s| **s == id) {
+        return s;
+    }
+    let s: &'static str = Box::leak(id.to_string().into_boxed_str());
+    seen.push(s);
+    s
+}
+
 /// What a database said about a hash.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verdict {
@@ -61,8 +73,24 @@ pub fn verify(cache: &Cache, net: &dyn Net, sha256: &str) -> (Verdicts, Failures
     let mut failed = Vec::new();
     let key = std::env::var("ABUSECH_AUTH_KEY").ok().filter(|k| !k.is_empty());
     let sources: Vec<Source> = {
-        let mut s: Vec<Source> =
-            vec![("YARAify", Box::new(|| yaraify(net, sha256))), ("CIRCL hashlookup", Box::new(|| circl(net, sha256)))];
+        let mut s: Vec<Source> = vec![
+            ("YARAify", Box::new(|| yaraify(net, "yaraify", url("yaraify"), sha256))),
+            ("CIRCL hashlookup", Box::new(|| circl(net, "circl-hashlookup", url("circl-hashlookup"), sha256))),
+        ];
+        // The user's own lookups, each said yes to ([`crate::sources::user`]).
+        let effective = crate::sources::file::effective();
+        for u in effective.sources.iter().filter(|u| u.kind == "hash-lookup" && effective.user.contains(&u.id)) {
+            if !crate::sources::file::active(&u.id) {
+                continue;
+            }
+            let (id, at) = (u.id.clone(), u.url.clone());
+            let name = label(&u.id);
+            if u.format == "yaraify" {
+                s.push((name, Box::new(move || yaraify(net, &id, &at, sha256))));
+            } else {
+                s.push((name, Box::new(move || circl(net, &id, &at, sha256))));
+            }
+        }
         if let Some(k) = key.clone() {
             s.push(("MalwareBazaar", Box::new(move || malwarebazaar(net, sha256, &k))));
         }
@@ -139,13 +167,9 @@ fn names_malware(sig: &str) -> bool {
 
 /// YARAify knows a file once anyone submitted it, so being known says
 /// nothing; the ClamAV signatures its analysis found are the verdict.
-fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
-    let resp = fetch::post_json(
-        net,
-        "yaraify",
-        url("yaraify"),
-        &serde_json::json!({"query": "lookup_hash", "search_term": sha256}),
-    )?;
+/// YARAify's answer, or an API of the user's in its format (`id` at `url`).
+fn yaraify(net: &dyn Net, id: &str, url: &str, sha256: &str) -> Result<Verdict> {
+    let resp = fetch::post_json(net, id, url, &serde_json::json!({"query": "lookup_hash", "search_term": sha256}))?;
     match resp.get("query_status").and_then(|s| s.as_str()) {
         Some("ok") => Ok(match clamav_names(&resp).into_iter().find(|n| names_malware(n)) {
             Some(sig) => Verdict::Malware(sig),
@@ -156,9 +180,9 @@ fn yaraify(net: &dyn Net, sha256: &str) -> Result<Verdict> {
     }
 }
 
-fn circl(net: &dyn Net, sha256: &str) -> Result<Verdict> {
-    let resp =
-        fetch::request(net, "circl-hashlookup", &format!("{}{sha256}", url("circl-hashlookup")), None, &[], None)?;
+/// CIRCL hashlookup's answer, or an API of the user's in its format.
+fn circl(net: &dyn Net, id: &str, url: &str, sha256: &str) -> Result<Verdict> {
+    let resp = fetch::request(net, id, &format!("{url}{sha256}"), None, &[], None)?;
     Ok(if resp.status == 200 { Verdict::KnownGood } else { Verdict::Unknown })
 }
 
@@ -268,6 +292,6 @@ mod tests {
         let odd = Fake::new(|_| Ok(Response::ok(r#"{"query_status": "illegal_hash"}"#)));
         assert!(malwarebazaar(&odd, "aa", "k").is_err());
         let odd = Fake::new(|_| Ok(Response::ok(r#"{"query_status": "unknown_auth_key"}"#)));
-        assert!(yaraify(&odd, "aa").is_err());
+        assert!(yaraify(&odd, "yaraify", url("yaraify"), "aa").is_err());
     }
 }

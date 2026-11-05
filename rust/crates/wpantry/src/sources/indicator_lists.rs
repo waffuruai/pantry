@@ -77,7 +77,7 @@ pub struct Iocs {
     /// Path regexes with their score.
     pub filenames: Vec<(Node, i64, String)>,
     /// C2 hosts and addresses, with where each came from.
-    pub c2: Vec<(String, &'static str)>,
+    pub c2: Vec<(String, String)>,
 }
 
 /// Lines that aren't blank or comments.
@@ -85,17 +85,62 @@ fn lines(text: &str) -> impl Iterator<Item = &str> {
     text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
 }
 
+/// The lists in `dir`: signature-base's, Feodo's, and the user's own
+/// (`user-<id>.<kind>.txt`, [`crate::sources::user`]).
 pub fn load(dir: &Path) -> Iocs {
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
     let mut iocs = Iocs::default();
-    for line in lines(&read("hash-iocs.txt")) {
+    hashes(&mut iocs, &read("hash-iocs.txt"), "");
+    filenames(&mut iocs, &read("filename-iocs.txt"));
+    hosts(&mut iocs, &read("c2-iocs.txt"), "signature-base");
+    if let Ok(v) = json::parse(read("feodo-ipblocklist.json").as_bytes(), json::MAX_DOCUMENT)
+        && let Some(entries) = v.as_array()
+    {
+        for e in entries {
+            if let Some(ip) = e.get("ip_address").and_then(|i| i.as_str()) {
+                iocs.c2.push((ip.to_string(), "Feodo Tracker".into()));
+            }
+        }
+    }
+    let mut users: Vec<std::path::PathBuf> =
+        std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    users.sort();
+    for p in users {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(rest) = name.strip_prefix("user-").and_then(|r| r.strip_suffix(".txt")) else { continue };
+        let Some((id, kind)) = rest.rsplit_once('.') else { continue };
+        let text = crate::utils::files::read_capped(&p, json::MAX_DOCUMENT as u64).unwrap_or_default();
+        match kind {
+            "hashes" => hashes(&mut iocs, &text, id),
+            "filenames" => filenames(&mut iocs, &text),
+            "hosts" => hosts(&mut iocs, &text, id),
+            _ => {}
+        }
+    }
+    iocs.c2.sort();
+    iocs.c2.dedup_by(|a, b| a.0 == b.0);
+    iocs
+}
+
+/// `hash[;what]` lines: MD5, SHA-1 or SHA-256; `source` names a user's list.
+fn hashes(iocs: &mut Iocs, text: &str, source: &str) {
+    for line in lines(text) {
         let (hash, what) = line.split_once(';').unwrap_or((line, ""));
         let hash = hash.trim().to_ascii_lowercase();
         if matches!(hash.len(), 32 | 40 | 64) && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-            iocs.hashes.insert(hash, what.trim().to_string());
+            let what = match (what.trim(), source) {
+                (w, "") => w.to_string(),
+                ("", s) => s.to_string(),
+                (w, s) => format!("{w} ({s})"),
+            };
+            iocs.hashes.insert(hash, what);
         }
     }
-    for line in lines(&read("filename-iocs.txt")) {
+}
+
+/// `regex;score` lines: path patterns malware uses.
+fn filenames(iocs: &mut Iocs, text: &str) {
+    for line in lines(text) {
         let Some((re, score)) = line.rsplit_once(';') else { continue };
         let Ok(score) = score.trim().parse::<i64>() else { continue };
         let (re, nocase) = match re.strip_prefix("(?i)") {
@@ -106,22 +151,14 @@ pub fn load(dir: &Path) -> Iocs {
             iocs.filenames.push((node, score, re.to_string()));
         }
     }
-    for line in lines(&read("c2-iocs.txt")) {
+}
+
+/// `host[;...]` lines: command-and-control hosts and addresses.
+fn hosts(iocs: &mut Iocs, text: &str, source: &str) {
+    for line in lines(text) {
         let host = line.split(';').next().unwrap_or(line).trim();
         if host.len() >= 6 && host.contains('.') && !host.contains(char::is_whitespace) {
-            iocs.c2.push((host.to_ascii_lowercase(), "signature-base"));
+            iocs.c2.push((host.to_ascii_lowercase(), source.to_string()));
         }
     }
-    if let Ok(v) = json::parse(read("feodo-ipblocklist.json").as_bytes(), json::MAX_DOCUMENT)
-        && let Some(entries) = v.as_array()
-    {
-        for e in entries {
-            if let Some(ip) = e.get("ip_address").and_then(|i| i.as_str()) {
-                iocs.c2.push((ip.to_string(), "Feodo Tracker"));
-            }
-        }
-    }
-    iocs.c2.sort();
-    iocs.c2.dedup_by(|a, b| a.0 == b.0);
-    iocs
 }

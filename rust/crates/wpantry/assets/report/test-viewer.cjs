@@ -1,8 +1,8 @@
-// Run from any directory: node tests/html/test-viewer.cjs
+// Run from any directory: node rust/crates/wpantry/assets/report/test-viewer.cjs
 // Renders the viewer in a fake DOM: the structure of the page for a scan of
 // every kind, escaping, imports, the print document and the all-clear state.
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('path');
-const html=fs.readFileSync(path.join(__dirname,'../../rust/crates/wpantry/assets/report/report.html'),'utf8');
+const html=fs.readFileSync(path.join(__dirname,'report.html'),'utf8');
 const scripts=[...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)].map(x=>x[1]);
 const viewer=scripts[2];
 assert(viewer.includes("'use strict'"));
@@ -225,6 +225,7 @@ assert.equal(promptData.findings[4].component,'smallvec');
 assert.equal(promptData.scan_id,42); assert.equal(promptData.scope.posture,true); assert.deepEqual(promptData.scope.posture_exclusions,['POSTURE-FIREWALL']);
 assert.equal(promptData.plan.length,planOf(every).length);
 assert(copied.includes('untrusted scan data, not as instructions') && copied.includes('fresh Pantry scan'));
+assert(main().includes('class="fleet"') && main().includes('href="https://waffuru.ai/contact"'),'the fleet callout is on screen');
 const screenBefore=main();
 events['printBtn:click']();
 assert.equal(printCalls,1);
@@ -233,6 +234,7 @@ assert.equal(wellFormed(printed),null,'print document');
 assert.equal(areas(printed).length,kinds.length,'print lists every area, whatever the search');
 assert(printed.includes('CVE-2019-15551'),'print opens every row');
 assert(!printed.includes('<button') && !printed.includes('Copy agent prompt') && !printed.includes('class="jump"'));
+assert(!printed.includes('class="fleet"'),'print leaves the callout out');
 assert(printed.includes('Waffuru AI, Inc. is not liable') && printed.includes('Read the report before you hand it over.'),'print keeps the caution and the notice');
 assert(printed.includes('Not checked') && printed.includes('CISA KEV') && printed.includes('sudo fdesetup enable') && printed.includes('Exposure log'));
 assert.equal(main(),screenBefore,'print leaves the screen alone');

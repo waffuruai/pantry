@@ -6,7 +6,7 @@
 # pins equal to ops' mise.toml. See ops planning/specs/02-mise-bootstrap.md.
 [tools]
 node = "26.12.1"  # offline HTML viewer behavior tests (no npm dependencies)
-python = "3.15.1"   # the CLI contract suite (tests/contract) and scripts/
+python = "3.15.1"   # scripts/ and their tests
 gitleaks = "8.30.1" # wpantry's secret scan
 shellcheck = "0.11.0"
 actionlint = "1.7.12"
@@ -34,8 +34,8 @@ run = '''
 cargo_test() { (cd rust && env -u RUSTUP_TOOLCHAIN cargo test --locked); }
 scripts_test() { python3 -m unittest discover -s scripts; }
 case "${usage_suite:-all}" in
-  all) cargo_test && rust/release/test-install.sh && scripts_test && node tests/html/test-viewer.cjs ;;
-  html) node tests/html/test-viewer.cjs ;;
+  all) cargo_test && rust/release/test-install.sh && scripts_test && node rust/crates/wpantry/assets/report/test-viewer.cjs ;;
+  html) node rust/crates/wpantry/assets/report/test-viewer.cjs ;;
   rust) cargo_test ;;
   install) exec rust/release/test-install.sh ;;
   scripts) scripts_test ;;
@@ -43,7 +43,7 @@ esac
 '''
 
 [tasks.coverage]
-description = "Line coverage of the Rust tests and the contract suite together (cargo-llvm-cov); fails under 90%. --html also writes rust/target/llvm-cov/html"
+description = "Line coverage of the Rust tests, the contract suite's runs of the binary included (cargo-llvm-cov); fails under 90%. --html also writes rust/target/llvm-cov/html"
 usage = '''
 flag "--html" help="Also write the HTML report, to rust/target/llvm-cov/html"
 '''
@@ -55,13 +55,12 @@ set -e
 unset RUSTUP_TOOLCHAIN
 PATH="$(mise where aqua:taiki-e/cargo-llvm-cov):$PATH"; export PATH
 rustup component add llvm-tools
-# One instrumented build (show-env) serves both suites: the Rust tests, then the
-# contract suite against the instrumented debug binary. The report counts both.
+# One instrumented build (show-env): the contract and advisories suites
+# (wpantry-cli's tests/) run the instrumented binary, which inherits
+# LLVM_PROFILE_FILE, so the report counts the unit tests and those runs both.
 eval "$(cargo llvm-cov show-env --sh)"
 cargo llvm-cov clean --workspace
 cargo test --locked --workspace --all-targets
-cargo build --locked
-(cd .. && WPANTRY=rust/target/debug/wpantry python3 -m unittest discover -s tests/contract)
 if [ "${usage_html:-false}" = true ]; then cargo llvm-cov report --html; fi
 cargo llvm-cov report --fail-under-lines 90
 '''
@@ -92,10 +91,9 @@ esac
 '''
 
 [tasks.contract]
-description = "The CLI contract suite against WPANTRY (default rust/target/release/wpantry, built first)"
-depends = ["build"]
-env = { WPANTRY = "{{ env.WPANTRY | default(value='rust/target/release/wpantry') }}" }
-run = "python3 -m unittest discover -s tests/contract"
+description = "The CLI contract and advisory suites (rust/crates/wpantry-cli/tests) against the release binary; `mise run test rust` runs them against the debug one"
+dir = "rust"
+run = "env -u RUSTUP_TOOLCHAIN cargo test --locked --release -p wpantry-cli --test contract --test advisories"
 
 [tasks.lint]
 description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"

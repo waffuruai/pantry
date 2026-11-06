@@ -199,11 +199,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo package --workspace --locked
 
-      - name: contract tests (rust)
-        working-directory: .
-        env:
-          WPANTRY: rust/target/release/wpantry
-        run: python3 -m unittest discover -s tests/contract -v
+      # `test` ran the contract suites against the debug binary; again
+      # against the release one.
+      - name: contract tests (release binary)
+        run: cargo test --locked --release -p wpantry-cli --test contract --test advisories
 
   # The coverage gate: the Rust tests and the contract suite together, through
   # cargo-llvm-cov, must cover 90% of the workspace's lines (CONTRIBUTING.md).
@@ -218,10 +217,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # cargo-llvm-cov at the version mise.toml pins, through mise's checksummed
-      # registry, and Python for the contract suite.
+      # registry.
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
-          install_args: python aqua:taiki-e/cargo-llvm-cov
+          install_args: aqua:taiki-e/cargo-llvm-cov
           cache: true
 
       - name: Install the pinned toolchain

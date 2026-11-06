@@ -13,7 +13,7 @@ wpantry version
 
 - mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
 - It remembers the signer and refuses a later release signed by anyone else.
-- Pin a version with `packslip:github.com/waffuruai/pantry@0.2.0`, or put that line in a project's `mise.toml`.
+- Pin a version with `packslip:github.com/waffuruai/pantry@0.4.0`, or put that line in a project's `mise.toml`.
 
 **With the install script** (no mise):
 
@@ -29,7 +29,7 @@ curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.
 Each release ships its own `install.sh`, attested like the binaries. To read it first:
 
 ```bash
-curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.2.0/install.sh
+curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.4.0/install.sh
 less install.sh
 sh install.sh
 ```
@@ -58,7 +58,7 @@ Each binary and `install.sh` also has a GitHub artifact attestation: a signed re
 ### Download
 
 ```bash
-VERSION=0.2.0                                   # the release to install
+VERSION=0.4.0                                   # the release to install
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)         ASSET=wpantry-x86_64-unknown-linux-musl ;;
   Linux/aarch64)        ASSET=wpantry-aarch64-unknown-linux-musl ;;
@@ -85,7 +85,7 @@ grep " $ASSET\$" SHA256SUMS | shasum -a 256 -c -
 
 ```bash
 packslip verify packslip.sigstore.json --artifact "$ASSET"
-# ok: github.com/waffuruai/pantry 0.2.0 …
+# ok: github.com/waffuruai/pantry 0.4.0 …
 ```
 
 Check the first line names `github.com/waffuruai/pantry` and your version: packslip trusts whatever project the bundle claims.
@@ -128,7 +128,7 @@ If it doesn't match, don't install it. Open an issue, or a [security report](../
 
 ```bash
 install -m 0755 "$ASSET" ~/.local/bin/wpantry  # or anywhere on your PATH
-wpantry version                                # wpantry 0.2.0 (rust, schema 1)
+wpantry version                                # wpantry 0.4.0 (rust, schema 1)
 wpantry tools                                  # which external tools it found
 ```
 
@@ -154,7 +154,7 @@ cargo install --locked wpantry-cli             # installs the `wpantry` binary
 
 ```bash
 git clone https://github.com/waffuruai/pantry && cd pantry/rust
-git checkout v0.2.0                             # a release tag
+git checkout v0.4.0                             # a release tag
 cargo build --release --locked                  # target/release/wpantry
 ```
 

@@ -8,6 +8,7 @@
 
 use crate::finding::Finding;
 use crate::remediation::{self, covering, shlex_split};
+use std::collections::HashMap;
 
 /// The order of areas at one rank: what is on the machine, what the repos
 /// lock, what the harnesses run, then the rest.
@@ -92,6 +93,13 @@ pub fn is_bundle(kind: &str) -> bool {
     matches!(kind, "image" | "bundled")
 }
 
+/// One package at one version is one row whatever lockfiles lock it:
+/// the same advisory in 300 lockfiles is one thing to know, with 300
+/// places to fix it.
+pub fn spans_places(kind: &str) -> bool {
+    kind == "project"
+}
+
 /// Severity labels from worst to least.
 fn severity_rank(s: &str) -> Option<u32> {
     match s {
@@ -133,7 +141,11 @@ pub fn rank(f: &Finding) -> u32 {
 pub struct Row<'a> {
     pub name: String,
     pub version: &'a str,
+    /// Where it is: the first of `places`, "" for a bundle.
     pub location: &'a str,
+    /// Every distinct location its findings are at, in order (a package's
+    /// lockfiles, when it [`spans_places`]).
+    pub places: Vec<&'a str>,
     /// Best first; never empty.
     pub findings: Vec<&'a Finding>,
     pub fails: bool,
@@ -166,6 +178,16 @@ pub fn epss_text(e: Option<(f64, f64)>) -> String {
 impl<'a> Row<'a> {
     pub fn top(&self) -> &'a Finding {
         self.findings[0]
+    }
+
+    /// Where it is, with `short` applied: `~/a/package-lock.json`, or
+    /// `~/a/package-lock.json and 8 more` across lockfiles; "" for none.
+    pub fn places_text(&self, short: impl Fn(&str) -> String) -> String {
+        match self.places.as_slice() {
+            [] => String::new(),
+            [one] => short(one),
+            [first, rest @ ..] => format!("{} and {} more", short(first), rest.len()),
+        }
     }
 }
 
@@ -325,27 +347,39 @@ pub fn view(findings: &[Finding]) -> View<'_> {
         .into_iter()
         .map(|kind| {
             let mut rows: Vec<Row> = Vec::new();
+            let mut index: HashMap<(String, &str, &str), usize> = HashMap::new();
             for f in findings.iter().filter(|f| f.kind == kind) {
                 let (name, version, location) = if is_bundle(kind) {
                     (f.component.split(" › ").next().unwrap_or("").to_string(), "", "")
                 } else {
                     (f.component.clone(), f.version.as_str(), f.location.as_str())
                 };
-                match rows.iter_mut().find(|r| r.name == name && r.version == version && r.location == location) {
-                    Some(r) => r.findings.push(f),
-                    None => rows.push(Row {
-                        name,
-                        version,
-                        location,
-                        findings: vec![f],
-                        fails: false,
-                        kev: false,
-                        severity: "",
-                        ids: Vec::new(),
-                        fix: String::new(),
-                        cvss: None,
-                        epss: None,
-                    }),
+                let place = if spans_places(kind) { "" } else { location };
+                match index.get(&(name.clone(), version, place)) {
+                    Some(&i) => {
+                        let r = &mut rows[i];
+                        r.findings.push(f);
+                        if !location.is_empty() && !r.places.contains(&location) {
+                            r.places.push(location);
+                        }
+                    }
+                    None => {
+                        index.insert((name.clone(), version, place), rows.len());
+                        rows.push(Row {
+                            name,
+                            version,
+                            location,
+                            places: if location.is_empty() { Vec::new() } else { vec![location] },
+                            findings: vec![f],
+                            fails: false,
+                            kev: false,
+                            severity: "",
+                            ids: Vec::new(),
+                            fix: String::new(),
+                            cvss: None,
+                            epss: None,
+                        });
+                    }
                 }
             }
             for r in &mut rows {

@@ -39,7 +39,7 @@ It **warns** when there is no fix yet, an app is outdated, an MCP server is unpi
 
 ## Sources
 
-![Where the answers come from: the inventory becomes (ecosystem, name, version) triples; the SQLite cache keeps every answer current from OSV's change lists; the rest go to OSV.dev and the feeds; judgement groups aliases into one finding and picks the safe version; the report fails, warns, or says not checked. Local tools run here and send nothing](../images/sources.png)
+![Where the threat data comes from: the inventory becomes (ecosystem, name, version) triples; the SQLite cache keeps every answer current from OSV's change lists; the rest go to OSV.dev and the feeds; judgement groups aliases into one finding and picks the safe version; the report fails, warns, or says not checked. Local tools run here and send nothing](../images/sources.png)
 
 [Full size](../images/sources.png) · [SVG source](../images/sources.svg)
 

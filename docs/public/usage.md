@@ -73,15 +73,23 @@ not checked
 - `KEV` marks a vulnerability CISA has seen exploited in the wild. Fix those first.
 - **not checked** lists sources that couldn't be reached and had nothing cached. Those areas are unknown, not clean; re-run when you're online.
 
-## Reports: what you were exposed to, and what was done
+## Reports: what the latest scan found, and what was done
 
-Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `wpantry fix` records the fixes it ran and the scan that verified them.
+`wpantry report` shows the latest scan from the cache; it never scans. `scan` and `fix` show the same when they finish, and take the same options. `export` is another name for it.
 
 ```bash
-wpantry report                              # exposure, remediation and audit logs, last 90 days, Markdown
-wpantry report --exposure --since 365 --format csv -o exposures.csv
-wpantry report --remediation --format json
+wpantry report                              # the terminal report: areas, a table each, the update plan
+wpantry report --md -o report.md            # the same as Markdown, in a file
+wpantry report --html -o report.html        # one offline page (open it in a browser)
+wpantry report --json                       # the schema-1 envelope scan --json prints
+wpantry report --csv -o findings.csv        # one row per finding
+wpantry report --jsonl -o findings.jsonl    # one object per finding, joined with its OSV record and lifecycle
+wpantry report --md --history               # and the exposure, remediation and audit logs, last 90 days
+wpantry report --csv --since 365 -o exposures.csv   # the exposure log of the last year
+wpantry scan --html -o report.html          # scan, then write the page
 ```
+
+Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `wpantry fix` records the fixes it ran and the scan that verified them; `--history` adds those logs to any format.
 
 [reports.md](reports.md) says what each log holds and how it maps onto SOC 2 evidence.
 ## Keeping the cache fresh, and scanning on a schedule
@@ -120,7 +128,7 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 
 `wpantry fix --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry fix` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
-For a browser report, run `wpantry scan --html report.html`. The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
+For a browser report, run `wpantry report --html -o report.html` (or `wpantry scan --html -o report.html` to scan first). The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
 
 The plan is wpantry's own (`wpantry fix --dryrun` prints the same one): one fix per component, `mise` never upgraded for you, many secret hits in one file one decision. **Hand this to an AI agent** under By hand copies a prompt with every finding, the plan and the coverage context of the scan for the agent of your choice; preview it and remove local paths you do not want to share. Copying sends nothing and runs nothing.
 
@@ -172,12 +180,12 @@ Answers live in one SQLite file: `~/.cache/wpantry/wpantry.db`, or `$XDG_CACHE_H
 ```bash
 wpantry search "tarfile traversal"            # rank cached advisories (SQLite FTS5 syntax: "exact phrase", tls AND cert, rust*)
 wpantry search openssl --applicable --json    # only those that apply here
-wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
-wpantry export --jsonl findings.jsonl --all   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
+wpantry report --csv -o findings.csv          # id, aliases, url, component, kind, affected and safe version, …
+wpantry report --jsonl --history -o f.jsonl   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
 wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 ```
 
-Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `wpantry fix` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
+Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `wpantry fix` ran did; with `--history` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
 
 ## Advisories with no fix yet
 
@@ -230,7 +238,7 @@ usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,ski
 | `check` | The same as `scan`, with the same options, output and exit codes |
 | `fix` | Scan, run the unattended fixes and the stopgaps, then re-check (`--dryrun` prints the plan) |
 | `search` | Search cached advisories (for agents) |
-| `export` | Write the findings as CSV or JSON Lines |
+| `export` | The same as `report` |
 | `breach` | Show or set consent for the email breach check |
 | `watch` | Re-check the unfixed Critical/High advisories; exit 10 when a fix has landed |
 | `version` | Print the version, implementation and JSON schema |
@@ -248,7 +256,7 @@ usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,ski
 ### scan, check
 
 ```
-usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
+usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS] [--no-input] [--jobs N]
                     [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
                     [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
@@ -261,8 +269,7 @@ usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--
 | `--no-machine` | Skip the machine inventory: repo checks only |
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
-| `--json` | Print the findings as JSON (schema 1) instead of the report; never prompts. See [JSON](#json) |
-| `--html FILE` | Also save an offline HTML report; open FILE in a browser. See [Fixing](#fixing) |
+| `--txt`, `--json`, `--jsonl`, `--csv`, `--md`, `--html`, `-o FILE`, `--history`, `--since DAYS` | How the report is shown when the scan is done, as [`report`](#report) shows it. `--json` (schema 1, see [JSON](#json)) never prompts. `-o FILE` is checked before the scan starts |
 | `--no-input` | Never prompt: the breach-check question is skipped, and `fix` runs without asking |
 | `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled `gitleaks.toml` (a repo's own `.gitleaks.toml` is reported, never obeyed) |
@@ -281,7 +288,7 @@ Policy files are one entry per line, `#` for comments. An install-scripts entry 
 ### fix
 
 ```
-usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
+usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS] [--no-input] [--jobs N]
                    [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
                    [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
@@ -312,17 +319,7 @@ Search cached advisories, ranked (SQLite FTS5 syntax: `"exact phrase"`, `tls AND
 
 ### export
 
-```
-usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]
-```
-
-Write the latest findings as CSV, or as JSON Lines joined with their OSV records, lifecycle and fix outcome. One of `--csv` and `--jsonl` is required; both may be given.
-
-| Option | Effect |
-|---|---|
-| `--csv CSV` | The summary columns, one finding per row |
-| `--jsonl JSONL` | One JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix |
-| `--all` | With `--jsonl`: also the resolved exposures the latest scan no longer lists |
+The same as [`report`](#report).
 
 ### breach
 
@@ -418,19 +415,23 @@ Check for a newer wpantry release and, after a yes, install it verified. See [Ke
 ### report
 
 ```
-usage: wpantry report [-h] [--exposure] [--remediation] [--audit] [--since DAYS] [--format FORMAT] [-o FILE]
+usage: wpantry report [-h] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS]
 ```
 
-The exposure, remediation and audit logs kept across scans. See [reports.md](reports.md).
+The latest scan's report, from the cache; it never scans. `scan` and `fix` show the same when they finish, with the same options. Exit 1 when the latest scan has a failing finding (or there is none yet), 0 otherwise. See [reports.md](reports.md).
 
 | Option | Effect |
 |---|---|
-| `--exposure` | What applied, from first seen to resolved (default: all three) |
-| `--remediation` | The fixes `wpantry fix` ran, and the scans that verified them |
-| `--audit` | Every scan and event |
-| `--since DAYS` | How far back (default 90) |
-| `--format FORMAT` | `md` (default), `json` or `csv` (csv: the exposure log) |
-| `-o`, `--out FILE` | Write there instead of stdout |
+| (none) | The terminal report: the findings grouped into areas in the order to fix them, each area a table (component, version, advisory, severity, fix) with where and why under each row; what couldn't be checked; the update plan, alike commands batched and `sudo` ones apart. Coloured on a terminal and fitted to its width |
+| `--txt` | The same as plain text, 120 columns |
+| `--json` | The schema-1 envelope `scan --json` prints |
+| `--jsonl` | One JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix |
+| `--csv` | One row per finding: id, aliases, url, component, kind, affected and safe version, severity, kev, status, location |
+| `--md` | Markdown: the areas as tables, the gaps, the plan |
+| `--html` | One offline page; with 90 days of history |
+| `-o`, `--out FILE` | Write there instead of stdout (the terminal report becomes `--txt`) |
+| `--history` | Add the exposure, remediation and audit logs (`--json`: under `history`; `--csv`: the exposure log instead of the findings; `--jsonl`: the resolved exposures too) |
+| `--since DAYS` | How far back the history goes (default 90); implies `--history` |
 
 ### harden
 

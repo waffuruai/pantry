@@ -1,8 +1,8 @@
 name: CI
 
 # wpantry's build, tests and supply-chain gates and the CLI contract suite
-# against the binary, on Linux and macOS (specs/cli-contract.md); the CA trust
-# scripts and install.sh on both; shell and workflow lint; the coverage gate.
+# against the binary, on Linux and macOS (specs/cli-contract.md); install.sh
+# on both; shell and workflow lint; the coverage gate.
 on:
   pull_request:
   push:
@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # What the Rust job doesn't cover: the CA trust scripts and install.sh.
+  # What the Rust job doesn't cover: install.sh (rust/release/).
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

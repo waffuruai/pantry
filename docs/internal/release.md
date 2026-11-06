@@ -1,6 +1,6 @@
 # Release playbook
 
-How we publish wpantry: the `wpantry` and `wpantry-cli` crates on crates.io, and signed, reproducible binaries on GitHub Releases. The automation is [`.github/workflows/release.yml`](../../.github/workflows/release.yml); this page is the human side around it. What users do with a release is [docs/public/install.md](../public/install.md). The requirements: every dependency pinned and built `--locked`, `cargo deny` and `cargo vet` green, two builds of a tag byte-identical, and every artifact shipped with `SHA256SUMS`, an attestation and a signature ([docs/internal/architecture.md](architecture.md#the-binary)).
+How we publish Pantry: the `wpantry-yara`, `wcli`, `wpantry` and `wpantry-cli` crates on crates.io, and signed, reproducible binaries on GitHub Releases. The automation is [`.github/workflows/release.yml`](../../.github/workflows/release.yml); this page is the human side around it. What users do with a release is [docs/public/install.md](../public/install.md). The requirements: every dependency pinned and built `--locked`, `cargo deny` and `cargo vet` green, two builds of a tag byte-identical, and every artifact shipped with `SHA256SUMS`, an attestation and a signature ([docs/internal/architecture.md](architecture.md#the-binary)).
 
 ## What a release is
 
@@ -13,7 +13,7 @@ A tag `vX.Y.Z` on `main`. Pushing it runs the release workflow:
    - It copies `install.sh` with the release's tag stamped in as its default version, and writes `install.sh.sha256` beside it for waffuru.ai's release receiver, which serves a verified, pinned copy at `https://waffuru.ai/pantry/install.sh`.
    - It makes a GitHub build-provenance attestation for each binary and `install.sh`, and a cosign keyless bundle for each binary.
    - It verifies all of that the way users will, then creates the GitHub release as a draft with generated notes. Releases in this repository are immutable once published, so nothing can be attached after that.
-   - It publishes `wpantry`, then `wpantry-cli`, to crates.io through trusted publishing.
+   - It publishes `wpantry-yara`, `wcli`, `wpantry` and `wpantry-cli`, in that order, to crates.io through trusted publishing.
 4. **packslip**: in a job that can't write the release, [packslip](https://packslip.dev) (`jdx/packslip`, pinned) signs a manifest of the three binaries: digests, platforms, and the command name `wpantry`. It links the publish job's attestations. mise's `packslip:` backend and `packslip verify` check releases against it.
 5. **release**: attaches the manifest to the draft as `packslip.sigstore.json`, checks the draft has every asset, and publishes it as the latest release. Then it dispatches the website's release receiver (`waffuruai/website` `release.yml`) with the `WEBSITE_DISPATCH_TOKEN` secret, so `https://waffuru.ai/pantry/install.sh` serves the new release within minutes. Without the secret, or if the dispatch fails, it warns; the next site deploy picks the release up. If a job before this one fails, the release stays a draft: fix the cause and rerun the failed jobs.
 
@@ -108,7 +108,7 @@ Record the result (who verified, on what) as a comment on the release's tracking
 1. Stop the spread: mark the GitHub release as a pre-release (so `latest` points back), and yank the crates: `cargo yank --version X.Y.Z wpantry-cli` then `wpantry`.
 2. Tell ops and the embedders to stay on the previous version.
 3. Fix on `dev`, release `X.Y.(Z+1)`. Never move or re-push a tag.
-4. A security problem in wpantry itself goes through [SECURITY.md](../../SECURITY.md) and a GitHub security advisory, published with the fix.
+4. A security problem in Pantry itself goes through [SECURITY.md](../../SECURITY.md) and a GitHub security advisory, published with the fix.
 
 ## Troubleshooting the workflow
 

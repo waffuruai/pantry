@@ -7,8 +7,8 @@
 
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-INSTALL="$ROOT/install.sh"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+INSTALL="$HERE/install.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

@@ -1,4 +1,4 @@
-# wpantry: internal docs
+# Pantry: internal docs
 
 For maintainers.
 

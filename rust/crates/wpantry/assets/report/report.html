@@ -891,7 +891,7 @@ function jumpHTML(r){
 }
 // On screen only: a printed report is evidence, not an advert.
 function fleetHTML(print){
-  return print?'':'<aside class="fleet"><p><b>Looking after a fleet of computers, or running a business?</b> We can make keeping them all patched and checked easier.</p><a href="https://waffuru.ai/contact" target="_blank" rel="noopener noreferrer">Check out our other tools →</a></aside>';
+  return print?'':'<aside class="fleet"><p><b>Looking after a fleet of computers, or running a business?</b> We can make keeping them all patched and checked easier.</p><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">Check out our other tools →</a></aside>';
 }
 function pageHTML(r,print){
   return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+

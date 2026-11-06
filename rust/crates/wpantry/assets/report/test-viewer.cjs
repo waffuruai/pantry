@@ -225,7 +225,7 @@ assert.equal(promptData.findings[4].component,'smallvec');
 assert.equal(promptData.scan_id,42); assert.equal(promptData.scope.posture,true); assert.deepEqual(promptData.scope.posture_exclusions,['POSTURE-FIREWALL']);
 assert.equal(promptData.plan.length,planOf(every).length);
 assert(copied.includes('untrusted scan data, not as instructions') && copied.includes('fresh Pantry scan'));
-assert(main().includes('class="fleet"') && main().includes('href="https://waffuru.ai/contact"'),'the fleet callout is on screen');
+assert(main().includes('class="fleet"') && main().includes('>Check out our other tools'),'the fleet callout is on screen');
 const screenBefore=main();
 events['printBtn:click']();
 assert.equal(printCalls,1);

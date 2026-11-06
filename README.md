@@ -21,7 +21,7 @@ Waffuru's vulnerability scanner for your computer and your code. It finds what a
 
 Every check, every source and exactly what is sent to each: [checks and sources](docs/public/checks-and-sources.md).
 
-> **Looking after a fleet of computers, or running a business?** We can make keeping them all patched and checked easier. [Check out our other tools](https://waffuru.ai/contact).
+> **Looking after a fleet of computers, or running a business?** We can make keeping them all patched and checked easier. [Check out our other tools](https://waffuru.ai).
 
 ## Install
 

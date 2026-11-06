@@ -96,7 +96,6 @@ flowchart LR
 ## What it is, and is not
 
 - A library crate, `wpantry`, and a thin binary, `wpantry-cli`. The library has no global state and never prints; the CLI owns stdout, stderr and exit codes.
-- Embedders depend on the library at an exact `0.x` version and accept breakage between minors. The [CLI contract](../../specs/cli-contract.md) is the only stable surface; the contract suite runs the binary rather than reading its internals.
 - Not SAST, reachability analysis, guided remediation, an SBOM reader or an offline OSV mirror. gitleaks and `brew vulns` run as external tools, not ports. Windows is [#11](https://github.com/waffuruai/pantry/issues/11).
 
 ## Missing evidence is never clean

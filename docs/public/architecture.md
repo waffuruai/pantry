@@ -17,7 +17,7 @@ It watches nothing live and needs no permission beyond reading files. You or an 
 
 [Full size](../images/architecture.png) · [SVG source](../images/architecture.svg)
 
-## A run
+## What happens during a Pantry file scan
 
 ```mermaid
 %%{init: {"flowchart": {"wrappingWidth": 560, "nodeSpacing": 40, "rankSpacing": 36}}}%%

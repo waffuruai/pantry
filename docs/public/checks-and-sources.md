@@ -72,7 +72,9 @@ These are the only hosts the binary connects to.
 | [YARA Forge](https://github.com/YARAHQ/yara-forge) releases (`api.github.com`, then `release-assets.githubusercontent.com` or `objects.githubusercontent.com`, where GitHub redirects the download) | The malware scan's community rules, at most daily | Nothing; the package is downloaded |
 | [Have I Been Pwned](https://haveibeenpwned.com) or [XposedOrNot](https://xposedornot.com) | Whether an email address appears in a breach | Your email address, only after `wpantry breach --enable` and only after you say yes; `HIBP_API_KEY` selects Have I Been Pwned |
 
-## Your own sources
+## Custom sources
+
+### Your own sources
 
 `wpantry sources` lists every source, when it was last fetched and what last went wrong.
 
@@ -82,6 +84,10 @@ A sources file of your own, `~/.config/wpantry/sources.toml` (or `--sources FILE
 - add YARA rules; hash, host and file-name lists; an indicator set in Maltrail's `trails.csv` format; an OSV-compatible API; or a hash lookup.
 
 A source of yours on a host Pantry doesn't already ask, or one that sends anything (a hash lookup may send a flagged file's SHA-256, nothing else), is used only after you say yes, once. With `--no-input` and no yes, it is reported not checked. Details: [the sources file](../../specs/design/sources-file.md).
+
+### Third-party sources
+
+Sources Pantry knows how to read but doesn't ship or fetch by default, usually because of their licence. Add one to your sources file to use it.
 
 **Maltrail's trails.** [Maltrail Trails](https://github.com/stamparm/trails) is about 1.85 million malicious domains, addresses and URLs, each with its family, published daily. Its licence allows defending systems you operate but not building it into something offered to others, so Pantry doesn't ship or fetch it by default. To use it, add it to your sources file:
 

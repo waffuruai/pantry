@@ -552,6 +552,15 @@ pub fn stamp(t: f64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, (rem % 3600) / 60)
 }
 
+/// `YYYYMMDDTHHMMSSZ` for a timestamp: ISO 8601's basic form, for a file
+/// name (no colons, and names sort by time).
+pub fn file_stamp(t: f64) -> String {
+    let secs = t.max(0.0) as i64;
+    let rem = secs.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+    format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
 /// Howard Hinnant's days-to-civil.
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719468;

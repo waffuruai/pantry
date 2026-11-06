@@ -94,7 +94,7 @@ fn one_format_a_file_and_the_history_are_the_report_options() {
     let Parsed::Run(Command::Scan(c)) = p(&["fix", "--md", "--since", "30"]) else { panic!() };
     assert_eq!((c.fix, c.show.format, c.show.since), (true, Shown::Md, 30));
     assert!(matches!(p(&["--history"]), Parsed::Usage(_)), "the logs are report's words now");
-    for bad in [&["--html", "--json"][..], &["-o"], &["--out=-"], &["--since", "x"]] {
+    for bad in [&["--html", "--json"][..], &["-o"], &["--out="], &["--since", "x"]] {
         assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
     }
 }
@@ -265,8 +265,13 @@ fn report_options() {
             part: Part::Remediation,
             format: Shown::Csv,
             out: Some("r.csv".into()),
+            stdout: false,
             since: 30
         }))
+    );
+    assert_eq!(
+        p(&["report", "--json", "-o", "-"]),
+        Parsed::Run(Command::Report(Show { format: Shown::Json, stdout: true, ..Default::default() }))
     );
     assert_eq!(
         p(&["report", "--txt"]),
@@ -291,16 +296,16 @@ fn schedule_cache_update_and_fix_options() {
         p(&["schedule", "install"]),
         Parsed::Run(Command::Schedule {
             action: "install".into(),
-            every: "daily".into(),
+            every: "day".into(),
             at: "09:30".into(),
             dry_run: false
         })
     );
     assert_eq!(
-        p(&["schedule", "install", "--every", "weekly", "--at", "7:05", "--dry-run"]),
+        p(&["schedule", "install", "--every", "week", "--at", "7:05", "--dry-run"]),
         Parsed::Run(Command::Schedule {
             action: "install".into(),
-            every: "weekly".into(),
+            every: "week".into(),
             at: "7:05".into(),
             dry_run: true
         })
@@ -398,7 +403,7 @@ fn schedule_cache_update_and_fix_options() {
         (&["schedule", "install", "run"], "unrecognized arguments: run"),
         (
             &["schedule", "install", "--every", "sometimes"],
-            "argument --every: invalid choice: 'sometimes' (choose from hourly, daily, weekly)",
+            "argument --every: invalid choice: 'sometimes' (choose from hour, day, week, month, quarter, year)",
         ),
         (&["schedule", "install", "--at", "25:00"], "argument --at: expected HH:MM, got '25:00'"),
         (&["schedule", "install", "--at", "9:5"], "argument --at: expected HH:MM, got '9:5'"),

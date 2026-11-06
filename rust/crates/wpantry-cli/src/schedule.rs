@@ -1,4 +1,5 @@
-//! `wpantry schedule`: a daily (hourly, weekly) `sync` and `scan` run by
+//! `wpantry schedule`: a `sync` and `scan` once a day (or an hour, week,
+//! month, quarter or year, each at the start of the period) run by
 //! the user's own scheduler, launchd on macOS, a systemd user timer on
 //! Linux, cron where there is no systemd. Never `fix`: a scheduled run
 //! only refreshes the cache and records what it found
@@ -17,20 +18,43 @@ use wpantry::utils::process::which;
 
 pub const LABEL: &str = "ai.waffuru.wpantry";
 
+/// How often the job runs: once a period, at the period's start (a week
+/// on Monday, a month on the 1st, a quarter on 1 January, April, July and
+/// October, a year on 1 January), at `--at`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Every {
-    Hourly,
-    Daily,
-    Weekly,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
 }
 
 impl Every {
+    pub const NAMES: [&'static str; 6] = ["hour", "day", "week", "month", "quarter", "year"];
+
     pub fn parse(s: &str) -> Option<Every> {
         match s {
-            "hourly" => Some(Every::Hourly),
-            "daily" => Some(Every::Daily),
-            "weekly" => Some(Every::Weekly),
+            "hour" => Some(Every::Hour),
+            "day" => Some(Every::Day),
+            "week" => Some(Every::Week),
+            "month" => Some(Every::Month),
+            "quarter" => Some(Every::Quarter),
+            "year" => Some(Every::Year),
             _ => None,
+        }
+    }
+
+    /// The start dates of a period: (month, day of month, weekday), any
+    /// left out matching every one; one entry per start in a year.
+    fn starts(self) -> Vec<(Option<u32>, Option<u32>, Option<u32>)> {
+        match self {
+            Every::Hour | Every::Day => vec![(None, None, None)],
+            Every::Week => vec![(None, None, Some(1))],
+            Every::Month => vec![(None, Some(1), None)],
+            Every::Quarter => [1, 4, 7, 10].iter().map(|m| (Some(*m), Some(1), None)).collect(),
+            Every::Year => vec![(Some(1), Some(1), None)],
         }
     }
 }
@@ -387,9 +411,12 @@ fn uid(run: Run) -> String {
 
 fn word(every: Every) -> &'static str {
     match every {
-        Every::Hourly => "hourly",
-        Every::Daily => "daily",
-        Every::Weekly => "weekly (Mondays)",
+        Every::Hour => "every hour",
+        Every::Day => "every day",
+        Every::Week => "every week (Mondays)",
+        Every::Month => "every month (the 1st)",
+        Every::Quarter => "every quarter (1 January, April, July, October)",
+        Every::Year => "every year (1 January)",
     }
 }
 
@@ -408,14 +435,31 @@ fn xml_escape(s: &str) -> String {
 
 /// The launchd job: a calendar start, low priority, its output in the log.
 pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
-    let when = match every {
-        Every::Hourly => "    <key>StartInterval</key>\n    <integer>3600</integer>\n".to_string(),
-        Every::Daily => format!(
-            "    <key>StartCalendarInterval</key>\n    <dict>\n      <key>Hour</key>\n      <integer>{hour}</integer>\n      <key>Minute</key>\n      <integer>{minute}</integer>\n    </dict>\n"
-        ),
-        Every::Weekly => format!(
-            "    <key>StartCalendarInterval</key>\n    <dict>\n      <key>Weekday</key>\n      <integer>1</integer>\n      <key>Hour</key>\n      <integer>{hour}</integer>\n      <key>Minute</key>\n      <integer>{minute}</integer>\n    </dict>\n"
-        ),
+    let when = if every == Every::Hour {
+        "    <key>StartInterval</key>\n    <integer>3600</integer>\n".to_string()
+    } else {
+        let int = |k: &str, v: u32| format!("      <key>{k}</key>\n      <integer>{v}</integer>\n");
+        let dicts: String = every
+            .starts()
+            .iter()
+            .map(|(month, day, weekday)| {
+                let mut d = String::from("    <dict>\n");
+                for (k, v) in [("Month", month), ("Day", day), ("Weekday", weekday)] {
+                    if let Some(v) = v {
+                        d.push_str(&int(k, *v));
+                    }
+                }
+                d.push_str(&int("Hour", hour));
+                d.push_str(&int("Minute", minute));
+                d + "    </dict>\n"
+            })
+            .collect();
+        // One start a period is a dict; several (a quarter's) an array of them.
+        if every.starts().len() == 1 {
+            format!("    <key>StartCalendarInterval</key>\n{dicts}")
+        } else {
+            format!("    <key>StartCalendarInterval</key>\n    <array>\n{dicts}    </array>\n")
+        }
     };
     let out = xml_escape(&p.state.join("launchd.log").to_string_lossy());
     format!(
@@ -442,10 +486,14 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
 
 /// The systemd user service and timer.
 pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> (String, String) {
+    let time = format!("{hour:02}:{minute:02}:00");
     let calendar = match every {
-        Every::Hourly => "hourly".to_string(),
-        Every::Daily => format!("*-*-* {hour:02}:{minute:02}:00"),
-        Every::Weekly => format!("Mon *-*-* {hour:02}:{minute:02}:00"),
+        Every::Hour => "hourly".to_string(),
+        Every::Day => format!("*-*-* {time}"),
+        Every::Week => format!("Mon *-*-* {time}"),
+        Every::Month => format!("*-*-01 {time}"),
+        Every::Quarter => format!("*-01,04,07,10-01 {time}"),
+        Every::Year => format!("*-01-01 {time}"),
     };
     let service = format!(
         "[Unit]\nDescription=wpantry: refresh the advisory cache and scan\n\n[Service]\nType=oneshot\nExecStart={} schedule run\nNice=10\nIOSchedulingClass=idle\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n",
@@ -465,9 +513,12 @@ const CRON_MARK: &str = "# wpantry schedule";
 
 pub fn cron_line(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
     let when = match every {
-        Every::Hourly => format!("{minute} * * * *"),
-        Every::Daily => format!("{minute} {hour} * * *"),
-        Every::Weekly => format!("{minute} {hour} * * 1"),
+        Every::Hour => format!("{minute} * * * *"),
+        Every::Day => format!("{minute} {hour} * * *"),
+        Every::Week => format!("{minute} {hour} * * 1"),
+        Every::Month => format!("{minute} {hour} 1 * *"),
+        Every::Quarter => format!("{minute} {hour} 1 1,4,7,10 *"),
+        Every::Year => format!("{minute} {hour} 1 1 *"),
     };
     format!(
         "{when} nice -n 10 {} schedule run >> {} 2>&1 {CRON_MARK}",

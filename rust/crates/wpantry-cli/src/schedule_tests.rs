@@ -10,36 +10,36 @@ fn p() -> Paths {
 
 #[test]
 fn launchd_plist_names_the_program_and_the_time() {
-    let text = plist(Path::new("/u/.local/bin/wpantry"), Every::Daily, 9, 30, &p());
+    let text = plist(Path::new("/u/.local/bin/wpantry"), Every::Day, 9, 30, &p());
     assert!(text.contains("<string>/u/.local/bin/wpantry</string>"));
     assert!(text.contains("<key>Hour</key>\n      <integer>9</integer>"));
     assert!(text.contains("<key>Minute</key>\n      <integer>30</integer>"));
     assert!(text.contains("<string>schedule</string>\n      <string>run</string>"));
     assert!(text.contains("<key>Nice</key>"));
-    let hourly = plist(Path::new("/x"), Every::Hourly, 0, 0, &p());
+    let hourly = plist(Path::new("/x"), Every::Hour, 0, 0, &p());
     assert!(hourly.contains("<key>StartInterval</key>\n    <integer>3600</integer>"));
-    let weekly = plist(Path::new("/x"), Every::Weekly, 7, 5, &p());
+    let weekly = plist(Path::new("/x"), Every::Week, 7, 5, &p());
     assert!(weekly.contains("<key>Weekday</key>\n      <integer>1</integer>"));
-    let odd = plist(Path::new("/a&b/<w>"), Every::Daily, 0, 0, &p());
+    let odd = plist(Path::new("/a&b/<w>"), Every::Day, 0, 0, &p());
     assert!(odd.contains("/a&amp;b/&lt;w&gt;"));
 }
 
 #[test]
 fn systemd_and_cron_entries() {
-    let (service, timer) = unit(Path::new("/u/bin/wpantry"), Every::Weekly, 6, 15, &p());
+    let (service, timer) = unit(Path::new("/u/bin/wpantry"), Every::Week, 6, 15, &p());
     assert!(service.contains("ExecStart=/u/bin/wpantry schedule run"));
     assert!(timer.contains("OnCalendar=Mon *-*-* 06:15:00"));
     assert!(timer.contains("Persistent=true"));
-    assert!(unit(Path::new("/x"), Every::Hourly, 0, 0, &p()).1.contains("OnCalendar=hourly"));
-    let line = cron_line(Path::new("/u/bin/wpantry"), Every::Daily, 9, 30, &p());
+    assert!(unit(Path::new("/x"), Every::Hour, 0, 0, &p()).1.contains("OnCalendar=hourly"));
+    let line = cron_line(Path::new("/u/bin/wpantry"), Every::Day, 9, 30, &p());
     assert!(line.starts_with("30 9 * * * nice -n 10 /u/bin/wpantry schedule run"));
     assert!(line.ends_with(CRON_MARK));
-    assert!(cron_line(Path::new("/x"), Every::Weekly, 1, 2, &p()).starts_with("2 1 * * 1 "));
+    assert!(cron_line(Path::new("/x"), Every::Week, 1, 2, &p()).starts_with("2 1 * * 1 "));
 }
 
 #[test]
 fn every_parses_and_ago_reads() {
-    assert_eq!(Every::parse("daily"), Some(Every::Daily));
+    assert_eq!(Every::parse("day"), Some(Every::Day));
     assert_eq!(Every::parse("sometimes"), None);
     assert_eq!(ago(30), "30 s");
     assert_eq!(ago(3600), "60 min");
@@ -63,19 +63,19 @@ fn the_lock_is_exclusive_and_stale_locks_are_taken() {
 
 #[test]
 fn words_escapes_and_every_spelling() {
-    assert_eq!(Every::parse("hourly"), Some(Every::Hourly));
-    assert_eq!(Every::parse("weekly"), Some(Every::Weekly));
-    assert_eq!(word(Every::Hourly), "hourly");
-    assert_eq!(word(Every::Daily), "daily");
-    assert_eq!(word(Every::Weekly), "weekly (Mondays)");
+    assert_eq!(Every::parse("hour"), Some(Every::Hour));
+    assert_eq!(Every::parse("week"), Some(Every::Week));
+    assert_eq!(word(Every::Hour), "every hour");
+    assert_eq!(word(Every::Day), "every day");
+    assert_eq!(word(Every::Week), "every week (Mondays)");
     assert_eq!(xml_escape("a&b<c>"), "a&amp;b&lt;c&gt;");
     assert_eq!(ago(89), "89 s");
     assert_eq!(ago(90), "1 min");
     assert_eq!(ago(36 * 3600), "1 days");
-    let (service, timer) = unit(Path::new("/x"), Every::Daily, 9, 5, &p());
+    let (service, timer) = unit(Path::new("/x"), Every::Day, 9, 5, &p());
     assert!(service.contains("StandardOutput=append:/s/wpantry/systemd.log"));
     assert!(timer.contains("OnCalendar=*-*-* 09:05:00"));
-    assert!(cron_line(Path::new("/x"), Every::Hourly, 9, 15, &p()).starts_with("15 * * * * "));
+    assert!(cron_line(Path::new("/x"), Every::Hour, 9, 15, &p()).starts_with("15 * * * * "));
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn a_dry_run_prints_the_job_and_runs_nothing() {
     let _home = test_home();
     let never = |argv: &[&OsStr], _: Duration| -> Result<Output> { panic!("ran {argv:?}") };
     for b in [Backend::Launchd, Backend::Systemd, Backend::Cron] {
-        assert_eq!(install_with(Every::Weekly, (7, 5), true, b, &never).unwrap(), EXIT_OK);
+        assert_eq!(install_with(Every::Week, (7, 5), true, b, &never).unwrap(), EXIT_OK);
     }
     assert!(!plist_path().exists());
 }
@@ -142,7 +142,7 @@ fn launchd_install_status_and_uninstall() {
     let _home = test_home();
     let calls = Mutex::new(Vec::new());
     let run = recorder(&calls, |cmd| ok(if cmd == "id -u" { "777\n" } else { "" }));
-    assert_eq!(install_with(Every::Daily, (9, 30), false, Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert_eq!(install_with(Every::Day, (9, 30), false, Backend::Launchd, &run).unwrap(), EXIT_OK);
     let plist = plist_path();
     let text = std::fs::read_to_string(&plist).unwrap();
     assert!(text.contains("<key>Hour</key>\n      <integer>9</integer>"), "{text}");
@@ -167,7 +167,7 @@ fn launchd_install_status_and_uninstall() {
             ok("")
         }
     });
-    let err = install_with(Every::Hourly, (0, 0), false, Backend::Launchd, &run).unwrap_err();
+    let err = install_with(Every::Hour, (0, 0), false, Backend::Launchd, &run).unwrap_err();
     assert!(err.to_string().contains("launchctl bootstrap failed: Bootstrap failed"), "{err}");
 }
 
@@ -179,7 +179,7 @@ fn systemd_install_status_and_uninstall() {
     }
     let calls = Mutex::new(Vec::new());
     let run = recorder(&calls, |_| ok(""));
-    assert_eq!(install_with(Every::Weekly, (6, 15), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
+    assert_eq!(install_with(Every::Week, (6, 15), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
     let dir = unit_dir();
     assert!(dir.join("wpantry.service").is_file());
     let timer = std::fs::read_to_string(dir.join("wpantry.timer")).unwrap();
@@ -200,7 +200,7 @@ fn systemd_install_status_and_uninstall() {
                 if cmd.ends_with("daemon-reload") { failed("Failed to connect to bus\n") } else { ok("") }
             },
         );
-    let err = install_with(Every::Daily, (1, 2), false, Backend::Systemd, &run).unwrap_err();
+    let err = install_with(Every::Day, (1, 2), false, Backend::Systemd, &run).unwrap_err();
     assert!(err.to_string().contains("systemctl --user daemon-reload failed: Failed to connect to bus"), "{err}");
 }
 
@@ -225,7 +225,7 @@ fn cron_install_replaces_its_own_line_and_keeps_the_rest() {
     let _home = test_home();
     let table = Mutex::new(Some(format!("0 0 * * * other\n5 5 * * * old {CRON_MARK}\n")));
     let run = crontab_of(&table);
-    assert_eq!(install_with(Every::Daily, (9, 30), false, Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(install_with(Every::Day, (9, 30), false, Backend::Cron, &run).unwrap(), EXIT_OK);
     let now = table.lock().unwrap().clone().unwrap();
     let lines: Vec<&str> = now.lines().collect();
     assert_eq!(lines.len(), 2, "{now}");
@@ -243,14 +243,14 @@ fn an_empty_crontab_gets_only_our_line_and_a_refusal_is_an_error() {
     let _home = test_home();
     let table = Mutex::new(None);
     let run = crontab_of(&table);
-    assert_eq!(install_with(Every::Hourly, (0, 10), false, Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(install_with(Every::Hour, (0, 10), false, Backend::Cron, &run).unwrap(), EXIT_OK);
     let now = table.lock().unwrap().clone().unwrap();
     assert_eq!(now.lines().count(), 1, "{now}");
     assert!(now.starts_with("10 * * * * nice -n 10 "), "{now}");
     assert_eq!(uninstall_with(Backend::Cron, &run).unwrap(), EXIT_OK);
     assert_eq!(table.lock().unwrap().as_deref(), Some(""));
     let refuse = |argv: &[&OsStr], _: Duration| if argv[1] == "-l" { ok("") } else { failed("bad minute\n") };
-    let err = install_with(Every::Daily, (9, 30), false, Backend::Cron, &refuse).unwrap_err();
+    let err = install_with(Every::Day, (9, 30), false, Backend::Cron, &refuse).unwrap_err();
     assert!(err.to_string().contains("crontab failed: bad minute"), "{err}");
 }
 
@@ -305,4 +305,26 @@ fn a_scheduled_run_records_the_check_and_logs_one_line() {
     // which is no wpantry: a failed check, logged.
     assert_eq!(run().unwrap(), EXIT_FAIL);
     assert!(!p.lock.exists());
+}
+
+#[test]
+fn a_month_quarter_and_year_start_at_the_period_start() {
+    let month = plist(Path::new("/x"), Every::Month, 7, 0, &p());
+    assert!(month.contains("<key>Day</key>\n      <integer>1</integer>"));
+    let quarter = plist(Path::new("/x"), Every::Quarter, 7, 0, &p());
+    assert!(quarter.contains("<key>StartCalendarInterval</key>\n    <array>"));
+    assert_eq!(quarter.matches("<key>Month</key>").count(), 4);
+    assert!(quarter.contains("<key>Month</key>\n      <integer>10</integer>"));
+    let year = plist(Path::new("/x"), Every::Year, 7, 0, &p());
+    assert!(
+        year.contains("<key>Month</key>\n      <integer>1</integer>\n      <key>Day</key>\n      <integer>1</integer>")
+    );
+    assert!(unit(Path::new("/x"), Every::Month, 7, 0, &p()).1.contains("OnCalendar=*-*-01 07:00:00"));
+    assert!(unit(Path::new("/x"), Every::Quarter, 7, 0, &p()).1.contains("OnCalendar=*-01,04,07,10-01 07:00:00"));
+    assert!(unit(Path::new("/x"), Every::Year, 7, 0, &p()).1.contains("OnCalendar=*-01-01 07:00:00"));
+    assert!(cron_line(Path::new("/x"), Every::Month, 7, 0, &p()).starts_with("0 7 1 * * "));
+    assert!(cron_line(Path::new("/x"), Every::Quarter, 7, 0, &p()).starts_with("0 7 1 1,4,7,10 * "));
+    assert!(cron_line(Path::new("/x"), Every::Year, 7, 0, &p()).starts_with("0 7 1 1 * "));
+    assert_eq!(Every::NAMES.map(|n| Every::parse(n).is_some()), [true; 6]);
+    assert_eq!(word(Every::Quarter), "every quarter (1 January, April, July, October)");
 }

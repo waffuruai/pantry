@@ -121,6 +121,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         deep: a.deep,
         no_online_hash: a.no_online_hash,
         sources: a.sources.clone(),
+        no_personal_files: a.no_personal_files,
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),

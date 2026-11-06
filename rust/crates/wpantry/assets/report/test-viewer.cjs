@@ -82,7 +82,7 @@ function planOf(findings){ // the shape src/reporters/html.rs writes: one step p
   return [...by.values()].sort((a,b)=>(a.mode==='optional')-(b.mode==='optional'));
 }
 const report={schema:1,impl:'rust',version:'0.2.0',checked:{'git repos':4,'project dependencies':812,'apps':61},unfixed:1,unknown_licenses:0,findings:every};
-const scope={machine:true,paths:[],offline:false,licenses:true,posture:true,posture_exclusions:['POSTURE-FIREWALL'],suspect_exemptions:{ids:['PRIV-ESCALATION'],paths:['trusted.js']},policy_files:{posture:'/example/posture.txt',suspect:'bundled'}};
+const scope={personal_files:false,machine:true,paths:[],offline:false,licenses:true,posture:true,posture_exclusions:['POSTURE-FIREWALL'],suspect_exemptions:{ids:['PRIV-ESCALATION'],paths:['trusted.js']},policy_files:{posture:'/example/posture.txt',suspect:'bundled'}};
 const history={since_days:90,open:3,
   exposures:[{kind:'brew',component:'curl',version:'8.1',location:'',vuln_id:'CVE-2025-9',status:'fail',severity:'HIGH',kev:false,fixed:'8.2',note:'',first_at:1,last_at:2,resolved_at:3,days_exposed:2.5,first:'2026-10-20 08:00 UTC',resolved:'2026-10-22 20:00 UTC',dep_scope:'unknown',dep_direct:null,affected_range:'',fix_cmd:'brew upgrade curl'},
     {kind:'project',component:'smallvec',version:'1.6.0',location:'/Users/me/w/app/Cargo.lock',vuln_id:'CVE-2021-25900',status:'fail',severity:'CRITICAL',kev:true,fixed:'1.6.1',note:'',first_at:1,last_at:2,resolved_at:null,days_exposed:12,first:'2026-10-20 08:00 UTC',resolved:null,dep_scope:'runtime',dep_direct:true,affected_range:'',fix_cmd:''}],
@@ -104,6 +104,7 @@ for(const f of every.filter(f=>f.kind==='unchecked')){
 }
 assert(!/every source answered|no coverage gaps were recorded/i.test(scanned),'gaps are never reported as clean');
 assert(scanned.includes('offline and not cached &lt;b&gt;x&lt;/b&gt;'));
+assert(scanned.includes('Personal-folder documents') && scanned.includes('Excluded (--no-personal-files or no machine inventory)'));
 assert(scanned.includes('POSTURE-FIREWALL') && scanned.includes('path: trusted.js') && scanned.includes('/example/posture.txt'));
 assert(scanned.includes('<dt>History scan</dt><dd>#42</dd>'));
 

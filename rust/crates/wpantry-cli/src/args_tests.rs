@@ -71,6 +71,23 @@ fn malware_options_and_the_rules_command() {
     assert!(usage(&["sources", "extra"]).contains("too many arguments for 'sources'"));
 }
 
+/// `--no-personal-files` is off unless given, on `scan` and `fix`, and
+/// refused with `--deep`, which walks all of `~`.
+#[test]
+fn personal_files_are_left_out_only_when_asked() {
+    for cmd in ["scan", "fix"] {
+        assert!(!scan(&[cmd]).no_personal_files, "{cmd}");
+        assert!(scan(&[cmd, "--no-personal-files"]).no_personal_files, "{cmd}");
+        assert!(
+            usage(&[cmd, "--deep", "--no-personal-files"]).contains("cannot be used with option '--deep'"),
+            "{cmd}: {}",
+            usage(&[cmd, "--deep", "--no-personal-files"])
+        );
+        assert!(usage(&[cmd, "--no-personal-files", "--deep"]).contains("cannot be used with"), "{cmd}");
+    }
+    assert!(help(&["scan"]).contains("--no-personal-files") && help(&["fix"]).contains("--no-personal-files"));
+}
+
 #[test]
 fn no_arguments_print_the_help_and_the_version_is_one_flag() {
     assert_eq!(p(&[]), Parsed::Help(help(&[])));

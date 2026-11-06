@@ -649,6 +649,7 @@ function scannedHTML(r,print){
     '<dt>Repos</dt><dd>'+(paths?esc(paths.length?paths.map(shortPath).join(', '):'Every git repo under the home directory'):'Not recorded')+'</dd>'+
     '<dt>Sources</dt><dd>'+mode('offline','Offline: the local cache only','Online; cached answers reused for a day')+'</dd>'+
     '<dt>Licenses</dt><dd>'+mode('licenses','Checked against the allowlist','Not requested')+'</dd>'+
+    '<dt>Personal-folder documents</dt><dd>'+mode('personal_files','Included','Excluded (--no-personal-files or no machine inventory)')+'</dd>'+
     '<dt>Security settings</dt><dd>'+mode('posture','Checked, minus the exclusions below','Not checked (--no-posture or no machine inventory)')+'</dd>';
   if(sc){
     var ex=Array.isArray(sc.posture_exclusions)?sc.posture_exclusions:null;

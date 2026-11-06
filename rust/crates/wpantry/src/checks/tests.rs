@@ -183,3 +183,25 @@ fn listed_files_and_bundled_defaults() {
     assert_eq!(policy_error(&toml), None);
     assert!(policy_error(&old).unwrap().contains("not a TOML policy file"), "a list from before TOML is refused");
 }
+
+#[test]
+fn excluding_personal_files_keeps_their_folders_out_of_the_file_pass() {
+    let home = crate::utils::files::test_home();
+    let dl = crate::utils::files::home().join("Downloads");
+    std::fs::create_dir_all(&dl).unwrap();
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = true;
+    s.opts.no_malware = true;
+    let reads_downloads = |s: &Scan| s.file_jobs().iter().any(|j| j.root.starts_with(&dl));
+    assert!(reads_downloads(&s));
+    s.opts.no_personal_files = true;
+    assert!(!reads_downloads(&s));
+    // The malware scan's landing places leave the personal folders out too.
+    s.opts.no_malware = false;
+    assert!(!reads_downloads(&s));
+    s.opts.no_personal_files = false;
+    assert!(reads_downloads(&s));
+    drop(home);
+}

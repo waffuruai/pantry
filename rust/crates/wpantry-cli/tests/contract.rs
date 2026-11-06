@@ -233,6 +233,8 @@ fn exit_2_on_usage_errors() {
         vec!["mitigate"],
         vec!["fix", "--dryrun"],
         vec!["scan", "--license"],
+        vec!["scan", "--deep", "--no-personal-files"],
+        vec!["fix", "--no-personal-files", "--deep"],
     ] {
         let r = t.run(&argv);
         assert_eq!(r.code, 2, "{argv:?}");
@@ -245,6 +247,7 @@ fn exit_2_on_usage_errors() {
         let r = t.run(&[cmd, "--help"]);
         assert_eq!(r.code, 0, "{cmd}");
         assert!(r.out.starts_with(&format!("Usage: {} {cmd} [options]", name())), "{}", r.out);
+        assert_eq!(r.out.contains("--no-personal-files"), cmd != "report", "{cmd}");
     }
 }
 
@@ -547,7 +550,16 @@ fn posture_flags() {
     // Repo-only scans never report the machine's settings.
     let r = t.project_run("scan", &["--json"]);
     assert!(of_kind(&r.json(), "posture").is_empty());
-    let r = t.run(&["scan", "--no-machine", "--no-posture", "--offline", "--no-input", "--path", s(&t.home)]);
+    let r = t.run(&[
+        "scan",
+        "--no-machine",
+        "--no-posture",
+        "--no-personal-files",
+        "--offline",
+        "--no-input",
+        "--path",
+        s(&t.home),
+    ]);
     assert_eq!(r.code, 0, "{}", r.err);
     let policy = t.home.join("posture.toml");
     write(&policy, "skip = [\"remote-login\", \"POSTURE-FILEVAULT\"]\n");

@@ -1,0 +1,425 @@
+//! HTTP behind a trait: one `ureq` + `rustls` implementation, and a fake for
+//! tests that answers from a closure and records every request. Every
+//! request names us and times out after 30 s; callers decide what an offline
+//! machine means for their source. Only the hosts in [`HOSTS`] (the list in
+//! `docs/public/checks-and-sources.md#sources`) are ever asked: [`Http`]
+//! refuses any other URL before a connection is made. TLS is verified
+//! against the platform's trust store, so a CA this machine distrusts is
+//! distrusted here too.
+
+use crate::error::{Error, Result};
+use crate::utils::json;
+use serde_json::Value;
+use std::sync::Mutex;
+use std::time::Duration;
+
+pub const USER_AGENT: &str = concat!("wpantry/", env!("CARGO_PKG_VERSION"), " (+https://github.com/waffuruai/pantry)");
+pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// The largest response body read; a bigger one is `Invalid`.
+pub const MAX_BODY: u64 = 128 << 20;
+
+/// Every host wpantry asks, and the only ones [`Http`] will connect to: the
+/// hosts of the bundled sources file (`assets/defaults/sources.toml`,
+/// [`crate::sources::file`]). A source that moves, or a new one, changes
+/// that file, this list and `docs/public/checks-and-sources.md` in the same
+/// change; a test fails when the file and this list disagree.
+pub const HOSTS: &[&str] = &[
+    "api.osv.dev",
+    "www.cisa.gov",
+    "endoflife.date",
+    "formulae.brew.sh",
+    "security.archlinux.org",
+    "versionhistory.googleapis.com",
+    "product-details.mozilla.org",
+    "www.postgresql.org",
+    "main.vscode-cdn.net",
+    "marketplace.visualstudio.com",
+    "open-vsx.org",
+    "api.github.com",
+    "api.deps.dev",
+    "haveibeenpwned.com",
+    "api.xposedornot.com",
+    // GitHub serves release assets (YARA rule bundles) from these, by redirect.
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+    // EPSS's daily scores, for every CVE.
+    "epss.empiricalsecurity.com",
+    "cveawg.mitre.org",
+    "osv-vulnerabilities.storage.googleapis.com",
+    // The malware scan's indicator lists and, with consent, hash lookups.
+    "feodotracker.abuse.ch",
+    "yaraify-api.abuse.ch",
+    "hashlookup.circl.lu",
+    "mb-api.abuse.ch",
+];
+
+/// Redirects followed per request; every hop must be in [`HOSTS`] too.
+const MAX_REDIRECTS: usize = 5;
+
+/// The host of an `https://` URL, lowercased and without a port; `None` for
+/// any other scheme, a missing host, or userinfo (`https://a@b/`).
+pub fn host_of(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    if host.is_empty() { None } else { Some(host.to_ascii_lowercase()) }
+}
+
+/// Hosts of the user's own sources the user said yes to, for this run
+/// ([`allow`]); never one the user wasn't asked about.
+static ALLOWED: std::sync::LazyLock<std::sync::RwLock<Vec<String>>> = std::sync::LazyLock::new(Default::default);
+
+/// Let [`Http`] connect to `host` for the rest of this run: a user source's
+/// host, after the user's yes (`crate::sources::user`).
+pub fn allow(host: &str) {
+    let host = host.to_ascii_lowercase();
+    let mut a = ALLOWED.write().expect("lock");
+    if !a.contains(&host) {
+        a.push(host);
+    }
+}
+
+/// `Ok` when `url` is https to a host in [`HOSTS`], or one [`allow`]ed.
+fn allowed(url: &str) -> Result<()> {
+    match host_of(url) {
+        Some(h) if HOSTS.contains(&h.as_str()) || ALLOWED.read().expect("lock").contains(&h) => Ok(()),
+        _ => Err(Error::Invalid(format!("{url}: not a host wpantry asks (docs/public/checks-and-sources.md)"))),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Request {
+    pub method: &'static str,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
+    /// The most of the response body read; more is `Invalid`. At most [`MAX_BODY`].
+    pub limit: u64,
+}
+
+impl Request {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Response {
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub etag: Option<String>,
+}
+
+impl Response {
+    pub fn ok(body: impl Into<Vec<u8>>) -> Response {
+        Response { status: 200, body: body.into(), etag: None }
+    }
+
+    pub fn not_found() -> Response {
+        Response { status: 404, body: Vec::new(), etag: None }
+    }
+}
+
+/// Sends one request. Any HTTP status comes back as a `Response`; only a
+/// transport failure (DNS, TLS, timeout, a body over the cap) is an error.
+pub trait Net: Send + Sync {
+    fn send(&self, req: &Request) -> Result<Response>;
+}
+
+/// `request` semantics shared by every caller (Python: `net.request`):
+/// 2xx and 304 (when `etag` still matches) and 404 come back; anything else
+/// is `Offline`.
+pub fn request(
+    net: &dyn Net,
+    url: &str,
+    data: Option<&Value>,
+    headers: &[(&str, &str)],
+    etag: Option<&str>,
+) -> Result<Response> {
+    request_capped(net, url, data, headers, etag, MAX_BODY)
+}
+
+/// [`request`], reading at most `limit` bytes of the body.
+pub fn request_capped(
+    net: &dyn Net,
+    url: &str,
+    data: Option<&Value>,
+    headers: &[(&str, &str)],
+    etag: Option<&str>,
+    limit: u64,
+) -> Result<Response> {
+    let mut h: Vec<(String, String)> =
+        vec![("User-Agent".into(), USER_AGENT.into()), ("Accept".into(), "application/json".into())];
+    for (k, v) in headers {
+        h.retain(|(name, _)| !name.eq_ignore_ascii_case(k));
+        h.push((k.to_string(), v.to_string()));
+    }
+    let body = data.map(|d| serde_json::to_vec(d).expect("a Value always serialises"));
+    if body.is_some() {
+        h.push(("Content-Type".into(), "application/json".into()));
+    }
+    if let Some(e) = etag {
+        h.push(("If-None-Match".into(), e.to_string()));
+    }
+    let req = Request {
+        method: if body.is_some() { "POST" } else { "GET" },
+        url: url.to_string(),
+        headers: h,
+        body,
+        limit: limit.min(MAX_BODY),
+    };
+    let resp = net.send(&req)?;
+    match resp.status {
+        200..=299 | 404 => Ok(resp),
+        304 => Ok(Response { status: 304, body: Vec::new(), etag: etag.map(str::to_string) }),
+        s => Err(Error::Offline(format!("{url}: HTTP {s}"))),
+    }
+}
+
+/// The JSON at `url`, or None on 404.
+pub fn get_json(net: &dyn Net, url: &str, headers: &[(&str, &str)]) -> Result<Option<Value>> {
+    let resp = request(net, url, None, headers, None)?;
+    if resp.status == 404 {
+        return Ok(None);
+    }
+    json::parse(&resp.body, json::MAX_DOCUMENT).map(Some)
+}
+
+pub fn post_json(net: &dyn Net, url: &str, data: &Value) -> Result<Value> {
+    let resp = request(net, url, Some(data), &[], None)?;
+    json::parse(&resp.body, json::MAX_DOCUMENT)
+}
+
+/// GitHub API headers; a GITHUB_TOKEN, when set, lifts the anonymous rate
+/// limit (60 requests an hour).
+pub fn github_headers() -> Vec<(String, String)> {
+    let mut h = vec![("Accept".to_string(), "application/vnd.github+json".to_string())];
+    if let Ok(t) = std::env::var("GITHUB_TOKEN")
+        && !t.is_empty()
+    {
+        h.push(("Authorization".into(), format!("Bearer {t}")));
+    }
+    h
+}
+
+/// The real network: blocking `ureq` over `rustls`, server certificates
+/// verified by the platform (the keychain on macOS, the system bundle on
+/// Linux), proxy from the environment (`HTTPS_PROXY`, `ALL_PROXY`), and
+/// only the hosts in [`HOSTS`].
+pub struct Http {
+    agent: ureq::Agent,
+}
+
+impl Default for Http {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Http {
+    pub fn new() -> Http {
+        // Keep a connection for each parallel fetch (OSV records, deps.dev):
+        // ureq keeps 3 per host by default, so the rest paid a TLS handshake
+        // per request.
+        let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+        let config = ureq::Agent::config_builder()
+            .tls_config(tls)
+            .timeout_global(Some(TIMEOUT))
+            .http_status_as_error(false)
+            .https_only(true)
+            .max_idle_connections(32)
+            .max_idle_connections_per_host(16)
+            // Redirects are followed here, not by ureq, so each hop is
+            // checked against HOSTS before a connection is made.
+            .max_redirects(0)
+            .build();
+        Http { agent: config.into() }
+    }
+}
+
+/// Tries per request: a dropped connection or a 429/502/503/504 is tried
+/// again after 250 ms, then 500 ms (plus jitter), honouring Retry-After up
+/// to 10 s. Every request here is idempotent (GETs, and OSV's querybatch).
+const TRIES: u32 = 3;
+
+impl Net for Http {
+    fn send(&self, req: &Request) -> Result<Response> {
+        follow_redirects(req, |r| {
+            allowed(&r.url)?;
+            let mut location = None;
+            let resp = with_retries(|| {
+                let (resp, retry, loc) = self.send_once(r)?;
+                location = loc;
+                Ok((resp, retry))
+            })?;
+            Ok((resp, location))
+        })
+    }
+}
+
+/// Send `req`, then follow a 301/302/303/307/308 to its `Location` (a GET,
+/// headers kept except `Authorization`, which never leaves the first host),
+/// at most [`MAX_REDIRECTS`] times. `send` checks each URL against [`HOSTS`].
+/// A redirect's `Location` against the URL it answered: absolute as is,
+/// `/path` on the same host, `name` beside the URL's last segment.
+fn resolve(base: &str, location: &str) -> String {
+    if location.contains("://") {
+        return location.to_string();
+    }
+    let host = host_of(base).unwrap_or_default();
+    if location.starts_with('/') {
+        return format!("https://{host}{location}");
+    }
+    let path = base.split(['?', '#']).next().unwrap_or_default();
+    match path.rsplit_once('/') {
+        Some((dir, _)) if dir.len() > "https://".len() + host.len() => format!("{dir}/{location}"),
+        _ => format!("https://{host}/{location}"),
+    }
+}
+
+fn follow_redirects(req: &Request, send: impl Fn(&Request) -> Result<(Response, Option<String>)>) -> Result<Response> {
+    let mut current = req.clone();
+    for _ in 0..=MAX_REDIRECTS {
+        let (resp, location) = send(&current)?;
+        let Some(next) = location.filter(|_| matches!(resp.status, 301 | 302 | 303 | 307 | 308)) else {
+            return Ok(resp);
+        };
+        let next = resolve(&current.url, &next);
+        let first_host = host_of(&req.url);
+        current = Request {
+            method: "GET",
+            headers: current
+                .headers
+                .into_iter()
+                .filter(|(k, _)| !k.eq_ignore_ascii_case("authorization") || host_of(&next) == first_host)
+                .collect(),
+            url: next,
+            body: None,
+            limit: req.limit,
+        };
+    }
+    Err(Error::Invalid(format!("{}: more than {MAX_REDIRECTS} redirects", req.url)))
+}
+
+/// `once` up to [`TRIES`] times: the response and the server's Retry-After.
+fn with_retries(mut once: impl FnMut() -> Result<(Response, Option<Duration>)>) -> Result<Response> {
+    let mut last = None;
+    for attempt in 0..TRIES {
+        match once() {
+            Ok((resp, retry_after)) if attempt + 1 < TRIES && matches!(resp.status, 429 | 502 | 503 | 504) => {
+                std::thread::sleep(retry_after.unwrap_or_else(|| backoff(attempt)));
+                last = Some(Ok(resp));
+            }
+            Ok((resp, _)) => return Ok(resp),
+            Err(e @ Error::Offline(_)) if attempt + 1 < TRIES => {
+                std::thread::sleep(backoff(attempt));
+                last = Some(Err(e));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    last.expect("at least one try")
+}
+
+/// 250 ms, 500 ms, …, each with up to a quarter of jitter.
+fn backoff(attempt: u32) -> std::time::Duration {
+    let base = 250u64 << attempt;
+    let jitter =
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)
+            as u64)
+            % (base / 4 + 1);
+    std::time::Duration::from_millis(base + jitter)
+}
+
+impl Http {
+    /// One try: the response, the server's Retry-After (capped) and its
+    /// redirect `Location`, if any.
+    fn send_once(&self, req: &Request) -> Result<(Response, Option<std::time::Duration>, Option<String>)> {
+        let offline = |e: ureq::Error| Error::Offline(format!("{}: {e}", req.url));
+        let mut resp = match &req.body {
+            Some(body) => {
+                let mut r = self.agent.post(&req.url);
+                for (k, v) in &req.headers {
+                    r = r.header(k.as_str(), v.as_str());
+                }
+                r.send(&body[..]).map_err(offline)?
+            }
+            None => {
+                let mut r = self.agent.get(&req.url);
+                for (k, v) in &req.headers {
+                    r = r.header(k.as_str(), v.as_str());
+                }
+                r.call().map_err(offline)?
+            }
+        };
+        let status = resp.status().as_u16();
+        let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let retry_after = retry_after(resp.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+        let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let limit = req.limit.min(MAX_BODY);
+        let body =
+            resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| body_error(&req.url, limit, e))?;
+        Ok((Response { status, body, etag }, retry_after, location))
+    }
+}
+
+/// A Retry-After header in seconds, capped at 10 s; a date form is ignored.
+fn retry_after(header: Option<&str>) -> Option<std::time::Duration> {
+    header.and_then(|s| s.trim().parse::<u64>().ok()).map(|s| std::time::Duration::from_secs(s.min(10)))
+}
+
+/// A body that couldn't be read: over the cap is `Invalid`, anything else
+/// (a dropped connection) `Offline`.
+fn body_error(url: &str, limit: u64, e: ureq::Error) -> Error {
+    match e {
+        ureq::Error::BodyExceedsLimit(_) => Error::Invalid(format!("{url}: response over {limit} bytes")),
+        e => Error::Offline(format!("{url}: {e}")),
+    }
+}
+
+type Handler = Box<dyn Fn(&Request) -> Result<Response> + Send + Sync>;
+
+/// A network for tests: answers from a closure and records every request.
+pub struct Fake {
+    handler: Handler,
+    log: Mutex<Vec<Request>>,
+}
+
+impl Fake {
+    pub fn new(handler: impl Fn(&Request) -> Result<Response> + Send + Sync + 'static) -> Fake {
+        Fake { handler: Box::new(handler), log: Mutex::new(Vec::new()) }
+    }
+
+    /// A network where every host is unreachable.
+    pub fn offline() -> Fake {
+        Fake::new(|r| Err(Error::Offline(format!("{}: offline (fake)", r.url))))
+    }
+
+    pub fn requests(&self) -> Vec<Request> {
+        self.log.lock().expect("fake net log").clone()
+    }
+}
+
+impl Net for Fake {
+    /// The handler's answer, with the request's `limit` enforced as [`Http`] enforces it.
+    fn send(&self, req: &Request) -> Result<Response> {
+        self.log.lock().expect("fake net log").push(req.clone());
+        let resp = (self.handler)(req)?;
+        if resp.body.len() as u64 > req.limit {
+            return Err(Error::Invalid(format!("{}: response over {} bytes", req.url, req.limit)));
+        }
+        Ok(resp)
+    }
+}
+
+/// A GitHub repository's clone URL.
+pub fn github(repo: &str) -> String {
+    format!("https://github.com/{repo}.git")
+}
+
+#[cfg(test)]
+#[path = "net_tests.rs"]
+mod tests;

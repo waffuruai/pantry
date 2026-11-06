@@ -1,0 +1,55 @@
+# Words that have no business in a script's identifiers. The AI-BAIT check
+# (src/checks/hidden/bait.rs) flags identifiers of 12 or more characters
+# that carry two of `terms`, or one of `strong`; three such identifiers in
+# one code file are a finding. Matching ignores case and underscores, and
+# a term matches inside a longer word ("detonat" finds "detonator").
+#
+# A compound term is written with a space and read without it ("chemical
+# weapon" is read as one word), so this file holds no identifier the check
+# would flag and pantry doesn't flag its own list.
+
+terms = [
+    "lethal",
+    "poison",
+    "ricin",
+    "sarin",
+    "anthrax",
+    "cyanide",
+    "toxin",
+    "bioweapon",
+    "nerve agent",
+    "overdose",
+    "suicide",
+    "kill",
+    "murder",
+    "bomb",
+    "explosive",
+    "detonat",
+    "weapon",
+    "warhead",
+    "uranium",
+    "plutonium",
+    "pathogen",
+    "chemical weapon",
+    "mass destruction",
+    "genocide",
+    "assassinat",
+    "torture",
+    "fentanyl",
+    "deadly",
+    "dosage",
+    "dose",
+]
+
+# Unmistakable: one is enough.
+strong = [
+    "ricin",
+    "sarin",
+    "anthrax",
+    "bioweapon",
+    "nerve agent",
+    "chemical weapon",
+    "mass destruction",
+    "warhead",
+    "plutonium",
+]

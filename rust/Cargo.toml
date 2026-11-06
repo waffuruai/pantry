@@ -1,11 +1,11 @@
-# wpantry in Rust: docs/architecture.md. Every dependency is pinned `=x.y.z`, only from the
+# Pantry in Rust: docs/public/architecture.md. Every dependency is pinned `=x.y.z`, only from the
 # allowlist in docs/internal/dependencies.md.
 [workspace]
 resolver = "3"
-members = ["crates/wpantry", "crates/wpantry-cli"]
+members = ["crates/wcli", "crates/wpantry", "crates/wpantry-cli", "crates/wpantry-yara"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -17,7 +17,9 @@ serde_json = { version = "=1.0.154", default-features = false, features = ["std"
 rusqlite = { version = "=0.41.0", features = ["bundled"] }
 ureq = { version = "=3.5.0", default-features = false, features = ["rustls", "platform-verifier"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-wpantry = { path = "crates/wpantry", version = "=0.3.0" }
+wcli = { path = "crates/wcli", version = "=0.4.0" }
+wpantry = { path = "crates/wpantry", version = "=0.4.0" }
+wpantry-yara = { path = "crates/wpantry-yara", version = "=0.4.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -33,3 +35,7 @@ codegen-units = 1
 strip = true
 panic = "unwind"
 opt-level = "z"
+
+# The scanner's hot loops are worth the size: the engine builds for speed, the rest for size.
+[profile.release.package.wpantry-yara]
+opt-level = 3

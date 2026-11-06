@@ -3,9 +3,9 @@
 
 use serde_json::{Value, json};
 use std::sync::Mutex;
-use wpantry::check::{Options, Scan};
+use wpantry::checks::{Options, Scan};
 use wpantry::db::Cache;
-use wpantry::net::{Fake, Response};
+use wpantry::utils::net::{Fake, Response};
 
 const LOCK: &str = r#"version = 4
 
@@ -40,7 +40,7 @@ fn record(id: &str, aliases: &[&str]) -> Value {
 
 #[test]
 fn repo_scan_end_to_end() {
-    let tmp = wpantry::system::TempDir::new("scan").unwrap();
+    let tmp = wpantry::utils::temp::TempDir::new("scan").unwrap();
     let project = tmp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("Cargo.lock"), LOCK).unwrap();
@@ -55,6 +55,9 @@ fn repo_scan_end_to_end() {
     let queried = std::sync::Arc::new(Mutex::new(Vec::new()));
     let q = queried.clone();
     let net = Fake::new(move |r| {
+        if r.url == "https://osv-vulnerabilities.storage.googleapis.com/crates.io/modified_id.csv" {
+            return Ok(Response::ok("2026-11-05T09:00:00Z,RUSTSEC-2021-0003\n2026-11-05T08:00:00Z,RUSTSEC-OTHER\n"));
+        }
         if r.url.contains("cisa.gov") {
             return Ok(Response::ok(json!({"vulnerabilities": [{"cveID": "CVE-2021-25900"}]}).to_string()));
         }
@@ -87,9 +90,21 @@ fn repo_scan_end_to_end() {
             };
             return Ok(Response::ok(rec.to_string()));
         }
+        if r.url.starts_with("https://cveawg.mitre.org/api/cve/CVE-2021-25900") {
+            return Ok(Response::ok(
+                json!({"containers": {"adp": [{"providerMetadata": {"shortName": "CISA-ADP"}, "metrics": [
+                    {"cvssV3_1": {"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}}]}]}})
+                .to_string(),
+            ));
+        }
+        if r.url.contains("epss") {
+            let rows: String = (0..1000).map(|i| format!("CVE-2020-{i},0.01,0.5\n")).collect();
+            return Ok(Response::ok(format!("cve,epss,percentile\nCVE-2021-25900,0.02,0.6\n{rows}")));
+        }
         panic!("unexpected request to {}", r.url);
     });
-    let opts = Options { paths: Some(vec![project.clone()]), machine: false, ..Default::default() };
+    // The malware pass has its own tests (src/malware/tests.rs); this one is the repo checks.
+    let opts = Options { paths: Some(vec![project.clone()]), machine: false, no_malware: true, ..Default::default() };
     let cache = Cache::open(Some(&db)).unwrap();
     let out = Scan::new(opts, cache, &net, &|_| {}, &|_| {}).run().unwrap();
 
@@ -113,6 +128,11 @@ fn repo_scan_end_to_end() {
         ),
         ("smallvec", "1.6.0", "CVE-2021-25900", "fail", "1.6.1", true, "CRITICAL")
     );
+    assert_eq!(
+        (f.cvss, f.cvss_version.as_str(), f.epss),
+        (Some(9.8), "3.1", Some(0.02)),
+        "CVE.org's score: OSV's records had none"
+    );
     assert_eq!(f.location, dir.join("Cargo.lock").to_string_lossy());
     assert_eq!(f.fix_cmd, format!("cd {} && cargo update -p smallvec --precise 1.6.1", dir.display()));
     assert!(
@@ -120,13 +140,19 @@ fn repo_scan_end_to_end() {
         "licenses are checked only with --licenses"
     );
 
-    // The findings are the cache's latest, and a second run the same day asks nothing.
+    // The findings are the cache's latest, and a second run reads OSV's
+    // change list and asks nothing else: nothing changed.
     let cache = Cache::open(Some(&db)).unwrap();
     let n: i64 =
         cache.conn.query_row("SELECT COUNT(*) FROM findings WHERE kind = 'project'", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 1);
-    let quiet = Fake::new(|r| panic!("cached answers are fresh, but asked {}", r.url));
-    let opts = Options { paths: Some(vec![project]), machine: false, ..Default::default() };
+    let quiet = Fake::new(|r| {
+        if r.url.ends_with("/crates.io/modified_id.csv") {
+            return Ok(Response::ok("2026-11-05T09:00:00Z,RUSTSEC-2021-0003\n2026-11-05T08:00:00Z,RUSTSEC-OTHER\n"));
+        }
+        panic!("cached answers are current, but asked {}", r.url)
+    });
+    let opts = Options { paths: Some(vec![project]), machine: false, no_malware: true, ..Default::default() };
     let again = Scan::new(opts, cache, &quiet, &|_| {}, &|_| {}).run().unwrap();
     assert_eq!(again.findings.iter().filter(|f| f.kind == "project").count(), 1);
 }

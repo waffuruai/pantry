@@ -1,48 +1,93 @@
-//! Argument parsing, behaving as the Python implementation's argparse
-//! parser does where the contract can see it: no arguments print the help,
-//! options may be abbreviated to a unique prefix and take their value as the
-//! next argument or after `=`, and a usage error prints the usage line and
-//! the error to stderr and exits 2.
+//! The command line, declared with [`wcli`]: every command, option and
+//! argument once, with its help; [`parse`] turns the words into a
+//! [`Command`] to run. No command has a second name, no option an alias,
+//! and options are spelled out: a typo is an error naming the closest.
 
 use std::path::PathBuf;
+use wcli::{Arg, Command as Cli, Exit, Matches, Opt};
+use wpantry::reporters::Part;
 
-pub const SUBCOMMANDS: &[&str] = &[
-    "scan",
-    "check",
-    "fix",
-    "search",
-    "export",
-    "breach",
-    "watch",
-    "version",
-    "tools",
-    "skill",
-    "sync",
-    "schedule",
-    "cache",
-    "update",
-    "report",
-    "harden",
-    "clipboard",
-    "mitigate",
-    "help",
+/// How a report is shown: the terminal's tables (the default), or a format
+/// a file or another program reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shown {
+    #[default]
+    Tui,
+    Txt,
+    Json,
+    Jsonl,
+    Csv,
+    Md,
+    Html,
+}
+
+impl Shown {
+    /// The flag that picks it.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Shown::Tui => "",
+            Shown::Txt => "--txt",
+            Shown::Json => "--json",
+            Shown::Jsonl => "--jsonl",
+            Shown::Csv => "--csv",
+            Shown::Md => "--md",
+            Shown::Html => "--html",
+        }
+    }
+}
+
+const FORMATS: [(Shown, &str); 6] = [
+    (Shown::Txt, "the report as plain text, without colour"),
+    (Shown::Json, "the findings as JSON (schema 1)"),
+    (Shown::Jsonl, "one JSON object per finding, joined with its OSV record, lifecycle and fix"),
+    (Shown::Csv, "one table: the findings, or the log asked for"),
+    (Shown::Md, "Markdown"),
+    (Shown::Html, "one offline HTML page"),
 ];
 
+/// The report's options, shared by `report`, `scan` and `fix`: what it
+/// covers (`report`'s word; the findings for a scan), which format, written
+/// where, and how far back the logs go.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Show {
+    pub part: Part,
+    pub format: Shown,
+    pub out: Option<PathBuf>,
+    /// `-o -`: to stdout even on a terminal. Otherwise a format other than
+    /// the terminal's goes to a file (`pantry_report_<when>.<ext>`) on a
+    /// terminal, and to stdout when stdout is a pipe or a file.
+    pub stdout: bool,
+    /// `--since DAYS`: the logs' reach.
+    pub since: i64,
+}
+
+impl Default for Show {
+    fn default() -> Show {
+        Show {
+            part: Part::Findings,
+            format: Shown::Tui,
+            out: None,
+            stdout: false,
+            since: wpantry::reporters::HISTORY_DAYS,
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
-/// The scan's options: `scan`, its alias `check`, and `fix`.
+/// The scan's options: `scan`, and `fix`.
 pub struct Check {
     pub path: Option<Vec<PathBuf>>,
     pub no_machine: bool,
-    /// `fix` (`scan --fix` and `--update` still work): the unattended fixes and the stopgaps, then a re-check.
+    /// `fix`: the unattended fixes and the stopgaps, then a re-check.
     pub fix: bool,
     /// `fix --yes`: run and write without asking.
     pub yes: bool,
-    /// `fix --dryrun`: print the plan, change nothing.
-    pub dryrun: bool,
+    /// `fix --dry-run`: print the plan, change nothing.
+    pub dry_run: bool,
     pub refresh: bool,
     pub offline: bool,
-    pub json: bool,
-    pub html: Option<PathBuf>,
+    /// How the report is shown when the scan is done.
+    pub show: Show,
     pub no_input: bool,
     /// `--jobs N`: CPU-bound scans at once.
     pub jobs: Option<usize>,
@@ -53,37 +98,37 @@ pub struct Check {
     pub install_scripts: Option<PathBuf>,
     pub repo_hooks: Option<PathBuf>,
     pub no_posture: bool,
-    pub no_clipboard: bool,
     pub posture_policy: Option<PathBuf>,
     pub suspect_policy: Option<PathBuf>,
     pub hooks_policy: Option<PathBuf>,
+    /// `--no-malware`: skip the YARA malware scan.
+    pub no_malware: bool,
+    /// `--deep`: the malware scan reads all of `~` with every system's rules.
+    pub deep: bool,
+    /// `--no-online-hash`: never look up a flagged file's hash online.
+    pub no_online_hash: bool,
+    /// `--sources FILE`: the user's sources file for this run.
+    pub sources: Option<PathBuf>,
 }
 
-/// What `mitigate` acts on.
+/// What `fix list` and `fix ID` act on.
 #[derive(Debug, PartialEq)]
 pub enum Target {
-    /// The stopgaps wpantry has and the advisories with an unattended fix.
+    /// What can be fixed, from the latest scan.
     List,
-    /// Everything: `fix`.
-    All,
-    /// One advisory, upper-cased.
+    /// One advisory, or one of wpantry's own fixes by name, upper-cased.
     Id(String),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
-    /// `scan`, `check` or `fix` (`fix` is set).
+    /// `scan`, or `fix` (all): `fix` is set.
     Scan(Check),
     Search {
         query: String,
         applicable: bool,
         limit: i64,
         json: bool,
-    },
-    Export {
-        csv: Option<String>,
-        jsonl: Option<String>,
-        all: bool,
     },
     Breach {
         enable: bool,
@@ -99,12 +144,14 @@ pub enum Command {
     Tools {
         json: bool,
     },
-    Report {
-        sections: Vec<String>,
-        since_days: i64,
-        format: String,
-        out: Option<String>,
+    /// `sources`: every source wpantry reads and what its fetches came to.
+    Sources {
+        json: bool,
+        /// `--sources FILE`: the user's sources file to list with.
+        file: Option<PathBuf>,
     },
+    /// `report`: the latest scan, shown.
+    Report(Show),
     Sync {
         refresh: bool,
         json: bool,
@@ -114,18 +161,10 @@ pub enum Command {
         every: String,
         at: String,
         dry_run: bool,
-        clipboard_guard: bool,
     },
     Cache {
         action: String,
         older_than: i64,
-    },
-    /// `clipboard`: the self-test once, or with `watch` the resident guard.
-    Clipboard {
-        watch: bool,
-        once: bool,
-        window: f64,
-        json: bool,
     },
     Update {
         check: bool,
@@ -134,27 +173,36 @@ pub enum Command {
         offline: bool,
         version: Option<String>,
     },
-    Harden {
-        what: String,
-        hours: u32,
-        bundle: Option<PathBuf>,
-    },
+    /// `fix list` and `fix ID`.
     Mitigate {
         target: Target,
         dry_run: bool,
         yes: bool,
         no_input: bool,
-        /// `--undo` (`--remove` is the same): take the stopgap away.
+        /// `--undo`: take the stopgap away.
         undo: bool,
-        offline: bool,
-        no_machine: bool,
-        path: Option<Vec<PathBuf>>,
+        /// `--bundle FILE` (`ca-trust`) and `--hours N` (`extension-cooldown`).
+        bundle: Option<PathBuf>,
+        hours: u32,
     },
     Skill,
+    /// `rules`: the YARA rule sources and what compiled (`--update` fetches);
+    /// `rules gen SAMPLE...` writes a rule; `rules goodware` rebuilds the goodware database.
+    Rules {
+        /// "" (list), "gen" or "goodware".
+        action: String,
+        samples: Vec<PathBuf>,
+        update: bool,
+        json: bool,
+        category: String,
+        family: Option<String>,
+        name: Option<String>,
+        out: Option<PathBuf>,
+    },
 }
 
-/// What parsing decided: run a command, or exit now (help printed, or a
-/// usage error).
+/// What parsing decided: run a command, or exit now (help or the version
+/// printed, or a usage error).
 #[derive(Debug, PartialEq)]
 // `Run` carries the whole parsed command; the other two are one string each.
 // One value is built per process, so the size gap costs nothing.
@@ -165,968 +213,398 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,help} ...";
+const EXIT_CODES: &str = "Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.";
 
-/// The scan's options in its usage line, shared by `scan`, `check` and
-/// `fix` (`fix` adds `--dryrun` and `--yes` in front).
-const SCAN_USAGE: [&str; 3] = [
-    "[--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]",
-    "[--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]",
-    "[--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard]",
-];
-
-/// The scan's options in its help, shared by `scan`, `check` and `fix`.
-const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-clipboard        skip the clipboard self-test (copies a canary address and reads it back)";
-
-pub fn usage(cmd: &str) -> String {
-    let line: &str = match cmd {
-        "scan" | "check" | "fix" => {
-            let pad = " ".repeat(format!("usage: wpantry {cmd} ").len());
-            let fix = if cmd == "fix" { " [--dryrun] [--yes]" } else { "" };
-            return format!(
-                "usage: wpantry {cmd} [-h]{fix} {}\n{pad}{}\n{pad}{}",
-                SCAN_USAGE[0], SCAN_USAGE[1], SCAN_USAGE[2]
-            );
-        }
-        "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
-        "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
-        "breach" => "usage: wpantry breach [-h] [--enable | --disable]",
-        "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
-        "version" => "usage: wpantry version [-h] [--json]",
-        "tools" => "usage: wpantry tools [-h] [--json]",
-        "skill" => "usage: wpantry skill [-h]",
-        "schedule" => {
-            "usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] [--clipboard-guard] {install,status,uninstall,run}"
-        }
-        "clipboard" => "usage: wpantry clipboard [-h] [--watch] [--once] [--window SECONDS] [--json]",
-        "sync" => "usage: wpantry sync [-h] [--refresh] [--json]",
-        "cache" => "usage: wpantry cache [-h] [--older-than DAYS] {prune}",
-        "update" => "usage: wpantry update [-h] [--check] [--yes] [--no-input] [--offline] [--version VER]",
-        "report" => {
-            "usage: wpantry report [-h] [--exposure] [--remediation] [--audit] [--since DAYS] [--format FORMAT] [-o FILE]"
-        }
-        "harden" => "usage: wpantry harden [-h] [--hours N] [--bundle FILE] {extension-cooldown,ca-trust}",
-        "mitigate" => {
-            "usage: wpantry mitigate [-h] [--dry-run] [--yes] [--no-input] [--undo] [--offline] [--no-machine] [--path DIR]\n                        {list,all,ID}"
-        }
-        _ => TOP_USAGE,
-    };
-    line.to_string()
+/// `--txt` … `--html`, at most one; `-o`; `--since`.
+fn report_opts() -> Vec<Opt> {
+    let mut opts: Vec<Opt> = FORMATS
+        .iter()
+        .map(|(f, help)| {
+            let others: Vec<&str> =
+                FORMATS.iter().filter(|(o, _)| o != f).map(|(o, _)| o.flag().trim_start_matches('-')).collect();
+            Opt::new(f.flag(), help).conflicts(&others)
+        })
+        .collect();
+    opts.push(Opt::new(
+        "-o, --out <file>",
+        "write the report there; - for stdout. Without it, a format goes to pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it is a pipe or a file",
+    ));
+    opts.push(Opt::new("--since <days>", "how far back the logs go").default("14"));
+    opts
 }
 
-fn help(cmd: &str) -> String {
-    let body = match cmd {
-        "scan" => {
-            return format!(
-                "{}\n\nscan this computer and report what applies to it; change nothing\n\noptions:\n  -h, --help            show this help message and exit\n{SCAN_OPTIONS}\n\nExit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.\n",
-                usage(cmd)
-            );
-        }
-        "check" => {
-            return format!(
-                "{}\n\nthe same as scan\n\noptions:\n  -h, --help            show this help message and exit\n{SCAN_OPTIONS}\n\nExit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.\n",
-                usage(cmd)
-            );
-        }
-        "fix" => {
-            return format!(
-                "{}\n\nscan, then run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check\n\noptions:\n  -h, --help            show this help message and exit\n  --dryrun              print the fix plan; change nothing\n  --yes                 run the fixes and write the stopgaps without asking\n{SCAN_OPTIONS}\n\nExit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage error, 3 internal error.\n",
-                usage(cmd)
-            );
-        }
-        "search" => {
-            "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
-        }
-        "export" => {
-            "write the latest findings as CSV, or as JSON Lines joined with their OSV records, lifecycle and fix outcome\n\noptions:\n  -h, --help     show this help message and exit\n  --csv CSV      the summary columns, one finding per row\n  --jsonl JSONL  one JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix\n  --all          with --jsonl: also the resolved exposures the latest scan no longer lists"
-        }
-        "breach" => {
-            "show or set consent for the email breach check\n\noptions:\n  -h, --help  show this help message and exit\n  --enable\n  --disable"
-        }
-        "watch" => {
-            "ask OSV again about the advisories the last scan found with no released fix (Critical, High, exploited in the wild): exit 10 when a fix has landed\n\noptions:\n  -h, --help  show this help message and exit\n  --offline   use only the local cache\n  --json"
-        }
-        "version" => {
-            "print the version, implementation and JSON schema\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
-        }
-        "tools" => {
-            "list the external tools this implementation uses\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
-        }
-        "skill" => "print the agent skill (SKILL.md)\n\noptions:\n  -h, --help  show this help message and exit",
-        "sync" => {
-            "refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan --offline has fresh answers\n\noptions:\n  -h, --help  show this help message and exit\n  --refresh   ask every source again, even when its answer is fresh\n  --json      print what was refreshed as JSON"
-        }
-        "schedule" => {
-            "run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes (that is wpantry fix)\n\npositional arguments:\n  {install,status,uninstall,run}\n\noptions:\n  -h, --help         show this help message and exit\n  --every WHEN       hourly, daily (default) or weekly\n  --at HH:MM         the time of day (default 09:30; weekly: Mondays)\n  --dry-run          print the job definition without installing it\n  --clipboard-guard  install or uninstall the resident clipboard guard (wpantry clipboard --watch) instead of the scan: a launch agent or systemd user service that starts at login, off by default"
-        }
-        "clipboard" => {
-            "test the clipboard for a clipper now, or with --watch guard it while you work: alert when a copied wallet address becomes a different address of the same chain within the window\n\noptions:\n  -h, --help        show this help message and exit\n  --watch           keep reading the clipboard four times a second until stopped; never writes it\n  --once            with --watch: exit 0 after the first alert\n  --window SECONDS  with --watch: how long after one address a different one of the same chain is a swap (default 2; a double copy inside it is the false positive)\n  --json            the self-test's result as one object, or with --watch one object per alert"
-        }
-        "cache" => {
-            "maintain the cache\n\npositional arguments:\n  {prune}               drop what no scan has used in a while, then compact the file\n\noptions:\n  -h, --help            show this help message and exit\n  --older-than DAYS     what counts as unused (default 90)"
-        }
-        "update" => {
-            "check for a newer wpantry release and, after a yes, install it verified\n\noptions:\n  -h, --help       show this help message and exit\n  --check          only say whether a newer release exists (exit 10 when one does)\n  --yes            install without asking\n  --no-input       never ask: report only\n  --offline        use only the cached answer\n  --version VER    this release instead of the latest"
-        }
-        "report" => {
-            "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes wpantry fix ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
-        }
-        "harden" => {
-            "apply one of the fixes wpantry can make itself\n\npositional arguments:\n  {extension-cooldown,ca-trust}\n    extension-cooldown  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n    ca-trust            distrust the leaked eMudhra roots in the system trust store (sudo asks to install the result)\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      extension-cooldown: the cooldown (default 72)\n  --bundle FILE  ca-trust: rewrite this PEM bundle instead of the system store"
-        }
-        "mitigate" => {
-            "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for scan\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
-        }
-        _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    clipboard           test the clipboard for a clipper, or guard it while you work (--watch)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
-        }
-    };
-    format!("{}\n\n{body}\n", usage(cmd))
+/// The scan's options, shared by `scan` and `fix`.
+fn scan_opts() -> Vec<Opt> {
+    let mut opts = vec![
+        Opt::new(
+            "--path <dir>",
+            "check only the repos at or under this directory; repeat it for more (default: every git repo under ~)",
+        ),
+        Opt::new("--no-machine", "skip the machine inventory: repo checks only"),
+        Opt::new("--refresh", "ignore cached answers and ask every source again"),
+        Opt::new("--offline", "use only the local cache"),
+    ];
+    opts.extend(report_opts());
+    opts.extend([
+        Opt::new("--no-input", "never prompt"),
+        Opt::new("--jobs <n>", "gitleaks scans at once (default: half the cores, at most 4)"),
+        Opt::new("--gitleaks-config <file>", "gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--licenses [file]", "also check dependency licenses, against the file (default: licenses.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--install-scripts <file>", "install-script policy, TOML (default: install-scripts.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--repo-hooks <file>", "indicators of hijacked repos, TOML (default: repo-hooks.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--hooks-policy <file>", "repo hooks you've read and accept, TOML (default: hooks.toml in ~/.config/wpantry)"),
+        Opt::new("--suspect-policy <file>", "suspicious-code ids and paths that warn instead of fail, TOML (default: suspect.toml in ~/.config/wpantry)"),
+        Opt::new("--no-posture", "skip the machine's security settings (FileVault, firewall, sharing, …)"),
+        Opt::new("--posture-policy <file>", "posture checks to skip, TOML (default: posture.toml in ~/.config/wpantry)"),
+        Opt::new(
+            "--no-malware",
+            "skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)",
+        ),
+        Opt::new("--deep", "the malware scan reads everything under ~ with every system's rules (slower)"),
+        Opt::new(
+            "--no-online-hash",
+            "never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)",
+        ),
+        Opt::new(
+            "--sources <file>",
+            "your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)",
+        ),
+    ]);
+    opts
 }
 
-/// Other spellings an option answers to, matched before prefixes are:
-/// `--license` for `--licenses`, `--update` for the scan's old `--fix`.
-const ALIASES: &[(&str, &str)] =
-    &[("--license", "--licenses"), ("-o", "--out"), ("--update", "--fix"), ("--remove", "--undo")];
-
-/// (option, takes a value) for each subcommand.
-fn options(cmd: &str) -> &'static [(&'static str, bool)] {
-    match cmd {
-        // The scan's, with `fix`'s hidden in front: `scan --fix` (and
-        // `--update`) still parse, undocumented, for scripts older than `fix`.
-        "scan" | "check" => &[
-            ("--help", false),
-            ("--fix", false),
-            ("--dryrun", false),
-            ("--yes", false),
-            ("--path", true),
-            ("--no-machine", false),
-            ("--refresh", false),
-            ("--offline", false),
-            ("--json", false),
-            ("--html", true),
-            ("--no-input", false),
-            ("--jobs", true),
-            ("--gitleaks-config", true),
-            ("--licenses", true),
-            ("--install-scripts", true),
-            ("--repo-hooks", true),
-            ("--no-posture", false),
-            ("--posture-policy", true),
-            ("--suspect-policy", true),
-            ("--hooks-policy", true),
-            ("--no-clipboard", false),
-        ],
-        "fix" => &[
-            ("--help", false),
-            ("--dryrun", false),
-            ("--yes", false),
-            ("--path", true),
-            ("--no-machine", false),
-            ("--refresh", false),
-            ("--offline", false),
-            ("--json", false),
-            ("--html", true),
-            ("--no-input", false),
-            ("--jobs", true),
-            ("--gitleaks-config", true),
-            ("--licenses", true),
-            ("--install-scripts", true),
-            ("--repo-hooks", true),
-            ("--no-posture", false),
-            ("--posture-policy", true),
-            ("--suspect-policy", true),
-            ("--hooks-policy", true),
-            ("--no-clipboard", false),
-        ],
-        "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
-        "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
-        "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
-        "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
-        "version" | "tools" => &[("--help", false), ("--json", false)],
-        "report" => &[
-            ("--help", false),
-            ("--exposure", false),
-            ("--remediation", false),
-            ("--audit", false),
-            ("--all", false),
-            ("--since", true),
-            ("--format", true),
-            ("--out", true),
-        ],
-        "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
-        "schedule" => {
-            &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false), ("--clipboard-guard", false)]
-        }
-        "clipboard" => {
-            &[("--help", false), ("--watch", false), ("--once", false), ("--window", true), ("--json", false)]
-        }
-        "cache" => &[("--help", false), ("--older-than", true)],
-        "update" => &[
-            ("--help", false),
-            ("--check", false),
-            ("--yes", false),
-            ("--no-input", false),
-            ("--offline", false),
-            ("--version", true),
-        ],
-        "harden" => &[("--help", false), ("--hours", true), ("--bundle", true)],
-        "mitigate" => &[
-            ("--help", false),
-            ("--dry-run", false),
-            ("--yes", false),
-            ("--no-input", false),
-            ("--undo", false),
-            ("--offline", false),
-            ("--no-machine", false),
-            ("--path", true),
-        ],
-        _ => &[("--help", false)],
-    }
-}
-
-/// A first word that is no subcommand.
-fn invalid_command(word: &str) -> Parsed {
-    Parsed::Usage(format!(
-        "{TOP_USAGE}\nwpantry: error: argument command: invalid choice: '{word}' (choose from {})\n",
-        SUBCOMMANDS.join(", ")
-    ))
+/// The whole command line.
+pub fn program() -> Cli {
+    Cli::new("wpantry")
+        .version(wpantry::VERSION)
+        .description("The vulnerabilities, malware and risky settings that apply to this computer and its repos. See README.md.")
+        .after_help("Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.")
+        .command(
+            Cli::new("scan")
+                .description("Scan this computer and its repos, then show the report. Changes nothing.")
+                .opts(scan_opts())
+                .after_help(EXIT_CODES),
+        )
+        .command(
+            Cli::new("fix")
+                .description("Scan, run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check.")
+                .summary("Scan, run the unattended fixes and stopgaps, then re-check (list, or one id)")
+                .arg(Arg::new(
+                    "[target]",
+                    "all: a scan, the unattended fixes, every stopgap that applies, a re-check. list: what can be fixed, from the latest scan; nothing runs. An advisory id (CVE-…, GHSA-…; an alias works): its unattended fixes, wpantry's stopgap for it, the steps that need you. Or one of wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots), extension-cooldown (editors wait before installing a new extension version), cve-2026-98432",
+                ).default("all"))
+                .option("--dry-run", "print what would run or be written; change nothing")
+                .option("--yes", "run the fixes and write the stopgaps without asking")
+                .option("--undo", "with an id: take wpantry's stopgap away once the real fix is installed")
+                .option("--bundle <file>", "ca-trust: rewrite this PEM bundle instead of the system trust store")
+                .opt(Opt::new("--hours <n>", "extension-cooldown: the cooldown").default("72"))
+                .opts(scan_opts())
+                .after_help("Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage error, 3 internal error."),
+        )
+        .command(
+            Cli::new("report")
+                .description("The latest scan's report, from the cache; it never scans (scan and fix show it when they finish).")
+                .summary("The latest scan's report, a log, or the summary, in any format")
+                .arg(Arg::new("[part]", "what the report covers").choices(&Part::NAMES).default("findings"))
+                .opts(report_opts())
+                .after_help("Parts:\n  findings     the latest scan's findings\n  history      the exposure, remediation and audit logs\n  exposure     what applied, from first seen to resolved\n  remediation  the fixes run: when, who, the result, the scan that verified them\n  audit        every scan and event\n  summary      one page for a CSO, an auditor or an insurer\n  all          the findings, then every log\n\nExit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3 internal error."),
+        )
+        .command(
+            Cli::new("search")
+                .description("Search the cached advisories (for agents).")
+                .argument("<query>", "an id, package or word")
+                .option("--applicable", "only advisories that apply here")
+                .opt(Opt::new("--limit <n>", "the most to list").default("20"))
+                .option("--json", "the hits as JSON"),
+        )
+        .command(
+            Cli::new("watch")
+                .description("Ask OSV again about the advisories the last scan found with no released fix (Critical, High, exploited in the wild); exit 10 when a fix has landed.")
+                .summary("Re-check the advisories with no fix yet; exit 10 when one lands")
+                .option("--offline", "use only the local cache")
+                .option("--json", "the watched advisories as JSON"),
+        )
+        .command(
+            Cli::new("sync")
+                .description("Refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan --offline has fresh answers.")
+                .summary("Refresh the cache for offline scans")
+                .option("--refresh", "ask every source again, even when its answer is fresh")
+                .option("--json", "what was refreshed, as JSON"),
+        )
+        .command(
+            Cli::new("schedule")
+                .description("Run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes.")
+                .summary("Run sync and scan on a schedule")
+                .subcommand_required()
+                .command(
+                    Cli::new("install")
+                        .description("Install the job.")
+                        .opt(
+                            Opt::new("--every <period>", "how often, each from the period's start: a week on Monday, a month on the 1st, a quarter on 1 January, April, July and October, a year on 1 January")
+                                .choices(&crate::schedule::Every::NAMES)
+                                .default("day"),
+                        )
+                        .opt(Opt::new("--at <time>", "the time of day, HH:MM").default("09:30"))
+                        .option("--dry-run", "print the job definition without installing it"),
+                )
+                .command(Cli::new("status").description("Whether the job is installed, and how its last run went."))
+                .command(Cli::new("uninstall").description("Remove the job."))
+                .command(Cli::new("run").description("What the job runs: sync, then scan --json --no-input.")),
+        )
+        .command(
+            Cli::new("rules")
+                .description("The YARA rules the malware scan uses: ours, built in, and YARA Forge's, fetched into the cache directory.")
+                .summary("The malware scan's YARA rules; gen writes one from samples")
+                .option("--update", "fetch YARA Forge's latest package now")
+                .option("--json", "the sources and counts as JSON")
+                .command(
+                    Cli::new("gen")
+                        .description("Write a YARA rule matching what the samples share and this machine's programs don't (unreviewed: category suspicious, score 60).")
+                        .argument("<sample...>", "the sample files")
+                        .opt(Opt::new("--category <cat>", "the category you propose").default("malware"))
+                        .option("--family <name>", "the family's name (default: the first sample's file name)")
+                        .option("--name <rule>", "the rule's name (default Gen_<category>_<family>)")
+                        .option("-o, --out <file>", "write the rule there, and its test file beside it (default: stdout)"),
+                )
+                .command(Cli::new("goodware").description("Rebuild the goodware database from this machine's system programs (gen builds it the first time).")),
+        )
+        .command(
+            Cli::new("sources")
+                .description("Every outside source wpantry reads: its kind, tier, host and licence, when it was last fetched, whether that is fresh, and what last went wrong.")
+                .summary("Every outside source, when it was last fetched and what went wrong")
+                .option("--json", "the sources as JSON")
+                .option("--sources <file>", "your sources file (default: ~/.config/wpantry/sources.toml when it exists)"),
+        )
+        .command(
+            Cli::new("breach")
+                .description("Show or set consent for the email breach check.")
+                .opt(Opt::new("--enable", "allow it").conflicts(&["disable"]))
+                .option("--disable", "stop it"),
+        )
+        .command(
+            Cli::new("cache")
+                .description("Maintain the cache.")
+                .subcommand_required()
+                .command(
+                    Cli::new("prune")
+                        .description("Drop what no scan has used in a while, then compact the file.")
+                        .opt(Opt::new("--older-than <days>", "what counts as unused").default("90")),
+                ),
+        )
+        .command(
+            Cli::new("update")
+                .description("Check for a newer wpantry release and, after a yes, install it verified.")
+                .summary("Install a newer release, verified")
+                .option("--check", "only say whether a newer release exists (exit 10 when one does)")
+                .option("--yes", "install without asking")
+                .option("--no-input", "never ask: report only")
+                .option("--offline", "use only the cached answer")
+                .option("--version <ver>", "this release instead of the latest"),
+        )
+        .command(Cli::new("version").description("Print the version, implementation and JSON schema.").option("--json", "as JSON"))
+        .command(Cli::new("tools").description("List the external tools wpantry uses.").option("--json", "as JSON"))
+        .command(Cli::new("skill").description("Print the agent skill (SKILL.md)."))
 }
 
 fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~/").or(if p == "~" { Some("") } else { None }) {
-        Some(rest) => wpantry::system::home().join(rest),
+        Some(rest) => wpantry::utils::files::home().join(rest),
         None => PathBuf::from(p),
     }
 }
 
-pub fn parse(argv: &[String]) -> Parsed {
-    let mut argv: Vec<String> = argv.to_vec();
-    match argv.first().map(String::as_str) {
-        None | Some("-h" | "--help") => return Parsed::Help(help("")),
-        // Options with no subcommand are the scan's, as before `scan` had a
-        // name: `wpantry --fix` and `wpantry --json` keep working.
-        Some(a) if a.starts_with('-') => argv.insert(0, "scan".into()),
-        Some(a) if !SUBCOMMANDS.contains(&a) => return invalid_command(a),
-        // `help` alone is `-h`; `help CMD` is `CMD -h`.
-        Some("help") => {
-            return match argv[1..].iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-                [] | ["-h" | "--help"] => Parsed::Help(help("")),
-                [c] if SUBCOMMANDS.contains(c) => Parsed::Help(help(if *c == "help" { "" } else { c })),
-                [c] => invalid_command(c),
-                [_, rest @ ..] => Parsed::Usage(format!(
-                    "{TOP_USAGE}\nwpantry help: error: unrecognized arguments: {}\n",
-                    rest.join(" ")
-                )),
-            };
-        }
-        Some(_) => {}
+/// A count of 1 or more: `--since 30` or `30d` for days.
+fn at_least_one<T: std::str::FromStr + PartialOrd + From<u8>>(
+    m: &Matches,
+    name: &str,
+    what: &str,
+) -> Result<Option<T>, Exit> {
+    match m.value(name) {
+        None => Ok(None),
+        Some(v) => match v.trim().trim_end_matches('d').parse::<T>() {
+            Ok(n) if n >= T::from(1) => Ok(Some(n)),
+            _ => Err(m.error(&format!("option '--{name}' expects {what}, got '{v}'"))),
+        },
     }
-    let cmd = argv[0].clone();
-    let fail = |msg: String| Parsed::Usage(format!("{}\nwpantry {cmd}: error: {msg}\n", usage(&cmd)));
-    let mut given: Vec<(&'static str, Option<String>)> = Vec::new();
-    let mut positional: Vec<String> = Vec::new();
-    let mut i = 1;
-    let mut only_positional = false;
-    while i < argv.len() {
-        let a = &argv[i];
-        i += 1;
-        if only_positional || !a.starts_with('-') || a == "-" {
-            positional.push(a.clone());
-            continue;
-        }
-        if a == "--" {
-            only_positional = true;
-            continue;
-        }
-        if a == "-h" {
-            return Parsed::Help(help(&cmd));
-        }
-        let (name, inline) = match a.split_once('=') {
-            Some((n, v)) if n.starts_with("--") => (n, Some(v.to_string())),
-            _ => (a.as_str(), None),
-        };
-        let name = ALIASES.iter().find(|(alias, _)| *alias == name).map_or(name, |(_, opt)| *opt);
-        let opts = options(&cmd);
-        let matched: Vec<&(&str, bool)> = match opts.iter().find(|(o, _)| *o == name) {
-            Some(exact) => vec![exact],
-            None if name.starts_with("--") && name.len() > 2 => {
-                opts.iter().filter(|(o, _)| o.starts_with(name)).collect()
-            }
-            None => vec![],
-        };
-        let (opt, takes) = match matched.as_slice() {
-            [one] => **one,
-            [] => {
-                let rest: Vec<&str> = argv[i - 1..].iter().map(String::as_str).collect();
-                return fail(format!("unrecognized arguments: {}", rest.join(" ")));
-            }
-            many => {
-                let names: Vec<&str> = many.iter().map(|(o, _)| *o).collect();
-                return fail(format!("ambiguous option: {name} could match {}", names.join(", ")));
-            }
-        };
-        if opt == "--help" {
-            return Parsed::Help(help(&cmd));
-        }
-        let value = if takes {
-            match inline {
-                Some(v) => Some(v),
-                None if i < argv.len() && !argv[i].starts_with('-') => {
-                    i += 1;
-                    Some(argv[i - 1].clone())
+}
+
+/// The report options given.
+fn show(m: &Matches) -> Result<Show, Exit> {
+    let format = FORMATS.iter().map(|(f, _)| *f).find(|f| m.flag(f.flag().trim_start_matches('-'))).unwrap_or_default();
+    let (out, stdout) = match m.value("out") {
+        Some("") => return Err(m.error("option '-o, --out <file>' expects a file path, or - for stdout")),
+        Some("-") => (None, true),
+        Some(v) => (Some(expand(v)), false),
+        None => (None, false),
+    };
+    // A file gets plain text, never the terminal's colours.
+    let format = if format == Shown::Tui && out.is_some() { Shown::Txt } else { format };
+    let since = at_least_one::<i64>(m, "since", "a number of days")?.unwrap_or(wpantry::reporters::HISTORY_DAYS);
+    Ok(Show { part: Part::Findings, format, out, stdout, since })
+}
+
+fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
+    let mut c = Check {
+        no_machine: m.flag("no-machine"),
+        fix,
+        yes: fix && m.flag("yes"),
+        dry_run: fix && m.flag("dry-run"),
+        refresh: m.flag("refresh"),
+        offline: m.flag("offline"),
+        no_input: m.flag("no-input"),
+        check_licenses: m.flag("licenses"),
+        no_posture: m.flag("no-posture"),
+        no_malware: m.flag("no-malware"),
+        deep: m.flag("deep"),
+        no_online_hash: m.flag("no-online-hash"),
+        sources: m.value("sources").map(expand),
+        show: show(m)?,
+        jobs: at_least_one::<usize>(m, "jobs", "a number of 1 or more")?,
+        ..Default::default()
+    };
+    let paths: Vec<PathBuf> = m.values("path").into_iter().map(expand).collect();
+    c.path = (!paths.is_empty()).then_some(paths);
+    // Each policy: the file its option names, else the user's own in the
+    // config folder (`~/.config/wpantry/<file>`), else the bundled default.
+    for (name, file, slot) in [
+        ("gitleaks-config", "gitleaks.toml", &mut c.gitleaks_config),
+        ("licenses", "licenses.toml", &mut c.licenses),
+        ("install-scripts", "install-scripts.toml", &mut c.install_scripts),
+        ("repo-hooks", "repo-hooks.toml", &mut c.repo_hooks),
+        ("posture-policy", "posture.toml", &mut c.posture_policy),
+        ("suspect-policy", "suspect.toml", &mut c.suspect_policy),
+        ("hooks-policy", "hooks.toml", &mut c.hooks_policy),
+    ] {
+        let p = match m.value(name) {
+            Some(v) => {
+                let p = expand(v);
+                if !p.is_file() {
+                    return Err(m.error(&format!("option '--{name}': no such file: {v}")));
                 }
-                // The one option whose value is optional (argparse's nargs="?").
-                None if opt == "--licenses" => None,
-                None => return fail(format!("argument {opt}: expected one argument")),
+                p
             }
-        } else {
-            if inline.is_some() {
-                return fail(format!("argument {opt}: ignored explicit argument '{}'", inline.unwrap_or_default()));
-            }
-            None
+            None => match wpantry::checks::user_policy(file) {
+                Some(p) => p,
+                None => continue,
+            },
         };
-        given.push((opt, value));
+        // gitleaks reads its own config; the rest are Pantry's TOML.
+        if name != "gitleaks-config"
+            && let Some(why) = wpantry::checks::policy_error(&p)
+        {
+            return Err(m.error(&format!("option '--{name}': {}: {why}", p.display())));
+        }
+        *slot = Some(p);
     }
-    let flag = |name: &str| given.iter().any(|(o, _)| *o == name);
-    let value = |name: &str| given.iter().rev().find(|(o, _)| *o == name).and_then(|(_, v)| v.clone());
-    let command = match cmd.as_str() {
-        "scan" | "check" | "fix" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let mut c = Check {
-                no_machine: flag("--no-machine"),
-                fix: cmd == "fix" || flag("--fix"),
-                yes: flag("--yes"),
-                dryrun: flag("--dryrun"),
-                refresh: flag("--refresh"),
-                offline: flag("--offline"),
-                json: flag("--json"),
-                no_input: flag("--no-input"),
-                check_licenses: flag("--licenses"),
-                no_posture: flag("--no-posture"),
-                no_clipboard: flag("--no-clipboard"),
-                ..Default::default()
-            };
-            if let Some(v) = value("--html") {
-                if v.is_empty() || v == "-" {
-                    return fail("argument --html: expected a file path, not stdout".into());
+    Ok(c)
+}
+
+fn command(m: &Matches) -> Result<Command, Exit> {
+    let flag = |n: &str| m.flag(n);
+    Ok(match m.path().as_slice() {
+        ["scan"] => Command::Scan(check(m, false)?),
+        ["fix"] => match m.arg("target").unwrap_or("all") {
+            "all" => {
+                if m.flag("undo") {
+                    return Err(m.error("--undo takes one id: wpantry fix CVE-2026-98432 --undo"));
                 }
-                c.html = Some(expand(&v));
+                Command::Scan(check(m, true)?)
             }
-            let paths: Vec<PathBuf> = given
-                .iter()
-                .filter(|(o, _)| *o == "--path")
-                .filter_map(|(_, v)| v.as_deref().map(PathBuf::from))
-                .collect();
-            c.path = (!paths.is_empty()).then_some(paths);
-            if let Some(v) = value("--jobs") {
-                match v.parse::<usize>() {
-                    Ok(n) if n >= 1 => c.jobs = Some(n),
-                    _ => return fail(format!("argument --jobs: expected a number of 1 or more, got {v}")),
-                }
-            }
-            for (opt, slot) in [
-                ("--gitleaks-config", &mut c.gitleaks_config),
-                ("--licenses", &mut c.licenses),
-                ("--install-scripts", &mut c.install_scripts),
-                ("--repo-hooks", &mut c.repo_hooks),
-                ("--posture-policy", &mut c.posture_policy),
-                ("--suspect-policy", &mut c.suspect_policy),
-                ("--hooks-policy", &mut c.hooks_policy),
-            ] {
-                if let Some(v) = value(opt) {
-                    let p = expand(&v);
-                    if !p.is_file() {
-                        return fail(format!("argument {opt}: no such file: {v}"));
+            word => {
+                let target = match word {
+                    "list" => Target::List,
+                    id if id.contains('-') && id.len() >= 6 => Target::Id(id.trim().to_ascii_uppercase()),
+                    other => {
+                        return Err(m.error(&format!(
+                            "argument 'target' expects all, list, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got '{other}'"
+                        )));
                     }
-                    *slot = Some(p);
+                };
+                if flag("dry-run") && flag("undo") {
+                    return Err(
+                        m.error("--dry-run and --undo can't be combined: --dry-run prints what applying would write")
+                    );
+                }
+                if target == Target::List && flag("undo") {
+                    return Err(m.error("--undo takes one id: wpantry fix CVE-2026-98432 --undo"));
+                }
+                Command::Mitigate {
+                    target,
+                    dry_run: flag("dry-run"),
+                    yes: flag("yes"),
+                    no_input: flag("no-input"),
+                    undo: flag("undo"),
+                    bundle: m.value("bundle").map(expand),
+                    hours: at_least_one::<u32>(m, "hours", "a number of hours")?
+                        .unwrap_or(wpantry::remediation::editors::COOLDOWN_HOURS),
                 }
             }
-            Command::Scan(c)
+        },
+        ["report"] => {
+            let part = Part::parse(m.arg("part").unwrap_or("findings")).expect("one of the choices");
+            Command::Report(Show { part, ..show(m)? })
         }
-        "search" => {
-            let query = match positional.as_slice() {
-                [q] => q.clone(),
-                [] => return fail("the following arguments are required: query".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            let limit = match value("--limit") {
-                None => 20,
-                Some(v) => match v.trim().parse::<i64>() {
-                    Ok(n) => n,
-                    Err(_) => return fail(format!("argument --limit: invalid int value: '{v}'")),
-                },
-            };
-            Command::Search { query, applicable: flag("--applicable"), limit, json: flag("--json") }
-        }
-        "export" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let (csv, jsonl) = (value("--csv"), value("--jsonl"));
-            if csv.is_none() && jsonl.is_none() {
-                return fail("one of the following arguments is required: --csv, --jsonl".into());
-            }
-            Command::Export { csv, jsonl, all: flag("--all") }
-        }
-        "breach" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let (enable, disable) = (flag("--enable"), flag("--disable"));
-            if enable && disable {
-                return fail("argument --disable: not allowed with argument --enable".into());
-            }
-            Command::Breach { enable, disable }
-        }
-        "report" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let mut sections: Vec<String> = ["exposure", "remediation", "audit"]
-                .iter()
-                .filter(|s| flag(&format!("--{s}")))
-                .map(|s| s.to_string())
-                .collect();
-            if sections.is_empty() || flag("--all") {
-                sections = vec!["all".into()];
-            }
-            let since_days = match value("--since") {
-                None => 90,
-                Some(v) => match v.trim().trim_end_matches('d').parse::<i64>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => return fail(format!("argument --since: expected a number of days, got '{v}'")),
-                },
-            };
-            let format = value("--format").unwrap_or_else(|| "md".into());
-            if !["md", "json", "csv"].contains(&format.as_str()) {
-                return fail(format!("argument --format: invalid choice: '{format}' (choose from md, json, csv)"));
-            }
-            Command::Report { sections, since_days, format, out: value("--out") }
-        }
-        "sync" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            Command::Sync { refresh: flag("--refresh"), json: flag("--json") }
-        }
-        "schedule" => {
-            let action = match positional.as_slice() {
-                [a] if ["install", "status", "uninstall", "run"].contains(&a.as_str()) => a.clone(),
-                [a] => {
-                    return fail(format!(
-                        "argument action: invalid choice: '{a}' (choose from install, status, uninstall, run)"
-                    ));
-                }
-                [] => return fail("the following arguments are required: action".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            let every = value("--every").unwrap_or_else(|| "daily".into());
-            if !["hourly", "daily", "weekly"].contains(&every.as_str()) {
-                return fail(format!(
-                    "argument --every: invalid choice: '{every}' (choose from hourly, daily, weekly)"
-                ));
-            }
-            let at = value("--at").unwrap_or_else(|| "09:30".into());
-            let ok_time = at.split_once(':').is_some_and(|(h, m)| {
-                h.parse::<u32>().is_ok_and(|h| h < 24) && m.len() == 2 && m.parse::<u32>().is_ok_and(|m| m < 60)
+        ["search"] => Command::Search {
+            query: m.arg("query").unwrap_or_default().to_string(),
+            applicable: flag("applicable"),
+            limit: m.get::<i64>("limit")?.unwrap_or(20),
+            json: flag("json"),
+        },
+        ["watch"] => Command::Watch { json: flag("json"), offline: flag("offline") },
+        ["sync"] => Command::Sync { refresh: flag("refresh"), json: flag("json") },
+        ["schedule", action] => {
+            let at = m.value("at").unwrap_or("09:30").to_string();
+            let ok_time = at.split_once(':').is_some_and(|(h, mm)| {
+                h.parse::<u32>().is_ok_and(|h| h < 24) && mm.len() == 2 && mm.parse::<u32>().is_ok_and(|mm| mm < 60)
             });
             if !ok_time {
-                return fail(format!("argument --at: expected HH:MM, got '{at}'"));
+                return Err(m.error(&format!("option '--at <time>' expects HH:MM, got '{at}'")));
             }
-            let clipboard_guard = flag("--clipboard-guard");
-            if clipboard_guard && action == "run" {
-                return fail(
-                    "argument --clipboard-guard: not allowed with run (it is wpantry clipboard --watch)".into(),
-                );
-            }
-            Command::Schedule { action, every, at, dry_run: flag("--dry-run"), clipboard_guard }
-        }
-        "clipboard" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let watch = flag("--watch");
-            for opt in ["--once", "--window"] {
-                if flag(opt) && !watch {
-                    return fail(format!("argument {opt}: requires --watch"));
-                }
-            }
-            let window = match value("--window") {
-                None => wpantry::guard::WINDOW.as_secs_f64(),
-                Some(v) => match v.trim().parse::<f64>() {
-                    Ok(s) if s.is_finite() && (0.1..=3600.0).contains(&s) => s,
-                    _ => return fail(format!("argument --window: expected seconds between 0.1 and 3600, got '{v}'")),
-                },
-            };
-            Command::Clipboard { watch, once: flag("--once"), window, json: flag("--json") }
-        }
-        "cache" => {
-            let action = match positional.as_slice() {
-                [a] if a == "prune" => a.clone(),
-                [a] => return fail(format!("argument action: invalid choice: '{a}' (choose from prune)")),
-                [] => return fail("the following arguments are required: action".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            let older_than = match value("--older-than") {
-                None => 90,
-                Some(v) => match v.trim().parse::<i64>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => return fail(format!("argument --older-than: expected a number of days, got '{v}'")),
-                },
-            };
-            Command::Cache { action, older_than }
-        }
-        "update" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            Command::Update {
-                check: flag("--check"),
-                yes: flag("--yes"),
-                no_input: flag("--no-input"),
-                offline: flag("--offline"),
-                version: value("--version"),
+            Command::Schedule {
+                action: action.to_string(),
+                every: m.value("every").unwrap_or("day").to_string(),
+                at,
+                dry_run: flag("dry-run"),
             }
         }
-        "harden" => {
-            let what = match positional.as_slice() {
-                [w] if w == "extension-cooldown" || w == "ca-trust" => w.clone(),
-                [w] => {
-                    return fail(format!(
-                        "argument what: invalid choice: '{w}' (choose from extension-cooldown, ca-trust)"
-                    ));
-                }
-                [] => return fail("the following arguments are required: what".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            let hours = match value("--hours") {
-                None => 72,
-                Some(v) => match v.trim().parse::<u32>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
-                },
-            };
-            Command::Harden { what, hours, bundle: value("--bundle").map(|v| expand(&v)) }
-        }
-        "mitigate" => {
-            let target = match positional.as_slice() {
-                [w] if w == "list" => Target::List,
-                [w] if w == "all" => Target::All,
-                [id] if id.contains('-') && id.len() >= 6 => Target::Id(id.trim().to_ascii_uppercase()),
-                [id] => {
-                    return fail(format!(
-                        "argument target: expected list, all or an advisory id such as CVE-2026-98432, got '{id}'"
-                    ));
-                }
-                [] => return fail("the following arguments are required: target (list, all or an advisory id)".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            if flag("--dry-run") && flag("--undo") {
-                return fail(
-                    "--dry-run and --undo can't be combined: --dry-run prints what applying would write".into(),
-                );
-            }
-            if target == Target::All && flag("--undo") {
-                return fail("--undo takes one advisory id: wpantry mitigate CVE-2026-98432 --undo".into());
-            }
-            let paths: Vec<PathBuf> =
-                given.iter().filter(|(o, _)| *o == "--path").filter_map(|(_, v)| v.as_deref().map(expand)).collect();
-            Command::Mitigate {
-                target,
-                dry_run: flag("--dry-run"),
-                yes: flag("--yes"),
-                no_input: flag("--no-input"),
-                undo: flag("--undo"),
-                offline: flag("--offline"),
-                no_machine: flag("--no-machine"),
-                path: (!paths.is_empty()).then_some(paths),
-            }
-        }
-        "version" | "tools" | "skill" | "watch" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            match cmd.as_str() {
-                "watch" => Command::Watch { json: flag("--json"), offline: flag("--offline") },
-                "version" => Command::Version { json: flag("--json") },
-                "tools" => Command::Tools { json: flag("--json") },
-                _ => Command::Skill,
-            }
-        }
-        _ => unreachable!("subcommands are fixed"),
-    };
-    Parsed::Run(command)
+        ["rules", rest @ ..] => Command::Rules {
+            action: rest.first().map(|s| s.to_string()).unwrap_or_default(),
+            samples: m.args("sample").into_iter().map(expand).collect(),
+            update: flag("update"),
+            json: flag("json"),
+            category: m.value("category").unwrap_or("malware").to_string(),
+            family: m.value("family").map(String::from),
+            name: m.value("name").map(String::from),
+            out: m.value("out").map(expand),
+        },
+        ["sources"] => Command::Sources { json: flag("json"), file: m.value("sources").map(expand) },
+        ["breach"] => Command::Breach { enable: flag("enable"), disable: flag("disable") },
+        ["cache", action] => Command::Cache {
+            action: action.to_string(),
+            older_than: at_least_one::<i64>(m, "older-than", "a number of days")?.unwrap_or(90),
+        },
+        ["update"] => Command::Update {
+            check: flag("check"),
+            yes: flag("yes"),
+            no_input: flag("no-input"),
+            offline: flag("offline"),
+            version: m.value("version").map(String::from),
+        },
+        ["version"] => Command::Version { json: flag("json") },
+        ["tools"] => Command::Tools { json: flag("json") },
+        ["skill"] => Command::Skill,
+        other => unreachable!("every command is matched: {other:?}"),
+    })
+}
+
+pub fn parse(argv: &[String]) -> Parsed {
+    match program().parse(argv).and_then(|m| command(&m)) {
+        Ok(c) => Parsed::Run(c),
+        Err(Exit::Help(t) | Exit::Version(t)) => Parsed::Help(t),
+        Err(Exit::Error(t)) => Parsed::Usage(t),
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn p(args: &[&str]) -> Parsed {
-        parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn no_arguments_print_the_help_and_options_alone_scan() {
-        assert_eq!(p(&[]), Parsed::Help(help("")));
-        assert_eq!(p(&["--json"]), Parsed::Run(Command::Scan(Check { json: true, ..Default::default() })));
-        let Parsed::Run(Command::Scan(c)) = p(&["--path", "/a", "--path=/b", "--no-m", "--json"]) else { panic!() };
-        assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
-        assert!(c.no_machine && c.json && !c.offline && !c.check_licenses);
-        let Parsed::Run(Command::Scan(c)) = p(&["--licenses", "--json"]) else { panic!() };
-        assert!(c.check_licenses && c.licenses.is_none() && c.json, "--licenses alone uses the bundled allowlist");
-        let Parsed::Run(Command::Scan(c)) = p(&["--license", "--json"]) else { panic!() };
-        assert!(c.check_licenses && c.licenses.is_none() && c.json, "--license is --licenses");
-        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-        let Parsed::Run(Command::Scan(c)) = p(&[&format!("--license={file}")]) else { panic!() };
-        assert!(c.check_licenses && c.licenses == Some(PathBuf::from(file)));
-    }
-
-    #[test]
-    fn html_is_optional_and_composes_with_json() {
-        let Parsed::Run(Command::Scan(c)) = p(&["--ht=report with spaces.html", "--json"]) else { panic!() };
-        assert!(c.json);
-        assert_eq!(c.html, Some(PathBuf::from("report with spaces.html")));
-        for bad in [&["--html"][..], &["--html="], &["--html=-"]] {
-            assert!(matches!(p(bad), Parsed::Usage(_)));
-        }
-    }
-
-    #[test]
-    fn usage_errors() {
-        for bad in [
-            &["--bogus"][..],
-            &["search"],
-            &["search", "--limit", "x", "q"],
-            &["export"],
-            &["breach", "--enable", "--disable"],
-            &["check", "--licenses", "/nonexistent/x.txt"],
-            &["version", "extra"],
-            &["--path"],
-            &["--no-machine=1"],
-            &["--n"],
-        ] {
-            assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
-        }
-        let Parsed::Usage(msg) = p(&["--bogus"]) else { panic!() };
-        assert!(msg.starts_with("usage: wpantry scan") && msg.contains("error: unrecognized arguments: --bogus"));
-        let Parsed::Usage(msg) = p(&["scna", "--json"]) else { panic!() };
-        assert!(msg.starts_with(TOP_USAGE) && msg.contains("wpantry: error: argument command: invalid choice: 'scna'"));
-    }
-
-    #[test]
-    fn scan_check_and_fix() {
-        let all = ["--path", "/a", "--no-machine", "--offline", "--json", "--no-input", "--jobs", "2", "--no-posture"];
-        let Parsed::Run(Command::Scan(scan)) = p(&[&["scan"][..], &all].concat()) else { panic!() };
-        assert!(!scan.fix && scan.no_machine && scan.offline && scan.json && scan.no_input && scan.no_posture);
-        assert_eq!(p(&[&["check"][..], &all].concat()), Parsed::Run(Command::Scan(scan)), "check is scan");
-        let fix = |dryrun: bool, yes: bool| {
-            Parsed::Run(Command::Scan(Check { fix: true, dryrun, yes, ..Default::default() }))
-        };
-        assert_eq!(p(&["fix"]), fix(false, false));
-        assert_eq!(p(&["fix", "--dryrun", "--yes"]), fix(true, true));
-        // the spellings from before `fix`, kept for scripts
-        for old in [&["--fix"][..], &["--update"], &["scan", "--fix"], &["check", "--fix"], &["check", "--update"]] {
-            assert_eq!(p(old), fix(false, false), "{old:?}");
-        }
-        assert_eq!(p(&["check", "--fix", "--dryrun"]), fix(true, false));
-        assert_eq!(p(&["--fix", "--yes"]), fix(false, true));
-        for (cmd, head) in [
-            ("scan", "usage: wpantry scan [-h] [--path DIR]"),
-            ("check", "usage: wpantry check [-h] [--path DIR]"),
-            ("fix", "usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR]"),
-        ] {
-            let Parsed::Help(text) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
-            assert!(
-                text.starts_with(head) && text.contains("--no-clipboard") && text.contains("Exit codes:"),
-                "{cmd}: {text}"
-            );
-            assert_eq!(text.contains("--dryrun"), cmd == "fix", "{cmd}: only fix documents --dryrun");
-            assert!(!text.contains("--fix") && !text.contains("--update"), "{cmd}: the old flags stay undocumented");
-        }
-        let Parsed::Usage(text) = p(&["fix", "--fix"]) else { panic!() };
-        assert!(text.starts_with("usage: wpantry fix") && text.contains("unrecognized arguments: --fix"), "{text}");
-    }
-
-    #[test]
-    fn help_and_subcommands() {
-        assert!(matches!(p(&["--help"]), Parsed::Help(_)));
-        assert!(matches!(p(&["search", "-h"]), Parsed::Help(_)));
-        assert_eq!(
-            p(&["search", "tls AND cert", "--limit", "5"]),
-            Parsed::Run(Command::Search { query: "tls AND cert".into(), applicable: false, limit: 5, json: false })
-        );
-        assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
-        assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
-        assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
-        assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
-    }
-
-    #[test]
-    fn clipboard_and_the_guard_flags() {
-        assert_eq!(
-            p(&["clipboard"]),
-            Parsed::Run(Command::Clipboard { watch: false, once: false, window: 2.0, json: false })
-        );
-        assert_eq!(
-            p(&["clipboard", "--watch", "--once", "--window", "1.5", "--json"]),
-            Parsed::Run(Command::Clipboard { watch: true, once: true, window: 1.5, json: true })
-        );
-        for bad in [
-            &["clipboard", "--once"][..],
-            &["clipboard", "--window", "3"],
-            &["clipboard", "--watch", "--window", "0"],
-            &["clipboard", "--watch", "--window", "soon"],
-            &["clipboard", "extra"],
-            &["schedule", "run", "--clipboard-guard"],
-        ] {
-            assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
-        }
-        let Parsed::Run(Command::Schedule { action, clipboard_guard, dry_run, .. }) =
-            p(&["schedule", "install", "--clipboard-guard", "--dry-run"])
-        else {
-            panic!()
-        };
-        assert!(action == "install" && clipboard_guard && dry_run);
-        let Parsed::Run(Command::Schedule { clipboard_guard, .. }) = p(&["schedule", "status"]) else { panic!() };
-        assert!(!clipboard_guard);
-    }
-
-    #[test]
-    fn every_subcommand_has_help_and_a_usage_line() {
-        for cmd in SUBCOMMANDS.iter().filter(|c| **c != "help") {
-            let Parsed::Help(text) = p(&[cmd, "-h"]) else { panic!("{cmd}") };
-            assert_eq!(p(&["help", cmd]), Parsed::Help(text.clone()), "help {cmd} is {cmd} -h");
-            assert!(text.starts_with(&format!("usage: wpantry {cmd} [-h]")), "{cmd}: {text}");
-            assert!(text.contains("-h, --help"), "{cmd}");
-            let Parsed::Help(long) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
-            assert_eq!(long, text);
-        }
-        let Parsed::Help(top) = p(&["-h"]) else { panic!() };
-        assert!(top.starts_with(TOP_USAGE) && top.contains("Exit codes:"));
-        for same in [&["help"][..], &["help", "-h"], &["help", "help"], &["--help"]] {
-            assert_eq!(p(same), Parsed::Help(top.clone()), "{same:?}");
-        }
-        for (bad, msg) in [
-            (&["help", "scna"][..], "invalid choice: 'scna'"),
-            (&["help", "scan", "fix"], "wpantry help: error: unrecognized arguments: fix"),
-        ] {
-            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-            assert!(text.starts_with(TOP_USAGE) && text.contains(msg), "{bad:?}: {text}");
-        }
-    }
-
-    #[test]
-    fn check_options_and_their_errors() {
-        let _home = wpantry::system::test_home();
-        let file = wpantry::system::home().join("g.toml");
-        std::fs::write(&file, "").unwrap();
-        let Parsed::Run(Command::Scan(c)) = p(&["--gitleaks-config", "~/g.toml", "--jobs=3", "--no-posture"]) else {
-            panic!()
-        };
-        assert_eq!((c.gitleaks_config, c.jobs, c.no_posture), (Some(file.clone()), Some(3), true));
-        let Parsed::Usage(text) = p(&["--install-scripts", "~", "--update"]) else { panic!() };
-        assert!(text.contains("argument --install-scripts: no such file: ~"), "a directory is no policy file: {text}");
-        assert_eq!(expand("~"), wpantry::system::home());
-        assert_eq!(expand("/x"), PathBuf::from("/x"));
-        for (bad, msg) in [
-            (&["check", "extra"][..], "unrecognized arguments: extra"),
-            (&["--jobs", "0"], "argument --jobs: expected a number of 1 or more, got 0"),
-            (&["--jobs", "many"], "argument --jobs: expected a number of 1 or more, got many"),
-            (&["--repo-hooks", "~/missing.txt"], "argument --repo-hooks: no such file: ~/missing.txt"),
-            (&["-x"], "unrecognized arguments: -x"),
-            (&["--off", "--", "--json"], "unrecognized arguments: --json"),
-        ] {
-            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-            assert!(text.contains(msg), "{bad:?}: {text}");
-        }
-    }
-
-    #[test]
-    fn search_export_breach_and_sync_errors() {
-        for (bad, msg) in [
-            (&["search", "a", "b"][..], "unrecognized arguments: b"),
-            (&["export", "x", "--csv", "f"], "unrecognized arguments: x"),
-            (&["breach", "x"], "unrecognized arguments: x"),
-            (&["sync", "x"], "unrecognized arguments: x"),
-            (&["skill", "--json"], "unrecognized arguments: --json"),
-            (&["tools", "--js=1"], "argument --json: ignored explicit argument '1'"),
-        ] {
-            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-            assert!(text.contains(msg), "{bad:?}: {text}");
-        }
-        assert_eq!(
-            p(&["search", "--applicable", "--limit=-2", "--json", "--", "-q"]),
-            Parsed::Run(Command::Search { query: "-q".into(), applicable: true, limit: -2, json: true })
-        );
-        assert_eq!(
-            p(&["export", "--jsonl", "f.jsonl", "--all"]),
-            Parsed::Run(Command::Export { csv: None, jsonl: Some("f.jsonl".into()), all: true })
-        );
-        assert_eq!(p(&["breach", "--enable"]), Parsed::Run(Command::Breach { enable: true, disable: false }));
-        assert_eq!(p(&["sync", "--refresh", "--json"]), Parsed::Run(Command::Sync { refresh: true, json: true }));
-        assert_eq!(p(&["tools"]), Parsed::Run(Command::Tools { json: false }));
-    }
-
-    #[test]
-    fn report_options() {
-        assert_eq!(
-            p(&["report"]),
-            Parsed::Run(Command::Report {
-                sections: vec!["all".into()],
-                since_days: 90,
-                format: "md".into(),
-                out: None
-            })
-        );
-        assert_eq!(
-            p(&["report", "--exposure", "--audit", "--since", "30d", "--format=csv", "-o", "r.csv"]),
-            Parsed::Run(Command::Report {
-                sections: vec!["exposure".into(), "audit".into()],
-                since_days: 30,
-                format: "csv".into(),
-                out: Some("r.csv".into())
-            })
-        );
-        let Parsed::Run(Command::Report { sections, .. }) = p(&["report", "--remediation", "--all"]) else { panic!() };
-        assert_eq!(sections, ["all"]);
-        for (bad, msg) in [
-            (&["report", "x"][..], "unrecognized arguments: x"),
-            (&["report", "--since", "0"], "argument --since: expected a number of days, got '0'"),
-            (&["report", "--format", "pdf"], "invalid choice: 'pdf' (choose from md, json, csv)"),
-        ] {
-            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-            assert!(text.contains(msg), "{bad:?}: {text}");
-        }
-    }
-
-    #[test]
-    fn schedule_cache_update_and_harden_options() {
-        assert_eq!(
-            p(&["schedule", "install"]),
-            Parsed::Run(Command::Schedule {
-                action: "install".into(),
-                every: "daily".into(),
-                at: "09:30".into(),
-                dry_run: false,
-                clipboard_guard: false
-            })
-        );
-        assert_eq!(
-            p(&["schedule", "install", "--every", "weekly", "--at", "7:05", "--dry-run"]),
-            Parsed::Run(Command::Schedule {
-                action: "install".into(),
-                every: "weekly".into(),
-                at: "7:05".into(),
-                dry_run: true,
-                clipboard_guard: false
-            })
-        );
-        assert_eq!(p(&["cache", "prune"]), Parsed::Run(Command::Cache { action: "prune".into(), older_than: 90 }));
-        assert_eq!(
-            p(&["cache", "prune", "--older-than", "7"]),
-            Parsed::Run(Command::Cache { action: "prune".into(), older_than: 7 })
-        );
-        assert_eq!(
-            p(&["update", "--check", "--yes", "--no-input", "--offline", "--version", "v1.2.3"]),
-            Parsed::Run(Command::Update {
-                check: true,
-                yes: true,
-                no_input: true,
-                offline: true,
-                version: Some("v1.2.3".into())
-            })
-        );
-        assert_eq!(
-            p(&["harden", "extension-cooldown"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72, bundle: None })
-        );
-        assert_eq!(
-            p(&["harden", "extension-cooldown", "--hours", "48"]),
-            Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48, bundle: None })
-        );
-        let mitigate = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| Command::Mitigate {
-            target,
-            dry_run,
-            yes,
-            no_input,
-            undo,
-            offline: false,
-            no_machine: false,
-            path: None,
-        };
-        assert_eq!(
-            p(&["mitigate", "cve-2026-98432"]),
-            Parsed::Run(mitigate(Target::Id("CVE-2026-98432".into()), false, false, false, false))
-        );
-        assert_eq!(p(&["mitigate", "list"]), Parsed::Run(mitigate(Target::List, false, false, false, false)));
-        assert_eq!(
-            p(&["mitigate", "--dry-run", "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
-            Parsed::Run(mitigate(Target::Id("GHSA-XXXX-YYYY-ZZZZ".into()), true, true, true, false))
-        );
-        for undo in ["--undo", "--remove"] {
-            assert_eq!(
-                p(&["mitigate", "CVE-2026-98432", undo]),
-                Parsed::Run(mitigate(Target::Id("CVE-2026-98432".into()), false, false, false, true))
-            );
-        }
-        assert_eq!(
-            p(&["mitigate", "all", "--offline", "--no-machine", "--path", "/w", "--yes"]),
-            Parsed::Run(Command::Mitigate {
-                target: Target::All,
-                dry_run: false,
-                yes: true,
-                no_input: false,
-                undo: false,
-                offline: true,
-                no_machine: true,
-                path: Some(vec![PathBuf::from("/w")]),
-            })
-        );
-        for (bad, msg) in [
-            (&["mitigate"][..], "the following arguments are required: target"),
-            (
-                &["mitigate", "kernel"],
-                "argument target: expected list, all or an advisory id such as CVE-2026-98432, got 'kernel'",
-            ),
-            (&["mitigate", "CVE-2026-98432", "now"], "unrecognized arguments: now"),
-            (&["mitigate", "CVE-2026-98432", "--dry-run", "--undo"], "--dry-run and --undo can't be combined"),
-            (&["mitigate", "all", "--remove"], "--undo takes one advisory id"),
-            (&["schedule"], "the following arguments are required: action"),
-            (
-                &["schedule", "dance"],
-                "argument action: invalid choice: 'dance' (choose from install, status, uninstall, run)",
-            ),
-            (&["schedule", "install", "run"], "unrecognized arguments: run"),
-            (
-                &["schedule", "install", "--every", "sometimes"],
-                "argument --every: invalid choice: 'sometimes' (choose from hourly, daily, weekly)",
-            ),
-            (&["schedule", "install", "--at", "25:00"], "argument --at: expected HH:MM, got '25:00'"),
-            (&["schedule", "install", "--at", "9:5"], "argument --at: expected HH:MM, got '9:5'"),
-            (&["cache"], "the following arguments are required: action"),
-            (&["cache", "vacuum"], "argument action: invalid choice: 'vacuum' (choose from prune)"),
-            (&["cache", "prune", "all"], "unrecognized arguments: all"),
-            (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
-            (&["update", "now"], "unrecognized arguments: now"),
-            (&["harden"], "the following arguments are required: what"),
-            (
-                &["harden", "firewall"],
-                "argument what: invalid choice: 'firewall' (choose from extension-cooldown, ca-trust)",
-            ),
-            (&["harden", "extension-cooldown", "now"], "unrecognized arguments: now"),
-            (
-                &["harden", "extension-cooldown", "--hours", "lots"],
-                "argument --hours: expected a number of hours, got 'lots'",
-            ),
-            (&["schedule", "--every"], "argument --every: expected one argument"),
-            (&["report", "--a"], "ambiguous option: --a could match --audit, --all"),
-        ] {
-            let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-            assert!(text.contains(msg), "{bad:?}: {text}");
-        }
-    }
-}
+#[path = "args_tests.rs"]
+mod tests;

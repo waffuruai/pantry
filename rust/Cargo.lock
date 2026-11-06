@@ -702,6 +702,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcli"
+version = "0.4.0"
+
+[[package]]
 name = "webpki-root-certs"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -818,22 +822,29 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wpantry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rusqlite",
  "rustls",
  "serde",
  "serde_json",
  "ureq",
+ "wpantry-yara",
 ]
 
 [[package]]
 name = "wpantry-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rusqlite",
+ "serde_json",
+ "wcli",
  "wpantry",
 ]
+
+[[package]]
+name = "wpantry-yara"
+version = "0.4.0"
 
 [[package]]
 name = "zeroize"

@@ -7,21 +7,21 @@
 //! error.
 
 mod args;
-mod html;
 mod progress;
-mod report;
 mod schedule;
 mod style;
+mod tui;
 mod update;
 
-use args::{Check, Command, Parsed, Target};
-use rusqlite::types::ValueRef;
+use args::{Check, Command, Parsed, Show, Shown, Target};
 use std::io::{IsTerminal, Write};
 use style::Style;
-use wpantry::check::{Options, Outcome, Policy, Scan};
+use wpantry::checks::{Options, Outcome, Policy, Scan};
 use wpantry::db::{self, Cache};
 use wpantry::error::Result;
-use wpantry::json::{J, obj};
+use wpantry::remediation;
+use wpantry::reporters::{Format, Output};
+use wpantry::utils::json::{J, obj};
 use wpantry::{IMPL, SCHEMA, VERSION};
 
 const EXIT_OK: i32 = 0;
@@ -44,26 +44,18 @@ fn emit(json: &str) {
     println!("{json}");
 }
 
+/// A one-line note on stderr (stdout stays the command's output).
+fn note(line: &str) {
+    eprintln!("{}", Style::stderr().line(&format!("  ℹ {}", style::clean(line))));
+}
+
 /// A line of the report on stdout, coloured by its mark on a terminal.
 fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
-/// `scan --json`: the findings plus what was checked (schema 1).
-fn envelope(scan: &Outcome) -> J {
-    obj([
-        ("schema", J::Int(SCHEMA)),
-        ("impl", IMPL.into()),
-        ("version", VERSION.into()),
-        ("checked", J::Obj(scan.counts.iter().map(|(k, n)| (k.clone(), J::Int(*n))).collect())),
-        ("unfixed", J::Int(scan.unfixed)),
-        ("unknown_licenses", J::Int(scan.unknown_licenses)),
-        ("findings", J::Arr(scan.findings.iter().map(|f| f.to_json()).collect())),
-    ])
-}
-
 /// One scan with a live progress line; the line is gone before this returns.
-fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcome> {
+fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result<Outcome> {
     let progress = progress::Progress::start();
     let log = |m: &str| {
         if !json {
@@ -96,14 +88,39 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::net::Net) -> Result<Outcom
     out
 }
 
+/// Where a report goes when no `-o FILE` says: a format other than the
+/// terminal's is written to `pantry_report_<when>.<ext>` in the current
+/// directory when stdout is a `terminal`, and to stdout when it is a pipe
+/// or a file (an agent's, `| jq`, `> out.json`) or `-o -` asked for it.
+fn resolve(mut show: Show, terminal: bool, now: f64) -> Show {
+    if show.out.is_none() && !show.stdout && terminal && show.format != Shown::Tui {
+        let ext = show.format.flag().trim_start_matches('-');
+        show.out = Some(std::path::PathBuf::from(wpantry::reporters::file_name(ext, now)));
+    }
+    show
+}
+
+/// Whether the report goes to stdout in a format a program reads: then
+/// nothing else is printed there and nothing is asked.
+fn quiet(show: &Show) -> bool {
+    show.out.is_none() && !matches!(show.format, Shown::Tui | Shown::Txt)
+}
+
 fn cmd_scan(a: Check) -> Result<i32> {
-    let html = a.html.as_deref().map(html::Output::new).transpose()?;
-    let net = wpantry::net::Http::new();
+    // A report file that can't be written fails now, before the scan.
+    if let Some(path) = &a.show.out {
+        drop(Output::new(path)?);
+    }
+    let net = wpantry::utils::net::Http::new();
+    let quiet = quiet(&a.show);
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
         no_posture: a.no_posture,
-        no_clipboard: a.no_clipboard,
+        no_malware: a.no_malware,
+        deep: a.deep,
+        no_online_hash: a.no_online_hash,
+        sources: a.sources.clone(),
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
@@ -117,21 +134,17 @@ fn cmd_scan(a: Check) -> Result<i32> {
         offline: a.offline,
         jobs: a.jobs,
         licenses: a.check_licenses,
-        ask: !(a.json || a.dryrun || a.no_input),
+        ask: !(quiet || a.dry_run || a.no_input),
     };
-    let first = scan(opts.clone(), a.json, &net)?;
-    if a.json {
-        html::finish(html, &first, &opts, "scan")?;
-        emit(&envelope(&first).dumps_indent(1));
-        return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
-    }
-    let db = db::path().to_string_lossy().into_owned();
-    let status = report::report(&first, &db, &mut |l| show(l));
-    if let Some(n) = update::notice(&net, a.offline) {
+    let first = scan(opts.clone(), quiet, &net)?;
+    // The scan is done; what it found is shown as `wpantry report` shows it.
+    let status = cmd_report(&a.show)?;
+    if a.show.format == Shown::Tui
+        && let Some(n) = update::notice(&net, a.offline)
+    {
         eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
     }
-    if !(a.fix || a.dryrun) {
-        html::finish(html, &first, &opts, "scan")?;
+    if quiet || !(a.fix || a.dry_run) {
         return Ok(status);
     }
     // Before changing anything, ask, when someone is there to answer.
@@ -146,11 +159,10 @@ fn cmd_scan(a: Check) -> Result<i32> {
         let what = if cmds.len() == 1 { "this update".to_string() } else { format!("these {} updates", cmds.len()) };
         progress::Progress::new(false).ask(&format!("Run {what} now?"), true).unwrap_or(false)
     };
-    let applied = report::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
+    let applied = remediation::apply(&first.findings, a.dry_run, &confirm, &mut |l| show(l));
     // then the stopgaps wpantry has, for the hosts they are for
-    let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dryrun, a.yes, interactive)?;
-    if a.dryrun {
-        html::finish(html, &first, &opts, "before updates (dry run)")?;
+    let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dry_run, a.yes, interactive)?;
+    if a.dry_run {
         return Ok(status);
     }
     if !applied.ran.is_empty() || !stopgaps_ran.is_empty() {
@@ -178,9 +190,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         cache.close()?;
     }
     // A fix that failed fails the run even when the re-check comes back clean.
-    let rechecked = report::report(&again, &db, &mut |l| show(l));
-    let phase = if applied.status == 0 { "after updates" } else { "after updates (an update command failed)" };
-    html::finish(html, &again, &opts, phase)?;
+    let rechecked = cmd_report(&a.show)?;
     Ok(if rechecked != 0 { rechecked } else { applied.status.max(stopgap_status) })
 }
 
@@ -194,36 +204,41 @@ fn cmd_scan(a: Check) -> Result<i32> {
 type StopgapRun = (String, bool, Vec<String>);
 
 fn stopgaps(
-    findings: &[wpantry::check::Finding],
+    findings: &[wpantry::finding::Finding],
     dryrun: bool,
     yes: bool,
     interactive: bool,
 ) -> Result<(i32, Vec<StopgapRun>)> {
-    use wpantry::mitigate::{self, Done, Mode};
+    use wpantry::remediation::mitigate::{self, Done, Mode};
     let mut status = EXIT_OK;
     let mut ran = Vec::new();
+    let settings = mitigate::Settings::default();
     for s in mitigate::STOPGAPS {
+        // wpantry's own fixes run for what the scan found; the others check the host
+        if s.when_found && !findings.iter().any(|f| f.vuln_id.eq_ignore_ascii_case(s.id)) {
+            continue;
+        }
         let mut lines: Vec<String> = Vec::new();
         let confirm = |what: &str| {
             if yes {
                 return true;
             }
             if !interactive {
-                show(&format!("  · skipped: pass --yes to {what} without asking (wpantry mitigate {} --yes)", s.id));
+                show(&format!("  · skipped: pass --yes to {what} without asking (wpantry fix {} --yes)", s.name));
                 return false;
             }
             progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
         };
         let mode = if dryrun { Mode::DryRun } else { Mode::Apply };
-        let command = format!("wpantry mitigate {} --yes", s.id);
+        let command = format!("wpantry fix {} --yes", s.name);
         let targets: Vec<String> =
             findings.iter().filter(|f| f.vuln_id.eq_ignore_ascii_case(s.id)).map(wpantry::history::key_of).collect();
         // the lines are shown only once the stopgap turns out to be for this host
-        let done = (s.run)(&mitigate::Real, mode, &confirm, &mut |l| lines.push(l.to_string()));
+        let done = (s.run)(&mitigate::Real, &settings, mode, &confirm, &mut |l| lines.push(l.to_string()));
         if matches!(done, Ok(Done::NotHere(_))) {
             continue;
         }
-        show(&format!("\n==> Stopgap for {}: {}{}", s.id, s.what, if dryrun { " (dry run)" } else { "" }));
+        show(&format!("\n==> {}: {}{}", s.name, s.what, if dryrun { " (dry run)" } else { "" }));
         for l in &lines {
             show(l);
         }
@@ -313,60 +328,6 @@ fn cmd_search(query: &str, applicable_only: bool, limit: i64, json: bool) -> Res
     Ok(EXIT_OK)
 }
 
-fn csv_field(s: &str) -> String {
-    if s.contains([',', '"', '\r', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
-}
-
-fn cmd_export(csv: Option<&str>, jsonl: Option<&str>, all: bool) -> Result<i32> {
-    if let Some(path) = jsonl {
-        let cache = Cache::open(None)?;
-        let (text, n) = wpantry::export::jsonl(&cache, all)?;
-        std::fs::write(path, text)?;
-        let what = if all { "findings and resolved exposures" } else { "findings" };
-        show(&format!("✓ wrote {n} {what} to {path}"));
-    }
-    match csv {
-        Some(path) => export_csv(path),
-        None => Ok(EXIT_OK),
-    }
-}
-
-fn export_csv(path: &str) -> Result<i32> {
-    let cache = Cache::open(None)?;
-    let rows: Vec<Vec<String>> = {
-        let mut stmt = cache.conn.prepare(
-            "SELECT f.vuln_id, v.aliases, v.url, f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location \
-             FROM findings f LEFT JOIN vulns v ON v.id = f.vuln_id OR (' ' || v.aliases || ' ') LIKE ('% ' || f.vuln_id || ' %') \
-             GROUP BY f.vuln_id, f.component, f.version, f.location",
-        )?;
-        stmt.query_map([], |r| {
-            (0..11)
-                .map(|i| {
-                    Ok(match r.get_ref(i)? {
-                        ValueRef::Null => String::new(),
-                        ValueRef::Integer(n) => n.to_string(),
-                        ValueRef::Real(x) => x.to_string(),
-                        ValueRef::Text(t) | ValueRef::Blob(t) => String::from_utf8_lossy(t).into_owned(),
-                    })
-                })
-                .collect()
-        })?
-        .collect::<std::result::Result<_, _>>()?
-    };
-    let mut text =
-        String::from("id,aliases,url,component,kind,affected_version,safe_version,severity,kev,status,location\r\n");
-    for mut r in rows.clone() {
-        if r[2].is_empty() && r[0].starts_with("CVE-") {
-            r[2] = format!("https://www.cve.org/CVERecord?id={}", r[0]);
-        }
-        text.push_str(&r.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
-        text.push_str("\r\n");
-    }
-    std::fs::write(path, text)?;
-    show(&format!("✓ wrote {} findings to {path}", rows.len()));
-    Ok(EXIT_OK)
-}
-
 fn cmd_breach(enable: bool, disable: bool) -> Result<i32> {
     let cache = Cache::open(None)?;
     if enable || disable {
@@ -418,123 +379,45 @@ fn cmd_tools(json: bool) -> Result<i32> {
     Ok(if found.iter().any(|t| t.required && !t.found) { EXIT_FAIL } else { EXIT_OK })
 }
 
-/// `report`: the exposure, remediation and audit logs from the cache's
-/// history tables, as Markdown (default), JSON or CSV.
-fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&str>) -> Result<i32> {
-    use wpantry::history::{self, stamp};
+/// `report` (and `export`, and `scan` and `fix` when they finish): the latest
+/// scan from the cache, as the terminal's tables or in a format, to stdout
+/// or a file. 1 when something in it fails, or there is no scan yet.
+fn cmd_report(show: &Show) -> Result<i32> {
     let cache = Cache::open(None)?;
-    let since = wpantry::system::now() - since_days as f64 * wpantry::db::DAY;
-    let want = |s: &str| sections.iter().any(|x| x == s || x == "all");
-    let exposures = if want("exposure") { history::exposures(&cache, since)? } else { Vec::new() };
-    let fixes = if want("remediation") { history::fixes(&cache, since)? } else { Vec::new() };
-    let (scans, events) = if want("audit") {
-        (history::scans(&cache, since)?, history::events(&cache, since)?)
-    } else {
-        (Vec::new(), Vec::new())
+    // The logs, when the report shows them; the HTML page always carries them.
+    let days = (show.part.logs() || show.format == Shown::Html).then_some(show.since);
+    let found = match wpantry::reporters::latest(&cache, days)? {
+        // A log needs no scan: a fix can be run, and logged, before one.
+        None if !show.part.findings() && show.part != wpantry::reporters::Part::Summary => {
+            Some(wpantry::reporters::logs_only(&cache, show.since)?)
+        }
+        found => found,
     };
-    let text = match format {
-        "json" => {
-            history::report_json(&cache, want("exposure"), want("remediation"), want("audit"), since, since_days)?
+    let Some(mut report) = found else {
+        cache.close()?;
+        eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
+        return Ok(EXIT_FAIL);
+    };
+    report.part = show.part;
+    let text = match show.format {
+        Shown::Tui | Shown::Txt => {
+            let terminal = show.format == Shown::Tui && show.out.is_none();
+            let style = if terminal { Style::stdout() } else { Style::new(false) };
+            let width = if terminal && std::io::stdout().is_terminal() { tui::width() } else { tui::DEFAULT_WIDTH };
+            let db = db::path().to_string_lossy().into_owned();
+            tui::lines(&report, &db, width).iter().map(|l| tui::paint(l, style) + "\n").collect::<String>()
         }
-        "csv" => {
-            let mut t = String::from(
-                "kind,component,version,location,vuln_id,status,severity,kev,fixed,first_seen,last_seen,resolved,days_exposed\r\n",
-            );
-            for e in &exposures {
-                let row = [
-                    e.kind.as_str(),
-                    &e.component,
-                    &e.version,
-                    &e.location,
-                    &e.vuln_id,
-                    &e.status,
-                    &e.severity,
-                    if e.kev { "true" } else { "false" },
-                    &e.fixed,
-                    &stamp(e.first_at),
-                    &stamp(e.last_at),
-                    &e.resolved_at.map(stamp).unwrap_or_default(),
-                    &e.days_exposed.to_string(),
-                ];
-                t.push_str(&row.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
-                t.push_str("\r\n");
-            }
-            t
-        }
-        _ => {
-            let mut t = format!(
-                "# wpantry report\n\nGenerated {} by wpantry {VERSION}; the last {since_days} days.\n",
-                stamp(wpantry::system::now())
-            );
-            if want("exposure") {
-                let open = exposures.iter().filter(|e| e.resolved_at.is_none()).count();
-                let closed: Vec<&history::Exposure> = exposures.iter().filter(|e| e.resolved_at.is_some()).collect();
-                let median = {
-                    let mut d: Vec<f64> = closed.iter().map(|e| e.days_exposed).collect();
-                    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    d.get(d.len() / 2).copied().unwrap_or(0.0)
-                };
-                t.push_str(&format!(
-                    "\n## Exposure log\n\n{open} open, {} resolved; median time to resolve {median} days.\n\n| Component | Version | Advisory | Severity | Status | First seen | Resolved | Days |\n|---|---|---|---|---|---|---|---|\n",
-                    closed.len()
-                ));
-                for e in &exposures {
-                    t.push_str(&format!(
-                        "| {} | {} | {}{} | {} | {} | {} | {} | {} |\n",
-                        md(&e.component),
-                        md(&e.version),
-                        md(&e.vuln_id),
-                        if e.kev { " (KEV)" } else { "" },
-                        md(&e.severity),
-                        if e.resolved_at.is_some() { "resolved" } else { &e.status },
-                        stamp(e.first_at),
-                        e.resolved_at.map(stamp).unwrap_or_else(|| "open".into()),
-                        e.days_exposed
-                    ));
-                }
-            }
-            if want("remediation") {
-                t.push_str("\n## Remediation log\n\n| When | Command | Mode | Result | Verified by scan |\n|---|---|---|---|---|\n");
-                for f in &fixes {
-                    t.push_str(&format!(
-                        "| {} | `{}` | {} | {} | {} |\n",
-                        stamp(f.at),
-                        f.command.replace('`', "'"),
-                        f.mode,
-                        if f.ok { "ok" } else { "failed" },
-                        f.verified_scan.map(|s| format!("#{s}")).unwrap_or_else(|| "-".into())
-                    ));
-                }
-            }
-            if want("audit") {
-                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns | Unchecked |\n|---|---|---|---|---|---|---|---|---|\n");
-                for s in &scans {
-                    t.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                        s.id,
-                        stamp(s.finished_at),
-                        md(&s.host),
-                        md(&s.user),
-                        s.version,
-                        md(&s.scope),
-                        s.fails,
-                        s.warns,
-                        s.unchecked
-                    ));
-                }
-                t.push_str("\n### Events\n\n| When | Event | Detail |\n|---|---|---|\n");
-                for e in &events {
-                    t.push_str(&format!("| {} | {} | {} |\n", stamp(e.at), e.kind, md(&e.detail.to_string())));
-                }
-            }
-            t
-        }
+        Shown::Json => wpantry::reporters::render(&cache, &report, Format::Json)?,
+        Shown::Jsonl => wpantry::reporters::render(&cache, &report, Format::Jsonl)?,
+        Shown::Csv => wpantry::reporters::render(&cache, &report, Format::Csv)?,
+        Shown::Md => wpantry::reporters::render(&cache, &report, Format::Md)?,
+        Shown::Html => wpantry::reporters::render(&cache, &report, Format::Html)?,
     };
     cache.close()?;
-    match out {
+    match &show.out {
         Some(path) => {
-            std::fs::write(path, &text)?;
-            show(&format!("✓ wrote the report to {path}"));
+            Output::new(path)?.write(&text)?;
+            eprintln!("{}", Style::stderr().line(&format!("✓ wrote the report to {}", path.display())));
         }
         None => {
             // A pipe that closes early (`| head`) ends the output, not the process.
@@ -546,17 +429,12 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
             }
         }
     }
-    Ok(EXIT_OK)
-}
-
-/// A table cell: no pipes, newlines or control characters.
-fn md(s: &str) -> String {
-    s.replace('|', "\\|").chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    Ok(report.status())
 }
 
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
-    let net = wpantry::net::Http::new();
+    let net = wpantry::utils::net::Http::new();
     let progress = progress::Progress::start();
     let status = |m: &str| progress.set(m);
     let cache = Cache::open(None)?;
@@ -598,10 +476,8 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
 }
 
-fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, clipboard_guard: bool) -> Result<i32> {
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
     match action {
-        "install" if clipboard_guard => schedule::install_guard(dry_run),
-        "uninstall" if clipboard_guard => schedule::uninstall_guard(),
         "install" => {
             let every = schedule::Every::parse(every).expect("validated");
             let (h, m) = at.split_once(':').expect("validated");
@@ -611,117 +487,6 @@ fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, clipboard_gu
         "uninstall" => schedule::uninstall(),
         _ => schedule::run(),
     }
-}
-
-/// `clipboard`: the self-test now (exit 1 when a canary came back
-/// changed; a test that couldn't run says so and exits 0, as an unchecked
-/// source does), or with `--watch` the resident guard, which runs until
-/// stopped, or after the first alert with `--once`. Each alert is one
-/// line (or one JSON object), a desktop notification and a `clipper`
-/// event in the cache. `WPANTRY_CLIPBOARD_FAKE=<file>` reads the
-/// clipboard from a script instead (one line per read; the contract
-/// tests' hook) and sends no notification.
-fn cmd_clipboard(watch: bool, once: bool, window: f64, json: bool) -> Result<i32> {
-    use wpantry::clipper::{self, Clipboard, SelfTest};
-    use wpantry::guard;
-    if !watch {
-        let result = clipper::run_self_test();
-        let (code, state, detail) = match &result {
-            SelfTest::Skipped(why) => (EXIT_OK, "skipped", vec![("why", J::from(why.as_str()))]),
-            SelfTest::Clean(n) => (EXIT_OK, "clean", vec![("canaries", J::Int(*n as i64))]),
-            SelfTest::Swapped(swaps) => (
-                EXIT_FAIL,
-                "swapped",
-                vec![(
-                    "swaps",
-                    J::Arr(
-                        swaps
-                            .iter()
-                            .map(|s| {
-                                obj([
-                                    ("chain", s.chain.name().into()),
-                                    ("canary", s.canary.as_str().into()),
-                                    ("got", s.got.as_str().into()),
-                                    ("read", J::Int(s.read as i64)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                )],
-            ),
-        };
-        if json {
-            let mut pairs: Vec<(&str, J)> = vec![
-                ("schema", J::Int(SCHEMA)),
-                ("impl", IMPL.into()),
-                ("version", VERSION.into()),
-                ("self_test", state.into()),
-            ];
-            pairs.extend(detail);
-            emit(&J::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()).dumps_indent(1));
-            return Ok(code);
-        }
-        match result {
-            SelfTest::Skipped(why) => show(&format!("  ⚠ clipboard self-test not run: {why}")),
-            SelfTest::Clean(n) => {
-                show(&format!("  ✓ {n} canary addresses copied to the clipboard came back unchanged"))
-            }
-            SelfTest::Swapped(swaps) => {
-                for s in &swaps {
-                    show(&format!(
-                        "  ✗ the {} canary {} came back as {} on read {}: something rewrites the clipboard. Don't send funds from this machine",
-                        s.chain.name(),
-                        s.canary,
-                        s.got,
-                        s.read
-                    ));
-                }
-            }
-        }
-        return Ok(code);
-    }
-    let settings =
-        guard::Settings { window: std::time::Duration::from_secs_f64(window), interval: guard::INTERVAL, once };
-    let fake = std::env::var_os("WPANTRY_CLIPBOARD_FAKE").filter(|v| !v.is_empty());
-    let scripted = fake.is_some();
-    let mut on_alert = |a: &guard::Alert| {
-        if json {
-            emit(&a.to_json(wpantry::system::now()).to_string());
-        } else {
-            show(&format!("  ✗ {}", a.note()));
-        }
-        if !scripted {
-            guard::notify(a);
-        }
-        if let Err(e) = Cache::open(None).and_then(|c| guard::record(&c, a).and_then(|()| c.close())) {
-            eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: the alert wasn't recorded in the cache: {e}")));
-        }
-    };
-    match fake {
-        Some(file) => {
-            let script = std::fs::read_to_string(&file)?;
-            guard::run_script(&script, &settings, &mut on_alert);
-        }
-        None => {
-            let cb =
-                clipper::real().map_err(|why| wpantry::Error::Failed(format!("can't guard the clipboard: {why}")))?;
-            eprintln!(
-                "{}",
-                Style::stderr().dim(&format!(
-                    "guarding the clipboard: a read every {} ms, a swap is two addresses of one chain within {window} s (Ctrl-C stops)",
-                    settings.interval.as_millis()
-                ))
-            );
-            guard::run(
-                &mut || Some(cb.read()),
-                &mut std::time::Instant::now,
-                &std::thread::sleep,
-                &settings,
-                &mut on_alert,
-            );
-        }
-    }
-    Ok(EXIT_OK)
 }
 
 /// `cache prune`: what no scan has used in `days`, then VACUUM.
@@ -749,7 +514,7 @@ fn mb(bytes: u64) -> String {
 /// again now; exit 10 when any has a fix.
 fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
     let cache = Cache::open(None)?;
-    let net = wpantry::net::Http::new();
+    let net = wpantry::utils::net::Http::new();
     let style = Style::stderr();
     let status = |s: &str| {
         if !json && std::io::stderr().is_terminal() {
@@ -779,7 +544,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
                 state
             ));
             match (&w.fixed, &w.mitigation) {
-                (Some(_), _) => say("    Fix: run wpantry fix --dryrun for the step"),
+                (Some(_), _) => say("    Fix: run wpantry fix --dry-run for the step"),
                 (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
                 (None, None) => {
                     say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
@@ -795,41 +560,24 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
     Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
 }
 
-/// `harden ca-trust`: distrust the leaked roots in the system trust store
-/// (the shell script it replaced did the same), asking for sudo only to install
-/// the result.
-fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
-    wpantry::catrust::fix(bundle, &|line| show(line))?;
-    if bundle.is_none() {
-        show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
-    }
-    Ok(EXIT_OK)
+/// What `fix ID` does: the dry run, the yes, whether it may ask, the undo,
+/// and what a stopgap is told (`--bundle`, `--hours`).
+struct FixOne {
+    dry_run: bool,
+    yes: bool,
+    no_input: bool,
+    undo: bool,
+    settings: wpantry::remediation::mitigate::Settings,
 }
 
-/// `harden extension-cooldown`: the one posture fix that edits files.
-fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::posture::tools::set_extension_cooldown(hours)?;
-    if changed.is_empty() {
-        let editors = wpantry::posture::tools::editor_settings();
-        if editors.is_empty() {
-            show("  no VS Code-family editor is installed");
-        } else {
-            show(&format!("  every editor already waits {hours} hours"));
-        }
-    }
-    for c in &changed {
-        show(&format!("  ✓ {c}"));
-    }
-    show("  Extensions wait that long after a version is published before it installs here (restart the editor).");
-    Ok(EXIT_OK)
-}
-
-/// `mitigate ID`: the last scan's findings for the advisory (by id or
-/// alias), their unattended fixes run, wpantry's stopgap for it run where
-/// one exists, and the steps that need a person printed. Exit 1 when a
-/// step is left, a fix failed, or nothing is known for the id here.
-fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) -> Result<i32> {
-    use wpantry::mitigate::{self, Done, Mode};
+/// `fix ID` (`mitigate ID`): the last scan's findings for the advisory (by
+/// id or alias), their unattended fixes run, wpantry's stopgap for it (or
+/// one of its own fixes, by name) run where one exists, and the steps that
+/// need a person printed. Exit 1 when a step is left, a fix failed, or
+/// nothing is known for the id here.
+fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
+    let FixOne { dry_run, yes, no_input, undo, ref settings } = o;
+    use wpantry::remediation::mitigate::{self, Done, Mode};
     let cache = Cache::open(None)?;
     // the id, its aliases, and the records that list it as one
     let mut ids: Vec<String> = vec![id.to_string()];
@@ -849,15 +597,16 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
         }
     }
-    let findings: Vec<wpantry::check::Finding> = wpantry::export::findings(&cache)?
+    let findings: Vec<wpantry::finding::Finding> = wpantry::reporters::jsonl::findings(&cache)?
         .into_iter()
         .filter(|f| ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id)))
         .collect();
     let stopgap = mitigate::stopgap(id);
     let interactive = !no_input && std::io::stdin().is_terminal();
-    let bundled = wpantry::check::mitigation(id);
+    let bundled = wpantry::checks::mitigation(id);
+    let shown = stopgap.filter(|s| s.name.eq_ignore_ascii_case(id)).map_or(id, |s| s.name);
     show(&format!(
-        "==> {id}: {}{}",
+        "==> {shown}: {}{}",
         match findings.len() {
             0 => "not in the last scan's findings".to_string(),
             1 => format!("1 finding in the last scan ({} {})", findings[0].component, findings[0].version),
@@ -889,8 +638,8 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
             progress::Progress::new(false).ask("Run these now?", true).unwrap_or(false)
         };
-        let auto: Vec<wpantry::check::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
-        let applied = report::apply(&auto, dry_run, &confirm, &mut |l| show(l));
+        let auto: Vec<wpantry::finding::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
+        let applied = remediation::apply(&auto, dry_run, &confirm, &mut |l| show(l));
         for (cmd, ok) in &applied.ran {
             let targets: Vec<String> =
                 auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
@@ -921,7 +670,22 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
             progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
         };
-        match (s.run)(&mitigate::Real, mode, &confirm, &mut |l| show(l))? {
+        let command = format!("wpantry fix {}", s.name);
+        let targets: Vec<String> = findings.iter().map(wpantry::history::key_of).collect();
+        let done = (s.run)(&mitigate::Real, settings, mode, &confirm, &mut |l| show(l));
+        if !dry_run && matches!(done, Ok(Done::Applied) | Err(_)) {
+            wpantry::history::record_fix(
+                &cache,
+                wpantry::history::latest_scan(&cache)?,
+                &command,
+                "stopgap",
+                done.is_ok(),
+                &targets,
+            )?;
+            // kept even when the stopgap failed and the run stops here
+            cache.commit()?;
+        }
+        match done? {
             Done::Applied => did_something = true,
             Done::Nothing(why) => {
                 show(&format!("  ✓ {why}"));
@@ -961,9 +725,12 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
                 "\n✗ nothing known for {id} here: it isn't in the last scan's findings (run wpantry scan) and wpantry has no stopgap for it"
             ));
         } else if findings.is_empty() {
-            show("  nothing to do here");
+            // a stopgap that was declined is still to do
+            if status == EXIT_OK {
+                show("  nothing to do here");
+            }
             cache.close()?;
-            return Ok(EXIT_OK);
+            return Ok(status);
         }
         cache.close()?;
         return Ok(EXIT_FAIL);
@@ -975,38 +742,263 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
 /// `mitigate list`: the stopgaps wpantry has, each with whether it applies
 /// here (a dry run with the output dropped), and the advisories in the last
 /// scan with an unattended fix.
-fn cmd_mitigate_list() -> Result<i32> {
-    use wpantry::mitigate::{self, Done, Mode};
-    show("==> Stopgaps wpantry can install (wpantry mitigate ID, or all):");
-    for s in mitigate::STOPGAPS {
-        let state = match (s.run)(&mitigate::Real, Mode::DryRun, &|_| false, &mut |_| {}) {
-            Ok(Done::Applied) => format!("needed here: wpantry mitigate {} --dry-run shows the plan", s.id),
-            Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
-            Ok(Done::Declined) => "unreachable on a dry run".into(),
-            Err(e) => format!("can't tell: {e}"),
+/// `fix list`: what can be fixed, from the latest scan: the update plan in
+/// batches, then wpantry's stopgaps and whether each applies here. Nothing
+/// runs.
+fn cmd_fix_list() -> Result<i32> {
+    use wpantry::remediation::mitigate::{self, Done, Mode};
+    let cache = Cache::open(None)?;
+    let latest = wpantry::reporters::latest(&cache, None)?;
+    cache.close()?;
+    let Some(report) = latest else {
+        eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
+        return Ok(EXIT_FAIL);
+    };
+    let findings = &report.outcome.findings;
+    let view = wpantry::reporters::view::view(findings);
+    show(&format!(
+        "==> What wpantry fix can do, from scan #{} ({})",
+        report.outcome.scan_id,
+        wpantry::history::stamp(report.scan.row.finished_at)
+    ));
+    show("");
+    show("Update plan (wpantry fix runs the automatic ones; --dry-run shows each command first):");
+    if view.batches.is_empty() {
+        show("  nothing to update");
+    }
+    for b in &view.batches {
+        let mode = match b.mode {
+            "auto" => "automatic",
+            "manual" => "needs you",
+            _ => "optional",
         };
-        show(&format!("  {}  {}\n      {state}", s.id, s.what));
+        let cmd = if b.sudo { b.cmd.strip_prefix("sudo ").unwrap_or(&b.cmd) } else { &b.cmd };
+        show(&format!("  {mode:<10} {}{cmd}  (clears {})", if b.sudo { "[sudo] " } else { "" }, b.findings));
+    }
+    show("");
+    show("Fixes wpantry makes itself (wpantry fix NAME; wpantry fix runs the ones that apply):");
+    let settings = mitigate::Settings::default();
+    for s in mitigate::STOPGAPS {
+        let found = findings.iter().any(|f| f.vuln_id.eq_ignore_ascii_case(s.id));
+        let state = if s.when_found && !found {
+            format!("not needed: the last scan didn't find {}", s.id)
+        } else {
+            match (s.run)(&mitigate::Real, &settings, Mode::DryRun, &|_| false, &mut |_| {}) {
+                Ok(Done::Applied) => {
+                    format!("needed here: wpantry fix {} --dry-run shows what it would change", s.name)
+                }
+                Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
+                Ok(Done::Declined) => "unreachable on a dry run".into(),
+                Err(e) => format!("can't tell: {e}"),
+            }
+        };
+        show(&format!("  {:<20} {} ({})", s.name, s.what, s.id));
+        show(&format!("  {:<20} {state}", ""));
+    }
+    Ok(EXIT_OK)
+}
+
+/// `rules`: where the malware scan's rules come from and what compiled;
+/// `--update` fetches YARA Forge's package first.
+fn cmd_rules(update: bool, json: bool) -> Result<i32> {
+    use wpantry::checks::malware;
+    let cache = Cache::open(None)?;
+    let mut failed = None;
+    if update {
+        let net = wpantry::utils::net::Http::new();
+        let progress = progress::Progress::start();
+        progress.set("Fetching YARA Forge's rules");
+        if let Err(e) = malware::yara::update(&cache, &net, true) {
+            failed = Some(e.to_string());
+        }
+        progress.finish();
+    }
+    let dir = malware::yara::rules_dir(&cache);
+    let active = |id: &str| wpantry::sources::file::active(id);
+    let loaded = malware::yara::load(&dir, false, &active);
+    let all = malware::yara::load(&dir, true, &active);
+    cache.close()?;
+    let stats = all.rules.stats();
+    if json {
+        let sources = all
+            .sources
+            .iter()
+            .map(|(n, c)| obj([("source", n.as_str().into()), ("rules", J::Int(*c as i64))]))
+            .collect();
+        say(&obj([
+            ("directory", dir.to_string_lossy().as_ref().into()),
+            ("sources", J::Arr(sources)),
+            ("rules", J::Int(stats.rules as i64)),
+            ("this_system", J::Int(loaded.rules.rules().len() as i64)),
+            ("rejected", J::Int(all.rules.rejected.len() as i64)),
+            ("update_failed", failed.as_deref().map_or(J::Null, |f| f.into())),
+        ])
+        .dumps_indent(1));
+    } else {
+        show(&format!("Rules in {}", dir.display()));
+        for (name, n) in &all.sources {
+            show(&format!("  {n:>6}  {name}"));
+        }
+        show(&format!(
+            "{} rules compile ({} for this system and any; --deep uses all), {} rejected",
+            stats.rules,
+            loaded.rules.rules().len(),
+            all.rules.rejected.len()
+        ));
+        if let Some(f) = &failed {
+            show(&format!("Not updated: {f}"));
+        }
+    }
+    Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
+}
+
+/// `sources`: every outside source and what its fetches came to.
+fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+    use wpantry::sources::file as sources;
+    let path = file.clone().unwrap_or_else(sources::user_file);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && file.is_none() => None,
+        Err(e) => {
+            eprintln!("wpantry: error: {}: {e}", path.display());
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if let Err(e) = sources::configure(text.as_deref(), false) {
+        eprintln!("wpantry: error: {e}");
+        return Ok(EXIT_USAGE);
+    }
+    let user = sources::effective().user.clone();
+    let cache = Cache::open(None)?;
+    let all = wpantry::sources::fetch::listing(&cache)?;
+    cache.close()?;
+    let now = wpantry::utils::os::now();
+    let when = |t: f64| if t > 0.0 { J::Float(t) } else { J::Null };
+    if json {
+        let rows = all
+            .iter()
+            .map(|l| {
+                let s = &l.source;
+                obj([
+                    ("id", s.id.as_str().into()),
+                    ("kind", s.kind.as_str().into()),
+                    ("format", s.format.as_str().into()),
+                    ("tier", s.tier.as_str().into()),
+                    ("host", s.host().map_or(J::Null, |h| h.as_str().into())),
+                    (
+                        "transport",
+                        if s.transport == wpantry::sources::file::Transport::Git { "git" } else { "https" }.into(),
+                    ),
+                    ("user", J::Bool(user.contains(&s.id))),
+                    ("license", s.license.as_str().into()),
+                    ("redistribute", J::Bool(s.redistribute)),
+                    ("refresh_seconds", J::Float(s.refresh)),
+                    ("sends", if s.sends.is_empty() { J::Null } else { s.sends.as_str().into() }),
+                    ("last_attempt", when(l.state.attempt)),
+                    ("last_success", when(l.state.success)),
+                    ("fresh", J::Bool(l.fresh)),
+                    ("error", if l.state.error.is_empty() { J::Null } else { l.state.error.as_str().into() }),
+                ])
+            })
+            .collect();
+        say(&obj([("sources", J::Arr(rows))]).dumps_indent(1));
+        return Ok(EXIT_OK);
+    }
+    for l in &all {
+        let s = &l.source;
+        let fetched = if l.state.success > 0.0 {
+            format!(
+                "{} ago{}",
+                schedule::ago((now - l.state.success).max(0.0) as u64),
+                if l.fresh { "" } else { ", stale" }
+            )
+        } else {
+            "never fetched".to_string()
+        };
+        let host = s.host().unwrap_or_else(|| "git".into());
+        let host = if user.contains(&s.id) { format!("{host} (yours)") } else { host };
+        show(&format!("{:<28} {:<18} {:<7} {:<34} {}", s.id, s.kind, s.tier.as_str(), host, fetched));
+        show(&format!(
+            "{:<28} licence: {}{}",
+            "",
+            s.license,
+            if s.redistribute { "" } else { " (fetched here, never redistributed)" }
+        ));
+        if !l.state.error.is_empty() {
+            show(&format!("{:<28} last error: {}", "", l.state.error));
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+/// `rules goodware`: rebuild the goodware database; returns how many files it read.
+fn cmd_rules_goodware() -> Result<usize> {
+    let cache = Cache::open(None)?;
+    let progress = progress::Progress::start();
+    let status = |m: &str| progress.set(m);
+    let files = wpantry::checks::malware::rulegen::goodware_files(&wpantry::checks::malware::rulegen::goodware_dirs());
+    let read = wpantry::checks::malware::rulegen::build(&cache, &files, &status);
+    progress.finish();
+    let read = read?;
+    cache.close()?;
+    note(&format!("goodware: {read} system programs read"));
+    Ok(read)
+}
+
+/// `rules gen`: a rule from samples, checked against the goodware.
+fn cmd_rules_gen(
+    samples: &[std::path::PathBuf],
+    category: &str,
+    family: Option<&str>,
+    name: Option<&str>,
+    out: Option<&std::path::Path>,
+) -> Result<i32> {
+    use wpantry::checks::malware::rulegen;
+    if !rulegen::built(&Cache::open(None)?)? {
+        cmd_rules_goodware()?;
     }
     let cache = Cache::open(None)?;
-    let findings = wpantry::export::findings(&cache)?;
-    cache.close()?;
-    let mut auto: Vec<&wpantry::check::Finding> =
-        findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();
-    auto.sort_by(|a, b| a.vuln_id.cmp(&b.vuln_id).then(a.component.cmp(&b.component)));
-    auto.dedup_by(|a, b| a.vuln_id == b.vuln_id && a.component == b.component);
-    show("\n==> Advisories in the last scan with an unattended fix (wpantry fix runs them):");
-    if auto.is_empty() {
-        show("  none");
+    let family = family.map(str::to_string).unwrap_or_else(|| {
+        samples[0].file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Unknown".into())
+    });
+    let name = name.map(str::to_string).unwrap_or_else(|| rulegen::rule_name(&family, category));
+    let mut hashes = Vec::new();
+    for s in samples {
+        hashes.push(wpantry::utils::sha256::hex(&std::fs::read(s)?));
     }
-    for f in auto {
-        show(&format!(
-            "  {}  {} {} → {}: {}",
-            f.vuln_id,
-            f.component,
-            f.version,
-            if f.fixed.is_empty() { "?".to_string() } else { f.fixed.clone() },
-            f.fix_cmd
-        ));
+    let date = wpantry::history::stamp(wpantry::utils::os::now());
+    let describe = rulegen::Describe {
+        name: &name,
+        category,
+        family: &family,
+        author: "wpantry rules gen",
+        reference: "",
+        date: date.get(..10).unwrap_or(&date),
+        hashes: &hashes,
+    };
+    let Some(output) = rulegen::run(&cache, samples, &describe)? else {
+        note("no rule: the samples share nothing that this machine's programs don't also have");
+        return Ok(EXIT_FAIL);
+    };
+    cache.close()?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &output.text)?;
+            std::fs::write(path.with_extension("test.toml"), &output.test_toml)?;
+            note(&format!(
+                "wrote {} ({} strings, {} code snippets) and its test file",
+                path.display(),
+                output.strings,
+                output.opcodes
+            ));
+        }
+        None => say(&output.text),
+    }
+    if !output.false_positives.is_empty() {
+        for f in &output.false_positives {
+            note(&format!("false positive: the rule matches {}", f.display()));
+        }
+        return Ok(EXIT_FAIL);
     }
     Ok(EXIT_OK)
 }
@@ -1020,46 +1012,41 @@ fn cmd_skill() -> Result<i32> {
 
 fn dispatch(cmd: Command) -> Result<i32> {
     match cmd {
-        Command::Scan(c) => cmd_scan(c),
+        Command::Scan(mut c) => {
+            c.show = resolve(c.show, std::io::stdout().is_terminal(), wpantry::utils::os::now());
+            cmd_scan(c)
+        }
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
-        Command::Export { csv, jsonl, all } => cmd_export(csv.as_deref(), jsonl.as_deref(), all),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
         Command::Watch { json, offline } => cmd_watch(json, offline),
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_skill(),
-        Command::Report { sections, since_days, format, out } => {
-            cmd_report(&sections, since_days, &format, out.as_deref())
-        }
+        Command::Sources { json, file } => cmd_sources(json, file),
+        Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
+            "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
+            "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),
+            _ => cmd_rules(update, json),
+        },
+        Command::Report(show) => cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now())),
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
-        Command::Schedule { action, every, at, dry_run, clipboard_guard } => {
-            cmd_schedule(&action, &every, &at, dry_run, clipboard_guard)
-        }
+        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
-        Command::Clipboard { watch, once, window, json } => cmd_clipboard(watch, once, window, json),
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
-        Command::Harden { what, hours, bundle } => {
-            if what == "ca-trust" {
-                cmd_harden_ca_trust(bundle.as_deref())
-            } else {
-                cmd_harden_cooldown(hours)
-            }
-        }
-        Command::Mitigate { target, dry_run, yes, no_input, undo, offline, no_machine, path } => match target {
-            Target::List => cmd_mitigate_list(),
-            Target::All => cmd_scan(Check {
-                fix: true,
-                dryrun: dry_run,
-                yes,
-                no_input,
-                offline,
-                no_machine,
-                path,
-                ..Default::default()
-            }),
-            Target::Id(id) => cmd_mitigate(&id, dry_run, yes, no_input, undo),
+        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours } => match target {
+            Target::List => cmd_fix_list(),
+            Target::Id(id) => cmd_mitigate(
+                &id,
+                FixOne {
+                    dry_run,
+                    yes,
+                    no_input,
+                    undo,
+                    settings: wpantry::remediation::mitigate::Settings { bundle, hours },
+                },
+            ),
         },
     }
 }
@@ -1072,7 +1059,7 @@ fn main() {
             EXIT_OK
         }
         Parsed::Usage(text) => {
-            eprint!("{}", text.replace(": error: ", &format!(": {} ", Style::stderr().red("error:"))));
+            eprint!("{}", text.replace("\nerror: ", &format!("\n{} ", Style::stderr().red("error:"))));
             EXIT_USAGE
         }
         // A crash is an internal error, never "clean" or "fail".
@@ -1091,55 +1078,5 @@ fn main() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use wpantry::check::Finding;
-
-    #[test]
-    fn csv_fields_quote_only_what_needs_it() {
-        assert_eq!(csv_field("plain"), "plain");
-        assert_eq!(csv_field(""), "");
-        assert_eq!(csv_field("a,b"), "\"a,b\"");
-        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
-        assert_eq!(csv_field("two\nlines"), "\"two\nlines\"");
-        assert_eq!(csv_field("cr\r"), "\"cr\r\"");
-    }
-
-    #[test]
-    fn table_cells_keep_one_line_without_pipes() {
-        assert_eq!(md("a|b"), "a\\|b");
-        assert_eq!(md("two\nlines\tand\x1b[0m"), "two lines and [0m");
-        assert_eq!(md("plain"), "plain");
-    }
-
-    #[test]
-    fn numbers_round_and_sizes_read_in_mb() {
-        assert_eq!(round3(1.23456), 1.235);
-        assert_eq!(round3(-5.0004), -5.0);
-        assert_eq!(mb(0), "0.0 MB");
-        assert_eq!(mb(1_250_000), "1.2 MB");
-        assert_eq!(mb(12_345_678), "12.3 MB");
-    }
-
-    #[test]
-    fn the_envelope_carries_the_counts_and_findings() {
-        let scan = Outcome {
-            scan_id: 3,
-            findings: vec![Finding { vuln_id: "CVE-2026-1".into(), status: "fail".into(), ..Default::default() }],
-            counts: vec![("git repos".into(), 2), ("packages".into(), 0)],
-            unfixed: 1,
-            unknown_licenses: 4,
-        };
-        let env = wpantry::json::parse(envelope(&scan).dumps().as_bytes(), wpantry::json::MAX_DOCUMENT).unwrap();
-        assert_eq!(env["schema"].as_i64(), Some(SCHEMA));
-        assert_eq!(env["impl"].as_str(), Some(IMPL));
-        assert_eq!(env["version"].as_str(), Some(VERSION));
-        assert_eq!(env["checked"]["git repos"].as_i64(), Some(2));
-        assert_eq!(env["checked"]["packages"].as_i64(), Some(0));
-        assert_eq!(env["unfixed"].as_i64(), Some(1));
-        assert_eq!(env["unknown_licenses"].as_i64(), Some(4));
-        let findings = env["findings"].as_array().unwrap();
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0]["vuln_id"].as_str(), Some("CVE-2026-1"));
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

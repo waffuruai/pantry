@@ -4,60 +4,23 @@
 //! fixes.
 //!
 //! The library has no global state and never prints: progress goes through
-//! the `log` callback a [`check::Scan`] is given, and the CLI owns stdout,
+//! the `log` callback a [`checks::Scan`] is given, and the CLI owns stdout,
 //! stderr and exit codes. The stable surface is the CLI
 //! contract (`specs/cli-contract.md`), not this crate's API.
 
-pub mod addresses;
-pub mod apps;
-pub mod breach;
-pub mod catalog;
-pub mod catrust;
-pub mod cellar;
-pub mod check;
-pub mod check_machine;
-pub mod check_supply;
-pub mod clipper;
-pub mod compare;
+pub mod checks;
+pub mod component;
 pub mod db;
-pub mod distros;
-pub mod documents;
-pub mod editors;
 pub mod error;
-pub mod export;
 pub mod external;
-pub mod feeds;
-pub mod guard;
-pub mod harnesses;
-pub mod hidden;
+pub mod finding;
 pub mod history;
-pub mod hooks;
-pub mod images;
-pub mod install_scripts;
-pub mod json;
-pub mod leaks;
-pub mod licenses;
-pub mod lockfiles;
-pub mod malicious;
-pub mod mitigate;
-pub mod mptcp;
-pub mod net;
-pub mod osdb;
-pub mod osv;
-pub mod packages;
-pub mod plist;
-pub mod posture;
-pub mod re;
-pub mod repos;
-pub mod scanners;
+pub mod remediation;
+pub mod reporters;
 pub mod selfinstall;
-pub mod sha256;
-pub mod suspect;
+pub mod sources;
 pub mod sync;
-pub mod system;
-pub mod tools;
-pub mod typosquat;
-pub mod versions;
+pub mod utils;
 pub mod watch;
 
 pub use error::Error;
@@ -73,16 +36,19 @@ pub const SCHEMA: i64 = 1;
 /// crate carries it; it describes this binary.
 pub const SKILL: &str = include_str!("../assets/SKILL.md");
 
-/// The bundled policy files, the defaults `--gitleaks-config`, `--licenses`
-/// and `--install-scripts` replace.
+/// The bundled policy and data files (TOML), the defaults the policy
+/// options (`--licenses`, `--install-scripts`, …) replace.
 pub mod defaults {
     pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
-    pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
-    pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
-    pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
-    pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
-    pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.txt");
-    pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.txt");
-    pub const HOOKS: &str = include_str!("../assets/defaults/hooks.txt");
-    pub const POPULAR: &str = include_str!("../assets/defaults/popular.txt");
+    pub const LICENSES: &str = include_str!("../assets/defaults/licenses.toml");
+    pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.toml");
+    pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.toml");
+    pub const POSTURE: &str = include_str!("../assets/defaults/posture.toml");
+    pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.toml");
+    pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.toml");
+    pub const HOOKS: &str = include_str!("../assets/defaults/hooks.toml");
+    pub const POPULAR: &str = include_str!("../assets/defaults/popular.toml");
+    pub const WEAK_PASSWORDS: &str = include_str!("../assets/defaults/weak-passwords.toml");
+    pub const BAIT: &str = include_str!("../assets/defaults/bait.toml");
+    pub const SOURCES: &str = include_str!("../assets/defaults/sources.toml");
 }

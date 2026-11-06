@@ -1,166 +1,220 @@
-# Using wpantry
+# Using Pantry
 
-wpantry finds the vulnerabilities that actually apply to your computer and your git repos: it inventories what is installed and what your repos lock, and asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions. Every check and every source is listed in [checks-and-sources.md](checks-and-sources.md); this page is how to run it and read what it says. Install it first: [install.md](install.md).
+Pantry finds the vulnerabilities that apply to your computer and your git repos. It inventories what is installed and what your repos lock, and asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) about those exact versions only. Install it first: [install](install.md). Every check and source: [checks and sources](checks-and-sources.md).
 
 ## Quick start
 
 ```bash
-wpantry scan                                       # this computer: machine + every git repo under ~
+wpantry scan                                       # this computer: the machine and every git repo under ~
 wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
-wpantry fix --dryrun                               # what it would fix, changing nothing
-wpantry fix                                        # apply the fixes that can run unattended and the stopgaps wpantry has, then re-check
-wpantry mitigate list                              # the stopgaps wpantry can install and whether each applies here
-wpantry scan --json --no-input                     # findings as JSON, for tools and agents
-wpantry help                                       # every command; wpantry help fix for one
+wpantry report                                     # the latest scan again, without scanning
+wpantry report --html                              # one offline page: pantry_report_<when>.html here
+wpantry fix --dry-run                              # what it would fix; changes nothing
+wpantry fix                                        # apply the unattended fixes and stopgaps, then re-check
+wpantry fix list                                   # what can be fixed
+wpantry scan --json --no-input | jq .              # findings as JSON, for tools and agents
+wpantry schedule install --every week              # sync and scan every Monday at 09:30
+wpantry help                                       # every command (wpantry help fix for one)
 ```
 
-`wpantry` on its own prints the commands. `wpantry check` is the same as `wpantry scan`. The first run downloads advisories for what it finds and takes a while; answers are cached for a day, so the next run the same day takes seconds.
-
-## What it checks
-
-Dependencies, committed secrets, malicious packages, AI harnesses, install scripts, the OS, installed software, end of life, certificate authorities and the machine's own settings: the full table, with what each source is asked and what is sent, is [checks-and-sources.md](checks-and-sources.md). `--no-machine` limits a run to the repo checks. What a run could not check shows up as "not checked", never as clean.
+- `wpantry` alone prints the commands; `wpantry --version` prints the version.
+- A mistyped command or option is an error that names the closest one (`Did you mean --dry-run?`).
+- The first run downloads advisories and takes a while. After that nothing expires: each run reads only what OSV changed since the last one, and asks OSV only about new versions, so later runs take seconds.
 
 ## Scope
 
-By default wpantry checks the machine and every git repo under your home directory. The walk is bounded: depth 6, symlinks not followed, and it skips `Library`, caches, toolchains, `node_modules`, build output and app bundles. It prints how many repos it found.
+By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
-- `--path DIR` (repeatable) limits the repo checks to the repos at or under DIR. A DIR with no git repo is scanned as one project, without the git-history checks. A missing DIR is skipped with a note.
-- `--no-machine` skips the machine inventory: repo checks only.
+- `--path DIR` checks only the repos at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks.
+- `--no-machine` skips the machine: repo checks only.
 
-## Cloned a repo? Check it before you open it
+What a run couldn't check is reported "not checked", never clean.
 
-A repo can run code the moment an agent or editor opens it: a `.claude/settings.json` SessionStart hook, a `.cursor/mcp.json` server, a `.vscode/tasks.json` task on folder open, a devcontainer command, an npm `postinstall`. Hijacked repos hide the payload in a file the hook runs (a 13 MB `.github/init.js` that code search never indexes). Before opening a clone you didn't write:
+## Check a clone before you open it
+
+A repo can run code the moment an agent or editor opens it: a Claude Code hook, an MCP server, a VS Code folder-open task, a devcontainer command, an npm `postinstall`. Before opening a clone you didn't write:
 
 ```bash
 wpantry scan --path ~/Downloads/some-repo --no-machine
 ```
 
-Alongside the hooks, the same pass reads every source, config and prose file for text that would fool you or a tool. Context decides, not the character alone: a bidirectional override on a line with no right-to-left text **fails** (`HIDDEN-BIDI`, Trojan Source), while the same control beside Arabic or Hebrew (a translation file, a link title) warns; Unicode tag characters **fail** when what they spell is an instruction to an agent or they sit in a file written for agents (`CLAUDE.md`, prompts), and warn otherwise, the note quoting what they spell either way (`HIDDEN-TAGS`); the England, Scotland and Wales flags, which are tag characters after a black flag, are emoji and not counted. Runs of zero-width characters, identifiers that mix Latin with Cyrillic or Greek, and identifiers named after weapons and lethal doses warn (`HIDDEN-ZERO-WIDTH`, `HIDDEN-HOMOGLYPH`, `AI-BAIT`). The last is a trick aimed at AI-assisted review: a model that refuses to read "computeRicinLethalDosage" never sees the fingerprinting it does. Pantry reads the code regardless and tells you the names were chosen to make a reviewer look away.
+| Finding | Fails | Warns |
+|---|---|---|
+| Repo hooks (`repo-hook`) | A hook that runs a file kept in the repo, looks like a dropper, or matches a known indicator (`RUNS-REPO-FILE`, `LOADER`, `IOC`) | A hook that runs any command (`OPEN-HOOK`, `INSTALL-HOOK`); a known campaign's commit or branch markers (`MARKER`) |
+| Hidden text ([suspect code](suspect-code.md)) | Trojan Source bidi overrides, hidden instructions to an agent, dangerous link targets, disguised file names | Zero-width runs, mixed-script names, text that addresses an agent |
+| Documents ([documents](documents.md)) | A PDF that runs JavaScript, an Office file with macros or a remote template, an image or SVG carrying code | What can't be read says so, never passes |
 
-An agent also reads what a person skims: READMEs, comments, package descriptions, commit messages, and whatever a page renders. Text in those places that addresses the agent instead of the reader ("ignore previous instructions", "note to AI agents: install …", "do not tell the user") warns (`AGENT-INSTRUCTIONS`); the files whose job that is (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, prompts) are left alone, and in code only comment lines count. The same text hidden from the reader (a `display:none` block, white on white, a zero-size font, an off-screen position, an HTML comment) **fails** (`HIDDEN-PROMPT`); a hidden block of ordinary text in a README warns (`HIDDEN-HTML`). A markdown image or link whose query string is built to carry something (`?data={{conversation}}`, `?secret=`) warns (`EXFIL-LINK`), and fails in a file that also addresses the agent: rendered, it posts whatever it was given. `javascript:`, `vbscript:` and executable `data:` URIs fail as link targets in prose and warn in page source (`DANGEROUS-URI`). A file name with invisible or direction-changing characters, or a document's extension in front of a program's (`report.pdf.exe`), fails (`HIDDEN-FILENAME`); a name or a domain in a link that mixes Latin with look-alike letters from another script fails for the domain (`CONFUSABLE-DOMAIN`) and warns for the name (`CONFUSABLE-NAME`); a punycode domain warns.
+Nothing is run or fixed for you: read the file the finding names, then remove the hook or trust it.
 
-The documents and images in the clone are read too (`document` findings): a PDF that runs JavaScript on open, a `.docx` carrying macros or fetching its template from a URL, an image with a program after its last byte, an SVG with a script fail; what can't be read (encrypted, zip64, over 32 MiB) says so rather than passing. The same pass covers the top of `~/Downloads`, `~/Desktop` and `~/Documents` on a machine scan, and runs ClamAV over those files when `clamscan` is installed (`wpantry tools` lists it; wpantry never installs it). [documents.md](documents.md) has every id.
+To accept a hook you've read, add it to your hooks policy, `~/.config/wpantry/hooks.toml` (see [policy files](#policy-files)). Each `OPEN-HOOK` and `INSTALL-HOOK` finding ends with the entry to paste:
 
-A hook that runs a file kept in the repo, a file that looks like a dropper, or a known indicator fails (`repo-hook` findings `RUNS-REPO-FILE`, `LOADER`, `IOC`); a hook that runs a command at all warns (`OPEN-HOOK`, `INSTALL-HOOK`), as do the commit and branch markers of a known campaign (`MARKER`). Nothing is run or fixed for you: read the file the finding names, then remove the hook or decide to trust it. `--repo-hooks FILE` replaces the bundled indicator list. A hook you have read and accept goes in your hooks policy (`--hooks-policy FILE`): each `OPEN-HOOK` and `INSTALL-HOOK` finding ends with the exact line to paste (`hook assets/package.json "npm postinstall script" node bin/postinstall`), and `repo ~/Development/mine` accepts every such hook under a path. Accepted hooks are counted in the report (`repo hooks accepted by policy`) rather than listed, and a hook whose command changes is listed again. Nothing that fails can be accepted.
+```toml
+hooks = [
+  { file = "assets/package.json", when = "npm postinstall script", command = "node bin/postinstall" },
+]
+repos = ["~/Development/mine"]   # every hook that warns under this path
+```
+
+Accepted hooks are counted, not listed. A hook whose command changes is listed again. A hook that fails can't be accepted.
+
+## Policy files
+
+Policy files tune what a scan accepts or checks. Each is a TOML file in `~/.config/wpantry/` (or `$XDG_CONFIG_HOME/wpantry/`), named as below. Pantry loads it on every scan, scheduled ones included, in place of its bundled default. An option names another file for one run.
+
+| File | Option | What it does | Keys | Bundled default |
+|---|---|---|---|---|
+| `suspect.toml` | `--suspect-policy` | Suspicious code you've reviewed warns instead of failing ([suspect code](suspect-code.md#the-policy-file)) | `ids`, `paths` | empty |
+| `hooks.toml` | `--hooks-policy` | Repo hooks you've read stop being reported (see above) | `hooks`, `repos` | empty |
+| `posture.toml` | `--posture-policy` | Machine settings checks to skip ([machine settings](posture.md)) | `skip` | empty |
+| `install-scripts.toml` | `--install-scripts` | npm packages whose install scripts are allowed | `allow` | [`install-scripts.toml`](../../rust/crates/wpantry/assets/defaults/install-scripts.toml) |
+| `licenses.toml` | `--licenses FILE` | Dependency licenses allowed without review (checked only with `--licenses`) | `allow` | [`licenses.toml`](../../rust/crates/wpantry/assets/defaults/licenses.toml) |
+| `repo-hooks.toml` | `--repo-hooks` | Indicators of hijacked repos | `files`, `packages`, `hosts`, `sha256` | [`repo-hooks.toml`](../../rust/crates/wpantry/assets/defaults/repo-hooks.toml) |
+
+To start one, copy the bundled default linked above (its comments explain each key) into `~/.config/wpantry/` and edit it. The next scan uses it:
+
+```bash
+mkdir -p ~/.config/wpantry
+$EDITOR ~/.config/wpantry/install-scripts.toml
+wpantry scan
+```
+
+- A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
+- A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
+- `gitleaks.toml` in the same folder replaces the bundled gitleaks config (`--gitleaks-config`); it's in gitleaks' own format.
 
 ## Reading the report
 
-While it scans, a progress line shows what it is doing (the directory it is walking, the lockfile it is reading, the advisories it is downloading) and the elapsed time. It is only drawn when the output is a terminal.
-
-Then the findings, grouped by kind, one line per component with why it is listed and how to fix it:
+While it scans, a progress line shows what it's doing (only on a terminal). Then the findings, grouped into areas in the order to fix them:
 
 ```
-==> Security scan (~/.cache/wpantry/wpantry.db)
+==> Security scan #12  2026-11-05 14:30 UTC · ~/.cache/wpantry/wpantry.db
   checked 12 git repos, 486 OS packages, 1820 project dependencies, 3 MCP servers
 
-project
-  ✗ smallvec 1.6.0 (~/code/app/Cargo.lock) - (CVE-2021-25900 KEV CRITICAL) Buffer overflow in SmallVec::insert_many. Fix: cd ~/code/app && cargo update -p smallvec --precise 1.6.1
+Project dependencies  1 fail
+    COMPONENT  VERSION  ADVISORY        SEVERITY  CVSS  EPSS  FIX
+  ✗ smallvec   1.6.0    CVE-2021-25900  CRITICAL  9.8   2.1%  cd ~/code/app && cargo update -p smallvec --precise 1.6.1
+    ~/code/app/Cargo.lock · known exploited · Buffer overflow in SmallVec::insert_many
 
-secret
-  ✗ app/.env (line 3, commit 1a2b3c4d5e6f) - (aws-access-token) AWS Access Key. Fix: If it's real: rotate it, then purge it from history. …
+Secrets  1 fail
+    COMPONENT    ADVISORY          SEVERITY  FIX
+  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it, then purge it from history
+    line 3, commit 1a2b3c4d5e6f · AWS Access Key
 
-mcp
-  ⚠ some-server (project: db) unpinned (~/code/app/.mcp.json) - (UNPINNED) `npx some-server` runs the latest release on every launch. Fix: Pin some-server to a reviewed version in ~/code/app/.mcp.json
+MCP servers  1 warn
+    COMPONENT                    ADVISORY  SEVERITY  FIX
+  ⚠ some-server (project: db)    UNPINNED  LOW       Pin some-server to a reviewed version in ~/code/app/.mcp.json
+    ~/code/app/.mcp.json · `npx some-server` runs the latest release on every launch
 
-not checked
-  ⚠ CISA KEV (exploited-in-the-wild marks) - CISA KEV list unreachable and not cached
+Not checked
+  ⚠ CISA KEV (exploited-in-the-wild marks): CISA KEV list unreachable and not cached
 
-✗ 2 thing(s) to update (2 advisories), 1 warning(s). See the plan: wpantry fix --dryrun
+Update plan  wpantry fix runs the automatic ones
+  needs you  cd ~/code/app && cargo update -p smallvec --precise 1.6.1  clears 1 finding
+
+✗ 2 thing(s) to update (2 advisories), 1 warning(s). See the plan: wpantry fix --dry-run
 ```
 
-- `✗` fails: a released fix exists, it's end of life, it's malicious, or it's a committed secret from a provider-specific rule.
-- `⚠` warns: no fix yet, an outdated app, an unpinned MCP server, an install script, a generic secret rule to review.
-- `KEV` marks a vulnerability CISA has seen exploited in the wild. Fix those first.
-- **not checked** lists sources that couldn't be reached and had nothing cached. Those areas are unknown, not clean; re-run when you're online.
+- **`✗` fails**: a released fix exists, end of life, malicious, or a committed secret from a provider-specific rule.
+- **`⚠` warns**: no fix yet, an outdated app, an unpinned MCP server, an install script, a generic secret to review.
+- **known exploited** (CISA KEV): seen exploited in the wild. Fix these first.
+- **Severity** uses CVSS's scale: CRITICAL 9.0–10.0, HIGH 7.0–8.9, MEDIUM 4.0–6.9, LOW 0.1–3.9. It comes from the advisory's label (GitHub's MODERATE is MEDIUM), else its CVSS 3.x or 4.0 score. Pantry's own checks are rated by what they mean for the machine.
+- **CVSS**: the advisory's base score. When its records have none, its CVE's score from OSV or CVE.org.
+- **EPSS**: [FIRST's](https://www.first.org/epss/) estimate of the chance it's exploited in the next 30 days. Shown beside the severity, never folded in; within a severity, the likelier comes first.
+- **Not checked**: sources that couldn't be reached and had nothing cached. Unknown, not clean.
 
-## Reports: what you were exposed to, and what was done
+## Reports
 
-Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `wpantry fix` records the fixes it ran and the scan that verified them.
+`wpantry report` shows the latest scan from the cache; it never scans. `scan` and `fix` end with the same report and take the same options.
 
 ```bash
-wpantry report                              # exposure, remediation and audit logs, last 90 days, Markdown
-wpantry report --exposure --since 365 --format csv -o exposures.csv
-wpantry report --remediation --format json
+wpantry report                              # the terminal report
+wpantry report --html                       # one offline page
+wpantry report --md                         # Markdown
+wpantry report --json                       # the schema-1 envelope (as scan --json)
+wpantry report --csv -o findings.csv        # one row per finding
+wpantry report --jsonl                      # one object per finding, with its OSV record and lifecycle
+wpantry report summary                      # one page for a CSO or an auditor
+wpantry report history --md                 # exposure, remediation and audit logs, last 14 days
+wpantry report exposure --csv --since 365   # what was exposed, and for how long, over a year
+wpantry report remediation --csv            # each fix: when, who, the result, the scan that verified it
+wpantry report audit --json                 # every scan and event
+wpantry report all --md                     # the findings, then every log
 ```
 
-[reports.md](reports.md) says what each log holds and how it maps onto SOC 2 evidence.
-## Keeping the cache fresh, and scanning on a schedule
+- **Where it goes:** on a terminal, a format other than the terminal tables is written to `pantry_report_<when>.<ext>` here (UTC, e.g. `pantry_report_20261105T143000Z.html`). Through a pipe or into a file it goes to stdout. `-o FILE` names the file; `-o -` forces stdout.
+- **What's kept:** every scan, and every finding from the scan that first saw it to the one that no longer did. `wpantry fix` records each fix, who ran it, and the scan that verified it.
+
+[Reports](reports.md) covers each log, the HTML page and the SOC 2 and ISO 27001 mapping.
+
+## Scheduled scans and the cache
 
 ```bash
-wpantry sync                          # refresh the feeds and every answer the cache holds
-wpantry schedule install              # daily at 09:30: sync, then scan (never fix)
-wpantry schedule install --every weekly --at 07:00
-wpantry schedule status               # scheduled? when did it last run, what did it find
+wpantry sync                                       # refresh the cache without scanning
+wpantry schedule install                           # every day at 09:30: sync, then scan (never fix)
+wpantry schedule install --every week --at 07:00   # also hour, month, quarter, year: each at the period's start
+wpantry schedule status                            # installed? last run, and what it found
 wpantry schedule uninstall
-wpantry cache prune                   # drop what no scan has used in 90 days, compact the file
+wpantry cache prune                                # drop what no scan used in 90 days, compact the file
 ```
 
-`sync` re-asks every source about what the cache already knows (feeds, end-of-life dates, every package version scanned before) without inventorying anything, so a `scan --offline` afterwards answers from fresh data. `schedule` runs it for you through launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and writes the scan's JSON to `~/.local/state/wpantry/last.json` (`$XDG_STATE_HOME`) with one line per run in `schedule.log`. A scheduled run never changes anything: run `wpantry fix` yourself when the morning report says so.
-
-## Guarding the clipboard
-
-A clipper swaps the wallet address you copied for its own, and a browser extension can do it as you paste, so a scan that copies a canary catches only a clipper that is running and takes the bait. The guard watches instead, while you work:
+- `sync` refreshes the feeds, end-of-life dates and OSV's answers for every version scanned before, so a later `scan --offline` is current.
+- `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
+- A scheduled run never changes anything. Run `wpantry fix` yourself.
+- The cache is one SQLite file: `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds advisories for what's here, which versions were checked, every scan's findings, and the feeds; never a mirror of OSV.
 
 ```bash
-wpantry clipboard                     # the self-test now: copy a canary of each shape, read it back
-wpantry clipboard --watch             # guard the clipboard until Ctrl-C; alerts on stdout and the desktop
-wpantry clipboard --watch --window 5  # a swap is two addresses of one chain within 5 s (default 2)
-wpantry clipboard --watch --once --json   # exit after the first alert, as one JSON object
-wpantry schedule install --clipboard-guard    # start it at login (launchd, or a systemd user service)
-wpantry schedule uninstall --clipboard-guard
+wpantry search "tarfile traversal"            # rank cached advisories (FTS5: "exact phrase", tls AND cert, rust*)
+wpantry search openssl --applicable --json    # only those that apply here
 ```
-
-The guard reads the clipboard about four times a second (on macOS a `pbpaste` per read: about five percent of one core on an M-series Mac, nearly all of it `pbpaste`; the rest of the time it sleeps) and keeps the last wallet address it saw and when. When text holding one address of some chain becomes a different valid address of the same chain within the window, with nothing but addresses on the clipboard in between, that is a swap: one line naming both addresses and the chain, a desktop notification, and a `clipper` event in the cache that `wpantry report --audit` lists. Don't paste it; find what rewrote it (the `CLIPPER-PERSISTENCE` findings, login items, browser extensions). The guard never writes the clipboard: a guard that put your address back would hide the clipper from you and fight it for the clipboard. The one false positive is copying two addresses of the same chain yourself within the window; the alert says so, and `--window` sets it. Installed with `schedule install --clipboard-guard`, it is a launch agent (`~/Library/LaunchAgents/ai.waffuru.wpantry.clipboard.plist`) or a systemd user service of your graphical session (`~/.config/systemd/user/wpantry-clipboard.service`), off unless you install it, with its output in `~/.local/state/wpantry/clipboard.log`; `wpantry schedule status` says whether it is installed and shows the last alert. Without launchd or a systemd user session, add `wpantry clipboard --watch` to your desktop's autostart.
-## Keeping wpantry current
-
-```bash
-wpantry update --check     # exit 10 when a newer release exists, 0 when you have the latest
-wpantry update             # asks, then installs the verified release (--yes to skip the question)
-```
-
-An update is verified before anything is replaced (see [install.md](install.md#upgrade-and-uninstall)); a mise, cargo or Homebrew install is updated through that tool. `scan` mentions a newer release on stderr once a day; `WPANTRY_NO_UPDATE_CHECK=1` silences it.
-
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Nothing fails. Warnings and "not checked" sources still exit 0 (the report says "Incomplete") |
-| 1 | Something fails, or an unattended fix failed under `fix` |
-| 2 | Usage error (unknown flag, missing argument, missing policy file) |
-| 3 | Internal error: the cache can't be opened or written, or the scanner crashed |
-| 10 | `wpantry watch` only: a fix has landed for something that had none |
 
 ## Fixing
 
-`wpantry fix --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry fix` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
-
-For a browser report, run `wpantry scan --html report.html`. The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
-
-The plan is wpantry's own (`wpantry fix --dryrun` prints the same one): one fix per component, `mise` never upgraded for you, many secret hits in one file one decision. **Hand this to an AI agent** under By hand copies a prompt with every finding, the plan and the coverage context of the scan for the agent of your choice; preview it and remove local paths you do not want to share. Copying sends nothing and runs nothing.
-
-A scan with no findings or recorded coverage gaps gets a quiet **All clear. Nicely done.** finish with the Waffuru mark. It applies only to the checked scope: empty imports, zero inventory, offline scans, unknown licenses, unfixed advisories and failed updates do not trigger it.
-
-The viewer imports `scan --json` reports and `export --csv` findings (Load report, or drop the file on the page). An imported scan has no recorded scope, plan or history; its steps are grouped from the findings' suggested actions and say so. History reports and lifecycle JSONL exports use different formats and are not scan imports. Older JSON reports remain readable, with missing dependency and scope information shown as unknown.
-
-**Print** (or your browser's Print command) produces a light paper layout of the same page with every row open, whatever the screen filters, and without controls or the agent prompt. Choose Save as PDF in the print dialog to keep a copy. The file makes no request when opened: the fonts, the mark, the styles and the script are embedded.
-
-## Exposed with no fix yet
-
-Most advisories are `✗` because a fixed version exists. When none does, the scan still tells you about the ones that matter (Critical, High, or exploited in the wild): a `⚠` line with `(no fix released for … yet)` and, as its step, what to do meanwhile. The steps come from a bundled list ([`mitigations.txt`](../../rust/crates/wpantry/assets/defaults/mitigations.txt), one line per advisory); an advisory with no entry says to keep checking and reduce exposure. The Moderate and Low ones are only counted (`unfixed` in the JSON). Nothing here fails the run.
-
-```
-os
-  ⚠ linux-image-generic 6.8.0-45.45 (/var/lib/dpkg/status) - (CVE-2026-98432 CRITICAL) TCP use-after-free (no fix released for Ubuntu:24.04:LTS yet). Fix: Until the kernel update lands: drop inbound IPv4 TCP packets that carry IP options (…) and turn off MPTCP (…)
+```bash
+wpantry fix --dry-run    # the plan: one fix per component, unattended or needs you
+wpantry fix              # run the unattended fixes, then re-check
 ```
 
-The daily scan asks OSV about a package version once a day. For these you want to know within the hour, so `wpantry watch` asks again about exactly them, bypassing that cache, and exits 10 when a fix has landed:
+- **Unattended:** Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions. On a terminal it asks `Run these N updates now? [Y/n]` first; with `--no-input`, or no terminal, it runs them.
+- **Needs you:** anything needing sudo, a vendor, or a repo change, printed as a step for you or your agent to run. A lockfile fix is a code change: make it on a branch, with that repo's tests.
+- `mise` is never upgraded for you.
+
+### One thing at a time
 
 ```bash
-wpantry watch                 # each watched advisory: "no fix yet" + the mitigation, or "FIX AVAILABLE: <component> <version>"
-wpantry watch --json          # {"schema": 1, …, "watched": [{"id", "severity", "summary", "ecosystem", "package", "version", "fixed", "mitigation"}]}
+wpantry fix list                            # the plan in batches, and Pantry's own fixes and whether each applies
+wpantry fix GHSA-xxxx-yyyy-zzzz             # one advisory: its unattended fix, then the steps that need you
+wpantry fix ca-trust                        # distrust the leaked eMudhra roots in the system trust store
+wpantry fix extension-cooldown --hours 72   # editors wait before installing a new extension version
+wpantry fix CVE-2026-98432 --dry-run        # no fix to install yet: the host's state and what the stopgap writes
+wpantry fix CVE-2026-98432                  # asks, then installs the stopgap (sudo asks on the terminal)
+wpantry fix CVE-2026-98432 --undo           # remove the stopgap once the kernel update is in
 ```
 
-Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …`), then run `wpantry fix --dryrun` for the step. On Linux the posture checks also cover the kernel: `POSTURE-KERNEL-TCP-IP-OPTIONS` fails while the running kernel is in CVE-2026-98432's range and no rule drops inbound TCP with IP options, and `POSTURE-MPTCP` warns while MPTCP is on or a program still holds an MPTCP listening socket (the sysctl only stops new ones; the evidence names the services to restart) (see [posture.md](posture.md)). The repo side is covered too: a Go module on `go 1.24` or newer that listens for TCP without `GODEBUG=multipathtcp=0` or `SetMultipathTCP(false)` (Go turns Multipath TCP on by default there, which is the path the bug is reached through), or any source that asks for MPTCP by name, is a `project` warning naming the file and the opt-out ([checks-and-sources.md](checks-and-sources.md#what-it-checks)); it is never auto-fixed.
+- `fix ID` exits 1 when a step is left, a fix failed, nothing is known for the id, or a question went unanswered (no terminal and no `--yes`).
+- Every fix goes into the remediation log with who ran it (`wpantry report remediation`).
+- `wpantry fix` also runs `ca-trust` and `extension-cooldown` when the scan found what they fix, and the CVE-2026-98432 stopgap on a Linux host that needs it.
+- A stopgap survives a reboot. It reduces exposure; it isn't the patch.
+
+### No fix released yet
+
+When an advisory that matters (Critical, High, or known exploited) has no fixed version, the scan warns with a stopgap from [`mitigations.toml`](../../rust/crates/wpantry/assets/defaults/mitigations.toml), or says to keep checking. Medium and Low ones are only counted (`unfixed` in the JSON). None of these fail the run.
+
+`wpantry watch` re-asks OSV about exactly those advisories and exits 10 when a fix lands. Run it hourly and alert on exit 10, for example from cron:
+
+```
+0 * * * * wpantry watch --json > ~/.cache/wpantry/watch.json || notify …
+```
+
+For CVE-2026-98432 the [posture checks](posture.md) also cover the Linux kernel (`POSTURE-KERNEL-TCP-IP-OPTIONS`, `POSTURE-MPTCP`), and a Go 1.24+ module that listens for TCP with Multipath TCP on is a `project` warning.
+
+## Keeping Pantry current
+
+```bash
+wpantry update --check    # exit 10 when a newer release exists
+wpantry update            # asks, then installs it, verified
+```
+
+See [upgrade](install.md#upgrade).
 
 ## JSON
 
@@ -168,334 +222,461 @@ Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watc
 
 ```json
 {
- "schema": 1, "impl": "rust", "version": "0.2.0",
+ "schema": 1, "impl": "rust", "version": "0.4.0",
  "checked": {"git repos": 12, "project dependencies": 1820},
  "unfixed": 3, "unknown_licenses": 0,
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
                "vuln_id": "CVE-2021-25900", "status": "fail", "fixed": "1.6.1", "kev": true, "severity": "CRITICAL",
+               "cvss": 9.8, "cvss_version": "3.1", "epss": 0.0213, "epss_percentile": 0.84,
                "note": "…", "fix_cmd": "…", "fix_auto": false}]
 }
 ```
 
-Check `schema` before reading it. The fields, the finding kinds and markers (`UNCHECKED`, `MISSING`, `EOL`, `OUTDATED`, `MALICIOUS`, …) are defined in the [CLI contract](../../specs/cli-contract.md).
+- Check `schema` before reading it. Every field, kind and marker is defined in the [CLI contract](../../specs/cli-contract.md).
+- A dependency finding also says how it's depended on: `dep_scope` (`runtime`, `dev`, `optional`, `unknown`), `dep_direct` (the project's own, or pulled in; `null` when unknown) and `affected_range`. A dev-only dependency is rarely exposed where the code runs.
+- `wpantry report --jsonl` adds each finding's full OSV record, when it was first and last seen and resolved, and what `wpantry fix` did about it.
 
-## The cache, search and export
+## Exit codes
 
-Answers live in one SQLite file: `~/.cache/wpantry/wpantry.db`, or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`. It holds the advisories for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
-
-```bash
-wpantry search "tarfile traversal"            # rank cached advisories (SQLite FTS5 syntax: "exact phrase", tls AND cert, rust*)
-wpantry search openssl --applicable --json    # only those that apply here
-wpantry export --csv findings.csv             # id, aliases, url, component, kind, affected and safe version, …
-wpantry export --jsonl findings.jsonl --all   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
-wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
-```
-
-Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `wpantry fix` ran did; with `--all` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
-
-## Advisories with no fix yet
-
-Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. `wpantry mitigate <ID>` does what this host can about one advisory, by id or alias:
-
-```
-wpantry mitigate CVE-2026-98432 --dry-run   # the state of the host and what would be written; nothing changes
-wpantry mitigate CVE-2026-98432             # the plan, a question, then the stopgap (as root: sudo asks on the terminal)
-wpantry mitigate CVE-2026-98432 --yes       # the same without the question (provisioning)
-wpantry mitigate CVE-2026-98432 --undo      # take the stopgap away once the kernel update is in (--remove is the same)
-wpantry mitigate GHSA-xxxx-yyyy-zzzz        # an advisory with a released fix: runs its unattended fix, prints the rest
-wpantry mitigate list                       # the stopgaps wpantry can install, whether each applies here, and the advisories with an unattended fix
-wpantry mitigate all --dry-run              # everything at once: the same as wpantry fix --dryrun
-```
-
-It runs the fixes the last scan found for the id that may run unattended (a version bump, the way `wpantry fix` does), runs wpantry's own stopgap for it where one exists, and prints the steps that need you; exit 1 when a step is left, a fix failed, or nothing is known for the id here (not in the last scan, no stopgap). The first stopgap is for the Linux kernel's IPv4 TCP use-after-free, [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432) (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, a systemd unit that reloads it at boot, MPTCP off through `sysctl.d`, and the services still holding an MPTCP listening socket named for a restart (`sudo systemctl restart …`, printed, never run: `net.mptcp.enabled=0` only stops new sockets, a program that already listens keeps its until restarted). The listeners are read from `ss -tlnpi` as root (every TCP listener whose upper-layer protocol is MPTCP is marked `tcp-ulp-mptcp`, which needs no `mptcp_diag` module), else from `ss -M` where the kernel has that module, else reported as unseen. A scan never runs any of it; it prints the command as the step. `wpantry fix` (and `mitigate all`, the same thing) runs the stopgaps too, after the unattended fixes, asking on a terminal and skipping them without one unless `--yes`.
-
-A stopgap survives a reboot: the systemd unit reloads the rule before the network comes up (`Before=network-pre.target`), and `/etc/sysctl.d/90-no-mptcp.conf` is applied by `systemd-sysctl` at boot. It is a reduction of exposure, not the patch, and it is meant to come off again. When the kernel update lands, three things tell you: `wpantry watch` exits 10 with `FIX AVAILABLE`, `POSTURE-KERNEL-TCP-IP-OPTIONS` passes with "the stopgap is still in place", and `wpantry mitigate list` says the fix is in. Then `wpantry mitigate CVE-2026-98432 --undo` puts the host back as it was: the unit disabled and removed, the nft table deleted, the rule file and the sysctl file removed, `net.mptcp.enabled` back to 1. Nothing else was changed, so nothing else needs undoing.
+| Code | Meaning |
+|---|---|
+| 0 | Nothing fails. Warnings and "not checked" still exit 0 (the report says "Incomplete") |
+| 1 | Something fails, or an unattended fix failed |
+| 2 | Usage error: unknown option, missing argument, missing or invalid policy file |
+| 3 | Internal error: the cache can't be opened or written, or a crash |
+| 10 | `watch`: a fix has landed. `update --check`: a newer release exists |
 
 ## What leaves your machine
 
-Package names and versions go to OSV.dev; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks-and-sources.md](checks-and-sources.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
+- Package names and versions go to OSV.dev.
+- The id of a CVE that applies and has no CVSS score goes to OSV.dev, then CVE.org.
+- Feeds are downloaded whole.
+- The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
 
-## Environment
+Source by source: [what is sent](checks-and-sources.md#sources). Every request names `wpantry` in its User-Agent and times out after 30 seconds.
+
+## Environment Variables
 
 | Variable | Effect |
 |---|---|
 | `WPANTRY_DB` | The cache file |
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
-| `WPANTRY_TIMINGS` | Any value: each scan step on stderr with the seconds since the scan began, to see where a slow run spends its time |
-| `WPANTRY_CLIPBOARD_FAKE` | A test hook: `clipboard --watch` reads this file instead of the clipboard, one line per read, and sends no notification. The contract suite uses it; you shouldn't need to |
-| `NO_COLOR` | Any non-empty value turns colour off. Without it, wpantry colours its report, prompts and errors on a terminal only (never in pipes, files or `--json`) |
-| `HTTPS_PROXY` | Requests go through the proxy |
+| `WPANTRY_TIMINGS` | Print each scan step's elapsed time on stderr |
+| `NO_COLOR` | Turn colour off. Colour is only ever used on a terminal |
+| `HTTPS_PROXY` | Send requests through the proxy |
 
 ## For agents
 
-`wpantry skill` prints an agent skill (`SKILL.md`) that teaches a coding agent to run wpantry, triage its JSON and plan fixes safely. `wpantry tools --json` lists the external tools and whether they're installed.
+`wpantry skill` prints the agent skill (`SKILL.md`): how to run Pantry, triage its JSON and plan fixes safely. `wpantry tools --json` lists the external tools and whether they're installed.
 
 ## Command reference
 
-Every command and its options, as `wpantry help` and `wpantry <command> --help` print them. `wpantry` with no arguments prints the same top-level help as `wpantry help` and `wpantry -h`, and exits 0; `wpantry help <command>` is `wpantry <command> --help`. An option can be shortened to any prefix that names only one (`--no-m` for `--no-machine`) and takes its value as the next word or after `=`. A usage error prints the usage line and the error to stderr and exits 2.
+Every command, exactly as `wpantry <command> --help` prints it. Options are spelled out in full and take their value as the next word or after `=`. A usage error exits 2. The help is generated by [wcli](../../rust/crates/wcli/README.md).
 
 ```
-usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,clipboard,mitigate,help} ...
+Usage: wpantry [options] [command]
+
+The vulnerabilities, malware and risky settings that apply to this computer and its repos. See
+README.md.
+
+Options:
+  -V, --version  print the version
+  -h, --help     print this help
+
+Commands:
+  scan [options]             Scan this computer and its repos, then show the report
+  fix [options] [target]     Scan, run the unattended fixes and stopgaps, then re-check (list, or
+                             one id)
+  report [options] [part]    The latest scan's report, a log, or the summary, in any format
+  search [options] <query>   Search the cached advisories (for agents)
+  watch [options]            Re-check the advisories with no fix yet; exit 10 when one lands
+  sync [options]             Refresh the cache for offline scans
+  schedule <command>         Run sync and scan on a schedule
+  rules [options] [command]  The malware scan's YARA rules; gen writes one from samples
+  sources [options]          Every outside source, when it was last fetched and what went wrong
+  breach [options]           Show or set consent for the email breach check
+  cache <command>            Maintain the cache
+  update [options]           Install a newer release, verified
+  version [options]          Print the version, implementation and JSON schema
+  tools [options]            List the external tools wpantry uses
+  skill                      Print the agent skill (SKILL.md)
+  help [command]             Print a command's help
+
+Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 ```
 
-| Command | What it does |
-|---|---|
-| `scan` | Scan this computer and report what applies to it; change nothing |
-| `check` | The same as `scan`, with the same options, output and exit codes |
-| `fix` | Scan, run the unattended fixes and the stopgaps, then re-check (`--dryrun` prints the plan) |
-| `search` | Search cached advisories (for agents) |
-| `export` | Write the findings as CSV or JSON Lines |
-| `breach` | Show or set consent for the email breach check |
-| `watch` | Re-check the unfixed Critical/High advisories; exit 10 when a fix has landed |
-| `version` | Print the version, implementation and JSON schema |
-| `tools` | List the external tools this implementation uses |
-| `skill` | Print the agent skill (`SKILL.md`) |
-| `sync` | Refresh the cache for offline scans |
-| `schedule` | Run sync and scan on a schedule |
-| `cache` | Maintain the cache (prune) |
-| `update` | Check for a newer release and install it verified |
-| `report` | The exposure, remediation and audit logs |
-| `harden` | Apply a fix wpantry can make itself (`extension-cooldown`, `ca-trust`) |
-| `clipboard` | Test the clipboard for a clipper, or guard it while you work (`--watch`) |
-| `mitigate` | `list`, `all`, or one advisory: its unattended fixes, its stopgap, the steps left for you |
-| `help` | This help, or with a command that command's (`wpantry help fix`) |
-
-### scan, check
+### scan
 
 ```
-usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
-                    [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
-                    [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard]
+Usage: wpantry scan [options]
+
+Scan this computer and its repos, then show the report. Changes nothing.
+
+Options:
+  --path <dir>              check only the repos at or under this directory; repeat it for more
+                            (default: every git repo under ~)
+  --no-machine              skip the machine inventory: repo checks only
+  --refresh                 ignore cached answers and ask every source again
+  --offline                 use only the local cache
+  --txt                     the report as plain text, without colour
+  --json                    the findings as JSON (schema 1)
+  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
+                            fix
+  --csv                     one table: the findings, or the log asked for
+  --md                      Markdown
+  --html                    one offline HTML page
+  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
+                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
+                            when it is a pipe or a file
+  --since <days>            how far back the logs go (default: 14)
+  --no-input                never prompt
+  --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
+  --gitleaks-config <file>  gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the
+                            bundled one)
+  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
+                            in ~/.config/wpantry, else the bundled one)
+  --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML (default: hooks.toml in
+                            ~/.config/wpantry)
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
+                            suspect.toml in ~/.config/wpantry)
+  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
+  --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
+                            ~/.config/wpantry)
+  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
+                            items and repo programs)
+  --deep                    the malware scan reads everything under ~ with every system's rules
+                            (slower)
+  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
+                            MalwareBazaar (asked once otherwise)
+  --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
+                            when it exists)
+  -h, --help                print this help
+
+Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ```
-
-`check` is the same command under its older name: `wpantry check --help` prints the same options. Exit 0 when nothing fails, 1 when something does, 2 on a usage error, 3 on an internal error.
-
-| Option | Effect |
-|---|---|
-| `--path DIR` | Check only the repos at or under DIR (repeatable; default: every git repo under `~`). See [Scope](#scope) |
-| `--no-machine` | Skip the machine inventory: repo checks only |
-| `--refresh` | Ignore cached answers and ask every source again |
-| `--offline` | Use only the cache; anything never cached is "not checked" |
-| `--json` | Print the findings as JSON (schema 1) instead of the report; never prompts. See [JSON](#json) |
-| `--html FILE` | Also save an offline HTML report; open FILE in a browser. See [Fixing](#fixing) |
-| `--no-input` | Never prompt: the breach-check question is skipped, and `fix` runs without asking |
-| `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
-| `--gitleaks-config FILE` | Your gitleaks config instead of the bundled `gitleaks.toml` (a repo's own `.gitleaks.toml` is reported, never obeyed) |
-| `--licenses [FILE]` | Also check repo dependencies' licenses, against FILE or the bundled `licenses.txt`. Off by default; `--license` works too |
-| `--install-scripts FILE` | Your allowlist of npm packages whose install scripts are accepted, each at a version range (`esbuild@^0.28`); a locked version outside its entry still warns |
-| `--repo-hooks FILE` | Your list of hijacked-repo indicators (file names, package names, hosts, hashes) instead of the bundled `repo-hooks.txt` |
-| `--hooks-policy FILE` | Repo hooks you have read and accept, each on its exact command (`hook <file> "<when>" <command>`, the line each warning prints) or every warning under a path (`repo <path>`); counted, not listed, until a command changes. Hooks that fail are never accepted |
-| `--suspect-policy FILE` | Suspicious-code ids and `path:` entries that should warn instead of fail (a legitimate hex table, an installer that uses sudo); nothing is silenced |
-| `--no-posture` | Skip the machine's security settings (FileVault, firewall, sharing, …) |
-| `--posture-policy FILE` | Posture checks to skip, one id per line (a server that means to run ssh: `REMOTE-LOGIN`) |
-| `--no-clipboard` | Skip the clipboard self-test. On a machine scan wpantry copies a valid address of each shape a clipper goes after (EVM, Bitcoin, Tron, Solana, XRP, Stellar) to the clipboard, reads it back twice over the next half second, and puts the clipboard back; an address that comes back changed is a clipper at work (`CLIPPER-ACTIVE`, fail). An image or files on the clipboard are left alone (the test reports itself skipped). The passive checks always run: launch agents and autostart entries that touch the clipboard with wallet addresses in hand (`CLIPPER-PERSISTENCE`), and browser extensions whose manifest can read and write the clipboard (`CLIPPER-EXTENSION`: warn, fail when the code has the clipper shape) |
-
-Policy files are one entry per line, `#` for comments. An install-scripts entry is `name@1.2.3` (that version), `name@^1.2` or `name@~1.2` (npm's caret and tilde ranges, so `^0.28` is `>=0.28.0 <0.29.0`), or a bare `name` for every version, which is allowed and discouraged: the allowlist is the only thing that decides whether an install script runs unremarked, so each entry should name the versions someone has read. The bundled list ([`install-scripts.txt`](../../rust/crates/wpantry/assets/defaults/install-scripts.txt)) explains itself, as does the hooks policy's ([`hooks.txt`](../../rust/crates/wpantry/assets/defaults/hooks.txt)). Reviewed false positives from gitleaks go in the repo's `.gitleaksignore` (the report prints the fingerprint to add).
 
 ### fix
 
 ```
-usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]
-                   [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
-                   [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-clipboard]
+Usage: wpantry fix [options] [target]
+
+Scan, run the fixes that can run unattended and the stopgaps wpantry has for what it found, then
+re-check.
+
+Arguments:
+  target  all: a scan, the unattended fixes, every stopgap that applies, a re-check. list: what can
+          be fixed, from the latest scan; nothing runs. An advisory id (CVE-…, GHSA-…; an alias
+          works): its unattended fixes, wpantry's stopgap for it, the steps that need you. Or one of
+          wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots), extension-cooldown
+          (editors wait before installing a new extension version), cve-2026-98432 (default: all)
+
+Options:
+  --dry-run                 print what would run or be written; change nothing
+  --yes                     run the fixes and write the stopgaps without asking
+  --undo                    with an id: take wpantry's stopgap away once the real fix is installed
+  --bundle <file>           ca-trust: rewrite this PEM bundle instead of the system trust store
+  --hours <n>               extension-cooldown: the cooldown (default: 72)
+  --path <dir>              check only the repos at or under this directory; repeat it for more
+                            (default: every git repo under ~)
+  --no-machine              skip the machine inventory: repo checks only
+  --refresh                 ignore cached answers and ask every source again
+  --offline                 use only the local cache
+  --txt                     the report as plain text, without colour
+  --json                    the findings as JSON (schema 1)
+  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
+                            fix
+  --csv                     one table: the findings, or the log asked for
+  --md                      Markdown
+  --html                    one offline HTML page
+  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
+                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
+                            when it is a pipe or a file
+  --since <days>            how far back the logs go (default: 14)
+  --no-input                never prompt
+  --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
+  --gitleaks-config <file>  gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the
+                            bundled one)
+  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
+                            in ~/.config/wpantry, else the bundled one)
+  --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML (default: hooks.toml in
+                            ~/.config/wpantry)
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
+                            suspect.toml in ~/.config/wpantry)
+  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
+  --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
+                            ~/.config/wpantry)
+  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
+                            items and repo programs)
+  --deep                    the malware scan reads everything under ~ with every system's rules
+                            (slower)
+  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
+                            MalwareBazaar (asked once otherwise)
+  --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
+                            when it exists)
+  -h, --help                print this help
+
+Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage
+error, 3 internal error.
 ```
-
-Scan, then run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check. It takes every option `scan` does, plus:
-
-| Option | Effect |
-|---|---|
-| `--dryrun` | Print the fix plan; change nothing |
-| `--yes` | Run the fixes and write the stopgaps without asking |
-
-Exit 0 when nothing fails after the re-check, 1 when something still fails or a fix failed, 2 on a usage error, 3 on an internal error. With `--json` it reports only, as `scan --json` does. [Fixing](#fixing) says what runs and when it asks.
-
-### search
-
-```
-usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query
-```
-
-Search cached advisories, ranked (SQLite FTS5 syntax: `"exact phrase"`, `tls AND cert`, `rust*`).
-
-| Option | Effect |
-|---|---|
-| `query` | What to search for |
-| `--applicable` | Only advisories that apply here |
-| `--limit LIMIT` | At most this many (default 20) |
-| `--json` | Print the results as JSON |
-
-### export
-
-```
-usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]
-```
-
-Write the latest findings as CSV, or as JSON Lines joined with their OSV records, lifecycle and fix outcome. One of `--csv` and `--jsonl` is required; both may be given.
-
-| Option | Effect |
-|---|---|
-| `--csv CSV` | The summary columns, one finding per row |
-| `--jsonl JSONL` | One JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix |
-| `--all` | With `--jsonl`: also the resolved exposures the latest scan no longer lists |
-
-### breach
-
-```
-usage: wpantry breach [-h] [--enable | --disable]
-```
-
-Show or set consent for the email breach check. Without an option it shows the consent.
-
-| Option | Effect |
-|---|---|
-| `--enable` | Consent: the breach check runs on a machine scan |
-| `--disable` | Withdraw it |
-
-### watch
-
-```
-usage: wpantry watch [-h] [--offline] [--json]
-```
-
-Ask OSV again about the advisories the last scan found with no released fix (Critical, High, exploited in the wild): exit 10 when a fix has landed. See [Exposed with no fix yet](#exposed-with-no-fix-yet).
-
-| Option | Effect |
-|---|---|
-| `--offline` | Use only the local cache |
-| `--json` | Print the watched advisories as JSON |
-
-### version, tools, skill
-
-```
-usage: wpantry version [-h] [--json]
-usage: wpantry tools [-h] [--json]
-usage: wpantry skill [-h]
-```
-
-`version` prints the version, implementation and JSON schema; `tools` lists the external tools this implementation uses, found or missing (exit 1 when a required one is missing); `skill` prints the agent skill. `--json` prints `version` and `tools` as JSON.
-
-### sync
-
-```
-usage: wpantry sync [-h] [--refresh] [--json]
-```
-
-Refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so `scan --offline` has fresh answers. Exit 1 when a source was unreachable.
-
-| Option | Effect |
-|---|---|
-| `--refresh` | Ask every source again, even when its answer is fresh |
-| `--json` | Print what was refreshed as JSON |
-
-### schedule
-
-```
-usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] [--clipboard-guard] {install,status,uninstall,run}
-```
-
-Run sync and scan on a schedule (launchd, a systemd user timer, or cron); a scheduled run never fixes anything (that is `wpantry fix`). `install` sets it up, `status` says whether it is installed and what the last run found, `uninstall` takes it away, `run` is what the scheduler runs.
-
-| Option | Effect |
-|---|---|
-| `--every WHEN` | `hourly`, `daily` (default) or `weekly` |
-| `--at HH:MM` | The time of day (default 09:30; weekly: Mondays) |
-| `--dry-run` | Print the job definition without installing it |
-| `--clipboard-guard` | Install or uninstall the resident clipboard guard (`wpantry clipboard --watch`) instead of the scan: a launch agent or systemd user service that starts at login, off by default |
-
-### cache
-
-```
-usage: wpantry cache [-h] [--older-than DAYS] {prune}
-```
-
-Maintain the cache. `prune` drops what no scan has used in a while, then compacts the file.
-
-| Option | Effect |
-|---|---|
-| `--older-than DAYS` | What counts as unused (default 90) |
-
-### update
-
-```
-usage: wpantry update [-h] [--check] [--yes] [--no-input] [--offline] [--version VER]
-```
-
-Check for a newer wpantry release and, after a yes, install it verified. See [Keeping wpantry current](#keeping-wpantry-current).
-
-| Option | Effect |
-|---|---|
-| `--check` | Only say whether a newer release exists (exit 10 when one does) |
-| `--yes` | Install without asking |
-| `--no-input` | Never ask: report only |
-| `--offline` | Use only the cached answer |
-| `--version VER` | This release instead of the latest |
 
 ### report
 
 ```
-usage: wpantry report [-h] [--exposure] [--remediation] [--audit] [--since DAYS] [--format FORMAT] [-o FILE]
+Usage: wpantry report [options] [part]
+
+The latest scan's report, from the cache; it never scans (scan and fix show it when they finish).
+
+Arguments:
+  part  what the report covers (choices: findings, history, exposure, remediation, audit, summary,
+        all; default: findings)
+
+Options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+  -h, --help        print this help
+
+Parts:
+findings     the latest scan's findings
+history      the exposure, remediation and audit logs
+exposure     what applied, from first seen to resolved
+remediation  the fixes run: when, who, the result, the scan that verified them
+audit        every scan and event
+summary      one page for a CSO, an auditor or an insurer
+all          the findings, then every log
+
+Exit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3
+internal error.
 ```
 
-The exposure, remediation and audit logs kept across scans. See [reports.md](reports.md).
-
-| Option | Effect |
-|---|---|
-| `--exposure` | What applied, from first seen to resolved (default: all three) |
-| `--remediation` | The fixes `wpantry fix` ran, and the scans that verified them |
-| `--audit` | Every scan and event |
-| `--since DAYS` | How far back (default 90) |
-| `--format FORMAT` | `md` (default), `json` or `csv` (csv: the exposure log) |
-| `-o`, `--out FILE` | Write there instead of stdout |
-
-### harden
+### search
 
 ```
-usage: wpantry harden [-h] [--hours N] [--bundle FILE] {extension-cooldown,ca-trust}
+Usage: wpantry search [options] <query>
+
+Search the cached advisories (for agents).
+
+Arguments:
+  query  an id, package or word
+
+Options:
+  --applicable  only advisories that apply here
+  --limit <n>   the most to list (default: 20)
+  --json        the hits as JSON
+  -h, --help    print this help
 ```
 
-Apply one of the fixes wpantry can make itself. `extension-cooldown` sets `extensions.installCooldownHours` in every VS Code-family editor's `settings.json`; `ca-trust` distrusts the leaked eMudhra roots in the system trust store (sudo asks to install the result).
-
-| Option | Effect |
-|---|---|
-| `--hours N` | `extension-cooldown`: the cooldown (default 72) |
-| `--bundle FILE` | `ca-trust`: rewrite this PEM bundle instead of the system store |
-
-### clipboard
+### watch
 
 ```
-usage: wpantry clipboard [-h] [--watch] [--once] [--window SECONDS] [--json]
+Usage: wpantry watch [options]
+
+Ask OSV again about the advisories the last scan found with no released fix (Critical, High,
+exploited in the wild); exit 10 when a fix has landed.
+
+Options:
+  --offline   use only the local cache
+  --json      the watched advisories as JSON
+  -h, --help  print this help
 ```
 
-Test the clipboard for a clipper now, or with `--watch` guard it while you work. See [Guarding the clipboard](#guarding-the-clipboard).
-
-| Option | Effect |
-|---|---|
-| `--watch` | Keep reading the clipboard four times a second until stopped; never writes it |
-| `--once` | With `--watch`: exit 0 after the first alert |
-| `--window SECONDS` | With `--watch`: how long after one address a different one of the same chain is a swap (default 2; a double copy inside it is the false positive) |
-| `--json` | The self-test's result as one object, or with `--watch` one object per alert |
-
-### mitigate
+### sync
 
 ```
-usage: wpantry mitigate [-h] [--dry-run] [--yes] [--no-input] [--undo] [--offline] [--no-machine] [--path DIR]
-                        {list,all,ID}
+Usage: wpantry sync [options]
+
+Refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan
+--offline has fresh answers.
+
+Options:
+  --refresh   ask every source again, even when its answer is fresh
+  --json      what was refreshed, as JSON
+  -h, --help  print this help
 ```
 
-Do what this host can about advisories: `list` (the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix), `all` (everything: the same as `wpantry fix`), or one advisory `ID` (`CVE-…`, `GHSA-…`; an alias works). See [Advisories with no fix yet](#advisories-with-no-fix-yet). Exit 0 when everything that applies here was done (or, with `--dry-run`, printed), 1 when a step is left for you, a fix failed, or nothing is known for the id here, 2 on a usage error.
+### schedule
 
-| Option | Effect |
-|---|---|
-| `--dry-run` | Print what would run or be written; change nothing |
-| `--yes` | Run and write without asking |
-| `--no-input` | Never ask: the unattended fixes run, the stopgaps are skipped unless `--yes` |
-| `--undo` | `ID` only: take wpantry's stopgap away again once the real fix is installed (`--remove` is the same) |
-| `--offline`, `--no-machine`, `--path DIR` | `all` only: as for `scan` |
+```
+Usage: wpantry schedule [options] <command>
+
+Run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes.
+
+Options:
+  -h, --help  print this help
+
+Commands:
+  install [options]  Install the job
+  status             Whether the job is installed, and how its last run went
+  uninstall          Remove the job
+  run                What the job runs: sync, then scan --json --no-input
+  help [command]     Print a command's help
+```
+
+### schedule install
+
+```
+Usage: wpantry schedule install [options]
+
+Install the job.
+
+Options:
+  --every <period>  how often, each from the period's start: a week on Monday, a month on the 1st, a
+                    quarter on 1 January, April, July and October, a year on 1 January (choices:
+                    hour, day, week, month, quarter, year; default: day)
+  --at <time>       the time of day, HH:MM (default: 09:30)
+  --dry-run         print the job definition without installing it
+  -h, --help        print this help
+```
+
+### rules
+
+```
+Usage: wpantry rules [options] [command]
+
+The YARA rules the malware scan uses: ours, built in, and YARA Forge's, fetched into the cache
+directory.
+
+Options:
+  --update    fetch YARA Forge's latest package now
+  --json      the sources and counts as JSON
+  -h, --help  print this help
+
+Commands:
+  gen [options] <sample...>  Write a YARA rule matching what the samples share and this machine's
+                             programs don't (unreviewed: category suspicious, score 60)
+  goodware                   Rebuild the goodware database from this machine's system programs (gen
+                             builds it the first time)
+  help [command]             Print a command's help
+```
+
+### rules gen
+
+```
+Usage: wpantry rules gen [options] <sample...>
+
+Write a YARA rule matching what the samples share and this machine's programs don't (unreviewed:
+category suspicious, score 60).
+
+Arguments:
+  sample  the sample files
+
+Options:
+  --category <cat>  the category you propose (default: malware)
+  --family <name>   the family's name (default: the first sample's file name)
+  --name <rule>     the rule's name (default Gen_<category>_<family>)
+  -o, --out <file>  write the rule there, and its test file beside it (default: stdout)
+  -h, --help        print this help
+```
+
+### sources
+
+```
+Usage: wpantry sources [options]
+
+Every outside source wpantry reads: its kind, tier, host and licence, when it was last fetched,
+whether that is fresh, and what last went wrong.
+
+Options:
+  --json            the sources as JSON
+  --sources <file>  your sources file (default: ~/.config/wpantry/sources.toml when it exists)
+  -h, --help        print this help
+```
+
+### breach
+
+```
+Usage: wpantry breach [options]
+
+Show or set consent for the email breach check.
+
+Options:
+  --enable    allow it
+  --disable   stop it
+  -h, --help  print this help
+```
+
+### cache prune
+
+```
+Usage: wpantry cache prune [options]
+
+Drop what no scan has used in a while, then compact the file.
+
+Options:
+  --older-than <days>  what counts as unused (default: 90)
+  -h, --help           print this help
+```
+
+### update
+
+```
+Usage: wpantry update [options]
+
+Check for a newer wpantry release and, after a yes, install it verified.
+
+Options:
+  --check          only say whether a newer release exists (exit 10 when one does)
+  --yes            install without asking
+  --no-input       never ask: report only
+  --offline        use only the cached answer
+  --version <ver>  this release instead of the latest
+  -h, --help       print this help
+```
+
+### version
+
+```
+Usage: wpantry version [options]
+
+Print the version, implementation and JSON schema.
+
+Options:
+  --json      as JSON
+  -h, --help  print this help
+```
+
+### tools
+
+```
+Usage: wpantry tools [options]
+
+List the external tools wpantry uses.
+
+Options:
+  --json      as JSON
+  -h, --help  print this help
+```
+
+### skill
+
+```
+Usage: wpantry skill [options]
+
+Print the agent skill (SKILL.md).
+
+Options:
+  -h, --help  print this help
+```
 
 ## Troubleshooting
 
 - **Everything is "not checked"**: you're offline, or a proxy blocks `api.osv.dev`. Re-run online, or `--offline` to use what's cached.
 - **`gitleaks` MISSING**: install it (`brew install gitleaks`, or see its README); the secret scan can't run without it.
-- **It's slow on the first run**: the first run downloads advisories and clones the malicious-package index; later runs reuse them for a day. `--path` and `--no-machine` narrow a run.
+- **It's slow on the first run**: the first run downloads advisories and clones the malicious-package index; later runs read only what changed. `--path` and `--no-machine` narrow a run.
 - **A finding is wrong**: open an issue with a minimal reproducer (never paste a real report; see [CONTRIBUTING.md](../../CONTRIBUTING.md)). Security reports go through [SECURITY.md](../../SECURITY.md).

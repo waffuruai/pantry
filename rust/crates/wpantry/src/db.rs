@@ -7,9 +7,9 @@
 //! we last asked, the latest scan's findings, and the small side feeds. A
 //! full-text index over the records lets agents search them.
 
-use crate::check::Finding;
 use crate::error::{Error, Result};
-use crate::system::now;
+use crate::finding::Finding;
+use crate::utils::os::now;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
   source TEXT PRIMARY KEY, fingerprint TEXT, ran_at REAL, result TEXT);
 CREATE TABLE IF NOT EXISTS malicious (ecosystem TEXT, name TEXT, id TEXT);
 CREATE INDEX IF NOT EXISTS malicious_name ON malicious (ecosystem, name);
+CREATE TABLE IF NOT EXISTS persistence (
+  key TEXT PRIMARY KEY, source TEXT, location TEXT, program TEXT, first_at REAL, last_at REAL);
 ";
 
 /// Columns added since a table was first created, as (table, column,
@@ -55,6 +57,20 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "fix_cmd", "TEXT"),
     ("fixes", "targets", "TEXT"),
     ("scans", "unchecked", "INTEGER"),
+    ("scans", "checked", "TEXT"),
+    ("scans", "unfixed", "INTEGER"),
+    ("scans", "unknown_licenses", "INTEGER"),
+    ("scans", "options", "TEXT"),
+    ("fixes", "user", "TEXT"),
+    ("findings", "cvss", "REAL"),
+    ("findings", "cvss_version", "TEXT"),
+    ("findings", "epss", "REAL"),
+    ("findings", "epss_percentile", "REAL"),
+    ("exposures", "cvss", "REAL"),
+    ("exposures", "cvss_version", "TEXT"),
+    ("exposures", "epss", "REAL"),
+    ("exposures", "epss_percentile", "REAL"),
+    ("fixes", "host", "TEXT"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -121,6 +137,13 @@ impl Cache {
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::history::SCHEMA)?;
+        conn.execute_batch(crate::checks::malware::SCHEMA)?;
+        conn.execute_batch(crate::checks::files::cache::SCHEMA)?;
+        conn.execute_batch(crate::sources::fetch::SCHEMA)?;
+        conn.execute_batch(crate::sources::epss::SCHEMA)?;
+        conn.execute_batch(crate::sources::cve_scores::SCHEMA)?;
+        conn.execute_batch(crate::checks::malware::rulegen::SCHEMA)?;
+        conn.execute_batch(crate::sources::hash_lookups::VERDICT_SCHEMA)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
              CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
@@ -145,7 +168,10 @@ impl Cache {
         Ok(())
     }
 
+    /// Commit and close, keeping what this process's source fetches came to
+    /// ([`crate::sources::fetch::save`]).
     pub fn close(self) -> Result<()> {
+        crate::sources::fetch::save(&self)?;
         self.conn.execute_batch("COMMIT")?;
         self.conn.close().map_err(|(_, e)| Error::Cache(e))
     }
@@ -192,16 +218,16 @@ impl Cache {
     }
 
     pub fn put_vuln(&self, rec: &Value) -> Result<()> {
-        let vid = crate::json::str_at(rec, "id");
-        let aliases = crate::json::strs_at(rec, "aliases").join(" ");
-        let mut packages: Vec<&str> = crate::json::arr_at(rec, "affected")
+        let vid = crate::utils::json::str_at(rec, "id");
+        let aliases = crate::utils::json::strs_at(rec, "aliases").join(" ");
+        let mut packages: Vec<&str> = crate::utils::json::arr_at(rec, "affected")
             .iter()
-            .map(|a| a.get("package").map(|p| crate::json::str_at(p, "name")).unwrap_or(""))
+            .map(|a| a.get("package").map(|p| crate::utils::json::str_at(p, "name")).unwrap_or(""))
             .collect();
         packages.sort_unstable();
         packages.dedup();
-        let summary = crate::json::str_at(rec, "summary");
-        let details = crate::json::str_at(rec, "details");
+        let summary = crate::utils::json::str_at(rec, "summary");
+        let details = crate::utils::json::str_at(rec, "details");
         self.conn.execute(
             "INSERT OR REPLACE INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -210,8 +236,8 @@ impl Cache {
                 summary,
                 details,
                 severity_of(rec),
-                crate::json::str_at(rec, "published"),
-                crate::json::str_at(rec, "modified"),
+                crate::utils::json::str_at(rec, "published"),
+                crate::utils::json::str_at(rec, "modified"),
                 format!("https://osv.dev/vulnerability/{vid}"),
                 rec.to_string(),
             ],
@@ -309,12 +335,50 @@ impl Cache {
         Ok((queries, gone.len(), runs))
     }
 
+    /// [`Cache::put_query`] keeping the time the answer was given: a change
+    /// applied from OSV's change list updates the answer, not its age.
+    pub fn put_query_at(&self, eco: &str, pkg: &str, ver: &str, ids: &[String], at: f64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO queries VALUES (?, ?, ?, ?, ?)",
+            params![eco, pkg, ver, at, ids.join(" ")],
+        )?;
+        Ok(())
+    }
+
     pub fn put_query(&self, eco: &str, pkg: &str, ver: &str, ids: &[String]) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO queries VALUES (?, ?, ?, ?, ?)",
             params![eco, pkg, ver, now(), ids.join(" ")],
         )?;
         Ok(())
+    }
+
+    // persistence baseline -------------------------------------------------
+
+    /// The keys a source's persistence items had at the last scan that read
+    /// it; None before the first.
+    pub fn persistence_baseline(&self, source: &str) -> Result<Option<HashSet<String>>> {
+        if self.get(&format!("persistence_at:{source}"))?.is_none() {
+            return Ok(None);
+        }
+        let mut stmt = self.conn.prepare("SELECT key FROM persistence WHERE source = ?")?;
+        let keys =
+            stmt.query_map([source], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(keys.into_iter().flatten().collect()))
+    }
+
+    /// Record what a source holds now, as (key, location, program): items
+    /// seen again keep when they were first seen, items gone are dropped.
+    pub fn persistence_record(&self, source: &str, items: &[(String, String, String)], at: f64) -> Result<()> {
+        for (key, location, program) in items {
+            self.conn.execute(
+                "INSERT INTO persistence VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(key) DO UPDATE SET location = excluded.location, program = excluded.program, last_at = excluded.last_at",
+                params![key, source, location, program, at, at],
+            )?;
+        }
+        self.conn.execute("DELETE FROM persistence WHERE source = ? AND last_at < ?", params![source, at])?;
+        self.set(&format!("persistence_at:{source}"), &at.to_string())
     }
 
     // cached source runs (gitleaks, feeds, tags) ----------------------------
@@ -388,7 +452,8 @@ impl Cache {
         self.conn.execute("DELETE FROM findings", [])?;
         let mut stmt = self.conn.prepare(
             "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
-             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )?;
         for f in findings {
             stmt.execute(params![
@@ -406,7 +471,11 @@ impl Cache {
                 f.fix_auto as i64,
                 f.dep_scope,
                 f.dep_direct.map(i64::from),
-                f.affected_range
+                f.affected_range,
+                f.cvss,
+                f.cvss_version,
+                f.epss,
+                f.epss_percentile
             ])?;
         }
         Ok(())
@@ -425,90 +494,14 @@ impl Cache {
     }
 }
 
-/// The CVSS 3.x base score of a vector string, by the specification's
-/// formula; None for anything else.
-pub fn cvss3_base_score(vector: &str) -> Option<f64> {
-    if !vector.starts_with("CVSS:3") {
-        return None;
-    }
-    let mut m: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for part in vector.split('/').skip(1) {
-        if let Some((k, v)) = part.split_once(':') {
-            m.insert(k, v);
-        }
-    }
-    let av = match *m.get("AV")? {
-        "N" => 0.85,
-        "A" => 0.62,
-        "L" => 0.55,
-        "P" => 0.2,
-        _ => return None,
-    };
-    let ac = match *m.get("AC")? {
-        "L" => 0.77,
-        "H" => 0.44,
-        _ => return None,
-    };
-    let scope_changed = m.get("S") == Some(&"C");
-    let pr = match (*m.get("PR")?, scope_changed) {
-        ("N", _) => 0.85,
-        ("L", false) => 0.62,
-        ("L", true) => 0.68,
-        ("H", false) => 0.27,
-        ("H", true) => 0.5,
-        _ => return None,
-    };
-    let ui = match *m.get("UI")? {
-        "N" => 0.85,
-        "R" => 0.62,
-        _ => return None,
-    };
-    let cia = |k: &str| -> Option<f64> {
-        match *m.get(k)? {
-            "H" => Some(0.56),
-            "L" => Some(0.22),
-            "N" => Some(0.0),
-            _ => None,
-        }
-    };
-    let iss = 1.0 - (1.0 - cia("C")?) * (1.0 - cia("I")?) * (1.0 - cia("A")?);
-    let impact = if scope_changed { 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powi(15) } else { 6.42 * iss };
-    let exploitability = 8.22 * av * ac * pr * ui;
-    let roundup = |x: f64| (x * 10.0).ceil() / 10.0;
-    Some(if impact <= 0.0 {
-        0.0
-    } else if scope_changed {
-        roundup((1.08 * (impact + exploitability)).min(10.0))
-    } else {
-        roundup((impact + exploitability).min(10.0))
-    })
-}
-
-/// A severity label for a CVSS base score.
-pub fn severity_label(score: f64) -> &'static str {
-    if score >= 9.0 {
-        "CRITICAL"
-    } else if score >= 7.0 {
-        "HIGH"
-    } else if score >= 4.0 {
-        "MODERATE"
-    } else {
-        "LOW"
-    }
-}
-
-/// A label (CRITICAL/HIGH/MODERATE/LOW) when the record carries one, else
-/// from its CVSS 3.x vector, else empty.
+/// A record's severity in CVSS's words (LOW, MEDIUM, HIGH, CRITICAL): its
+/// own label when it carries one, else from its CVSS 3.x or 4.0 vector,
+/// else empty.
 pub fn severity_of(rec: &Value) -> String {
-    if let Some(v) = severity_label_of(rec) {
-        return v;
+    if let Some(v) = severity_label_of(rec).map(|l| crate::utils::cvss::word(&l)).filter(|w| !w.is_empty()) {
+        return v.to_string();
     }
-    for s in crate::json::arr_at(rec, "severity") {
-        if let Some(score) = s.get("score").and_then(Value::as_str).and_then(cvss3_base_score) {
-            return severity_label(score).to_string();
-        }
-    }
-    String::new()
+    crate::utils::cvss::of_record(rec).map(|s| crate::utils::cvss::label(s.value).to_string()).unwrap_or_default()
 }
 
 fn severity_label_of(rec: &Value) -> Option<String> {
@@ -517,7 +510,7 @@ fn severity_label_of(rec: &Value) -> Option<String> {
     {
         return Some(label.to_uppercase());
     }
-    for a in crate::json::arr_at(rec, "affected") {
+    for a in crate::utils::json::arr_at(rec, "affected") {
         if let Some(label) = a.get("ecosystem_specific").and_then(|d| d.get("severity")).and_then(Value::as_str)
             && !label.is_empty()
         {
@@ -528,190 +521,5 @@ fn severity_label_of(rec: &Value) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    /// A cached run stamped in the future (an edited cache) is stale, not
-    /// fresh forever.
-    #[test]
-    fn a_future_timestamp_is_not_fresh() {
-        let dir = crate::system::TempDir::new("db").unwrap();
-        let c = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
-        c.conn
-            .execute(
-                "INSERT INTO runs(source, fingerprint, ran_at, result) VALUES (?, ?, ?, ?)",
-                ("k", "fp", 1e12, "[1]"),
-            )
-            .unwrap();
-        let v = c.memo("k", || Ok(json!([2])), DAY, "fp", false, false).unwrap();
-        assert_eq!(v, json!([2]));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&dir.path().join("w.db")), 0o600);
-        }
-    }
-
-    /// A cache from before the dependency columns existed gains them on
-    /// open, and keeps its rows.
-    #[test]
-    fn older_caches_gain_the_added_columns() {
-        let d = crate::system::TempDir::new("migrate").unwrap();
-        let file = d.path().join("old.db");
-        let conn = Connection::open(&file).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE findings (kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT, status TEXT, \
-             fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT, fix_auto INTEGER); \
-             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1); \
-             CREATE TABLE fixes (id INTEGER PRIMARY KEY, scan_id INTEGER, at REAL, command TEXT, mode TEXT, ok INTEGER, \
-             verified_scan INTEGER); \
-             INSERT INTO fixes VALUES (1, 1, 1.0, 'brew upgrade x', 'auto', 1, NULL); \
-             CREATE TABLE scans (id INTEGER PRIMARY KEY, started_at REAL, finished_at REAL, host TEXT, user TEXT, \
-             version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER);",
-        )
-        .unwrap();
-        conn.close().unwrap();
-        let c = Cache::open(Some(&file)).unwrap();
-        // A cache from before fixes kept their targets (v0.2.0) still reads its remediation log.
-        let fixes = crate::history::fixes(&c, 0.0).expect("the fixes table gained its targets column");
-        assert_eq!((fixes.len(), fixes[0].targets.len()), (1, 0));
-        // A cache from before scans counted their unchecked sources (v0.2.0) still records a scan.
-        let scan_cols: Vec<String> = c
-            .conn
-            .prepare("PRAGMA table_info(scans)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert!(scan_cols.iter().any(|c| c == "unchecked"), "{scan_cols:?}");
-        crate::history::record_scan(&c, 1.0, &[], &[], &crate::check::Options::default())
-            .expect("a scan records on the migrated table");
-        let cols: Vec<String> = c
-            .conn
-            .prepare("PRAGMA table_info(findings)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(&cols[12..], ["dep_scope", "dep_direct", "affected_range"]);
-        let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
-        assert_eq!(kept, 1);
-        let f = crate::export::findings(&c).unwrap();
-        assert_eq!((f[0].dep_scope.as_str(), f[0].dep_direct, f[0].affected_range.as_str()), ("", None, ""));
-        c.close().unwrap();
-        // Opening again is a no-op.
-        Cache::open(Some(&file)).unwrap().close().unwrap();
-    }
-
-    pub fn temp_cache() -> (crate::system::TempDir, Cache) {
-        let dir = crate::system::TempDir::new("db").unwrap();
-        let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
-        (dir, cache)
-    }
-
-    #[test]
-    fn cvss_vectors_score_like_the_calculator() {
-        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
-        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"), Some(5.3));
-        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N"), Some(5.4));
-        assert_eq!(cvss3_base_score("CVSS:3.0/AV:L/AC:H/PR:H/UI:R/S:U/C:N/I:N/A:N"), Some(0.0));
-        assert_eq!(cvss3_base_score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"), None);
-        assert_eq!(cvss3_base_score("CVSS:3.1/AV:N"), None);
-        assert_eq!(severity_label(9.8), "CRITICAL");
-        assert_eq!(severity_label(7.0), "HIGH");
-        assert_eq!(severity_label(3.9), "LOW");
-        let labelled = json!({"database_specific": {"severity": "low"}, "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]});
-        assert_eq!(severity_of(&labelled), "LOW", "a label wins over the vector");
-        let vector_only =
-            json!({"severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]});
-        assert_eq!(severity_of(&vector_only), "CRITICAL");
-        assert_eq!(severity_of(&json!({})), "");
-    }
-
-    #[test]
-    fn schema_matches_the_contract() {
-        let (_d, c) = temp_cache();
-        assert!(c.fts, "the bundled SQLite has FTS5");
-        let cols = |t: &str| -> Vec<String> {
-            let mut s = c.conn.prepare(&format!("PRAGMA table_info({t})")).unwrap();
-            s.query_map([], |r| r.get::<_, String>(1)).unwrap().map(|r| r.unwrap()).collect()
-        };
-        assert_eq!(cols("queries"), ["ecosystem", "package", "version", "checked_at", "vuln_ids"]);
-        assert_eq!(
-            cols("findings"),
-            [
-                "kind",
-                "component",
-                "version",
-                "location",
-                "vuln_id",
-                "status",
-                "fixed",
-                "kev",
-                "severity",
-                "note",
-                "fix_cmd",
-                "fix_auto",
-                "dep_scope",
-                "dep_direct",
-                "affected_range"
-            ]
-        );
-    }
-
-    #[test]
-    fn records_queries_and_search() {
-        let (_d, c) = temp_cache();
-        c.put_vuln(&json!({"id": "GHSA-b", "aliases": ["CVE-1"], "summary": "vite dev server path traversal",
-                            "modified": "2026-10-01T00:00:00Z", "database_specific": {"severity": "high"},
-                            "affected": [{"package": {"ecosystem": "npm", "name": "vite"}}]}))
-            .unwrap();
-        assert_eq!(c.modified("GHSA-b").unwrap().as_deref(), Some("2026-10-01T00:00:00Z"));
-        assert_eq!(c.vuln("GHSA-b").unwrap().unwrap()["summary"], "vite dev server path traversal");
-        let sev: String = c.conn.query_row("SELECT severity FROM vulns", [], |r| r.get(0)).unwrap();
-        assert_eq!(sev, "HIGH");
-        let hit: String =
-            c.conn.query_row("SELECT id FROM vulns_fts WHERE vulns_fts MATCH 'traversal'", [], |r| r.get(0)).unwrap();
-        assert_eq!(hit, "GHSA-b");
-        c.put_query("npm", "zod", "4.4.3", &[]).unwrap();
-        let (at, ids) = c.query("npm", "zod", "4.4.3").unwrap().unwrap();
-        assert!(at > now() - 5.0 && ids.is_empty());
-    }
-
-    #[test]
-    fn memo_reuses_fresh_falls_back_stale_and_never_caches_failures() {
-        let (_d, c) = temp_cache();
-        let off = || Err(Error::Offline("down".into()));
-        assert!(matches!(c.memo("k", off, DAY, "", false, true), Err(Error::Offline(_))));
-        assert!(matches!(c.memo("k", off, DAY, "", false, false), Err(Error::Offline(_))));
-        assert_eq!(c.memo("k", || Ok(json!([1])), DAY, "fp", false, false).unwrap(), json!([1]));
-        assert_eq!(c.memo("k", || panic!("fresh"), DAY, "fp", false, false).unwrap(), json!([1]));
-        c.conn.execute("UPDATE runs SET ran_at = 0", []).unwrap();
-        assert_eq!(c.memo("k", off, DAY, "fp", false, false).unwrap(), json!([1]), "stale beats nothing");
-        assert_eq!(c.memo("k", || panic!("offline"), DAY, "fp", false, true).unwrap(), json!([1]));
-        // A result for other input is never reused, offline or not.
-        assert!(matches!(c.memo("k", || panic!("offline"), DAY, "other", false, true), Err(Error::Offline(_))));
-        assert!(matches!(c.memo("k", off, DAY, "other", false, false), Err(Error::Offline(_))));
-        assert_eq!(c.memo("k", || Ok(json!([2])), DAY, "fp", true, false).unwrap(), json!([2]));
-    }
-
-    #[test]
-    fn cache_location() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(v))
-        };
-        assert_eq!(path_from(&env(&[("WPANTRY_DB", "/x/w.db"), ("HOME", "/h")])), PathBuf::from("/x/w.db"));
-        assert_eq!(
-            path_from(&env(&[("XDG_CACHE_HOME", "/x"), ("HOME", "/h")])),
-            PathBuf::from("/x/wpantry/wpantry.db")
-        );
-        assert_eq!(
-            path_from(&env(&[("XDG_CACHE_HOME", ""), ("HOME", "/h")])),
-            PathBuf::from("/h/.cache/wpantry/wpantry.db")
-        );
-    }
-}
+#[path = "db_tests.rs"]
+mod tests;

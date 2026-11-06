@@ -69,7 +69,8 @@ license = "CC0-1.0"
 | kind | format | used as |
 |---|---|---|
 | `yara` | `yara` | a rules file beside ours and YARA Forge's (`rules/user-<id>.yar`) |
-| `hashes`, `hosts`, `filenames` | `lines` (`value[;what]`, `regex;score` for file names) | indicators beside signature-base's (`rules/iocs/user-<id>.<kind>.txt`) |
+| `hashes`, `hosts`, `filenames` | `lines` (`value[;what]`, `regex;score` for file names) | indicators beside signature-base's (`rules/iocs/user-<id>.<kind>.txt`): hashes and hosts in the indicator store, matched by lookup (`Hash_IOC_User_<id>`, `IOC_C2_Host_User_<id>`); file names as regexes |
+| `indicators` | `maltrail-csv` (`value,what,reference` lines, gzip or plain: Maltrail's `trails.csv`) | domains, addresses and URLs with their family, in the indicator store (`IOC_Host_User_<id>`); added in phase 4 for Maltrail Trails, whose licence keeps it out of the bundled file (#164) |
 | `advisories` | `osv-api` | asked beside OSV.dev; with `osv` off, in its place |
 | `hash-lookup` | `circl` or `yaraify` | asked about flagged files after the hash-lookup consent and its own; `sends = "sha256"` is required |
 

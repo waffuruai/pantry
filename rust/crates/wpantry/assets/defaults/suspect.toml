@@ -1,0 +1,8 @@
+# Suspicious-code findings that warn rather than fail. Nothing is silenced:
+# an exempted finding is still reported, as a warning. Replaced by
+# `--suspect-policy FILE`.
+#   ids    finding ids: "SUSPECT-PRIV-ESCALATION", or "PRIV-ESCALATION"
+#   paths  text matched against the file's path in the repo: "scripts/legacy/"
+
+ids = []
+paths = []

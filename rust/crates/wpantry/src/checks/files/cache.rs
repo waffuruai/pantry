@@ -68,7 +68,7 @@ fn sources(check: Check) -> Vec<&'static str> {
                 include_str!("../suspects/blobs.rs"),
                 include_str!("../suspects/scripts.rs"),
                 include_str!("../../utils/addresses.rs"),
-                include_str!("../../../assets/defaults/weak-passwords.txt"),
+                include_str!("../../../assets/defaults/weak-passwords.toml"),
             ])
             .collect(),
         Check::Mptcp => vec![include_str!("../supply_chain/mptcp.rs")],

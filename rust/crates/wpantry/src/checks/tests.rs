@@ -154,7 +154,7 @@ fn mitigations_are_looked_up_by_id() {
     assert!(mitigation("CVE-2026-98432").unwrap().contains("mptcp"));
     assert!(mitigation("cve-2026-98432").is_some());
     assert_eq!(mitigation("CVE-2000-1"), None);
-    assert_eq!(mitigation_in("# c\nX-1\tdo this\n", "X-1").as_deref(), Some("do this"));
+    assert_eq!(mitigation_in("# c\n[mitigations]\n\"X-1\" = \"do this\"\n", "x-1").as_deref(), Some("do this"));
 }
 
 #[test]
@@ -173,6 +173,13 @@ fn unchecked_is_reported_once() {
 
 #[test]
 fn listed_files_and_bundled_defaults() {
-    assert!(listed(None, crate::defaults::INSTALL_SCRIPTS).iter().any(|l| l.starts_with("esbuild@")));
-    assert!(listed(Some(Path::new("/nonexistent")), "x").is_empty());
+    assert!(listed(None, crate::defaults::INSTALL_SCRIPTS, "allow").iter().any(|l| l.starts_with("esbuild@")));
+    assert!(listed(Some(Path::new("/nonexistent")), "x", "allow").is_empty());
+    let d = crate::utils::temp::TempDir::new("policy").unwrap();
+    let (toml, old) = (d.path().join("p.toml"), d.path().join("p.txt"));
+    std::fs::write(&toml, "# mine\nallow = [\"MIT\"]\n").unwrap();
+    std::fs::write(&old, "MIT\nApache-2.0\n").unwrap();
+    assert_eq!(listed(Some(&toml), "", "allow"), ["MIT"]);
+    assert_eq!(policy_error(&toml), None);
+    assert!(policy_error(&old).unwrap().contains("not a TOML policy file"), "a list from before TOML is refused");
 }

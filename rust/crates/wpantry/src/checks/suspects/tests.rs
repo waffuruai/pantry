@@ -50,7 +50,8 @@ fn line_helpers() {
 
 #[test]
 fn policy_parses_ids_and_paths() {
-    let p = Policy::parse("# mine\nSUSPECT-PRIV-ESCALATION\n  raw-ip \npath: scripts/legacy/\n\n");
+    let p =
+        Policy::parse("# mine\nids = [\"SUSPECT-PRIV-ESCALATION\", \"  raw-ip \"]\npaths = [\" scripts/legacy/\"]\n");
     assert_eq!(p.ids, ["PRIV-ESCALATION", "RAW-IP"]);
     assert_eq!(p.paths, ["scripts/legacy/"]);
     let hit = Suspect { file: "x.js".into(), id: "SUSPECT-RAW-IP", line: 1, note: String::new(), hard: true };
@@ -65,7 +66,7 @@ fn policy_parses_ids_and_paths() {
 
 #[test]
 fn policy_downgrades_but_never_silences() {
-    let p = Policy::parse("# mine\nSUSPECT-PRIV-ESCALATION\npath:scripts/legacy/\n");
+    let p = Policy::parse("# mine\nids = [\"SUSPECT-PRIV-ESCALATION\"]\npaths = [\"scripts/legacy/\"]\n");
     let d = crate::utils::temp::TempDir::new("suspect").unwrap();
     std::fs::create_dir_all(d.path().join("scripts/legacy")).unwrap();
     std::fs::write(d.path().join("scripts/legacy/old.js"), "eval(atob('x'))").unwrap();

@@ -61,28 +61,36 @@ struct Popular {
 /// The bundled list, parsed once, keyed by lowercase ecosystem.
 static POPULAR: LazyLock<HashMap<String, Popular>> = LazyLock::new(|| index(crate::defaults::POPULAR));
 
-fn index(list: &'static str) -> HashMap<String, Popular> {
+/// Every `ecosystem = [names]` of the list's `[popular]` table (TOML). The
+/// names are kept for the life of the process (the list is read once).
+fn index(list: &str) -> HashMap<String, Popular> {
     let mut out: HashMap<String, Popular> = HashMap::new();
-    for line in list.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((eco, name)) = line.split_once('\t') else { continue };
-        let name = name.trim();
+    let tables = crate::utils::toml::parse(list).unwrap_or_default();
+    let Some(popular) = tables.iter().find(|t| t.name == "popular") else { return out };
+    for (eco, names) in &popular.entries {
+        let crate::utils::toml::Val::Raw(raw) = names else { continue };
+        let names: &'static [String] = Box::leak(crate::utils::toml::strings(raw).into_boxed_slice());
         let pop = out.entry(eco.to_ascii_lowercase()).or_default();
-        pop.names.insert(name);
-        if name.starts_with('@') {
-            if let Some((scope, _)) = name.split_once('/') {
-                pop.scopes.insert(scope);
-            }
-            continue;
+        for name in names {
+            add(pop, name.trim());
         }
-        let canon = canon(name);
-        pop.folded.insert(fold(name));
-        pop.by_len.entry(canon.chars().count()).or_default().push(Candidate { name, canon: canon.chars().collect() });
-        pop.canon.insert(canon);
     }
     out
+}
+
+/// One listed name, indexed.
+fn add(pop: &mut Popular, name: &'static str) {
+    pop.names.insert(name);
+    if name.starts_with('@') {
+        if let Some((scope, _)) = name.split_once('/') {
+            pop.scopes.insert(scope);
+        }
+        return;
+    }
+    let canon = canon(name);
+    pop.folded.insert(fold(name));
+    pop.by_len.entry(canon.chars().count()).or_default().push(Candidate { name, canon: canon.chars().collect() });
+    pop.canon.insert(canon);
 }
 
 /// Lowercase with every run of separators as one `-`: how PyPI (PEP 503)

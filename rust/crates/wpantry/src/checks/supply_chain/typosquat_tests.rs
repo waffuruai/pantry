@@ -127,8 +127,8 @@ fn established_packages_are_not_typos_of_each_other() {
 fn a_typosquat_in_the_suspect_policy_warns_instead() {
     let d = TempDir::new("typosquat").unwrap();
     let net = testing::osv_net(&[]);
-    let policy = d.path().join("suspect.txt");
-    std::fs::write(&policy, "SUSPECT-TYPOSQUAT\n").unwrap();
+    let policy = d.path().join("suspect.toml");
+    std::fs::write(&policy, "ids = [\"SUSPECT-TYPOSQUAT\"]\n").unwrap();
     let opts = Options { policy: Policy { suspect: Some(policy), ..Default::default() }, ..Default::default() };
     let mut s = testing::scan(&net, &d, opts);
     let (name, root) = testing::repo(&d, "app");

@@ -478,6 +478,12 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
             if !p.is_file() {
                 return Err(m.error(&format!("option '--{name}': no such file: {v}")));
             }
+            // gitleaks reads its own config; the rest are Pantry's TOML.
+            if name != "gitleaks-config"
+                && let Some(why) = wpantry::checks::policy_error(&p)
+            {
+                return Err(m.error(&format!("option '--{name}': {v}: {why}")));
+            }
             *slot = Some(p);
         }
     }

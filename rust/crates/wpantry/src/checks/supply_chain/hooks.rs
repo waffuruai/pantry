@@ -54,10 +54,11 @@ impl Hook {
         matches!(self.id, "OPEN-HOOK" | "INSTALL-HOOK")
     }
 
-    /// The `--hooks-policy` line that accepts this hook: its file, when it
-    /// runs and its exact command (see [`Accepted`]).
+    /// The `--hooks-policy` entry that accepts this hook, for its `hooks`
+    /// list: its file, when it runs and its exact command (see [`Accepted`]).
     pub fn policy_line(&self) -> String {
-        format!("hook {} {} {}", word(&self.file), quote(&self.when), self.command).trim_end().to_string()
+        let q = |s: &str| serde_json::to_string(s).expect("a string serialises");
+        format!("{{ file = {}, when = {}, command = {} }}", q(&self.file), q(&self.when), q(&self.command))
     }
 }
 
@@ -83,24 +84,29 @@ pub struct AcceptedHook {
 }
 
 impl Accepted {
+    /// The policy file's `hooks` (inline tables of `file`, `when` and
+    /// `command`) and `repos` (TOML); empty when unreadable.
     pub fn parse(text: &str) -> Accepted {
+        use crate::utils::toml;
         let mut out = Accepted::default();
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-            match line.split_once(char::is_whitespace) {
-                Some(("hook", rest)) => {
-                    let Some((file, rest)) = token(rest) else { continue };
-                    let Some((when, command)) = token(rest) else { continue };
+        let Ok(tables) = toml::parse(text) else { return out };
+        let Some(top) = tables.iter().find(|t| t.name.is_empty()) else { return out };
+        if let Some(toml::Val::Raw(raw)) = top.get("hooks") {
+            for t in toml::inline_tables(raw) {
+                let get =
+                    |k: &str| t.iter().find(|(n, _)| n == k).and_then(|(_, v)| v.as_str()).unwrap_or("").to_string();
+                let (file, when, command) = (get("file"), get("when"), get("command"));
+                if !file.is_empty() {
                     out.hooks.push(AcceptedHook { file, when, command: command.trim().to_string() });
                 }
-                Some(("repo", path)) => {
-                    let path = path.trim().trim_end_matches('/');
-                    if !path.is_empty() {
-                        out.repos.push(path.to_string());
-                    }
-                }
-                _ => {}
             }
         }
+        out.repos = toml::list(text, "", "repos")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.trim().trim_end_matches('/').to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
         out
     }
 
@@ -133,37 +139,6 @@ fn under(root: &Path, prefix: &str) -> bool {
     starts(&prefix) || std::fs::canonicalize(&prefix).is_ok_and(|real| starts(&real.to_string_lossy()))
 }
 
-/// The first token of `s` (a bare word, or a `"…"` string with `\"` and
-/// `\\` escapes) and what follows it.
-fn token(s: &str) -> Option<(String, &str)> {
-    let s = s.trim_start();
-    if let Some(rest) = s.strip_prefix('"') {
-        let mut out = String::new();
-        let mut chars = rest.char_indices();
-        while let Some((i, c)) = chars.next() {
-            match c {
-                '\\' => out.push(chars.next()?.1),
-                '"' => return Some((out, &rest[i + 1..])),
-                c => out.push(c),
-            }
-        }
-        None
-    } else {
-        let end = s.find(char::is_whitespace).unwrap_or(s.len());
-        (end > 0).then(|| (s[..end].to_string(), &s[end..]))
-    }
-}
-
-/// `s` as a `"…"` token.
-fn quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-/// `s` as a token: bare when it can be, quoted otherwise.
-fn word(s: &str) -> String {
-    if s.is_empty() || s.contains(char::is_whitespace) || s.contains('"') { quote(s) } else { s.to_string() }
-}
-
 /// Indicators from the bundled list (`--repo-hooks FILE` replaces it).
 #[derive(Default)]
 pub struct Indicators {
@@ -174,24 +149,16 @@ pub struct Indicators {
 }
 
 impl Indicators {
+    /// The list's `files`, `packages`, `hosts` and `sha256` (TOML); empty
+    /// when unreadable.
     pub fn parse(text: &str) -> Indicators {
-        let mut out = Indicators::default();
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-            match line.split_once(' ') {
-                Some(("file", v)) => {
-                    out.files.insert(v.trim().to_string());
-                }
-                Some(("package", v)) => {
-                    out.packages.insert(v.trim().to_string());
-                }
-                Some(("host", v)) => out.hosts.push(v.trim().to_string()),
-                Some(("sha256", v)) => {
-                    out.sha256.insert(v.trim().to_ascii_lowercase());
-                }
-                _ => {}
-            }
+        let list = |k: &str| crate::utils::toml::list(text, "", k).unwrap_or_default();
+        Indicators {
+            files: list("files").into_iter().map(|v| v.trim().to_string()).collect(),
+            packages: list("packages").into_iter().map(|v| v.trim().to_string()).collect(),
+            hosts: list("hosts").into_iter().map(|v| v.trim().to_string()).collect(),
+            sha256: list("sha256").into_iter().map(|v| v.trim().to_ascii_lowercase()).collect(),
         }
-        out
     }
 }
 
@@ -727,7 +694,7 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
                 (
                     "warn",
                     format!(
-                        "Read {} before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {}",
+                        "Read {} before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to `hooks` in your hooks policy (--hooks-policy FILE): {}",
                         h.file,
                         h.policy_line()
                     ),

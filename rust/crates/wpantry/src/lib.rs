@@ -36,18 +36,19 @@ pub const SCHEMA: i64 = 1;
 /// crate carries it; it describes this binary.
 pub const SKILL: &str = include_str!("../assets/SKILL.md");
 
-/// The bundled policy files, the defaults `--gitleaks-config`, `--licenses`
-/// and `--install-scripts` replace.
+/// The bundled policy and data files (TOML), the defaults the policy
+/// options (`--licenses`, `--install-scripts`, …) replace.
 pub mod defaults {
     pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
-    pub const LICENSES: &str = include_str!("../assets/defaults/licenses.txt");
-    pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.txt");
-    pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.txt");
-    pub const POSTURE: &str = include_str!("../assets/defaults/posture.txt");
-    pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.txt");
-    pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.txt");
-    pub const HOOKS: &str = include_str!("../assets/defaults/hooks.txt");
-    pub const POPULAR: &str = include_str!("../assets/defaults/popular.txt");
+    pub const LICENSES: &str = include_str!("../assets/defaults/licenses.toml");
+    pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.toml");
+    pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.toml");
+    pub const POSTURE: &str = include_str!("../assets/defaults/posture.toml");
+    pub const MITIGATIONS: &str = include_str!("../assets/defaults/mitigations.toml");
+    pub const SUSPECT: &str = include_str!("../assets/defaults/suspect.toml");
+    pub const HOOKS: &str = include_str!("../assets/defaults/hooks.toml");
+    pub const POPULAR: &str = include_str!("../assets/defaults/popular.toml");
+    pub const WEAK_PASSWORDS: &str = include_str!("../assets/defaults/weak-passwords.toml");
     pub const BAIT: &str = include_str!("../assets/defaults/bait.toml");
     pub const SOURCES: &str = include_str!("../assets/defaults/sources.toml");
 }

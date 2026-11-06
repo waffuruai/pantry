@@ -108,7 +108,7 @@ fn verdicts() {
 
 #[test]
 fn the_bundled_list_parses_whole_and_is_pinned() {
-    let lines = crate::checks::listed(None, crate::defaults::INSTALL_SCRIPTS);
+    let lines = crate::checks::listed(None, crate::defaults::INSTALL_SCRIPTS, "allow");
     let parsed = parse_entries(&lines);
     assert_eq!(parsed.len(), lines.len(), "every line of the default file is an entry");
     assert!(parsed.iter().all(|a| a.range.is_some()), "every default entry carries a version range");

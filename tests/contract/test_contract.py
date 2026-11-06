@@ -296,10 +296,10 @@ class Contract(unittest.TestCase):
         repo = git_repo(self.home / "app")
         (repo / "package.json").write_text(json.dumps({"scripts": {"postinstall": "node setup.js"}}))
         (repo / "setup.js").write_text("// benign fixture: no code is executed\n")
-        posture = Path(self.tmp.name, "posture.txt")
-        posture.write_text("POSTURE-FIREWALL\n")
-        suspect = Path(self.tmp.name, "suspect.txt")
-        suspect.write_text("PRIV-ESCALATION\npath:trusted.js\n")
+        posture = Path(self.tmp.name, "posture.toml")
+        posture.write_text('skip = ["POSTURE-FIREWALL"]\n')
+        suspect = Path(self.tmp.name, "suspect.toml")
+        suspect.write_text('ids = ["PRIV-ESCALATION"]\npaths = ["trusted.js"]\n')
         path = Path(self.tmp.name, "report.html")
         code, out, err = self.project_run("--html", "-o", str(path), "--no-posture",
                                           "--posture-policy", str(posture), "--suspect-policy", str(suspect))
@@ -375,13 +375,13 @@ class Contract(unittest.TestCase):
         code, out, err = self.run_bin(*scan)
         hooks = [f for f in json.loads(out)["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([(h["vuln_id"], h["status"]) for h in hooks], [("INSTALL-HOOK", "warn")], hooks)
-        # The warning's fix text ends with the exact policy line to paste.
-        marker = "add to your hooks policy (--hooks-policy FILE): "
+        # The warning's fix text ends with the exact entry to paste.
+        marker = "add to `hooks` in your hooks policy (--hooks-policy FILE): "
         self.assertIn(marker, hooks[0]["fix_cmd"])
         line = hooks[0]["fix_cmd"].split(marker, 1)[1]
-        self.assertEqual(line, 'hook assets/package.json "npm postinstall script" node bin/postinstall')
-        policy = self.home / "hooks.txt"
-        policy.write_text("# reviewed\n" + line + "\n")
+        self.assertEqual(line, '{ file = "assets/package.json", when = "npm postinstall script", command = "node bin/postinstall" }')
+        policy = self.home / "hooks.toml"
+        policy.write_text("# reviewed\nhooks = [\n  " + line + ",\n]\n")
         # Accepted: no finding, but counted, so the report shows it was seen.
         code, out, err = self.run_bin(*scan, "--hooks-policy", str(policy))
         env = json.loads(out)
@@ -393,10 +393,10 @@ class Contract(unittest.TestCase):
         env = json.loads(out)
         hooks = [f for f in env["findings"] if f["kind"] == "repo-hook"]
         self.assertEqual([h["vuln_id"] for h in hooks], ["INSTALL-HOOK"], hooks)
-        self.assertTrue(hooks[0]["fix_cmd"].endswith("node bin/postinstall --quiet"), hooks[0]["fix_cmd"])
+        self.assertTrue(hooks[0]["fix_cmd"].endswith('command = "node bin/postinstall --quiet" }'), hooks[0]["fix_cmd"])
         self.assertNotIn("repo hooks accepted by policy", env["checked"])
-        # A `repo` line accepts every warning under that path.
-        policy.write_text(f"repo {self.home}\n")
+        # A `repos` entry accepts every warning under that path.
+        policy.write_text(f'repos = ["{self.home}"]\n')
         code, out, err = self.run_bin(*scan, "--hooks-policy", str(policy))
         env = json.loads(out)
         self.assertFalse([f for f in env["findings"] if f["kind"] == "repo-hook"], env["findings"])
@@ -421,8 +421,8 @@ class Contract(unittest.TestCase):
         self.assertFalse([f for f in json.loads(out)["findings"] if f["kind"] == "posture"])
         code, _, err = self.run_bin("scan", "--no-machine", "--no-posture", "--offline", "--no-input", "--path", str(self.home))
         self.assertEqual(code, 0, err)
-        policy = self.home / "posture.txt"
-        policy.write_text("remote-login\nPOSTURE-FILEVAULT\n")
+        policy = self.home / "posture.toml"
+        policy.write_text('skip = ["remote-login", "POSTURE-FILEVAULT"]\n')
         code, _, err = self.run_bin("scan", "--no-machine", "--posture-policy", str(policy), "--offline", "--no-input", "--path", str(self.home))
         self.assertEqual(code, 0, err)
         code, _, err = self.run_bin("scan", "--posture-policy", str(self.home / "missing.txt"))
@@ -715,8 +715,8 @@ class Contract(unittest.TestCase):
         self.assertIn("a clipper swaps the address you copied", notes["clip.py"])
         self.assertIn("Tron address hardcoded", notes["clip.py"])
         self.assertIn("sets a regular key that signs for the account (`SetRegularKey`, XRP Ledger)", notes["take.ts"])
-        policy = self.home / "suspect.txt"
-        policy.write_text("PRIV-ESCALATION\npath:index.html\nWALLET-SIGNING\nCLIPBOARD-SWAP\n")
+        policy = self.home / "suspect.toml"
+        policy.write_text('ids = ["PRIV-ESCALATION", "WALLET-SIGNING", "CLIPBOARD-SWAP"]\npaths = ["index.html"]\n')
         code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
         findings = json.loads(out)["findings"]
         # A runner without gitleaks still fails on the missing tool: the exit follows what is left.
@@ -796,8 +796,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(found[1][2], "lodahs (npm)")
         self.assertTrue(found[0][2].endswith("/node_modules/lodahs/build/helper.node"), found[0])
         # The policy downgrades the typo to a warning (by id); nothing is silenced.
-        policy = self.home / "squat.txt"
-        policy.write_text("TYPOSQUAT\n")
+        policy = self.home / "squat.toml"
+        policy.write_text('ids = ["TYPOSQUAT"]\n')
         code, out, err = self.run_bin("scan", "--json", "--no-input", "--offline", "--no-machine", "--path", str(repo), "--suspect-policy", str(policy))
         findings = json.loads(out)["findings"]
         fails = [f for f in findings if f["status"] == "fail"]
@@ -901,8 +901,8 @@ class Contract(unittest.TestCase):
         (proj / "package-lock.json").write_text(
             '{"lockfileVersion": 3, "packages": {"": {}, "node_modules/esbuild": {"version": "0.28.1", '
             '"hasInstallScript": true}, "node_modules/foo": {"version": "1.0.0", "hasInstallScript": true}}}')
-        allow = Path(self.tmp.name, "allow.txt")
-        allow.write_text("# ours\nfoo\n")
+        allow = Path(self.tmp.name, "allow.toml")
+        allow.write_text('# ours\nallow = ["foo"]\n')
         _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json")
         self.assertEqual([f["component"] for f in self.envelope(out)["findings"] if f["kind"] == "install-script"], ["foo"])
         _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
@@ -911,14 +911,14 @@ class Contract(unittest.TestCase):
         self.assertEqual([f["component"] for f in got], ["esbuild"])  # the bundled list allows 0.28.x; this one doesn't list it
         self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
         # A pinned entry: the locked version is outside it, so it warns and names both.
-        allow.write_text("# ours\nfoo\nesbuild@^0.24\n")
+        allow.write_text('# ours\nallow = ["foo", "esbuild@^0.24"]\n')
         _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
                                  str(allow))
         got = [f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"]
         self.assertEqual([(f["component"], f["vuln_id"], f["status"]) for f in got], [("esbuild", "INSTALL-SCRIPT", "warn")])
         self.assertIn("allowed at ^0.24 but 0.28.1 is locked", got[0]["note"])
         self.assertIn("(--install-scripts)", got[0]["fix_cmd"])
-        allow.write_text("# ours\nfoo\nesbuild@^0.28\n")
+        allow.write_text('# ours\nallow = ["foo", "esbuild@^0.28"]\n')
         _, out, _ = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", "--install-scripts",
                                  str(allow))
         self.assertEqual([f for f in self.envelope(out)["findings"] if f["kind"] == "install-script"], [])
@@ -932,8 +932,13 @@ class Contract(unittest.TestCase):
         env = self.envelope(out)
         self.assertEqual([f for f in env["findings"] if f["kind"] == "license" or "license" in f["component"]], [])
         self.assertEqual(env["unknown_licenses"], 0)
-        allow = Path(self.tmp.name, "licenses.txt")
-        allow.write_text("MIT\n")
+        allow = Path(self.tmp.name, "licenses.toml")
+        allow.write_text('allow = ["MIT"]\n')
+        old = Path(self.tmp.name, "licenses.txt")
+        old.write_text("MIT\n")
+        code, _, err = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--licenses", str(old))
+        self.assertEqual(code, 2, "a list from before TOML is refused")
+        self.assertIn("not a TOML policy file", err)
         for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"]):
             code, _, err = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", *extra)
             self.assertNotEqual(code, 2, (extra, err))

@@ -239,6 +239,67 @@ pub fn inline(raw: &str) -> Vec<(String, Val)> {
     }
 }
 
+/// The strings of array `key` in table `table` ("" for the top level);
+/// empty when there is no such key. `Invalid` when the text isn't TOML.
+pub fn list(text: &str, table: &str, key: &str) -> Result<Vec<String>> {
+    let tables = parse(text)?;
+    Ok(tables
+        .iter()
+        .filter(|t| t.name == table && !t.array)
+        .find_map(|t| t.get(key))
+        .map(|v| match v {
+            Val::Str(s) => vec![s.clone()],
+            Val::Raw(raw) => strings(raw),
+        })
+        .unwrap_or_default())
+}
+
+/// The inline tables in an array's raw text (`[{ a = "1" }, { a = "2" }]`),
+/// comments skipped.
+pub fn inline_tables(raw: &str) -> Vec<Vec<(String, Val)>> {
+    let mut out = Vec::new();
+    let mut rest = raw.trim().strip_prefix('[').unwrap_or("");
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.starts_with('#') {
+            rest = rest.split_once('\n').map(|(_, r)| r).unwrap_or("");
+            continue;
+        }
+        if !rest.starts_with('{') {
+            return out;
+        }
+        // The table's end: the brace that closes it, outside strings.
+        let mut depth = 0;
+        let mut end = None;
+        let mut i = 0;
+        while i < rest.len() {
+            let c = rest[i..].chars().next().expect("in bounds");
+            match c {
+                '"' | '\'' => match string(&rest[i..]) {
+                    Some((_, after)) => {
+                        i = rest.len() - after.len();
+                        continue;
+                    }
+                    None => return out,
+                },
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += c.len_utf8();
+        }
+        let Some(end) = end else { return out };
+        out.push(inline(&rest[..=end]));
+        rest = &rest[end + 1..];
+    }
+}
+
 #[cfg(test)]
 #[path = "toml_tests.rs"]
 mod tests;

@@ -21,7 +21,7 @@ fn dependencies_that_ship_binaries_without_sources() {
     let got = dependency_blobs(root, &Policy::default());
     assert_eq!(ids(&got), [("SUSPECT-BINARY-BLOB", true)], "{got:?}");
     assert!(got[0].note.contains("starts with 23 21 2f 62"), "{}", got[0].note);
-    let p = Policy::parse("BINARY-BLOB\n");
+    let p = Policy::parse("ids = [\"BINARY-BLOB\"]\n");
     assert!(dependency_blobs(root, &p).iter().all(|s| !s.hard), "the policy downgrades");
     assert!(dependency_blobs(root.join("node_modules/honest").as_path(), &p).is_empty(), "no node_modules: nothing");
 }

@@ -150,7 +150,7 @@ wpantry fix              # run the unattended fixes, then re-check
 ```
 
 - **Unattended:** Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions. On a terminal it asks `Run these N updates now? [Y/n]` first; with `--no-input`, or no terminal, it runs them.
-- **Needs you:** anything needing sudo, a vendor, or a repo change, printed as a step. A lockfile fix is a code change: make it on a branch, with that repo's tests.
+- **Needs you:** anything needing sudo, a vendor, or a repo change, printed as a step for you or your agent to run. A lockfile fix is a code change: make it on a branch, with that repo's tests.
 - `mise` is never upgraded for you.
 
 ### One thing at a time

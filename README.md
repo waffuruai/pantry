@@ -16,7 +16,7 @@ Waffuru's vulnerability scanner for your computer and your code. It finds what a
 | **Find leaked secrets** | Credentials committed anywhere in a repo's git history. |
 | **See what your AI tools run** | The MCP servers, plugins and skills of Claude Code, Codex, Cursor and others. |
 | **Harden the machine** | CIS checks of disk encryption, the firewall, sharing and login, programs that start at login, and compromised certificate authorities. |
-| **Fix it safely** | `wpantry fix` runs only unattended, user-level updates. Anything else is printed as a step. |
+| **Fix it safely** | `wpantry fix` runs only unattended, user-level updates. Anything else is printed as a step for you or your agent to run. |
 | **Prove it** | Exposure, remediation and audit logs, and a one-page summary for SOC 2, ISO 27001 and insurers. |
 
 Every check, every source and exactly what is sent to each: [checks and sources](docs/public/checks-and-sources.md).

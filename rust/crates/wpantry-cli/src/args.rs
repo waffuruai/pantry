@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 pub const SUBCOMMANDS: &[&str] = &[
     "scan", "check", "fix", "search", "export", "breach", "watch", "version", "tools", "skill", "sync", "schedule",
-    "cache", "update", "report", "harden", "mitigate", "rules", "sources", "help",
+    "cache", "update", "report", "mitigate", "rules", "sources", "help",
 ];
 
 /// How a report is shown: the terminal's tables (the default), or a format
@@ -103,14 +103,12 @@ pub struct Check {
     pub sources: Option<PathBuf>,
 }
 
-/// What `mitigate` acts on.
+/// What `fix list` and `fix ID` act on.
 #[derive(Debug, PartialEq)]
 pub enum Target {
-    /// The stopgaps wpantry has and the advisories with an unattended fix.
+    /// What can be fixed, from the latest scan.
     List,
-    /// Everything: `fix`.
-    All,
-    /// One advisory, upper-cased.
+    /// One advisory, or one of wpantry's own fixes by name, upper-cased.
     Id(String),
 }
 
@@ -167,11 +165,7 @@ pub enum Command {
         offline: bool,
         version: Option<String>,
     },
-    Harden {
-        what: String,
-        hours: u32,
-        bundle: Option<PathBuf>,
-    },
+    /// `fix list` and `fix ID` (`mitigate` is the same command).
     Mitigate {
         target: Target,
         dry_run: bool,
@@ -179,9 +173,9 @@ pub enum Command {
         no_input: bool,
         /// `--undo` (`--remove` is the same): take the stopgap away.
         undo: bool,
-        offline: bool,
-        no_machine: bool,
-        path: Option<Vec<PathBuf>>,
+        /// `--bundle FILE` (`ca-trust`) and `--hours N` (`extension-cooldown`).
+        bundle: Option<PathBuf>,
+        hours: u32,
     },
     Skill,
     /// `rules`: the YARA rule sources and what compiled (`--update` fetches);
@@ -211,7 +205,7 @@ pub enum Parsed {
     Usage(String),
 }
 
-const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help} ...";
+const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,mitigate,rules,sources,help} ...";
 
 /// The scan's options in its usage line, shared by `scan`, `check` and
 /// `fix` (`fix` adds `--dryrun` and `--yes` in front).
@@ -238,10 +232,15 @@ const SCAN_OPTIONS: &str = concat!(
 );
 
 pub fn usage(cmd: &str) -> String {
+    let cmd = if cmd == "mitigate" { "fix" } else { cmd };
     let line: &str = match cmd {
         "scan" | "check" | "fix" => {
             let pad = " ".repeat(format!("usage: wpantry {cmd} ").len());
-            let fix = if cmd == "fix" { " [--dryrun] [--yes]" } else { "" };
+            let fix = if cmd == "fix" {
+                " [--dryrun] [--yes] [--undo] [--bundle FILE] [--hours N] [list|all|ID]"
+            } else {
+                ""
+            };
             return format!(
                 "usage: wpantry {cmd} [-h]{fix} {}\n{pad}{}\n{pad}{}\n{pad}{}",
                 SCAN_USAGE[0], SCAN_USAGE[1], SCAN_USAGE[2], SCAN_USAGE[3]
@@ -269,16 +268,13 @@ pub fn usage(cmd: &str) -> String {
                 " ".repeat(format!("usage: wpantry {cmd} ").len())
             );
         }
-        "harden" => "usage: wpantry harden [-h] [--hours N] [--bundle FILE] {extension-cooldown,ca-trust}",
-        "mitigate" => {
-            "usage: wpantry mitigate [-h] [--dry-run] [--yes] [--no-input] [--undo] [--offline] [--no-machine] [--path DIR]\n                        {list,all,ID}"
-        }
         _ => TOP_USAGE,
     };
     line.to_string()
 }
 
 fn help(cmd: &str) -> String {
+    let cmd = if cmd == "mitigate" { "fix" } else { cmd };
     let body = match cmd {
         "scan" => {
             return format!(
@@ -294,7 +290,7 @@ fn help(cmd: &str) -> String {
         }
         "fix" => {
             return format!(
-                "{}\n\nscan, then run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check\n\noptions:\n  -h, --help            show this help message and exit\n  --dryrun              print the fix plan; change nothing\n  --yes                 run the fixes and write the stopgaps without asking\n{SCAN_OPTIONS}\n\nExit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage error, 3 internal error.\n",
+                "{}\n\nscan, then run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check. mitigate is the same command\n\npositional arguments:\n  all                   everything (the default): a scan, the unattended fixes, every stopgap that applies, a re-check\n  list                  what can be fixed, from the latest scan: the update plan in batches, the stopgaps and whether each applies here; nothing runs\n  ID                    one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it, the steps that need you. Or one of wpantry's own fixes by name: ca-trust (distrust the leaked eMudhra roots in the system trust store), extension-cooldown (editors wait before installing a new extension version), cve-2026-98432\n\noptions:\n  -h, --help            show this help message and exit\n  --dryrun, --dry-run   print what would run or be written; change nothing\n  --yes                 run the fixes and write the stopgaps without asking\n  --undo                ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --bundle FILE         ca-trust: rewrite this PEM bundle instead of the system trust store\n  --hours N             extension-cooldown: the cooldown (default 72)\n{SCAN_OPTIONS}\n\nExit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage error, 3 internal error.\n",
                 usage(cmd)
             );
         }
@@ -339,14 +335,8 @@ fn help(cmd: &str) -> String {
                 report_options!()
             );
         }
-        "harden" => {
-            "apply one of the fixes wpantry can make itself\n\npositional arguments:\n  {extension-cooldown,ca-trust}\n    extension-cooldown  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n    ca-trust            distrust the leaked eMudhra roots in the system trust store (sudo asks to install the result)\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      extension-cooldown: the cooldown (default 72)\n  --bundle FILE  ca-trust: rewrite this PEM bundle instead of the system store"
-        }
-        "mitigate" => {
-            "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for scan\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
-        }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              the same as report\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the latest scan's report, or its history, a log or the summary (--json, --md, --html, …)\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan; list, or one ID)\n    search              search cached advisories (for agents)\n    export              the same as report\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the latest scan's report, or its history, a log or the summary (--json, --md, --html, …)\n    mitigate            the same as fix\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -354,8 +344,13 @@ fn help(cmd: &str) -> String {
 
 /// Other spellings an option answers to, matched before prefixes are:
 /// `--license` for `--licenses`, `--update` for the scan's old `--fix`.
-const ALIASES: &[(&str, &str)] =
-    &[("--license", "--licenses"), ("-o", "--out"), ("--update", "--fix"), ("--remove", "--undo")];
+const ALIASES: &[(&str, &str)] = &[
+    ("--license", "--licenses"),
+    ("-o", "--out"),
+    ("--update", "--fix"),
+    ("--remove", "--undo"),
+    ("--dry-run", "--dryrun"),
+];
 
 /// The report options given: at most one format, a file to write, and the
 /// logs' reach.
@@ -424,6 +419,9 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--help", false),
             ("--dryrun", false),
             ("--yes", false),
+            ("--undo", false),
+            ("--bundle", true),
+            ("--hours", true),
             ("--path", true),
             ("--no-machine", false),
             ("--refresh", false),
@@ -487,17 +485,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--offline", false),
             ("--version", true),
         ],
-        "harden" => &[("--help", false), ("--hours", true), ("--bundle", true)],
-        "mitigate" => &[
-            ("--help", false),
-            ("--dry-run", false),
-            ("--yes", false),
-            ("--no-input", false),
-            ("--undo", false),
-            ("--offline", false),
-            ("--no-machine", false),
-            ("--path", true),
-        ],
         _ => &[("--help", false)],
     }
 }
@@ -539,7 +526,8 @@ pub fn parse(argv: &[String]) -> Parsed {
         }
         Some(_) => {}
     }
-    let cmd = argv[0].clone();
+    // `mitigate` is `fix` under its older name.
+    let cmd = if argv[0] == "mitigate" { "fix".to_string() } else { argv[0].clone() };
     let fail = |msg: String| Parsed::Usage(format!("{}\nwpantry {cmd}: error: {msg}\n", usage(&cmd)));
     let mut given: Vec<(&'static str, Option<String>)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
@@ -614,8 +602,45 @@ pub fn parse(argv: &[String]) -> Parsed {
     let flag = |name: &str| given.iter().any(|(o, _)| *o == name);
     let value = |name: &str| given.iter().rev().find(|(o, _)| *o == name).and_then(|(_, v)| v.clone());
     let command = match cmd.as_str() {
+        "fix" if !positional.is_empty() && positional[0] != "all" => {
+            let target = match positional.as_slice() {
+                [w] if w == "list" => Target::List,
+                [id] if id.contains('-') && id.len() >= 6 => Target::Id(id.trim().to_ascii_uppercase()),
+                [id] => {
+                    return fail(format!(
+                        "argument what: expected list, all, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got '{id}'"
+                    ));
+                }
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+                [] => unreachable!("matched above"),
+            };
+            if flag("--dryrun") && flag("--undo") {
+                return fail(
+                    "--dry-run and --undo can't be combined: --dry-run prints what applying would write".into(),
+                );
+            }
+            if target == Target::List && flag("--undo") {
+                return fail("--undo takes one id: wpantry fix CVE-2026-98432 --undo".into());
+            }
+            let hours = match value("--hours") {
+                None => wpantry::remediation::editors::COOLDOWN_HOURS,
+                Some(v) => match v.trim().parse::<u32>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
+                },
+            };
+            Command::Mitigate {
+                target,
+                dry_run: flag("--dryrun"),
+                yes: flag("--yes"),
+                no_input: flag("--no-input"),
+                undo: flag("--undo"),
+                bundle: value("--bundle").map(|v| expand(&v)),
+                hours,
+            }
+        }
         "scan" | "check" | "fix" => {
-            if !positional.is_empty() {
+            if !positional.is_empty() && !(cmd == "fix" && positional == ["all"]) {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
             }
             let mut c = Check {
@@ -771,60 +796,6 @@ pub fn parse(argv: &[String]) -> Parsed {
                 no_input: flag("--no-input"),
                 offline: flag("--offline"),
                 version: value("--version"),
-            }
-        }
-        "harden" => {
-            let what = match positional.as_slice() {
-                [w] if w == "extension-cooldown" || w == "ca-trust" => w.clone(),
-                [w] => {
-                    return fail(format!(
-                        "argument what: invalid choice: '{w}' (choose from extension-cooldown, ca-trust)"
-                    ));
-                }
-                [] => return fail("the following arguments are required: what".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            let hours = match value("--hours") {
-                None => 72,
-                Some(v) => match v.trim().parse::<u32>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => return fail(format!("argument --hours: expected a number of hours, got '{v}'")),
-                },
-            };
-            Command::Harden { what, hours, bundle: value("--bundle").map(|v| expand(&v)) }
-        }
-        "mitigate" => {
-            let target = match positional.as_slice() {
-                [w] if w == "list" => Target::List,
-                [w] if w == "all" => Target::All,
-                [id] if id.contains('-') && id.len() >= 6 => Target::Id(id.trim().to_ascii_uppercase()),
-                [id] => {
-                    return fail(format!(
-                        "argument target: expected list, all or an advisory id such as CVE-2026-98432, got '{id}'"
-                    ));
-                }
-                [] => return fail("the following arguments are required: target (list, all or an advisory id)".into()),
-                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
-            };
-            if flag("--dry-run") && flag("--undo") {
-                return fail(
-                    "--dry-run and --undo can't be combined: --dry-run prints what applying would write".into(),
-                );
-            }
-            if target == Target::All && flag("--undo") {
-                return fail("--undo takes one advisory id: wpantry mitigate CVE-2026-98432 --undo".into());
-            }
-            let paths: Vec<PathBuf> =
-                given.iter().filter(|(o, _)| *o == "--path").filter_map(|(_, v)| v.as_deref().map(expand)).collect();
-            Command::Mitigate {
-                target,
-                dry_run: flag("--dry-run"),
-                yes: flag("--yes"),
-                no_input: flag("--no-input"),
-                undo: flag("--undo"),
-                offline: flag("--offline"),
-                no_machine: flag("--no-machine"),
-                path: (!paths.is_empty()).then_some(paths),
             }
         }
         "rules" => {

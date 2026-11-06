@@ -200,28 +200,33 @@ fn stopgaps(
     use wpantry::remediation::mitigate::{self, Done, Mode};
     let mut status = EXIT_OK;
     let mut ran = Vec::new();
+    let settings = mitigate::Settings::default();
     for s in mitigate::STOPGAPS {
+        // wpantry's own fixes run for what the scan found; the others check the host
+        if s.when_found && !findings.iter().any(|f| f.vuln_id.eq_ignore_ascii_case(s.id)) {
+            continue;
+        }
         let mut lines: Vec<String> = Vec::new();
         let confirm = |what: &str| {
             if yes {
                 return true;
             }
             if !interactive {
-                show(&format!("  · skipped: pass --yes to {what} without asking (wpantry mitigate {} --yes)", s.id));
+                show(&format!("  · skipped: pass --yes to {what} without asking (wpantry fix {} --yes)", s.name));
                 return false;
             }
             progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
         };
         let mode = if dryrun { Mode::DryRun } else { Mode::Apply };
-        let command = format!("wpantry mitigate {} --yes", s.id);
+        let command = format!("wpantry fix {} --yes", s.name);
         let targets: Vec<String> =
             findings.iter().filter(|f| f.vuln_id.eq_ignore_ascii_case(s.id)).map(wpantry::history::key_of).collect();
         // the lines are shown only once the stopgap turns out to be for this host
-        let done = (s.run)(&mitigate::Real, mode, &confirm, &mut |l| lines.push(l.to_string()));
+        let done = (s.run)(&mitigate::Real, &settings, mode, &confirm, &mut |l| lines.push(l.to_string()));
         if matches!(done, Ok(Done::NotHere(_))) {
             continue;
         }
-        show(&format!("\n==> Stopgap for {}: {}{}", s.id, s.what, if dryrun { " (dry run)" } else { "" }));
+        show(&format!("\n==> {}: {}{}", s.name, s.what, if dryrun { " (dry run)" } else { "" }));
         for l in &lines {
             show(l);
         }
@@ -369,7 +374,14 @@ fn cmd_report(show: &Show) -> Result<i32> {
     let cache = Cache::open(None)?;
     // The logs, when the report shows them; the HTML page always carries them.
     let days = (show.part.logs() || show.format == Shown::Html).then_some(show.since);
-    let Some(mut report) = wpantry::reporters::latest(&cache, days)? else {
+    let found = match wpantry::reporters::latest(&cache, days)? {
+        // A log needs no scan: a fix can be run, and logged, before one.
+        None if !show.part.findings() && show.part != wpantry::reporters::Part::Summary => {
+            Some(wpantry::reporters::logs_only(&cache, show.since)?)
+        }
+        found => found,
+    };
+    let Some(mut report) = found else {
         cache.close()?;
         eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
         return Ok(EXIT_FAIL);
@@ -536,56 +548,23 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
     Ok(if landed > 0 { EXIT_AVAILABLE } else { EXIT_OK })
 }
 
-/// `harden ca-trust`: distrust the leaked roots in the system trust store
-/// (the shell script it replaced did the same), asking for sudo only to install
-/// the result.
-/// A `harden` fix in the remediation log: what ran, who ran it, whether it
-/// worked.
-fn record_harden(command: &str, ok: bool) -> Result<()> {
-    let cache = Cache::open(None)?;
-    wpantry::history::record_fix(&cache, wpantry::history::latest_scan(&cache)?, command, "harden", ok, &[])?;
-    cache.close()
+/// What `fix ID` does: the dry run, the yes, whether it may ask, the undo,
+/// and what a stopgap is told (`--bundle`, `--hours`).
+struct FixOne {
+    dry_run: bool,
+    yes: bool,
+    no_input: bool,
+    undo: bool,
+    settings: wpantry::remediation::mitigate::Settings,
 }
 
-fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
-    let done = wpantry::remediation::ca_trust::fix(bundle, &|line| show(line));
-    let command = match bundle {
-        Some(b) => format!("wpantry harden ca-trust --bundle {}", b.display()),
-        None => "wpantry harden ca-trust".into(),
-    };
-    record_harden(&command, done.is_ok())?;
-    done?;
-    if bundle.is_none() {
-        show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
-    }
-    Ok(EXIT_OK)
-}
-
-/// `harden extension-cooldown`: the one posture fix that edits files.
-fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::remediation::editors::set_extension_cooldown(hours);
-    record_harden(&format!("wpantry harden extension-cooldown --hours {hours}"), changed.is_ok())?;
-    let changed = changed?;
-    if changed.is_empty() {
-        let editors = wpantry::checks::machine::any::dev_settings::editor_settings();
-        if editors.is_empty() {
-            show("  no VS Code-family editor is installed");
-        } else {
-            show(&format!("  every editor already waits {hours} hours"));
-        }
-    }
-    for c in &changed {
-        show(&format!("  ✓ {c}"));
-    }
-    show("  Extensions wait that long after a version is published before it installs here (restart the editor).");
-    Ok(EXIT_OK)
-}
-
-/// `mitigate ID`: the last scan's findings for the advisory (by id or
-/// alias), their unattended fixes run, wpantry's stopgap for it run where
-/// one exists, and the steps that need a person printed. Exit 1 when a
-/// step is left, a fix failed, or nothing is known for the id here.
-fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) -> Result<i32> {
+/// `fix ID` (`mitigate ID`): the last scan's findings for the advisory (by
+/// id or alias), their unattended fixes run, wpantry's stopgap for it (or
+/// one of its own fixes, by name) run where one exists, and the steps that
+/// need a person printed. Exit 1 when a step is left, a fix failed, or
+/// nothing is known for the id here.
+fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
+    let FixOne { dry_run, yes, no_input, undo, ref settings } = o;
     use wpantry::remediation::mitigate::{self, Done, Mode};
     let cache = Cache::open(None)?;
     // the id, its aliases, and the records that list it as one
@@ -613,8 +592,9 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
     let stopgap = mitigate::stopgap(id);
     let interactive = !no_input && std::io::stdin().is_terminal();
     let bundled = wpantry::checks::mitigation(id);
+    let shown = stopgap.filter(|s| s.name.eq_ignore_ascii_case(id)).map_or(id, |s| s.name);
     show(&format!(
-        "==> {id}: {}{}",
+        "==> {shown}: {}{}",
         match findings.len() {
             0 => "not in the last scan's findings".to_string(),
             1 => format!("1 finding in the last scan ({} {})", findings[0].component, findings[0].version),
@@ -678,7 +658,22 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
             }
             progress::Progress::new(false).ask(&format!("{what}?"), false).unwrap_or(false)
         };
-        match (s.run)(&mitigate::Real, mode, &confirm, &mut |l| show(l))? {
+        let command = format!("wpantry fix {}", s.name);
+        let targets: Vec<String> = findings.iter().map(wpantry::history::key_of).collect();
+        let done = (s.run)(&mitigate::Real, settings, mode, &confirm, &mut |l| show(l));
+        if !dry_run && matches!(done, Ok(Done::Applied) | Err(_)) {
+            wpantry::history::record_fix(
+                &cache,
+                wpantry::history::latest_scan(&cache)?,
+                &command,
+                "stopgap",
+                done.is_ok(),
+                &targets,
+            )?;
+            // kept even when the stopgap failed and the run stops here
+            cache.commit()?;
+        }
+        match done? {
             Done::Applied => did_something = true,
             Done::Nothing(why) => {
                 show(&format!("  ✓ {why}"));
@@ -718,9 +713,12 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
                 "\n✗ nothing known for {id} here: it isn't in the last scan's findings (run wpantry scan) and wpantry has no stopgap for it"
             ));
         } else if findings.is_empty() {
-            show("  nothing to do here");
+            // a stopgap that was declined is still to do
+            if status == EXIT_OK {
+                show("  nothing to do here");
+            }
             cache.close()?;
-            return Ok(EXIT_OK);
+            return Ok(status);
         }
         cache.close()?;
         return Ok(EXIT_FAIL);
@@ -732,38 +730,56 @@ fn cmd_mitigate(id: &str, dry_run: bool, yes: bool, no_input: bool, undo: bool) 
 /// `mitigate list`: the stopgaps wpantry has, each with whether it applies
 /// here (a dry run with the output dropped), and the advisories in the last
 /// scan with an unattended fix.
-fn cmd_mitigate_list() -> Result<i32> {
+/// `fix list`: what can be fixed, from the latest scan: the update plan in
+/// batches, then wpantry's stopgaps and whether each applies here. Nothing
+/// runs.
+fn cmd_fix_list() -> Result<i32> {
     use wpantry::remediation::mitigate::{self, Done, Mode};
-    show("==> Stopgaps wpantry can install (wpantry mitigate ID, or all):");
-    for s in mitigate::STOPGAPS {
-        let state = match (s.run)(&mitigate::Real, Mode::DryRun, &|_| false, &mut |_| {}) {
-            Ok(Done::Applied) => format!("needed here: wpantry mitigate {} --dry-run shows the plan", s.id),
-            Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
-            Ok(Done::Declined) => "unreachable on a dry run".into(),
-            Err(e) => format!("can't tell: {e}"),
-        };
-        show(&format!("  {}  {}\n      {state}", s.id, s.what));
-    }
     let cache = Cache::open(None)?;
-    let findings = wpantry::reporters::jsonl::findings(&cache)?;
+    let latest = wpantry::reporters::latest(&cache, None)?;
     cache.close()?;
-    let mut auto: Vec<&wpantry::finding::Finding> =
-        findings.iter().filter(|f| f.fix_auto && !f.fix_cmd.is_empty()).collect();
-    auto.sort_by(|a, b| a.vuln_id.cmp(&b.vuln_id).then(a.component.cmp(&b.component)));
-    auto.dedup_by(|a, b| a.vuln_id == b.vuln_id && a.component == b.component);
-    show("\n==> Advisories in the last scan with an unattended fix (wpantry fix runs them):");
-    if auto.is_empty() {
-        show("  none");
+    let Some(report) = latest else {
+        eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
+        return Ok(EXIT_FAIL);
+    };
+    let findings = &report.outcome.findings;
+    let view = wpantry::reporters::view::view(findings);
+    show(&format!(
+        "==> What wpantry fix can do, from scan #{} ({})",
+        report.outcome.scan_id,
+        wpantry::history::stamp(report.scan.row.finished_at)
+    ));
+    show("");
+    show("Update plan (wpantry fix runs the automatic ones; --dryrun shows each command first):");
+    if view.batches.is_empty() {
+        show("  nothing to update");
     }
-    for f in auto {
-        show(&format!(
-            "  {}  {} {} → {}: {}",
-            f.vuln_id,
-            f.component,
-            f.version,
-            if f.fixed.is_empty() { "?".to_string() } else { f.fixed.clone() },
-            f.fix_cmd
-        ));
+    for b in &view.batches {
+        let mode = match b.mode {
+            "auto" => "automatic",
+            "manual" => "needs you",
+            _ => "optional",
+        };
+        let cmd = if b.sudo { b.cmd.strip_prefix("sudo ").unwrap_or(&b.cmd) } else { &b.cmd };
+        show(&format!("  {mode:<10} {}{cmd}  (clears {})", if b.sudo { "[sudo] " } else { "" }, b.findings));
+    }
+    show("");
+    show("Fixes wpantry makes itself (wpantry fix NAME; wpantry fix runs the ones that apply):");
+    let settings = mitigate::Settings::default();
+    for s in mitigate::STOPGAPS {
+        let found = findings.iter().any(|f| f.vuln_id.eq_ignore_ascii_case(s.id));
+        let state = if s.when_found && !found {
+            format!("not needed: the last scan didn't find {}", s.id)
+        } else {
+            match (s.run)(&mitigate::Real, &settings, Mode::DryRun, &|_| false, &mut |_| {}) {
+                Ok(Done::Applied) => format!("needed here: wpantry fix {} --dryrun shows what it would change", s.name),
+                Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
+                Ok(Done::Declined) => "unreachable on a dry run".into(),
+                Err(e) => format!("can't tell: {e}"),
+            }
+        };
+        show(&format!("  {:<20} {} ({})", s.name, s.what, s.id));
+        show(&format!("  {:<20} {state}", ""));
     }
     Ok(EXIT_OK)
 }
@@ -1002,26 +1018,18 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
-        Command::Harden { what, hours, bundle } => {
-            if what == "ca-trust" {
-                cmd_harden_ca_trust(bundle.as_deref())
-            } else {
-                cmd_harden_cooldown(hours)
-            }
-        }
-        Command::Mitigate { target, dry_run, yes, no_input, undo, offline, no_machine, path } => match target {
-            Target::List => cmd_mitigate_list(),
-            Target::All => cmd_scan(Check {
-                fix: true,
-                dryrun: dry_run,
-                yes,
-                no_input,
-                offline,
-                no_machine,
-                path,
-                ..Default::default()
-            }),
-            Target::Id(id) => cmd_mitigate(&id, dry_run, yes, no_input, undo),
+        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours } => match target {
+            Target::List => cmd_fix_list(),
+            Target::Id(id) => cmd_mitigate(
+                &id,
+                FixOne {
+                    dry_run,
+                    yes,
+                    no_input,
+                    undo,
+                    settings: wpantry::remediation::mitigate::Settings { bundle, hours },
+                },
+            ),
         },
     }
 }

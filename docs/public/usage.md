@@ -9,7 +9,7 @@ wpantry scan                                       # this computer: machine + ev
 wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
 wpantry fix --dryrun                               # what it would fix, changing nothing
 wpantry fix                                        # apply the fixes that can run unattended and the stopgaps wpantry has, then re-check
-wpantry mitigate list                              # the stopgaps wpantry can install and whether each applies here
+wpantry fix list                                   # what can be fixed: the plan, and wpantry's own fixes and whether each applies
 wpantry scan --json --no-input                     # findings as JSON, for tools and agents
 wpantry help                                       # every command; wpantry help fix for one
 ```
@@ -192,23 +192,25 @@ wpantry watch                                 # re-ask about the unfixed Critica
 
 Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `wpantry fix` ran did; with `report exposure` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
 
-## Advisories with no fix yet
+## Fixing one thing, and fixes with no update yet
 
-Some advisories have no fix you can install: the vendor has not shipped the kernel or package yet. `wpantry mitigate <ID>` does what this host can about one advisory, by id or alias:
+`wpantry fix` does everything; `wpantry fix list` shows what that is, and `wpantry fix ID` does one thing: an advisory (by id or alias), or one of the fixes wpantry makes itself, by name. `mitigate` is the same command under its older name.
 
 ```
-wpantry mitigate CVE-2026-98432 --dry-run   # the state of the host and what would be written; nothing changes
-wpantry mitigate CVE-2026-98432             # the plan, a question, then the stopgap (as root: sudo asks on the terminal)
-wpantry mitigate CVE-2026-98432 --yes       # the same without the question (provisioning)
-wpantry mitigate CVE-2026-98432 --undo      # take the stopgap away once the kernel update is in (--remove is the same)
-wpantry mitigate GHSA-xxxx-yyyy-zzzz        # an advisory with a released fix: runs its unattended fix, prints the rest
-wpantry mitigate list                       # the stopgaps wpantry can install, whether each applies here, and the advisories with an unattended fix
-wpantry mitigate all --dry-run              # everything at once: the same as wpantry fix --dryrun
+wpantry fix list                            # the update plan in batches, and wpantry's own fixes and whether each applies here
+wpantry fix --dryrun                        # every command and change, nothing run
+wpantry fix GHSA-xxxx-yyyy-zzzz             # an advisory with a released fix: runs its unattended fix, prints the rest
+wpantry fix ca-trust                        # distrust the leaked eMudhra roots in the system trust store (sudo asks)
+wpantry fix extension-cooldown --hours 72   # editors wait before installing a newly published extension version
+wpantry fix CVE-2026-98432 --dry-run        # an advisory with no fix to install yet: the state of the host and what the stopgap would write
+wpantry fix CVE-2026-98432                  # the plan, a question, then the stopgap (as root: sudo asks on the terminal)
+wpantry fix CVE-2026-98432 --yes            # the same without the question (provisioning)
+wpantry fix CVE-2026-98432 --undo           # take the stopgap away once the kernel update is in (--remove is the same)
 ```
 
-It runs the fixes the last scan found for the id that may run unattended (a version bump, the way `wpantry fix` does), runs wpantry's own stopgap for it where one exists, and prints the steps that need you; exit 1 when a step is left, a fix failed, or nothing is known for the id here (not in the last scan, no stopgap). The first stopgap is for the Linux kernel's IPv4 TCP use-after-free, [CVE-2026-98432](https://osv.dev/vulnerability/CVE-2026-98432) (CVSS 9.8): an nftables rule dropping inbound TCP with IP options before conntrack, a systemd unit that reloads it at boot, MPTCP off through `sysctl.d`, and the services still holding an MPTCP listening socket named for a restart (`sudo systemctl restart …`, printed, never run: `net.mptcp.enabled=0` only stops new sockets, a program that already listens keeps its until restarted). The listeners are read from `ss -tlnpi` as root (every TCP listener whose upper-layer protocol is MPTCP is marked `tcp-ulp-mptcp`, which needs no `mptcp_diag` module), else from `ss -M` where the kernel has that module, else reported as unseen. A scan never runs any of it; it prints the command as the step. `wpantry fix` (and `mitigate all`, the same thing) runs the stopgaps too, after the unattended fixes, asking on a terminal and skipping them without one unless `--yes`.
+`fix ID` runs the fixes the last scan found for the id that may run unattended (a version bump, the way `wpantry fix` does), runs wpantry's own fix for it where one exists, and prints the steps that need you; exit 1 when a step is left, a fix failed, nothing is known for the id here, or a question went unanswered (no terminal and no `--yes`). Every fix it runs goes into the remediation log with who ran it (`wpantry report remediation`). `wpantry fix` runs wpantry's own fixes too: `ca-trust` and `extension-cooldown` when the scan found what they fix, the CVE-2026-98432 stopgap on a Linux host it is for.
 
-A stopgap survives a reboot: the systemd unit reloads the rule before the network comes up (`Before=network-pre.target`), and `/etc/sysctl.d/90-no-mptcp.conf` is applied by `systemd-sysctl` at boot. It is a reduction of exposure, not the patch, and it is meant to come off again. When the kernel update lands, three things tell you: `wpantry watch` exits 10 with `FIX AVAILABLE`, `POSTURE-KERNEL-TCP-IP-OPTIONS` passes with "the stopgap is still in place", and `wpantry mitigate list` says the fix is in. Then `wpantry mitigate CVE-2026-98432 --undo` puts the host back as it was: the unit disabled and removed, the nft table deleted, the rule file and the sysctl file removed, `net.mptcp.enabled` back to 1. Nothing else was changed, so nothing else needs undoing.
+A stopgap survives a reboot: the systemd unit reloads the rule before the network comes up (`Before=network-pre.target`), and `/etc/sysctl.d/90-no-mptcp.conf` is applied by `systemd-sysctl` at boot. It is a reduction of exposure, not the patch, and is taken away with `--undo` once the kernel update is in.
 
 ## What leaves your machine
 
@@ -234,7 +236,7 @@ Package names and versions go to OSV.dev; the feeds are downloaded; the breach c
 Every command and its options, as `wpantry help` and `wpantry <command> --help` print them. `wpantry` with no arguments prints the same top-level help as `wpantry help` and `wpantry -h`, and exits 0; `wpantry help <command>` is `wpantry <command> --help`. An option can be shortened to any prefix that names only one (`--no-m` for `--no-machine`) and takes its value as the next word or after `=`. A usage error prints the usage line and the error to stderr and exits 2.
 
 ```
-usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help} ...
+usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,mitigate,rules,sources,help} ...
 ```
 
 | Command | What it does |
@@ -254,8 +256,7 @@ usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,ski
 | `cache` | Maintain the cache (prune) |
 | `update` | Check for a newer release and install it verified |
 | `report` | The exposure, remediation and audit logs |
-| `harden` | Apply a fix wpantry can make itself (`extension-cooldown`, `ca-trust`) |
-| `mitigate` | `list`, `all`, or one advisory: its unattended fixes, its stopgap, the steps left for you |
+| `mitigate` | The same as `fix` |
 | `help` | This help, or with a command that command's (`wpantry help fix`) |
 
 ### scan, check
@@ -293,17 +294,28 @@ Policy files are one entry per line, `#` for comments. An install-scripts entry 
 ### fix
 
 ```
-usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]
+usage: wpantry fix [-h] [--dryrun] [--yes] [--undo] [--bundle FILE] [--hours N] [list|all|ID] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]
                    [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
                    [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
 
-Scan, then run the fixes that can run unattended and the stopgaps wpantry has for what it found, then re-check. It takes every option `scan` does, plus:
+Scan, then run the fixes that can run unattended and the fixes wpantry makes itself for what it found, then re-check. `mitigate` is the same command. See [Fixing one thing](#fixing-one-thing-and-fixes-with-no-update-yet).
+
+| What | Does |
+|---|---|
+| `all` (default) | Everything: a scan, the unattended fixes, wpantry's own fixes that apply, a re-check |
+| `list` | What can be fixed, from the latest scan: the update plan in batches (`sudo` ones marked), and wpantry's own fixes and whether each applies here. Nothing runs |
+| `ID` | One advisory (CVE-…, GHSA-…; an alias works), or one of wpantry's own fixes by name: `ca-trust`, `extension-cooldown`, `cve-2026-98432` |
+
+It takes every option `scan` does, plus:
 
 | Option | Effect |
 |---|---|
-| `--dryrun` | Print the fix plan; change nothing |
+| `--dryrun`, `--dry-run` | Print every command and change; change nothing |
 | `--yes` | Run the fixes and write the stopgaps without asking |
+| `--undo` | `ID` only: take wpantry's stopgap away again once the real fix is installed (`--remove` is the same) |
+| `--bundle FILE` | `ca-trust`: rewrite this PEM bundle instead of the system trust store |
+| `--hours N` | `extension-cooldown`: the cooldown (default 72) |
 
 Exit 0 when nothing fails after the re-check, 1 when something still fails or a fix failed, 2 on a usage error, 3 on an internal error. With `--json` it reports only, as `scan --json` does. [Fixing](#fixing) says what runs and when it asks.
 
@@ -447,36 +459,6 @@ A report from the cache; it never scans. `scan` and `fix` show `findings` the sa
 | `--html` | The scan's offline page, with 14 days of history (`--since DAYS` for more) |
 | `-o`, `--out FILE` | Write there instead of stdout (the terminal report becomes `--txt`) |
 | `--since DAYS` | How far back the logs go (default 14) |
-
-### harden
-
-```
-usage: wpantry harden [-h] [--hours N] [--bundle FILE] {extension-cooldown,ca-trust}
-```
-
-Apply one of the fixes wpantry can make itself. `extension-cooldown` sets `extensions.installCooldownHours` in every VS Code-family editor's `settings.json`; `ca-trust` distrusts the leaked eMudhra roots in the system trust store (sudo asks to install the result).
-
-| Option | Effect |
-|---|---|
-| `--hours N` | `extension-cooldown`: the cooldown (default 72) |
-| `--bundle FILE` | `ca-trust`: rewrite this PEM bundle instead of the system store |
-
-### mitigate
-
-```
-usage: wpantry mitigate [-h] [--dry-run] [--yes] [--no-input] [--undo] [--offline] [--no-machine] [--path DIR]
-                        {list,all,ID}
-```
-
-Do what this host can about advisories: `list` (the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix), `all` (everything: the same as `wpantry fix`), or one advisory `ID` (`CVE-…`, `GHSA-…`; an alias works). See [Advisories with no fix yet](#advisories-with-no-fix-yet). Exit 0 when everything that applies here was done (or, with `--dry-run`, printed), 1 when a step is left for you, a fix failed, or nothing is known for the id here, 2 on a usage error.
-
-| Option | Effect |
-|---|---|
-| `--dry-run` | Print what would run or be written; change nothing |
-| `--yes` | Run and write without asking |
-| `--no-input` | Never ask: the unattended fixes run, the stopgaps are skipped unless `--yes` |
-| `--undo` | `ID` only: take wpantry's stopgap away again once the real fix is installed (`--remove` is the same) |
-| `--offline`, `--no-machine`, `--path DIR` | `all` only: as for `scan` |
 
 ## Troubleshooting
 

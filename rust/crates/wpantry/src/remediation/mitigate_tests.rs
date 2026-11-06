@@ -46,8 +46,10 @@ impl Host for Fake {
 
 fn run(host: &Fake, mode: Mode, yes: bool) -> (Done, Vec<String>) {
     let mut lines = Vec::new();
-    let done =
-        (stopgap("cve-2026-98432").unwrap().run)(host, mode, &|_| yes, &mut |l| lines.push(l.to_string())).unwrap();
+    let done = (stopgap("cve-2026-98432").unwrap().run)(host, &Settings::default(), mode, &|_| yes, &mut |l| {
+        lines.push(l.to_string())
+    })
+    .unwrap();
     (done, lines)
 }
 
@@ -112,7 +114,8 @@ fn apply_writes_the_rule_the_unit_and_the_sysctl_after_a_yes() {
     // a failed step is an error, and nothing after it runs
     let mut failing = Fake::new(EXPOSED);
     failing.fail = Some("nft -f");
-    let err = (stopgap(CVE).unwrap().run)(&failing, Mode::Apply, &|_| true, &mut |_| {}).unwrap_err();
+    let err =
+        (stopgap(CVE).unwrap().run)(&failing, &Settings::default(), Mode::Apply, &|_| true, &mut |_| {}).unwrap_err();
     assert!(err.to_string().contains("nft -f"), "{err}");
     assert_eq!(failing.did().len(), 2);
 }
@@ -254,6 +257,9 @@ fn remove_takes_the_stopgap_away_and_is_a_no_op_without_it() {
 #[test]
 fn the_registry_and_the_files() {
     assert_eq!(stopgap("cve-2026-98432").unwrap().id, "CVE-2026-98432");
+    assert_eq!(stopgap("CA-TRUST").unwrap().id, "DISTRUSTED-CA", "by name, any case");
+    assert_eq!(stopgap("posture-extension-cooldown").unwrap().name, "extension-cooldown", "by finding id");
+    assert!(stopgap("ca-trust").unwrap().when_found && !stopgap(CVE).unwrap().when_found);
     assert!(stopgap("CVE-2024-3094").is_none());
     assert!(rules().contains("delete table inet cve_2026_98432"), "idempotent reload");
     assert!(unit().contains("Before=network-pre.target"));

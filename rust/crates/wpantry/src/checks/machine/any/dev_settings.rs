@@ -152,7 +152,7 @@ pub static CHECKS: &[Check] = &[
         title: "Editor extensions wait before installing new versions",
         severity: Severity::High,
         probe: extension_cooldown,
-        fix: user("wpantry harden extension-cooldown --hours 72"),
+        fix: user("wpantry fix extension-cooldown"),
         explain: "A compromised extension version is pulled from the marketplace within hours; a 72-hour cooldown (extensions.installCooldownHours) means it never lands here",
     },
     Check {

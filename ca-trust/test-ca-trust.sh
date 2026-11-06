@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Cover check-ca-trust.sh --bundle against a bundle that still holds the
-# distrusted roots and one that never did. The fix is `wpantry harden
+# distrusted roots and one that never did. The fix is `wpantry fix
 # ca-trust` (catrust.rs, tested there and in the contract suite).
 #
 # Run directly; CI runs it on Linux and macOS.

@@ -146,7 +146,10 @@ fn scan_check_and_fix() {
     for (cmd, head) in [
         ("scan", "usage: wpantry scan [-h] [--path DIR]"),
         ("check", "usage: wpantry check [-h] [--path DIR]"),
-        ("fix", "usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR]"),
+        (
+            "fix",
+            "usage: wpantry fix [-h] [--dryrun] [--yes] [--undo] [--bundle FILE] [--hours N] [list|all|ID] [--path DIR]",
+        ),
     ] {
         let Parsed::Help(text) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
         assert!(
@@ -179,7 +182,9 @@ fn every_subcommand_has_help_and_a_usage_line() {
     for cmd in SUBCOMMANDS.iter().filter(|c| **c != "help") {
         let Parsed::Help(text) = p(&[cmd, "-h"]) else { panic!("{cmd}") };
         assert_eq!(p(&["help", cmd]), Parsed::Help(text.clone()), "help {cmd} is {cmd} -h");
-        assert!(text.starts_with(&format!("usage: wpantry {cmd} [-h]")), "{cmd}: {text}");
+        // mitigate is fix under its older name, and says so.
+        let name = if *cmd == "mitigate" { "fix" } else { cmd };
+        assert!(text.starts_with(&format!("usage: wpantry {name} [-h]")), "{cmd}: {text}");
         assert!(text.contains("-h, --help"), "{cmd}");
         let Parsed::Help(long) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
         assert_eq!(long, text);
@@ -281,7 +286,7 @@ fn report_options() {
 }
 
 #[test]
-fn schedule_cache_update_and_harden_options() {
+fn schedule_cache_update_and_fix_options() {
     assert_eq!(
         p(&["schedule", "install"]),
         Parsed::Run(Command::Schedule {
@@ -315,61 +320,76 @@ fn schedule_cache_update_and_harden_options() {
             version: Some("v1.2.3".into())
         })
     );
-    assert_eq!(
-        p(&["harden", "extension-cooldown"]),
-        Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 72, bundle: None })
-    );
-    assert_eq!(
-        p(&["harden", "extension-cooldown", "--hours", "48"]),
-        Parsed::Run(Command::Harden { what: "extension-cooldown".into(), hours: 48, bundle: None })
-    );
-    let mitigate = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| Command::Mitigate {
+    let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| Command::Mitigate {
         target,
         dry_run,
         yes,
         no_input,
         undo,
-        offline: false,
-        no_machine: false,
-        path: None,
+        bundle: None,
+        hours: 72,
     };
-    assert_eq!(
-        p(&["mitigate", "cve-2026-98432"]),
-        Parsed::Run(mitigate(Target::Id("CVE-2026-98432".into()), false, false, false, false))
-    );
-    assert_eq!(p(&["mitigate", "list"]), Parsed::Run(mitigate(Target::List, false, false, false, false)));
-    assert_eq!(
-        p(&["mitigate", "--dry-run", "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
-        Parsed::Run(mitigate(Target::Id("GHSA-XXXX-YYYY-ZZZZ".into()), true, true, true, false))
-    );
+    for cmd in ["fix", "mitigate"] {
+        assert_eq!(
+            p(&[cmd, "cve-2026-98432"]),
+            Parsed::Run(one(Target::Id("CVE-2026-98432".into()), false, false, false, false)),
+            "{cmd}: mitigate is fix"
+        );
+        assert_eq!(p(&[cmd, "list"]), Parsed::Run(one(Target::List, false, false, false, false)));
+    }
+    for dry in ["--dry-run", "--dryrun"] {
+        assert_eq!(
+            p(&["fix", dry, "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
+            Parsed::Run(one(Target::Id("GHSA-XXXX-YYYY-ZZZZ".into()), true, true, true, false))
+        );
+    }
     for undo in ["--undo", "--remove"] {
         assert_eq!(
             p(&["mitigate", "CVE-2026-98432", undo]),
-            Parsed::Run(mitigate(Target::Id("CVE-2026-98432".into()), false, false, false, true))
+            Parsed::Run(one(Target::Id("CVE-2026-98432".into()), false, false, false, true))
         );
     }
     assert_eq!(
-        p(&["mitigate", "all", "--offline", "--no-machine", "--path", "/w", "--yes"]),
+        p(&["fix", "extension-cooldown", "--hours", "48"]),
         Parsed::Run(Command::Mitigate {
-            target: Target::All,
+            target: Target::Id("EXTENSION-COOLDOWN".into()),
             dry_run: false,
-            yes: true,
+            yes: false,
             no_input: false,
             undo: false,
-            offline: true,
-            no_machine: true,
-            path: Some(vec![PathBuf::from("/w")]),
+            bundle: None,
+            hours: 48
+        }),
+        "the former harden fixes, by name"
+    );
+    assert_eq!(
+        p(&["fix", "ca-trust", "--bundle", "/b.pem"]),
+        Parsed::Run(Command::Mitigate {
+            target: Target::Id("CA-TRUST".into()),
+            dry_run: false,
+            yes: false,
+            no_input: false,
+            undo: false,
+            bundle: Some(PathBuf::from("/b.pem")),
+            hours: 72
         })
     );
+    let Parsed::Run(Command::Scan(c)) = p(&["mitigate", "all", "--offline", "--no-machine", "--path", "/w", "--yes"])
+    else {
+        panic!("fix all is the whole run")
+    };
+    assert!(c.fix && c.offline && c.no_machine && c.yes && c.path == Some(vec![PathBuf::from("/w")]));
+    let Parsed::Run(Command::Scan(c)) = p(&["mitigate"]) else { panic!("mitigate alone is fix") };
+    assert!(c.fix);
     for (bad, msg) in [
-        (&["mitigate"][..], "the following arguments are required: target"),
         (
-            &["mitigate", "kernel"],
-            "argument target: expected list, all or an advisory id such as CVE-2026-98432, got 'kernel'",
+            &["mitigate", "kernel"][..],
+            "argument what: expected list, all, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got 'kernel'",
         ),
         (&["mitigate", "CVE-2026-98432", "now"], "unrecognized arguments: now"),
         (&["mitigate", "CVE-2026-98432", "--dry-run", "--undo"], "--dry-run and --undo can't be combined"),
-        (&["mitigate", "all", "--remove"], "--undo takes one advisory id"),
+        (&["fix", "list", "--remove"], "--undo takes one id"),
+        (&["fix", "extension-cooldown", "--hours", "lots"], "argument --hours: expected a number of hours, got 'lots'"),
         (&["schedule"], "the following arguments are required: action"),
         (
             &["schedule", "dance"],
@@ -387,16 +407,7 @@ fn schedule_cache_update_and_harden_options() {
         (&["cache", "prune", "all"], "unrecognized arguments: all"),
         (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
         (&["update", "now"], "unrecognized arguments: now"),
-        (&["harden"], "the following arguments are required: what"),
-        (
-            &["harden", "firewall"],
-            "argument what: invalid choice: 'firewall' (choose from extension-cooldown, ca-trust)",
-        ),
-        (&["harden", "extension-cooldown", "now"], "unrecognized arguments: now"),
-        (
-            &["harden", "extension-cooldown", "--hours", "lots"],
-            "argument --hours: expected a number of hours, got 'lots'",
-        ),
+        (&["harden", "ca-trust"], "invalid choice: 'harden'"),
         (&["schedule", "--every"], "argument --every: expected one argument"),
         (&["report", "--h"], "ambiguous option: --h could match --help, --html"),
     ] {

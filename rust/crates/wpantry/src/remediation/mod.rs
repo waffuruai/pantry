@@ -2,7 +2,8 @@
 //! unattended, what needs a person, what is optional) as numbered steps,
 //! and running the unattended ones, each bounded by a timeout and never
 //! through a shell. The stopgaps for a fix that isn't out yet are in
-//! [`mitigate`]; the `wpantry harden` fixes are [`ca_trust`] and [`editors`].
+//! [`mitigate`], with the two fixes wpantry makes itself: [`ca_trust`] and
+//! [`editors`].
 
 pub mod ca_trust;
 pub mod editors;

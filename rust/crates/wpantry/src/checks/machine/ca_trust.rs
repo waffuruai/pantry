@@ -1,5 +1,5 @@
 //! Is a certificate authority this machine trusts known to be compromised?
-//! (On its own: `ca-trust/check-ca-trust.sh` in the repo; `wpantry harden
+//! (On its own: `ca-trust/check-ca-trust.sh` in the repo; `wpantry fix
 //! ca-trust` repairs what it finds.) A trust store fails when openssl can build a path from one of the
 //! distrusted intermediates in `assets/distrusted-ca/` (today: the eMudhra
 //! intermediates whose private keys leaked) to a root the store holds: the
@@ -301,7 +301,7 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
     let mut c = Checker::new(openssl.clone())?;
     let mut pending = Vec::new();
     let mut add = |s: Option<Pending>| pending.extend(s);
-    let fix = "wpantry harden ca-trust (asks for sudo to install the result), or the OS's ca-certificates update";
+    let fix = "wpantry fix ca-trust (asks for sudo to install the result), or the OS's ca-certificates update";
     if MACOS {
         add(c.store("system", "/etc/ssl/cert.pem", Path::new("/etc/ssl/cert.pem"), &format!("Run: {fix}")));
     } else {

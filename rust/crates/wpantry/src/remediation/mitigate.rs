@@ -1,18 +1,27 @@
-//! `wpantry mitigate <ID>`: what this host can do about one advisory. The
-//! CLI applies the fixes the last scan found for it that may run
+//! The stopgaps `wpantry fix` runs: changes wpantry makes itself, as root
+//! where they must be, never by a scan. `wpantry fix ID` (alias `mitigate`)
+//! applies the fixes the last scan found for one advisory that may run
 //! unattended (a version bump), prints the ones that need a person, and
-//! runs the stopgap here when wpantry has one: a change a host can make
-//! while the vendor's fix is still pending, written as root, never by a
-//! scan. The first is CVE-2026-98432's: the Linux kernel's IPv4 TCP
-//! use-after-free (CVSS 9.8), reached through TCP segments that carry IP
-//! options, which almost nothing legitimate sends. An nftables rule drops
-//! inbound IPv4 TCP whose header is longer than 20 bytes (`ip hdrlength >
-//! 5`) before conntrack sees it, a systemd unit reloads it at boot, MPTCP
-//! (the public proof of concept's path, and what Go 1.24+ servers listen
-//! with) is turned off through sysctl.d, and the services still holding an
-//! MPTCP listener are named for a restart: the sysctl only stops new
-//! sockets. None of it replaces the kernel update; `Mode::Remove` takes
-//! it away once that has landed.
+//! runs the stopgap here when wpantry has one.
+//!
+//! - `ca-trust` (`DISTRUSTED-CA`): distrust the leaked eMudhra roots in the
+//!   system trust store until the OS's ca-certificates update ships
+//!   ([`super::ca_trust`]).
+//! - `extension-cooldown` (`POSTURE-EXTENSION-COOLDOWN`): every VS
+//!   Code-family editor waits before installing a newly published
+//!   extension version ([`super::editors`]).
+//! - CVE-2026-98432: a change a host can make while the vendor's fix is
+//!   still pending.
+//!
+//! CVE-2026-98432 is the Linux kernel's IPv4 TCP use-after-free (CVSS 9.8),
+//! reached through TCP segments that carry IP options, which almost nothing
+//! legitimate sends. An nftables rule drops inbound IPv4 TCP whose header
+//! is longer than 20 bytes (`ip hdrlength > 5`) before conntrack sees it, a
+//! systemd unit reloads it at boot, MPTCP (the public proof of concept's
+//! path, and what Go 1.24+ servers listen with) is turned off through
+//! sysctl.d, and the services still holding an MPTCP listener are named for
+//! a restart: the sysctl only stops new sockets. None of it replaces the
+//! kernel update; `Mode::Remove` takes it away once that has landed.
 //!
 //! Every read and every root write goes through [`Host`], so the tests
 //! run the whole thing against a recorded machine.
@@ -101,23 +110,129 @@ pub type Confirm<'a> = &'a dyn Fn(&str) -> bool;
 /// Gets the status lines.
 pub type Say<'a> = &'a mut dyn FnMut(&str);
 
-/// A stopgap wpantry can install, by advisory id.
-pub struct Stopgap {
-    pub id: &'static str,
-    /// One line for the help and the report.
-    pub what: &'static str,
-    pub run: fn(&dyn Host, Mode, Confirm, Say) -> Result<Done>,
+/// What a stopgap may be told: the bundle `ca-trust` rewrites instead of
+/// the system store (`--bundle`), and the hours `extension-cooldown` sets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settings {
+    pub bundle: Option<std::path::PathBuf>,
+    pub hours: u32,
 }
 
-pub const STOPGAPS: &[Stopgap] = &[Stopgap {
-    id: "CVE-2026-98432",
-    what: "Linux: drop inbound IPv4 TCP with IP options (nftables, reloaded at boot), MPTCP off, the services still listening with MPTCP named for a restart",
-    run: cve_2026_98432,
-}];
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings { bundle: None, hours: super::editors::COOLDOWN_HOURS }
+    }
+}
 
-/// The stopgap for an advisory id, any case.
+/// A fix wpantry makes itself, by the finding it is for.
+pub struct Stopgap {
+    /// The finding's `vuln_id` (an advisory, or wpantry's own marker).
+    pub id: &'static str,
+    /// What to type: `wpantry fix <name>` (the id works too).
+    pub name: &'static str,
+    /// One line for the help and the report.
+    pub what: &'static str,
+    /// Run by `wpantry fix` only when the last scan found `id`; otherwise
+    /// it checks the host itself.
+    pub when_found: bool,
+    pub run: fn(&dyn Host, &Settings, Mode, Confirm, Say) -> Result<Done>,
+}
+
+pub const STOPGAPS: &[Stopgap] = &[
+    Stopgap {
+        id: "DISTRUSTED-CA",
+        name: "ca-trust",
+        what: "distrust the leaked eMudhra roots in the system trust store (sudo asks to install the result) until the OS's ca-certificates update ships",
+        when_found: true,
+        run: ca_trust,
+    },
+    Stopgap {
+        id: "POSTURE-EXTENSION-COOLDOWN",
+        name: "extension-cooldown",
+        what: "make every VS Code-family editor wait before installing a newly published extension version (extensions.installCooldownHours)",
+        when_found: true,
+        run: extension_cooldown,
+    },
+    Stopgap {
+        id: "CVE-2026-98432",
+        name: "cve-2026-98432",
+        what: "Linux: drop inbound IPv4 TCP with IP options (nftables, reloaded at boot), MPTCP off, the services still listening with MPTCP named for a restart",
+        when_found: false,
+        run: cve_2026_98432,
+    },
+];
+
+/// The stopgap for an id or a name, any case.
 pub fn stopgap(id: &str) -> Option<&'static Stopgap> {
-    STOPGAPS.iter().find(|s| s.id.eq_ignore_ascii_case(id.trim()))
+    let id = id.trim();
+    STOPGAPS.iter().find(|s| s.id.eq_ignore_ascii_case(id) || s.name.eq_ignore_ascii_case(id))
+}
+
+/// `ca-trust`: the leaked roots distrusted in the system trust store, or in
+/// `--bundle`'s PEM file.
+fn ca_trust(_: &dyn Host, s: &Settings, mode: Mode, confirm: Confirm, say: Say) -> Result<Done> {
+    let store = super::ca_trust::store(s.bundle.as_deref())?;
+    match mode {
+        Mode::Remove => {
+            Ok(Done::Nothing("nothing to undo: the OS's ca-certificates update distrusts the same roots".into()))
+        }
+        Mode::DryRun => {
+            say(&format!("  would distrust the leaked eMudhra roots in {store}"));
+            Ok(Done::Applied)
+        }
+        Mode::Apply => {
+            if !confirm(&format!("Distrust the leaked eMudhra roots in {store}")) {
+                return Ok(Done::Declined);
+            }
+            let lines = std::cell::RefCell::new(Vec::new());
+            super::ca_trust::fix(s.bundle.as_deref(), &|l| lines.borrow_mut().push(l.to_string()))?;
+            for l in lines.into_inner() {
+                say(&l);
+            }
+            Ok(Done::Applied)
+        }
+    }
+}
+
+/// `extension-cooldown`: the cooldown set in every editor's settings.json.
+fn extension_cooldown(_: &dyn Host, s: &Settings, mode: Mode, confirm: Confirm, say: Say) -> Result<Done> {
+    let editors = crate::checks::machine::any::dev_settings::editor_settings();
+    if editors.is_empty() {
+        return Ok(Done::NotHere("no VS Code-family editor is installed".into()));
+    }
+    let short = super::editors::needing(s.hours)?;
+    if short.is_empty() {
+        return Ok(Done::Nothing(format!("every editor already waits {} hours", s.hours)));
+    }
+    match mode {
+        Mode::Remove => Ok(Done::Nothing("nothing to undo: the setting is the editor's own".into())),
+        Mode::DryRun => {
+            for (name, file) in &short {
+                say(&format!(
+                    "  would set extensions.installCooldownHours to {} in {name} ({})",
+                    s.hours,
+                    file.display()
+                ));
+            }
+            Ok(Done::Applied)
+        }
+        Mode::Apply => {
+            if !confirm(&format!(
+                "Set the extension install cooldown to {} hours in {} editor(s)",
+                s.hours,
+                short.len()
+            )) {
+                return Ok(Done::Declined);
+            }
+            for c in super::editors::set_extension_cooldown(s.hours)? {
+                say(&format!("  ✓ {c}"));
+            }
+            say(
+                "  Extensions wait that long after a version is published before it installs here (restart the editor).",
+            );
+            Ok(Done::Applied)
+        }
+    }
 }
 
 const CVE: &str = "CVE-2026-98432";
@@ -199,7 +314,7 @@ fn listeners(host: &dyn Host, say: Say) {
 }
 
 /// The CVE-2026-98432 stopgap: see the module doc.
-fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Result<Done> {
+fn cve_2026_98432(host: &dyn Host, _: &Settings, mode: Mode, confirm: Confirm, say: Say) -> Result<Done> {
     let os = host.read(&["uname", "-s"]);
     if os.trim() != "Linux" {
         let os = os.trim();

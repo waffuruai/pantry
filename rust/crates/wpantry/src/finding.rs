@@ -29,6 +29,16 @@ pub struct Finding {
     /// The advisory's range the installed version fell in (`>=7.2.0, <9.0.0`),
     /// so a reader sees why it applies; "" for findings without one.
     pub affected_range: String,
+    /// The CVSS base score of the advisory (or of a record it is an alias
+    /// of), and the version it was scored by ("3.1", "4.0"); None and ""
+    /// without one.
+    pub cvss: Option<f64>,
+    pub cvss_version: String,
+    /// EPSS: the probability (0–1) that the CVE is exploited in the next 30
+    /// days, and its percentile among all scored CVEs; None without a CVE
+    /// EPSS scores.
+    pub epss: Option<f64>,
+    pub epss_percentile: Option<f64>,
 }
 
 impl Finding {
@@ -61,6 +71,10 @@ impl Finding {
             ("fixed", self.fixed.as_str().into()),
             ("kev", self.kev.into()),
             ("severity", self.severity.as_str().into()),
+            ("cvss", self.cvss.map(J::Float).unwrap_or(J::Null)),
+            ("cvss_version", self.cvss_version.as_str().into()),
+            ("epss", self.epss.map(J::Float).unwrap_or(J::Null)),
+            ("epss_percentile", self.epss_percentile.map(J::Float).unwrap_or(J::Null)),
             ("note", self.note.as_str().into()),
             ("fix_cmd", self.fix_cmd.as_str().into()),
             ("fix_auto", self.fix_auto.into()),

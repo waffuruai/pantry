@@ -105,7 +105,8 @@ pub fn postgres(scan: &mut Scan, c: &Component, advisories: &[releases::PgAdviso
         if !a.majors.contains(&major) || fixed.is_empty() || !versions::lt(&c.version, &fixed) {
             continue;
         }
-        let sev = releases::severity_from_score(a.score);
+        // PostgreSQL publishes a CVSS 3.x base score, not always the vector.
+        let sev = if a.score > 0.0 { crate::utils::cvss::label(a.score) } else { "" };
         if scan.cache.vuln(&a.cve)?.is_none() {
             scan.cache.put_vuln(&serde_json::json!({"id": a.cve, "summary": a.summary, "database_specific": {"severity": sev},
                                                     "affected": [{"package": {"ecosystem": "PostgreSQL", "name": "postgresql"}}]}))?;
@@ -117,6 +118,8 @@ pub fn postgres(scan: &mut Scan, c: &Component, advisories: &[releases::PgAdviso
             fixed: fixed.clone(),
             kev,
             severity: sev.into(),
+            cvss: (a.score > 0.0).then_some(a.score),
+            cvss_version: if a.score > 0.0 { "3.x".into() } else { String::new() },
             note: format!("{} ({})", a.summary, a.component),
             fix_cmd: fill(&c.fix, &fixed),
             fix_auto: c.auto,

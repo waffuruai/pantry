@@ -63,7 +63,10 @@ fn older_caches_gain_the_added_columns() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(&cols[12..], ["dep_scope", "dep_direct", "affected_range"]);
+    assert_eq!(
+        &cols[12..],
+        ["dep_scope", "dep_direct", "affected_range", "cvss", "cvss_version", "epss", "epss_percentile"]
+    );
     let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
     assert_eq!(kept, 1);
     let f = crate::reporters::jsonl::findings(&c).unwrap();
@@ -81,15 +84,25 @@ pub fn temp_cache() -> (crate::utils::temp::TempDir, Cache) {
 
 #[test]
 fn cvss_vectors_score_like_the_calculator() {
-    assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
-    assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"), Some(5.3));
-    assert_eq!(cvss3_base_score("CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N"), Some(5.4));
-    assert_eq!(cvss3_base_score("CVSS:3.0/AV:L/AC:H/PR:H/UI:R/S:U/C:N/I:N/A:N"), Some(0.0));
-    assert_eq!(cvss3_base_score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"), None);
-    assert_eq!(cvss3_base_score("CVSS:3.1/AV:N"), None);
-    assert_eq!(severity_label(9.8), "CRITICAL");
-    assert_eq!(severity_label(7.0), "HIGH");
-    assert_eq!(severity_label(3.9), "LOW");
+    let rec = |sev: serde_json::Value| serde_json::json!({"severity": sev});
+    assert_eq!(
+        severity_of(&rec(
+            serde_json::json!([{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}])
+        )),
+        "CRITICAL"
+    );
+    assert_eq!(
+        severity_of(&rec(
+            serde_json::json!([{"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N"}])
+        )),
+        "MEDIUM"
+    );
+    assert_eq!(
+        severity_of(&serde_json::json!({"database_specific": {"severity": "MODERATE"}})),
+        "MEDIUM",
+        "GitHub's word, as CVSS says it"
+    );
+    assert_eq!(severity_of(&serde_json::json!({})), "");
     let labelled = json!({"database_specific": {"severity": "low"}, "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]});
     assert_eq!(severity_of(&labelled), "LOW", "a label wins over the vector");
     let vector_only =
@@ -124,7 +137,11 @@ fn schema_matches_the_contract() {
             "fix_auto",
             "dep_scope",
             "dep_direct",
-            "affected_range"
+            "affected_range",
+            "cvss",
+            "cvss_version",
+            "epss",
+            "epss_percentile"
         ]
     );
 }

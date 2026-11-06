@@ -31,13 +31,15 @@ pub const HISTORY_DAYS: i64 = 14;
 /// The exposure log's columns, in the order every format shows them: when
 /// it was first seen, whether (and when) it was resolved, how bad it is,
 /// what it is; then the rest. `(CSV name, heading)`.
-pub const EXPOSURE_COLUMNS: [(&str, &str); 13] = [
+pub const EXPOSURE_COLUMNS: [(&str, &str); 15] = [
     ("first_seen", "First seen"),
     ("resolved", "Resolved"),
     ("severity", "Severity"),
     ("component", "Component"),
     ("version", "Version"),
     ("vuln_id", "Advisory"),
+    ("cvss", "CVSS"),
+    ("epss", "EPSS"),
     ("kev", "KEV"),
     ("status", "Status"),
     ("fixed", "Fixed in"),
@@ -49,14 +51,20 @@ pub const EXPOSURE_COLUMNS: [(&str, &str); 13] = [
 
 /// One exposure's cells, in [`EXPOSURE_COLUMNS`] order: "open" until it is
 /// resolved.
-pub fn exposure_cells(e: &Exposure) -> [String; 13] {
+pub fn exposure_cells(e: &Exposure) -> [String; 15] {
     [
         history::stamp(e.first_at),
         e.resolved_at.map(history::stamp).unwrap_or_else(|| "open".into()),
-        e.severity.clone(),
+        crate::utils::cvss::word(&e.severity).to_string(),
         e.component.clone(),
         e.version.clone(),
         e.vuln_id.clone(),
+        e.cvss
+            .map(
+                |c| if e.cvss_version.is_empty() { format!("{c:.1}") } else { format!("{c:.1} (v{})", e.cvss_version) },
+            )
+            .unwrap_or_default(),
+        view::epss_text(e.epss.map(|s| (s, e.epss_percentile.unwrap_or(0.0)))),
         if e.kev { "yes" } else { "no" }.into(),
         e.status.clone(),
         e.fixed.clone(),

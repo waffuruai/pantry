@@ -45,6 +45,10 @@ fn from_exposure(e: &Exposure) -> Row {
         dep_scope: e.dep_scope.clone(),
         dep_direct: e.dep_direct,
         affected_range: e.affected_range.clone(),
+        cvss: e.cvss,
+        cvss_version: e.cvss_version.clone(),
+        epss: e.epss,
+        epss_percentile: e.epss_percentile,
     };
     from_finding(f)
 }
@@ -53,7 +57,7 @@ fn from_exposure(e: &Exposure) -> Row {
 pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
-         dep_scope, dep_direct, affected_range FROM findings",
+         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile FROM findings",
     )?;
     let rows = stmt.query_map([], |r| {
         let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -73,6 +77,10 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
             dep_scope: s(12)?,
             dep_direct: r.get::<_, Option<i64>>(13)?.map(|d| d != 0),
             affected_range: s(14)?,
+            cvss: r.get(15)?,
+            cvss_version: s(16)?,
+            epss: r.get(17)?,
+            epss_percentile: r.get(18)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -171,6 +179,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         "schema": crate::SCHEMA,
         "kind": f.kind, "component": f.component, "version": f.version, "location": f.location,
         "vuln_id": f.vuln_id, "status": f.status, "fixed": f.fixed, "kev": f.kev, "severity": f.severity,
+        "cvss": f.cvss, "cvss_version": f.cvss_version, "epss": f.epss, "epss_percentile": f.epss_percentile,
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
         "aliases": aliases, "url": url, "record": rec,

@@ -12,8 +12,12 @@ use crate::finding::Finding;
 use crate::history::{Exposure, Fix, stamp};
 use crate::utils::json::{J, obj};
 
+/// An EPSS score at or above this is "likely to be exploited" in the
+/// summary: a one-in-ten chance in the next 30 days.
+pub const LIKELY: f64 = 0.1;
+
 /// The days to remediate by severity: our security policy's.
-pub const TARGETS: [(&str, i64); 4] = [("CRITICAL", 14), ("HIGH", 30), ("MODERATE", 90), ("LOW", 180)];
+pub const TARGETS: [(&str, i64); 4] = [("CRITICAL", 14), ("HIGH", 30), ("MEDIUM", 90), ("LOW", 180)];
 
 /// The controls the summary is evidence for: (framework and control, what
 /// in the summary shows it).
@@ -32,7 +36,7 @@ pub fn level(severity: &str) -> &'static str {
     match severity {
         "CRITICAL" | "MALICIOUS" => "CRITICAL",
         "HIGH" | "IMPORTANT" => "HIGH",
-        "MODERATE" | "MEDIUM" => "MODERATE",
+        "MODERATE" | "MEDIUM" => "MEDIUM",
         "LOW" => "LOW",
         _ => "",
     }
@@ -41,7 +45,7 @@ pub fn level(severity: &str) -> &'static str {
 /// One severity's line of the summary.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Level {
-    /// CRITICAL, HIGH, MODERATE, LOW, or "" (no severity rated).
+    /// CRITICAL, HIGH, MEDIUM, LOW, or "" (no severity rated).
     pub severity: &'static str,
     /// The target in days, when there is one.
     pub target: Option<i64>,
@@ -66,6 +70,8 @@ pub struct Summary {
     pub scan_finished: f64,
     pub levels: Vec<Level>,
     pub kev_open: usize,
+    /// Open now with an EPSS score of at least [`LIKELY`].
+    pub likely_open: usize,
     /// The open Critical or High exposure seen first: (severity, component,
     /// version, advisory, days open).
     pub oldest: Option<(String, String, String, String, f64)>,
@@ -146,6 +152,7 @@ pub fn summary(report: &Report) -> Summary {
         scan_finished: report.scan.row.finished_at,
         levels,
         kev_open: findings.iter().filter(|f| f.kev).count(),
+        likely_open: findings.iter().filter(|f| f.epss.is_some_and(|e| e >= LIKELY)).count(),
         oldest,
         median_days: percentile(resolved_days.clone(), 0.5),
         p90_days: percentile(resolved_days, 0.9),
@@ -164,7 +171,7 @@ pub fn name(severity: &str) -> &str {
         "" => "Not rated",
         "CRITICAL" => "Critical",
         "HIGH" => "High",
-        "MODERATE" => "Medium",
+        "MEDIUM" => "Medium",
         "LOW" => "Low",
         s => s,
     }
@@ -204,6 +211,7 @@ pub fn json(s: &Summary) -> J {
         ("scan_finished", stamp(s.scan_finished).as_str().into()),
         ("by_severity", J::Arr(levels)),
         ("known_exploited_open", J::Int(s.kev_open as i64)),
+        ("likely_exploited_open", J::Int(s.likely_open as i64)),
         (
             "oldest_open_critical_or_high",
             s.oldest.as_ref().map_or(J::Null, |(sev, c, v, id, d)| {
@@ -260,6 +268,7 @@ pub fn csv(s: &Summary) -> String {
         ("scan_id".into(), s.scan_id.to_string()),
         ("scan_finished".into(), stamp(s.scan_finished)),
         ("known_exploited_open".into(), s.kev_open.to_string()),
+        ("likely_exploited_open".into(), s.likely_open.to_string()),
         ("median_days_to_resolve".into(), s.median_days.to_string()),
         ("p90_days_to_resolve".into(), s.p90_days.to_string()),
         ("scans".into(), s.scans.to_string()),
@@ -314,6 +323,11 @@ pub fn md(s: &Summary) -> String {
         ));
     }
     t.push_str(&format!("\n- Known exploited, open now: {}\n", s.kev_open));
+    t.push_str(&format!(
+        "- Likely to be exploited (EPSS {}% or more), open now: {}\n",
+        (LIKELY * 100.0) as i64,
+        s.likely_open
+    ));
     if let Some((sev, c, v, id, d)) = &s.oldest {
         t.push_str(&format!(
             "- Oldest open Critical or High: {} {} {} ({}), open {d} days\n",

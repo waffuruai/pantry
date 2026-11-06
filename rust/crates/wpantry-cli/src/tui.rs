@@ -76,14 +76,22 @@ fn plural(n: usize, word: &str) -> String {
 
 fn hot(severity: &str) -> Role {
     match severity {
-        "MALICIOUS" | "CRITICAL" | "HIGH" | "IMPORTANT" => Role::Hot,
-        "MODERATE" | "MEDIUM" => Role::Warn,
+        "MALICIOUS" | "CRITICAL" | "HIGH" => Role::Hot,
+        "MEDIUM" => Role::Warn,
         _ => Role::Plain,
     }
 }
 
-/// A row's cells: component, version, advisory, severity, fix.
-fn cells(area: &Area, row: &Row) -> [String; 5] {
+/// A table's columns: component, version, advisory, severity, CVSS, EPSS,
+/// fix.
+const COLS: usize = 7;
+const FIX_COL: usize = COLS - 1;
+const HEADS: [&str; COLS] = ["COMPONENT", "VERSION", "ADVISORY", "SEVERITY", "CVSS", "EPSS", "FIX"];
+
+/// A row's cells, one per [`HEADS`].
+fn cells(area: &Area, row: &Row) -> [String; COLS] {
+    let cvss = view::cvss_text(row.cvss.as_ref());
+    let epss = view::epss_text(row.epss);
     if view::is_bundle(area.kind) {
         let pkgs: Vec<&str> = {
             let mut p: Vec<&str> = Vec::new();
@@ -96,54 +104,56 @@ fn cells(area: &Area, row: &Row) -> [String; 5] {
             p
         };
         let adv = format!("{}, {}", plural(pkgs.len(), "package"), plural(row.findings.len(), "advisory"));
-        return [row.name.clone(), String::new(), adv, row.severity.to_string(), row.fix.clone()];
+        return [row.name.clone(), String::new(), adv, row.severity.to_string(), cvss, epss, row.fix.clone()];
     }
     let mut adv = row.ids.first().map(|i| i.to_string()).unwrap_or_default();
     if row.ids.len() > 1 {
         adv.push_str(&format!(" +{}", row.ids.len() - 1));
     }
-    [row.name.clone(), row.version.to_string(), adv, row.severity.to_string(), row.fix.clone()]
+    [row.name.clone(), row.version.to_string(), adv, row.severity.to_string(), cvss, epss, row.fix.clone()]
 }
 
 /// The column widths for an area's rows in `width` characters: each column
 /// as wide as its widest cell, within a cap; the fix takes what's left.
-fn columns(rows: &[[String; 5]], width: usize) -> [usize; 5] {
+fn columns(rows: &[[String; COLS]], width: usize) -> [usize; COLS] {
     // The component is what a reader looks for: on a wide terminal it gets
     // a third of the line.
-    let caps = [36.max(width / 3), 18, 24, 10];
-    let heads = ["COMPONENT", "VERSION", "ADVISORY", "SEVERITY"];
-    let mut w = [0usize; 5];
+    let caps = [36.max(width / 3), 18, 24, 10, 4, 6];
+    let mut w = [0usize; COLS];
     for (i, cap) in caps.iter().enumerate() {
-        let widest = rows.iter().map(|r| chars(&r[i])).max().unwrap_or(0).max(chars(heads[i]));
+        let widest = rows.iter().map(|r| chars(&r[i])).max().unwrap_or(0).max(chars(HEADS[i]));
         w[i] = widest.min(*cap);
     }
-    // No row has a version (rules, settings, files): no version column.
-    if rows.iter().all(|r| r[1].is_empty()) {
-        w[1] = 0;
+    // No row has a version (rules, settings, files), or a score (wpantry's
+    // own checks): no column for it.
+    for col in [1, 4, 5] {
+        if rows.iter().all(|r| r[col].is_empty()) {
+            w[col] = 0;
+        }
     }
     // "  ✗ " before the cells, two spaces between them, and room for the
     // fix: on a narrow terminal the component gives way first, then the
     // advisory and the version.
     const FIX: usize = 16;
-    let used = |w: &[usize; 5]| 4 + w[..4].iter().map(|n| if *n == 0 { 0 } else { n + 2 }).sum::<usize>();
+    let used = |w: &[usize; COLS]| 4 + w[..FIX_COL].iter().map(|n| if *n == 0 { 0 } else { n + 2 }).sum::<usize>();
     for (col, floor) in [(0, 12), (2, 14), (1, 8)] {
         if w[col] > 0 && used(&w) + FIX > width {
             w[col] = w[col].saturating_sub(used(&w) + FIX - width).max(floor);
         }
     }
-    w[4] = width.saturating_sub(used(&w)).max(FIX);
+    w[FIX_COL] = width.saturating_sub(used(&w)).max(FIX);
     w
 }
 
 /// A table line: the cells at their widths, two spaces apart, an empty
 /// column left out.
-fn cells_line(cells: Vec<(Role, &str)>, w: &[usize; 5]) -> Line {
+fn cells_line(cells: Vec<(Role, &str)>, w: &[usize; COLS]) -> Line {
     let mut out: Line = Vec::new();
     for (i, (role, text)) in cells.into_iter().enumerate() {
         if w[i] == 0 {
             continue;
         }
-        if i == 4 {
+        if i == FIX_COL {
             out.push((role, fit(text, w[i])));
         } else {
             out.push((role, pad(text, w[i])));
@@ -168,11 +178,10 @@ fn area_lines(area: &Area, width: usize, out: &mut Vec<Line>) {
     }
     out.push(Vec::new());
     out.push(head);
-    let rows: Vec<[String; 5]> = area.rows.iter().map(|r| cells(area, r)).collect();
+    let rows: Vec<[String; COLS]> = area.rows.iter().map(|r| cells(area, r)).collect();
     let w = columns(&rows, width);
-    let heads = ["COMPONENT", "VERSION", "ADVISORY", "SEVERITY", "FIX"];
     let mut head: Line = vec![(Role::Dim, "    ".into())];
-    head.extend(cells_line(heads.iter().map(|h| (Role::Dim, *h)).collect(), &w));
+    head.extend(cells_line(HEADS.iter().map(|h| (Role::Dim, *h)).collect(), &w));
     out.push(head);
     for (row, c) in area.rows.iter().zip(&rows) {
         let (mark, role) = if row.fails { ("✗", Role::Fail) } else { ("⚠", Role::Warn) };
@@ -184,7 +193,16 @@ fn area_lines(area: &Area, width: usize, out: &mut Vec<Line>) {
                 (Role::Plain, clean_cells[1].as_str()),
                 (if row.kev { Role::Hot } else { Role::Plain }, clean_cells[2].as_str()),
                 (hot(row.severity), clean_cells[3].as_str()),
-                (Role::Command, clean_cells[4].as_str()),
+                (Role::Plain, clean_cells[4].as_str()),
+                (
+                    if row.epss.is_some_and(|e| e.0 >= wpantry::reporters::summary::LIKELY) {
+                        Role::Hot
+                    } else {
+                        Role::Plain
+                    },
+                    clean_cells[5].as_str(),
+                ),
+                (Role::Command, clean_cells[6].as_str()),
             ],
             &w,
         ));

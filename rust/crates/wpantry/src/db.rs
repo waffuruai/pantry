@@ -62,6 +62,14 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("scans", "unknown_licenses", "INTEGER"),
     ("scans", "options", "TEXT"),
     ("fixes", "user", "TEXT"),
+    ("findings", "cvss", "REAL"),
+    ("findings", "cvss_version", "TEXT"),
+    ("findings", "epss", "REAL"),
+    ("findings", "epss_percentile", "REAL"),
+    ("exposures", "cvss", "REAL"),
+    ("exposures", "cvss_version", "TEXT"),
+    ("exposures", "epss", "REAL"),
+    ("exposures", "epss_percentile", "REAL"),
     ("fixes", "host", "TEXT"),
 ];
 
@@ -132,6 +140,7 @@ impl Cache {
         conn.execute_batch(crate::checks::malware::SCHEMA)?;
         conn.execute_batch(crate::checks::files::cache::SCHEMA)?;
         conn.execute_batch(crate::sources::fetch::SCHEMA)?;
+        conn.execute_batch(crate::sources::epss::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::rulegen::SCHEMA)?;
         conn.execute_batch(crate::sources::hash_lookups::VERDICT_SCHEMA)?;
         conn.execute_batch(
@@ -432,7 +441,8 @@ impl Cache {
         self.conn.execute("DELETE FROM findings", [])?;
         let mut stmt = self.conn.prepare(
             "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
-             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )?;
         for f in findings {
             stmt.execute(params![
@@ -450,7 +460,11 @@ impl Cache {
                 f.fix_auto as i64,
                 f.dep_scope,
                 f.dep_direct.map(i64::from),
-                f.affected_range
+                f.affected_range,
+                f.cvss,
+                f.cvss_version,
+                f.epss,
+                f.epss_percentile
             ])?;
         }
         Ok(())
@@ -469,90 +483,14 @@ impl Cache {
     }
 }
 
-/// The CVSS 3.x base score of a vector string, by the specification's
-/// formula; None for anything else.
-pub fn cvss3_base_score(vector: &str) -> Option<f64> {
-    if !vector.starts_with("CVSS:3") {
-        return None;
-    }
-    let mut m: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for part in vector.split('/').skip(1) {
-        if let Some((k, v)) = part.split_once(':') {
-            m.insert(k, v);
-        }
-    }
-    let av = match *m.get("AV")? {
-        "N" => 0.85,
-        "A" => 0.62,
-        "L" => 0.55,
-        "P" => 0.2,
-        _ => return None,
-    };
-    let ac = match *m.get("AC")? {
-        "L" => 0.77,
-        "H" => 0.44,
-        _ => return None,
-    };
-    let scope_changed = m.get("S") == Some(&"C");
-    let pr = match (*m.get("PR")?, scope_changed) {
-        ("N", _) => 0.85,
-        ("L", false) => 0.62,
-        ("L", true) => 0.68,
-        ("H", false) => 0.27,
-        ("H", true) => 0.5,
-        _ => return None,
-    };
-    let ui = match *m.get("UI")? {
-        "N" => 0.85,
-        "R" => 0.62,
-        _ => return None,
-    };
-    let cia = |k: &str| -> Option<f64> {
-        match *m.get(k)? {
-            "H" => Some(0.56),
-            "L" => Some(0.22),
-            "N" => Some(0.0),
-            _ => None,
-        }
-    };
-    let iss = 1.0 - (1.0 - cia("C")?) * (1.0 - cia("I")?) * (1.0 - cia("A")?);
-    let impact = if scope_changed { 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powi(15) } else { 6.42 * iss };
-    let exploitability = 8.22 * av * ac * pr * ui;
-    let roundup = |x: f64| (x * 10.0).ceil() / 10.0;
-    Some(if impact <= 0.0 {
-        0.0
-    } else if scope_changed {
-        roundup((1.08 * (impact + exploitability)).min(10.0))
-    } else {
-        roundup((impact + exploitability).min(10.0))
-    })
-}
-
-/// A severity label for a CVSS base score.
-pub fn severity_label(score: f64) -> &'static str {
-    if score >= 9.0 {
-        "CRITICAL"
-    } else if score >= 7.0 {
-        "HIGH"
-    } else if score >= 4.0 {
-        "MODERATE"
-    } else {
-        "LOW"
-    }
-}
-
-/// A label (CRITICAL/HIGH/MODERATE/LOW) when the record carries one, else
-/// from its CVSS 3.x vector, else empty.
+/// A record's severity in CVSS's words (LOW, MEDIUM, HIGH, CRITICAL): its
+/// own label when it carries one, else from its CVSS 3.x or 4.0 vector,
+/// else empty.
 pub fn severity_of(rec: &Value) -> String {
-    if let Some(v) = severity_label_of(rec) {
-        return v;
+    if let Some(v) = severity_label_of(rec).map(|l| crate::utils::cvss::word(&l)).filter(|w| !w.is_empty()) {
+        return v.to_string();
     }
-    for s in crate::utils::json::arr_at(rec, "severity") {
-        if let Some(score) = s.get("score").and_then(Value::as_str).and_then(cvss3_base_score) {
-            return severity_label(score).to_string();
-        }
-    }
-    String::new()
+    crate::utils::cvss::of_record(rec).map(|s| crate::utils::cvss::label(s.value).to_string()).unwrap_or_default()
 }
 
 fn severity_label_of(rec: &Value) -> Option<String> {

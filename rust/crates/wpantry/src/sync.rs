@@ -34,6 +34,8 @@ pub fn run(cache: &Cache, net: &dyn Net, refresh: bool, status: Status) -> Resul
     };
     status("Fetching CISA's known-exploited list");
     note("CISA KEV", kev::kev(cache, net, false).map(|_| ()), &mut out);
+    status("Fetching EPSS's exploit predictions");
+    note("EPSS", crate::sources::epss::refresh(cache, net, false).map(|_| ()), &mut out);
     status("Fetching the malicious-package index");
     note("OpenSSF malicious packages", malicious_packages::sync(cache, false).map(|_| ()), &mut out);
     if cfg!(target_os = "macos") {

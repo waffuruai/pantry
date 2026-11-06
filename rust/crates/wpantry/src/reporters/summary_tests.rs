@@ -47,8 +47,8 @@ fn the_summary_counts_against_the_policy_targets() {
             scan_id: 2,
             findings: vec![
                 finding("CRITICAL", "fail", true),
-                finding("HIGH", "fail", false),
-                finding("", "warn", false),
+                Finding { epss: Some(0.3), ..finding("HIGH", "fail", false) },
+                Finding { epss: Some(0.01), ..finding("", "warn", false) },
                 Finding { kind: "unchecked".into(), component: "CISA KEV".into(), ..Default::default() },
             ],
             ..Default::default()
@@ -96,6 +96,7 @@ fn the_summary_counts_against_the_policy_targets() {
         "45 days is past 30"
     );
     assert_eq!(s.levels.last().unwrap().severity, "", "the unrated ones are counted too");
+    assert_eq!(s.likely_open, 1, "an EPSS of 30% is likely; 1% isn't");
     assert_eq!((s.kev_open, s.scans, s.hosts.clone(), s.days_without_scan), (1, 2, vec!["mac".to_string()], 13));
     assert_eq!(s.oldest.as_ref().map(|o| o.4), Some(20.0));
     assert_eq!(s.gaps, ["CISA KEV"]);

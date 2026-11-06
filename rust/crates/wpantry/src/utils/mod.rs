@@ -8,6 +8,7 @@
 
 pub mod addresses;
 pub mod archive;
+pub mod cvss;
 pub mod dates;
 pub mod files;
 pub mod homebrew;

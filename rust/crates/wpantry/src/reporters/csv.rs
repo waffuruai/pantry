@@ -20,13 +20,14 @@ fn line(fields: &[&str]) -> String {
 /// The latest findings, each joined with its OSV record's aliases and URL.
 pub fn findings(cache: &Cache) -> Result<String> {
     let mut stmt = cache.conn.prepare(
-        "SELECT f.vuln_id, v.aliases, v.url, f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location \
+        "SELECT f.vuln_id, v.aliases, v.url, f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location, \
+         f.cvss, f.cvss_version, f.epss, f.epss_percentile \
          FROM findings f LEFT JOIN vulns v ON v.id = f.vuln_id OR (' ' || v.aliases || ' ') LIKE ('% ' || f.vuln_id || ' %') \
          GROUP BY f.vuln_id, f.component, f.version, f.location",
     )?;
     let rows: Vec<Vec<String>> = stmt
         .query_map([], |r| {
-            (0..11)
+            (0..15)
                 .map(|i| {
                     Ok(match r.get_ref(i)? {
                         ValueRef::Null => String::new(),
@@ -38,8 +39,9 @@ pub fn findings(cache: &Cache) -> Result<String> {
                 .collect()
         })?
         .collect::<std::result::Result<_, _>>()?;
-    let mut text =
-        String::from("id,aliases,url,component,kind,affected_version,safe_version,severity,kev,status,location\r\n");
+    let mut text = String::from(
+        "id,aliases,url,component,kind,affected_version,safe_version,severity,kev,status,location,cvss,cvss_version,epss,epss_percentile\r\n",
+    );
     for mut r in rows {
         if r[2].is_empty() && r[0].starts_with("CVE-") {
             r[2] = format!("https://www.cve.org/CVERecord?id={}", r[0]);

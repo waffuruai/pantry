@@ -358,3 +358,37 @@ fn without_gitleaks_the_tool_is_missing() {
         if has_brew { "brew install gitleaks".to_string() } else { format!("Install gitleaks: {GITLEAKS_INSTALL}") }
     );
 }
+
+/// History's big files are marked binary for git, so gitleaks never reads
+/// them; only those the new commits add are listed on a later scan.
+#[test]
+fn big_files_in_history_are_marked_binary() {
+    assert_eq!(attr_pattern(b"data/big set [v2].json"), "/data/big*set*v2*.json");
+    assert_eq!(attr_pattern("é/x".as_bytes()), "/*/x");
+    let d = TempDir::new("big-files").unwrap();
+    let Some(repo) = git_repo(&d, &[&["init", "-q"]]) else { panic!("git can't make a repo here") };
+    std::fs::write(repo.join("big set.json"), vec![b'x'; ((MAX_MB << 20) + 1) as usize]).unwrap();
+    std::fs::write(repo.join("small.txt"), "fine").unwrap();
+    git_repo(&d, &[&["add", "-A"], &["commit", "-q", "-m", "a"]]).unwrap();
+    assert_eq!(big_files(&repo, &["--all".into()]), "/big*set.json -diff\n");
+    assert_eq!(big_files(&repo, &["--all".into(), "^HEAD".into()]), "", "nothing new since the tip");
+    let attrs = d.path().join("attributes");
+    std::fs::write(&attrs, big_files(&repo, &["--all".into()])).unwrap();
+    let attrs_file = format!("core.attributesFile={}", attrs.display());
+    let log = [
+        OsStr::new("git"),
+        OsStr::new("-C"),
+        repo.as_os_str(),
+        OsStr::new("-c"),
+        OsStr::new(&attrs_file),
+        OsStr::new("log"),
+        OsStr::new("-p"),
+    ];
+    let out = exec(&log, &[], Duration::from_secs(30)).unwrap();
+    assert!(
+        out.stdout.contains("Binary files /dev/null and b/big set.json differ"),
+        "{}",
+        &out.stdout[..out.stdout.len().min(400)]
+    );
+    assert!(out.stdout.contains("+fine"));
+}

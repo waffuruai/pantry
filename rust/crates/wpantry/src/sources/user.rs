@@ -54,24 +54,27 @@ pub fn consent(
 fn place(rules: &Path, s: &Source) -> Option<std::path::PathBuf> {
     match s.kind.as_str() {
         "yara" => Some(rules.join(format!("user-{}.yar", s.id))),
-        "hashes" | "hosts" | "filenames" => Some(rules.join("iocs").join(format!("user-{}.{}.txt", s.id, s.kind))),
+        "hashes" | "hosts" | "filenames" | "indicators" => {
+            Some(rules.join("iocs").join(format!("user-{}.{}.txt", s.id, s.kind)))
+        }
         _ => None,
     }
 }
 
 /// Fetch each of `sources` (the user's, in use this run) that is a file
-/// into its place, when due; drop the files of user sources no longer in
-/// use. Returns what couldn't be
-/// fetched, by id.
+/// into its place, when due; drop the files of user sources no longer
+/// `declared` (one off for this run, a `deep` one on a default scan, keeps
+/// its copy). Returns what couldn't be fetched, by id.
 pub fn fetch_files(
     cache: &Cache,
     net: &dyn Net,
     rules: &Path,
     sources: &[Source],
+    declared: &[Source],
     offline: bool,
 ) -> Vec<(String, String)> {
     let mut failed = Vec::new();
-    let mut keep = Vec::new();
+    let mut keep: Vec<std::path::PathBuf> = declared.iter().filter_map(|s| place(rules, s)).collect();
     for s in sources {
         let Some(path) = place(rules, s) else { continue };
         keep.push(path.clone());

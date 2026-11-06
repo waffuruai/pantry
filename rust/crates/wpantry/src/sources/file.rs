@@ -198,6 +198,7 @@ const USER_FORMATS: &[(&str, &[&str])] = &[
     ("hashes", &["lines"]),
     ("hosts", &["lines"]),
     ("filenames", &["lines"]),
+    ("indicators", &["maltrail-csv"]),
     ("advisories", &["osv-api"]),
     ("hash-lookup", &["circl", "yaraify"]),
 ];
@@ -221,7 +222,7 @@ pub fn merged(user_text: &str) -> Result<Vec<Source>> {
         match formats {
             None => {
                 return Err(bad(&format!(
-                    "kind {:?} can't be a source of yours (yara, hashes, hosts, filenames, advisories, hash-lookup)",
+                    "kind {:?} can't be a source of yours (yara, hashes, hosts, filenames, indicators, advisories, hash-lookup)",
                     s.kind
                 )));
             }

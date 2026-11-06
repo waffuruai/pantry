@@ -12,6 +12,7 @@ pub mod fetch;
 pub mod file;
 pub mod hash_lookups;
 pub mod indicator_lists;
+pub mod indicator_store;
 pub mod kev;
 pub mod malicious_packages;
 #[cfg(test)]

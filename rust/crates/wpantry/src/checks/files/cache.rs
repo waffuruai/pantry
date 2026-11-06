@@ -84,7 +84,12 @@ fn sources(check: Check) -> Vec<&'static str> {
             include_str!("../../utils/archive/zip.rs"),
             include_str!("../../utils/archive/deflate.rs"),
         ],
-        Check::Malware(_) => vec![include_str!("../malware/targets.rs"), include_str!("../malware/yara.rs")],
+        Check::Malware(_) => vec![
+            include_str!("../malware/targets.rs"),
+            include_str!("../malware/yara.rs"),
+            include_str!("../malware/observe.rs"),
+            include_str!("../../sources/indicator_store.rs"),
+        ],
     }
 }
 
@@ -281,7 +286,7 @@ impl Store {
         // Most files' results: nothing found, read without a JSON parser.
         match (job.check, result.as_str()) {
             (Check::Malware(_), "false" | "true") => {
-                return Some(Out::Malware(Scanned { target: result == "true", hits: Vec::new() }));
+                return Some(Out::Malware(Scanned { target: result == "true", hits: Vec::new(), seen: None }));
             }
             (Check::Hidden, "[]") => return Some(Out::Hidden(Vec::new())),
             (Check::Documents, "[]") => return Some(Out::Documents(Vec::new())),
@@ -453,12 +458,32 @@ fn to_json(out: &Out) -> Value {
         Out::Documents(v) => Value::Array(v.iter().map(doc_json).collect()),
         // Nearly every file: the bare `target`, nothing found.
         Out::Blob(why) => json!(why),
-        Out::Malware(s) if s.hits.is_empty() => Value::Bool(s.target),
+        Out::Malware(s) if s.hits.is_empty() && s.seen.is_none() => Value::Bool(s.target),
         Out::Malware(s) => json!({
             "target": s.target,
             "hits": s.hits.iter().map(|h| json!([h.namespace, h.rule, h.category, h.description, h.sha256])).collect::<Vec<_>>(),
+            "seen": s.seen.as_ref().map(|w| json!([
+                w.sha256,
+                w.md5,
+                w.sha1,
+                w.keys.iter().map(|k| format!("{k:016x}")).collect::<String>(),
+            ])),
         }),
     }
+}
+
+/// What a file holds for the indicators, as [`to_json`] keeps it:
+/// `[sha256, md5, sha1, keys]`, the keys as 16 hex digits each.
+fn seen_of(v: Option<&Value>) -> Option<crate::checks::malware::observe::Seen> {
+    let a = v?.as_array()?;
+    let s = |i: usize| a.get(i).and_then(Value::as_str).map(str::to_string);
+    let hex = s(3)?;
+    let keys = hex
+        .as_bytes()
+        .chunks(16)
+        .map(|c| std::str::from_utf8(c).ok().and_then(|c| u64::from_str_radix(c, 16).ok()))
+        .collect::<Option<Vec<u64>>>()?;
+    Some(crate::checks::malware::observe::Seen { sha256: s(0)?, md5: s(1)?, sha1: s(2)?, keys })
 }
 
 fn from_json(check: Check, v: &Value, path: &std::path::Path) -> Option<Out> {
@@ -485,8 +510,11 @@ fn from_json(check: Check, v: &Value, path: &std::path::Path) -> Option<Out> {
         })),
         Check::Documents => Out::Documents(v.as_array()?.iter().map(doc_of).collect()),
         Check::Blobs => Out::Blob(v.as_str().map(str::to_string)),
-        Check::Malware(_) if v.is_boolean() => Out::Malware(Scanned { target: v.as_bool()?, hits: Vec::new() }),
+        Check::Malware(_) if v.is_boolean() => {
+            Out::Malware(Scanned { target: v.as_bool()?, hits: Vec::new(), seen: None })
+        }
         Check::Malware(_) => Out::Malware(Scanned {
+            seen: seen_of(v.get("seen")),
             target: v.get("target")?.as_bool()?,
             hits: v
                 .get("hits")?

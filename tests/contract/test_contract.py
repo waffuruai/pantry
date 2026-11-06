@@ -567,33 +567,33 @@ class Contract(unittest.TestCase):
         code, out, err = self.run_bin("update", "--version", "nope", "--offline")
         self.assertEqual(code, 3, out + err)
 
-    def test_harden_usage(self):
-        code, _, err = self.run_bin("harden")
+    def test_fix_usage(self):
+        """harden is gone: its two fixes are fix's, by name."""
+        code, _, err = self.run_bin("harden", "ca-trust")
         self.assertEqual(code, 2, err)
-        code, _, err = self.run_bin("harden", "firewall")
+        code, _, err = self.run_bin("fix", "firewall")
         self.assertEqual(code, 2, err)
-        code, _, err = self.run_bin("harden", "extension-cooldown", "--hours", "lots")
+        code, _, err = self.run_bin("fix", "extension-cooldown", "--hours", "lots")
         self.assertEqual(code, 2, err)
         # With a temp HOME there is no editor: nothing to edit, exit 0.
-        code, out, err = self.run_bin("harden", "extension-cooldown")
+        code, out, err = self.run_bin("fix", "extension-cooldown")
         self.assertEqual(code, 0, err)
         self.assertIn("no VS Code-family editor", out)
 
-    def test_mitigate_usage(self):
-        code, _, err = self.run_bin("mitigate")
-        self.assertEqual(code, 2, err)
-        self.assertIn("required: target", err)
+    def test_mitigate_is_fix(self):
         code, _, err = self.run_bin("mitigate", "kernel")
         self.assertEqual(code, 2, err)
-        code, _, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run", "--undo")
+        code, _, err = self.run_bin("fix", "CVE-2026-98432", "--dry-run", "--undo")
         self.assertEqual(code, 2, err)
-        code, _, err = self.run_bin("mitigate", "all", "--remove")
+        code, _, err = self.run_bin("fix", "list", "--remove")
         self.assertEqual(code, 2, err)
         code, out, _ = self.run_bin("mitigate", "--help")
         self.assertEqual(code, 0)
         self.assertIn("--dry-run", out)
+        self.assertIn("mitigate is the same command", out)
+        self.assertEqual(out, self.run_bin("fix", "--help")[1])
 
-    def test_mitigate_list_names_the_stopgaps_and_the_unattended_fixes(self):
+    def test_fix_list_names_the_plan_and_the_stopgaps(self):
         self.project_run()
         conn = sqlite3.connect(str(self.db))
         conn.execute("DELETE FROM findings")
@@ -605,13 +605,16 @@ class Contract(unittest.TestCase):
                       "needs a person", "sudo something", 0, "", None, ""))
         conn.commit()
         conn.close()
-        code, out, err = self.run_bin("mitigate", "list")
+        code, out, err = self.run_bin("fix", "list")
         self.assertEqual(code, 0, out + err)
+        self.assertEqual(out, self.run_bin("mitigate", "list")[1], "mitigate is fix")
         self.assertIn("CVE-2026-98432", out)
         if platform.system() != "Linux":
             self.assertIn("a Linux kernel bug; nothing to do on", out)
-        self.assertIn("GHSA-demo  demo 1.0.0 → 1.0.1: true", out)
-        self.assertNotIn("GHSA-manual", out, "only the unattended ones")
+        self.assertIn("  automatic  true  (clears 1)", out)
+        self.assertIn("  needs you  [sudo] something  (clears 1)", out)
+        self.assertIn("ca-trust", out)
+        self.assertIn("not needed: the last scan didn't find DISTRUSTED-CA", out)
 
     def test_mitigate_errors_for_an_advisory_nothing_is_known_about(self):
         self.project_run()
@@ -669,22 +672,33 @@ class Contract(unittest.TestCase):
             self.assertFalse(os.path.exists("/etc/nftables-cve-2026-98432.nft") and "would write" not in out)
         else:
             self.assertIn("a Linux kernel bug; nothing to do on", out)
-    def test_harden_ca_trust_rewrites_a_bundle(self):
+    def test_fix_ca_trust_rewrites_a_bundle(self):
         if shutil.which("openssl") is None:
             self.skipTest("openssl")
         assets = ROOT / "rust/crates/wpantry/assets/distrusted-ca"
         bundle = self.home / "bundle.pem"
         bundle.write_text((assets / "issuers.pem").read_text() + (assets / "roots.pem").read_text())
-        code, out, err = self.run_bin("harden", "ca-trust", "--bundle", str(bundle))
+        code, out, err = self.run_bin("fix", "ca-trust", "--bundle", str(bundle), "--dry-run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn(f"would distrust the leaked eMudhra roots in {bundle}", out)
+        self.assertEqual(bundle.read_text().count("BEGIN CERTIFICATE"), 3, "a dry run changes nothing")
+        code, out, err = self.run_bin("fix", "ca-trust", "--bundle", str(bundle))
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("pass --yes", out, "no terminal: never without a yes")
+        code, out, err = self.run_bin("fix", "ca-trust", "--bundle", str(bundle), "--yes")
         self.assertEqual(code, 0, out + err)
         self.assertIn("removed 2 distrusted root(s)", out)
         self.assertEqual(bundle.read_text().count("BEGIN CERTIFICATE"), 1)
         self.assertTrue((self.home / "bundle.pem.orig").exists())
-        code, out, err = self.run_bin("harden", "ca-trust", "--bundle", str(bundle))
+        code, out, err = self.run_bin("fix", "ca-trust", "--bundle", str(bundle), "--yes")
         self.assertEqual(code, 0, out + err)
         self.assertIn("holds none of the distrusted roots", out)
-        code, _, err = self.run_bin("harden", "ca-trust", "--bundle", str(self.home / "missing.pem"))
+        code, _, err = self.run_bin("fix", "ca-trust", "--bundle", str(self.home / "missing.pem"), "--yes")
         self.assertEqual(code, 3, err)
+        code, out, _ = self.run_bin("report", "remediation", "--csv")
+        rows = list(csv.reader(io.StringIO(out)))
+        self.assertEqual([r[3] for r in rows[1:]], ["wpantry fix ca-trust"] * 3, "each run is in the remediation log")
+        self.assertEqual([r[5] for r in rows[1:]], ["true", "true", "false"])
 
     def test_suspect_code_fails_where_out_of_place_and_policy_downgrades(self):
         repo = git_repo(self.home / "suspect")
@@ -1256,19 +1270,19 @@ class Contract(unittest.TestCase):
         self.assertIn("keep checking", out)
         self.assertIn("1 advisories watched, 0 with a fix now", out)
 
-    def test_harden_sets_the_cooldown_in_each_editor(self):
+    def test_fix_sets_the_cooldown_in_each_editor(self):
         env = dict(self.env)
         env.pop("XDG_CONFIG_HOME", None)
         for root in ("Library/Application Support", ".config"):  # a macOS and a Linux home
             (self.home / root / "Code" / "User").mkdir(parents=True)
-        code, out, err = self.run_bin("harden", "extension-cooldown", "--hours", "48", env=env)
+        code, out, err = self.run_bin("fix", "extension-cooldown", "--hours", "48", "--yes", env=env)
         self.assertEqual(code, 0, err)
         self.assertIn("VS Code: 48", out)
         self.assertIn("restart the editor", out)
         settings = list(self.home.glob("*/Code/User/settings.json")) + list(self.home.glob("*/*/Code/User/settings.json"))
         self.assertEqual(len(settings), 1, settings)
         self.assertEqual(json.loads(settings[0].read_text())["extensions.installCooldownHours"], 48)
-        code, out, err = self.run_bin("harden", "extension-cooldown", "--hours", "48", env=env)
+        code, out, err = self.run_bin("fix", "extension-cooldown", "--hours", "48", "--yes", env=env)
         self.assertEqual(code, 0, err)
         self.assertIn("already waits 48 hours", out)
 

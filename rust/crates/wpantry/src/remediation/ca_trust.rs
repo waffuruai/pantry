@@ -1,4 +1,4 @@
-//! `wpantry harden ca-trust`: distrust the leaked roots in the system trust
+//! `wpantry fix ca-trust`: distrust the leaked roots in the system trust
 //! store, by the OS's own mechanism (a blocklist directory, `ca-certificates.conf`,
 //! or a rewritten bundle), as root, and check the store no longer trusts them.
 //! What it fixes is found by [`crate::checks::machine::ca_trust`].
@@ -326,7 +326,33 @@ fn blocklist_dir(parent: &str) -> PathBuf {
     if old.is_dir() && !new.is_dir() { old } else { new }
 }
 
-/// `wpantry harden ca-trust`: distrusts the leaked roots in the system
+/// Where [`fix`] distrusts the roots: `bundle`, or this system's trust
+/// store; an error where wpantry doesn't know it.
+pub fn store(bundle: Option<&Path>) -> Result<String> {
+    if let Some(b) = bundle {
+        return Ok(b.display().to_string());
+    }
+    if MACOS {
+        return Ok("/etc/ssl/cert.pem".into());
+    }
+    for (dir, what) in [
+        ("/etc/pki/trust", "the system trust store (/etc/pki/trust, update-ca-certificates)"),
+        ("/etc/pki/ca-trust/source", "the system trust store (/etc/pki/ca-trust, update-ca-trust)"),
+        ("/etc/ca-certificates/trust-source", "the system trust store (/etc/ca-certificates, update-ca-trust)"),
+    ] {
+        if Path::new(dir).is_dir() {
+            return Ok(what.into());
+        }
+    }
+    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+        return Ok("the system trust store (/etc/ca-certificates.conf, update-ca-certificates)".into());
+    }
+    Err(Error::Failed(format!(
+        "don't know this system's trust store. Update its ca-certificates package (see {ADVISORY})."
+    )))
+}
+
+/// `wpantry fix ca-trust`: distrusts the leaked roots in the system
 /// trust store, the advisory's workaround until the OS's ca-certificates
 /// update ships, matched by fingerprint; root is needed only to install the
 /// result (sudo asks on the terminal). `bundle` rewrites that PEM file

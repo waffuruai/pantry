@@ -186,6 +186,18 @@ pub fn latest(cache: &Cache, history_days: Option<i64>) -> Result<Option<Report>
     Ok(Some(Report { outcome, scan, after_fixes, history, part: Part::Findings }))
 }
 
+/// The logs alone, before any scan: what `report history` (or one log)
+/// shows when the cache has fixes or events but no scan yet.
+pub fn logs_only(cache: &Cache, days: i64) -> Result<Report> {
+    Ok(Report {
+        outcome: Outcome::default(),
+        scan: ScanDetail::default(),
+        after_fixes: false,
+        history: Some(history(cache, days)?),
+        part: Part::History,
+    })
+}
+
 /// A format another program or a file reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {

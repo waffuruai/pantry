@@ -1,8 +1,23 @@
-//! `wpantry harden extension-cooldown`: the one posture fix that edits
-//! files, setting the extension install cooldown in every editor's settings.
+//! `wpantry fix extension-cooldown`: the one posture fix that edits files,
+//! setting the extension install cooldown in every editor's settings.
 //! The check is [`crate::checks::machine::any::dev_settings`].
 
 use crate::checks::machine::any::dev_settings::editor_settings;
+
+/// The cooldown the posture check asks for, in hours.
+pub const COOLDOWN_HOURS: u32 = 72;
+
+/// The editors whose settings don't say `hours` yet: `(name, settings.json)`.
+pub fn needing(hours: u32) -> crate::error::Result<Vec<(String, std::path::PathBuf)>> {
+    let mut out = Vec::new();
+    for (name, file) in editor_settings() {
+        let text = if file.is_file() { crate::utils::files::read_capped(&file, 1 << 20)? } else { String::new() };
+        if with_cooldown(&text, hours) != text {
+            out.push((name.to_string(), file));
+        }
+    }
+    Ok(out)
+}
 
 /// Set `extensions.installCooldownHours` in every editor's settings.json
 /// (the fix for the cooldown check in [`crate::checks::machine::any::dev_settings`]);

@@ -53,6 +53,9 @@ fn feeds(r: &Request) -> Result<Response> {
     if u.contains("/v1/vulns/") {
         return Ok(Response { status: 404, body: Vec::new(), etag: None });
     }
+    if u.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+        return Ok(Response::not_found());
+    }
     panic!("unexpected {u}");
 }
 

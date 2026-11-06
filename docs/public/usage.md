@@ -17,7 +17,7 @@ wpantry schedule install --every week              # sync and scan every Monday 
 wpantry help                                       # every command; wpantry help fix for one
 ```
 
-`wpantry` on its own prints the commands; `wpantry --version` the version. Each command has one name, and a mistyped command or option is an error that names the closest one (`Did you mean --dry-run?`). The first run downloads advisories for what it finds and takes a while; answers are cached for a day, so the next run the same day takes seconds.
+`wpantry` on its own prints the commands; `wpantry --version` the version. Each command has one name, and a mistyped command or option is an error that names the closest one (`Did you mean --dry-run?`). The first run downloads advisories for what it finds and takes a while. After that, nothing expires: each run reads only what OSV changed since the last one, however long ago that was, and asks OSV only about versions it hasn't asked about before, so a later run takes seconds.
 
 ## What it checks
 
@@ -165,7 +165,7 @@ os
   ⚠ linux-image-generic 6.8.0-45.45 (/var/lib/dpkg/status) - (CVE-2026-98432 CRITICAL) TCP use-after-free (no fix released for Ubuntu:24.04:LTS yet). Fix: Until the kernel update lands: drop inbound IPv4 TCP packets that carry IP options (…) and turn off MPTCP (…)
 ```
 
-The daily scan asks OSV about a package version once a day. For these you want to know within the hour, so `wpantry watch` asks again about exactly them, bypassing that cache, and exits 10 when a fix has landed:
+A scan picks up a fix when OSV's change list shows it. For these you want to know within the hour, so `wpantry watch` asks again about exactly them, bypassing that cache, and exits 10 when a fix has landed:
 
 ```bash
 wpantry watch                 # each watched advisory: "no fix yet" + the mitigation, or "FIX AVAILABLE: <component> <version>"
@@ -641,5 +641,5 @@ Options:
 
 - **Everything is "not checked"**: you're offline, or a proxy blocks `api.osv.dev`. Re-run online, or `--offline` to use what's cached.
 - **`gitleaks` MISSING**: install it (`brew install gitleaks`, or see its README); the secret scan can't run without it.
-- **It's slow on the first run**: the first run downloads advisories and clones the malicious-package index; later runs reuse them for a day. `--path` and `--no-machine` narrow a run.
+- **It's slow on the first run**: the first run downloads advisories and clones the malicious-package index; later runs read only what changed. `--path` and `--no-machine` narrow a run.
 - **A finding is wrong**: open an issue with a minimal reproducer (never paste a real report; see [CONTRIBUTING.md](../../CONTRIBUTING.md)). Security reports go through [SECURITY.md](../../SECURITY.md).

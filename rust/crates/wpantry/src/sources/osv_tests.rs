@@ -181,12 +181,16 @@ fn lookup_batches_pages_fetches_changed_records_and_caches() {
     ids.sort();
     assert_eq!(ids, ["GHSA-new", "GHSA-old", "MAL-1"]);
     let mut f = fetched.lock().unwrap().clone();
+    f.retain(|id| id != "modified_id.csv");
     f.sort();
     assert_eq!(f, ["GHSA-new", "MAL-1"]);
     assert_eq!(c.get("vuln_etag:GHSA-new").unwrap().as_deref(), Some("\"GHSA-new\""));
     assert!(got[&item("npm", "pkg7", "1.0.0")].is_empty(), "answered clean");
     // A second lookup the same day asks nothing.
-    let quiet = Fake::new(|_| panic!("fresh answers are not refetched"));
+    let quiet = Fake::new(|r| {
+        assert!(r.url.contains("modified_id.csv"), "fresh answers are not refetched: {}", r.url);
+        Ok(Response::not_found())
+    });
     assert_eq!(lookup(&c, &quiet, &items, false, false, &|_| {}, &|_| {}).unwrap().found.len(), items.len());
 }
 
@@ -205,7 +209,7 @@ fn unreachable_osv_leaves_items_unanswered() {
     )
     .unwrap();
     assert!(got.found.is_empty());
-    assert!(logged.lock().unwrap()[0].contains("OSV unreachable"));
+    assert!(logged.lock().unwrap().iter().any(|l| l.contains("OSV unreachable")));
 }
 
 /// An answer cached clean two days ago, then OSV fails: the old answer is
@@ -219,7 +223,11 @@ fn a_stale_answer_after_a_failed_refresh_is_a_gap() {
     let got = lookup(&c, &Fake::offline(), std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
     assert!(got.found[&it].is_empty());
     assert_eq!(got.gaps.len(), 1);
-    assert!(got.gaps[0].contains("older than a day") && got.gaps[0].contains("OSV unreachable"), "{:?}", got.gaps);
+    assert!(
+        got.gaps[0].contains("more than a day out of date") && got.gaps[0].contains("OSV unreachable"),
+        "{:?}",
+        got.gaps
+    );
     let off = lookup(&c, &Fake::offline(), std::slice::from_ref(&it), false, true, &|_| {}, &|_| {}).unwrap();
     assert!(off.gaps[0].contains("--offline"), "{:?}", off.gaps);
 }
@@ -308,7 +316,11 @@ fn invalid_evidence_does_not_replace_a_previous_answer() {
         let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
         assert_eq!(got.found[&it][0]["id"], "CVE-2026-9", "page {page}: the earlier answer stands");
         assert_eq!(got.gaps.len(), 1, "page {page}: {:?}", got.gaps);
-        assert!(got.gaps[0].contains("older than a day") && got.gaps[0].contains("OSV answered"), "{:?}", got.gaps);
+        assert!(
+            got.gaps[0].contains("more than a day out of date") && got.gaps[0].contains("OSV answered"),
+            "{:?}",
+            got.gaps
+        );
         let (at, ids) = c.query("npm", "a", "1.0.0").unwrap().unwrap();
         assert!(at < now() - QUERY_TTL && ids == "CVE-2026-9", "page {page}: the stale answer wasn't restamped");
     }

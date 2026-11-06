@@ -55,6 +55,9 @@ fn repo_scan_end_to_end() {
     let queried = std::sync::Arc::new(Mutex::new(Vec::new()));
     let q = queried.clone();
     let net = Fake::new(move |r| {
+        if r.url == "https://osv-vulnerabilities.storage.googleapis.com/crates.io/modified_id.csv" {
+            return Ok(Response::ok("2026-11-05T09:00:00Z,RUSTSEC-2021-0003\n2026-11-05T08:00:00Z,RUSTSEC-OTHER\n"));
+        }
         if r.url.contains("cisa.gov") {
             return Ok(Response::ok(json!({"vulnerabilities": [{"cveID": "CVE-2021-25900"}]}).to_string()));
         }
@@ -137,12 +140,18 @@ fn repo_scan_end_to_end() {
         "licenses are checked only with --licenses"
     );
 
-    // The findings are the cache's latest, and a second run the same day asks nothing.
+    // The findings are the cache's latest, and a second run reads OSV's
+    // change list and asks nothing else: nothing changed.
     let cache = Cache::open(Some(&db)).unwrap();
     let n: i64 =
         cache.conn.query_row("SELECT COUNT(*) FROM findings WHERE kind = 'project'", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 1);
-    let quiet = Fake::new(|r| panic!("cached answers are fresh, but asked {}", r.url));
+    let quiet = Fake::new(|r| {
+        if r.url.ends_with("/crates.io/modified_id.csv") {
+            return Ok(Response::ok("2026-11-05T09:00:00Z,RUSTSEC-2021-0003\n2026-11-05T08:00:00Z,RUSTSEC-OTHER\n"));
+        }
+        panic!("cached answers are current, but asked {}", r.url)
+    });
     let opts = Options { paths: Some(vec![project]), machine: false, no_malware: true, ..Default::default() };
     let again = Scan::new(opts, cache, &quiet, &|_| {}, &|_| {}).run().unwrap();
     assert_eq!(again.findings.iter().filter(|f| f.kind == "project").count(), 1);

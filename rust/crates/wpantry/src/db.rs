@@ -335,6 +335,16 @@ impl Cache {
         Ok((queries, gone.len(), runs))
     }
 
+    /// [`Cache::put_query`] keeping the time the answer was given: a change
+    /// applied from OSV's change list updates the answer, not its age.
+    pub fn put_query_at(&self, eco: &str, pkg: &str, ver: &str, ids: &[String], at: f64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO queries VALUES (?, ?, ?, ?, ?)",
+            params![eco, pkg, ver, at, ids.join(" ")],
+        )?;
+        Ok(())
+    }
+
     pub fn put_query(&self, eco: &str, pkg: &str, ver: &str, ids: &[String]) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO queries VALUES (?, ?, ?, ?, ?)",

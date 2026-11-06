@@ -30,6 +30,18 @@ max_bytes = 134217728
 sends = "package"
 
 [[source]]
+id = "osv-changes"
+kind = "advisories"
+format = "osv-modified-csv"
+url = "https://osv-vulnerabilities.storage.googleapis.com/"
+tier = "default"
+refresh = "1d"
+license = "CC-BY-4.0 (varies by advisory source)"
+redistribute = false
+max_bytes = 1048576
+sends = "ecosystem"
+
+[[source]]
 id = "osv-git-tags"
 kind = "advisories"
 format = "git-tags"

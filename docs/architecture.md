@@ -1,6 +1,6 @@
 # How wpantry works
 
-wpantry is one Rust binary that reads what is installed on this computer and what its git repos lock, asks a few public sources about exactly those versions, judges the answers against each ecosystem's own version rules, and says what applies. Answers live in one SQLite cache, so a second run the same day takes seconds, and a source it can't reach is reported "not checked", never clean.
+wpantry is one Rust binary that reads what is installed on this computer and what its git repos lock, asks a few public sources about exactly those versions, judges the answers against each ecosystem's own version rules, and says what applies. Answers live in one SQLite cache, kept current from OSV's change lists, so a later run fetches only what changed since the last, and a source it can't reach is reported "not checked", never clean.
 
 Pantry is three things in a line: verified sources of CVEs, IOCs, YARA malware rules and other known attack vectors; wpantry, a fast file scanner that runs on a schedule or when triggered and keeps in its cache the sources it checked, the files it checked, the exposures it found and how and when each was mitigated; and the reports it writes (terminal text, JSON, JSON Lines, CSV, HTML, Markdown). It watches nothing live and needs no permission beyond reading files. Live telemetry, the clipboard included, belongs to a resident watchdog or sidecar beside it, which can trigger a scan; JSON reports can go to an external reporting service that shows many machines in aggregate.
 
@@ -15,7 +15,7 @@ Pantry is three things in a line: verified sources of CVEs, IOCs, YARA malware r
 flowchart TB
   scope["<b>1 SCOPE</b><br/>Walk ~ to depth 6, skipping Library, caches, toolchains, node_modules and app bundles,<br/>or the --path directories. Inventory the machine unless --no-machine."]
   read["<b>2 READ, in parallel</b><br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages;<br/>apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings;<br/>container images; documents and code. gitleaks runs on repos whose HEAD moved."]
-  ask["<b>3 ASK</b><br/>(ecosystem, name, version) to OSV in batches of 1000, only new or changed records fetched;<br/>KEV, EPSS, end-of-life, the malicious index, licenses and release feeds. Every answer memoized for a day."]
+  ask["<b>3 ASK</b><br/>(ecosystem, name, version) to OSV in batches of 1000, only new or changed records fetched;<br/>KEV, EPSS, end-of-life, the malicious index, licenses and release feeds.<br/>Answers kept current from OSV's change lists: only what changed since the last run is read."]
   judge["<b>4 JUDGE</b><br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own<br/>comparator; fail, warn, or not checked."]
   report["<b>5 REPORT</b><br/>Severity on CVSS&#39;s scale with CVSS and EPSS beside it; wpantry report renders the cache: areas of tables, JSON, CSV, Markdown, HTML;<br/>exit 0 clean, 1 fails, 2 usage, 3 internal. wpantry fix runs the unattended fixes, then re-checks."]
   scope --> read --> ask --> judge --> report

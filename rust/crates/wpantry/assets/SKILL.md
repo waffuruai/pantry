@@ -5,7 +5,7 @@ description: Scan this computer (or one project) for vulnerabilities that actual
 
 # wpantry
 
-wpantry inventories what is installed on this computer and in its git repos, asks OSV.dev, CISA KEV and endoflife.date only about that, and keeps everything in a local SQLite cache (`wpantry version` and the report header name it; default `~/.cache/wpantry/wpantry.db`, or `WPANTRY_DB`). Repeat runs the same day make almost no network calls. The CLI contract is `specs/cli-contract.md` in the `waffuruai/pantry` repo.
+wpantry inventories what is installed on this computer and in its git repos, asks OSV.dev, CISA KEV and endoflife.date only about that, and keeps everything in a local SQLite cache (`wpantry version` and the report header name it; default `~/.cache/wpantry/wpantry.db`, or `WPANTRY_DB`). Later runs read only what OSV changed since the last one (its change lists), so they make few network calls whenever they run. The CLI contract is `specs/cli-contract.md` in the `waffuruai/pantry` repo.
 
 ## Commands
 

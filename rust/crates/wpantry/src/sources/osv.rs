@@ -1,9 +1,10 @@
 //! OSV.dev lookups (F8): one `querybatch` per 1000 (ecosystem, package,
 //! version) answers which advisories apply, with ids and modified times only;
 //! a record is downloaded only when it is new or OSV changed it since, at
-//! most 8 at a time, with the stored ETag. Answers are reused for a day, so a
-//! second run the same day makes no OSV calls at all. Failures are never
-//! cached.
+//! most 8 at a time, with the stored ETag. An answer is kept current from
+//! OSV's change lists ([`crate::sources::osv_changes`]) and isn't asked
+//! again; where there is no list (git repos, the user's own advisory APIs)
+//! it is reused for a day. Failures are never cached.
 
 use crate::checks::ecosystems::versions;
 use crate::component::Status;
@@ -51,10 +52,23 @@ pub fn lookup(
     status: Status,
 ) -> Result<Answers> {
     let items: BTreeSet<&Item> = items.iter().collect();
+    // OSV's change lists first: what changed since the last read is applied
+    // to the answers held, so those needn't be asked again.
+    let synced = if offline {
+        crate::sources::osv_changes::Synced::default()
+    } else {
+        crate::sources::osv_changes::sync(cache, net, &items, refresh, status)?
+    };
+    for f in &synced.failed {
+        log(&format!("  ⚠ OSV's change list unreachable, asking OSV instead ({f})"));
+    }
+    let current = |it: &Item, at: f64| -> Result<bool> {
+        Ok(at >= now() - QUERY_TTL || crate::sources::osv_changes::current(cache, &it.0, at, QUERY_TTL)?)
+    };
     let mut stale = Vec::new();
     for it in &items {
         match cache.query(&it.0, &it.1, &it.2)? {
-            Some((at, _)) if !refresh && at >= now() - QUERY_TTL => {}
+            Some((at, _)) if !refresh && !synced.reask.contains(*it) && current(it, at)? => {}
             _ => stale.push((*it).clone()),
         }
     }
@@ -109,7 +123,7 @@ pub fn lookup(
     let mut old = 0;
     for it in items {
         let Some((at, ids)) = cache.query(&it.0, &it.1, &it.2)? else { continue };
-        if at < now() - QUERY_TTL {
+        if !current(it, at)? {
             old += 1;
         }
         let mut recs = Vec::new();
@@ -132,7 +146,7 @@ pub fn lookup(
     }
     if old > 0 {
         let why = failure.unwrap_or_else(|| "OSV wasn't asked again".into());
-        out.gaps.push(format!("{old} answers are older than a day and couldn't be refreshed ({why})"));
+        out.gaps.push(format!("{old} answers are more than a day out of date and couldn't be refreshed ({why})"));
     }
     Ok(out)
 }
@@ -156,7 +170,7 @@ fn want_key(id: &str) -> String {
 /// older one is stored, the old record marked stale so the scan reports
 /// the gap and the next run asks again. A record OSV never served at all
 /// is left absent, which [`lookup`] reports on its own.
-fn keep(cache: &Cache, id: &str, fetched: Fetched, wanted: Option<&str>) -> Result<()> {
+pub(crate) fn keep(cache: &Cache, id: &str, fetched: Fetched, wanted: Option<&str>) -> Result<()> {
     match fetched {
         Fetched::Record(rec, etag) => {
             store_record(cache, &rec, etag.as_deref())?;
@@ -196,7 +210,7 @@ fn hits(v: &Value, what: &str) -> Result<Vec<(String, String)>> {
 /// The OSV-compatible APIs in use, in order: OSV.dev (unless turned off)
 /// and any of the user's own (`format = "osv-api"`). Each is asked; the
 /// advisories they name are merged.
-fn endpoints() -> Vec<(String, String)> {
+pub(crate) fn endpoints() -> Vec<(String, String)> {
     crate::sources::file::effective()
         .sources
         .iter()
@@ -304,7 +318,7 @@ fn finish_refresh(
 
 /// One record download.
 #[derive(Debug)]
-enum Fetched {
+pub(crate) enum Fetched {
     Record(Value, Option<String>),
     /// 304: the cached record stands.
     NotModified,
@@ -315,9 +329,9 @@ enum Fetched {
 
 /// GET /v1/vulns/{id} for each id, at most [`PARALLEL`] in flight, each
 /// with its stored ETag, from the API `(source, base)` that named it.
-type Want = (String, Option<String>, (String, String));
+pub(crate) type Want = (String, Option<String>, (String, String));
 
-fn fetch_records(net: &dyn Net, ids: &[Want], status: Status) -> Result<Vec<(String, Fetched)>> {
+pub(crate) fn fetch_records(net: &dyn Net, ids: &[Want], status: Status) -> Result<Vec<(String, Fetched)>> {
     let queue = Mutex::new(ids.iter());
     let results = Mutex::new(Vec::new());
     let first_error = Mutex::new(None);
@@ -367,7 +381,7 @@ fn norm_repo(url: &str) -> String {
     u.strip_suffix(".git").unwrap_or(u).to_string()
 }
 
-fn matches(affected: &Value, eco: &str, pkg: &str) -> bool {
+pub(crate) fn matches(affected: &Value, eco: &str, pkg: &str) -> bool {
     let p = affected.get("package").cloned().unwrap_or(Value::Null);
     if eco == "GIT" {
         let want = norm_repo(pkg);

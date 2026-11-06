@@ -5,7 +5,7 @@ use super::{Contents, FileView, Read, Stat, When};
 use crate::checks::documents::{self, Doc};
 use crate::checks::hidden::{self, Hidden};
 use crate::checks::malware::targets::{self, Scope};
-use crate::checks::malware::yara::{Hit, Loaded};
+use crate::checks::malware::yara::Loaded;
 use crate::checks::supply_chain::mptcp::{self, Exposure};
 use crate::checks::suspects::{self, Kind, Suspect};
 use crate::db::Cache;
@@ -50,8 +50,8 @@ pub enum Found {
     Suspects(Vec<Suspect>),
     Mptcp(Vec<Exposure>),
     Documents(Vec<Doc>),
-    /// The files the scan counts, each with its hits.
-    Malware(Vec<(PathBuf, Vec<Hit>)>),
+    /// The files the scan counts, each as it was read.
+    Malware(Vec<(PathBuf, targets::Scanned)>),
     Blobs(Vec<Suspect>),
 }
 
@@ -183,8 +183,8 @@ impl Results {
         }
     }
 
-    /// A malware job's files, each with its hits.
-    pub fn malware(&self, job: &Job) -> Vec<(PathBuf, Vec<Hit>)> {
+    /// A malware job's files, each as it was read.
+    pub fn malware(&self, job: &Job) -> Vec<(PathBuf, targets::Scanned)> {
         match self.get(job) {
             Found::Malware(v) => v,
             _ => unreachable!("a malware job finds files"),

@@ -910,8 +910,9 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
         progress.finish();
     }
     let dir = malware::yara::rules_dir(&cache);
-    let loaded = malware::yara::load(&dir, false);
-    let all = malware::yara::load(&dir, true);
+    let active = |id: &str| wpantry::sources::file::active(id);
+    let loaded = malware::yara::load(&dir, false, &active);
+    let all = malware::yara::load(&dir, true, &active);
     cache.close()?;
     let stats = all.rules.stats();
     if json {

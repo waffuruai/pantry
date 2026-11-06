@@ -255,13 +255,37 @@ fn the_indicator_lists_and_the_rules_package_never_panic() {
     each("indicator lists", lists.as_bytes(), 14, |m| {
         stale(&c);
         let _ = crate::sources::indicator_lists::update(&c, &answer(m), &dir, true);
-        let _ = crate::sources::indicator_lists::load(&dir);
+        let _ = crate::sources::indicator_lists::load(&dir, &|_| true);
+        let _ = crate::sources::indicator_lists::store(&dir, &|_| true);
     });
     let feodo = json!([{"ip_address": "198.51.100.7", "malware": "Emotet"}]).to_string();
     each("feodo", feodo.as_bytes(), 15, |m| {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("feodo-ipblocklist.json"), m).unwrap();
-        let _ = crate::sources::indicator_lists::load(&dir);
+        let _ = crate::sources::indicator_lists::store(&dir, &|_| true);
+    });
+    let trails = "# Maltrail Trails\nevil.example,generic (malware),(static)\n198.51.100.7/,c2 (malware),(static)\n\"q,uoted.example\",x,y\n";
+    let gz = crate::utils::archive::gzip::tests::stored(trails.as_bytes(), Some("trails.csv"));
+    each("trails", &gz, 17, |m| {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("user-trails.indicators.txt"), m).unwrap();
+        let _ = crate::sources::indicator_lists::store(&dir, &|_| true);
+    });
+    let mut built = crate::sources::indicator_store::Store::new();
+    let o = built.origin("IOC_Host_User_trails", "trails");
+    built.add("evil.example", "generic (malware)", o);
+    built.add(&"0f".repeat(32), "Test Kit", o);
+    built.seal();
+    let saved = dir.join("saved-store.bin");
+    built.save(&saved, "d").unwrap();
+    let good = std::fs::read(&saved).unwrap();
+    each("saved indicator store", &good, 18, |m| {
+        std::fs::write(&saved, m).unwrap();
+        if let Some(s) = crate::sources::indicator_store::Store::load(&saved, "d") {
+            let _ = s
+                .get(crate::sources::indicator_store::key(crate::sources::indicator_store::Kind::Host, "evil.example"));
+            let _ = s.counts();
+        }
     });
     let zip = stored_zip("yara-rules-full.yar", b"rule a { condition: true }");
     each("rules package", &zip, 16, |m| {

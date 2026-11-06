@@ -1,7 +1,8 @@
-//! Archives the in-tree readers open: zip members, inflated by [`deflate`],
-//! and the little-endian and search helpers they share.
+//! Archives the in-tree readers open: zip members and gzip files, inflated
+//! by [`deflate`], and the little-endian and search helpers they share.
 
 pub mod deflate;
+pub mod gzip;
 pub mod zip;
 
 /// A zip member is read only up to this much once inflated (a bomb guard);

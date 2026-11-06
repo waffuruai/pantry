@@ -20,7 +20,8 @@ fn every_result_reads_back_as_it_was_kept() {
             listen: None,
         })),
         Out::Documents(vec![Doc { file: "a.pdf".into(), id: "DOC-JS-ON-OPEN", note: "n".into(), hard: true }]),
-        Out::Malware(Scanned { target: false, hits: Vec::new() }),
+        Out::Malware(Scanned { target: false, hits: Vec::new(), seen: None }),
+        Out::Malware(Scanned { target: true, hits: Vec::new(), seen: None }),
         Out::Malware(Scanned {
             target: true,
             hits: vec![Hit {
@@ -31,6 +32,7 @@ fn every_result_reads_back_as_it_was_kept() {
                 description: "d".into(),
                 sha256: "ab".into(),
             }],
+            seen: Some(crate::checks::malware::observe::observe(b"pool = bad-c2.example:443")),
         }),
     ];
     let checks = [

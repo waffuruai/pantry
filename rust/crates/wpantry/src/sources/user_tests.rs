@@ -42,11 +42,17 @@ fn file_sources_land_in_their_places_and_leave_when_dropped() {
     let net = Fake::new(|r| {
         Ok(Response::ok(if r.url.ends_with(".yar") { "rule t { condition: true }" } else { "bad.example\n" }))
     });
-    assert!(fetch_files(&c, &net, &rules, &mine, false).is_empty());
+    assert!(fetch_files(&c, &net, &rules, &mine, &mine, false).is_empty());
     assert!(rules.join("user-t-rules.yar").is_file() && rules.join("iocs/user-t-hosts.hosts.txt").is_file());
-    assert!(fetch_files(&c, &net, &rules, &mine[..1], false).is_empty());
+    assert!(fetch_files(&c, &net, &rules, &mine[..1], &mine, false).is_empty());
+    assert!(rules.join("iocs/user-t-hosts.hosts.txt").exists(), "listed but not used this run (deep, say): kept");
+    assert!(fetch_files(&c, &net, &rules, &mine[..1], &mine[..1], false).is_empty());
     assert!(!rules.join("iocs/user-t-hosts.hosts.txt").exists(), "a source no longer listed leaves");
     let gone = Fake::offline();
     std::fs::remove_file(rules.join("user-t-rules.yar")).unwrap();
-    assert_eq!(fetch_files(&c, &gone, &rules, &mine[..1], false).len(), 1, "unreachable with no copy: said so");
+    assert_eq!(
+        fetch_files(&c, &gone, &rules, &mine[..1], &mine[..1], false).len(),
+        1,
+        "unreachable with no copy: said so"
+    );
 }

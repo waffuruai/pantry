@@ -82,5 +82,8 @@ fn a_job_the_pass_was_not_given_runs_on_demand() {
     write(&d, "a.sh", b"#!/bin/sh\n");
     let results = run(&[]);
     let job = Job::new(Check::Malware(Scope::Programs), d.path(), targets::DEEP);
-    assert_eq!(results.malware(&job), [(d.path().join("a.sh"), Vec::new())]);
+    let got = results.malware(&job);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, d.path().join("a.sh"));
+    assert!(got[0].1.hits.is_empty() && got[0].1.seen.is_some(), "read, nothing found, its hashes kept");
 }

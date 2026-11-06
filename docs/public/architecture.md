@@ -5,7 +5,7 @@ Pantry is one Rust binary. It reads what is installed on this computer and what 
 - Answers live in one SQLite cache, kept current from OSV's change lists: a later run fetches only what changed.
 - A source it can't reach is reported "not checked", never clean.
 
-Pantry is three things in a line:
+Pantry is three things in one simple pipeline:
 
 1. **Sources**: verified CVEs, IOCs, YARA malware rules and other known attack vectors.
 2. **`wpantry`**: a fast file scanner, run on a schedule or when triggered. Its cache keeps the sources and files it checked, the exposures it found, and how and when each was mitigated.

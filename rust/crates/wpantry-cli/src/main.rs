@@ -414,6 +414,8 @@ fn cmd_report(show: &Show) -> Result<i32> {
         Shown::Md => wpantry::reporters::render(&cache, &report, Format::Md)?,
         Shown::Html => wpantry::reporters::render(&cache, &report, Format::Html)?,
     };
+    // A report saved where the malware scan looks is known as Pantry's own.
+    wpantry::reporters::remember(&cache, &text)?;
     cache.close()?;
     match &show.out {
         Some(path) => {

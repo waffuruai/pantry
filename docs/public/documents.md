@@ -6,7 +6,7 @@ Scanners skip the files people are sent: a spreadsheet with macros, a PDF that r
 - **Never** opened, rendered, executed or fetched. Every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess.
 - [ClamAV](https://www.clamav.net/), when installed, runs over the same files.
 
-**A clean result is not a clean file.** These checks find the shapes of document malware; ClamAV finds what it has signatures for. A document from a stranger still goes in a sandbox or a viewer with scripting off.
+**A clean result is not a clean file.** These checks find the shapes of document malware; ClamAV finds what it has signatures for. A document from a stranger should still be opened in a sandbox or a viewer with scripting off.
 
 | Id | What | Fails | Warns |
 |---|---|---|---|

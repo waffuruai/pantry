@@ -1,4 +1,4 @@
-# What Pantry checks, and where the answers come from
+# What Pantry checks for
 
 Pantry inventories what is installed on your computer and what your git repos lock, then asks a few public sources about only those exact versions. This page lists every check and every source.
 

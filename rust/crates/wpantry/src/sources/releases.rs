@@ -296,21 +296,6 @@ pub fn postgres(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Vec<PgAdv
         .collect())
 }
 
-/// The label for a CVSS score.
-pub fn severity_from_score(score: f64) -> &'static str {
-    if score >= 9.0 {
-        "CRITICAL"
-    } else if score >= 7.0 {
-        "HIGH"
-    } else if score >= 4.0 {
-        "MODERATE"
-    } else if score > 0.0 {
-        "LOW"
-    } else {
-        ""
-    }
-}
-
 #[cfg(test)]
 #[path = "releases_tests.rs"]
 mod tests;

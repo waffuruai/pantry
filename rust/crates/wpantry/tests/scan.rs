@@ -87,6 +87,10 @@ fn repo_scan_end_to_end() {
             };
             return Ok(Response::ok(rec.to_string()));
         }
+        if r.url.contains("epss") {
+            let rows: String = (0..1000).map(|i| format!("CVE-2020-{i},0.01,0.5\n")).collect();
+            return Ok(Response::ok(format!("cve,epss,percentile\nCVE-2021-25900,0.02,0.6\n{rows}")));
+        }
         panic!("unexpected request to {}", r.url);
     });
     // The malware pass has its own tests (src/malware/tests.rs); this one is the repo checks.

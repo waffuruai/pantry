@@ -42,6 +42,8 @@ pub const HOSTS: &[&str] = &[
     // GitHub serves release assets (YARA rule bundles) from these, by redirect.
     "release-assets.githubusercontent.com",
     "objects.githubusercontent.com",
+    // EPSS's daily scores, for every CVE.
+    "epss.empiricalsecurity.com",
     // The malware scan's indicator lists and, with consent, hash lookups.
     "feodotracker.abuse.ch",
     "yaraify-api.abuse.ch",
@@ -255,6 +257,23 @@ impl Net for Http {
 /// Send `req`, then follow a 301/302/303/307/308 to its `Location` (a GET,
 /// headers kept except `Authorization`, which never leaves the first host),
 /// at most [`MAX_REDIRECTS`] times. `send` checks each URL against [`HOSTS`].
+/// A redirect's `Location` against the URL it answered: absolute as is,
+/// `/path` on the same host, `name` beside the URL's last segment.
+fn resolve(base: &str, location: &str) -> String {
+    if location.contains("://") {
+        return location.to_string();
+    }
+    let host = host_of(base).unwrap_or_default();
+    if location.starts_with('/') {
+        return format!("https://{host}{location}");
+    }
+    let path = base.split(['?', '#']).next().unwrap_or_default();
+    match path.rsplit_once('/') {
+        Some((dir, _)) if dir.len() > "https://".len() + host.len() => format!("{dir}/{location}"),
+        _ => format!("https://{host}/{location}"),
+    }
+}
+
 fn follow_redirects(req: &Request, send: impl Fn(&Request) -> Result<(Response, Option<String>)>) -> Result<Response> {
     let mut current = req.clone();
     for _ in 0..=MAX_REDIRECTS {
@@ -262,12 +281,7 @@ fn follow_redirects(req: &Request, send: impl Fn(&Request) -> Result<(Response, 
         let Some(next) = location.filter(|_| matches!(resp.status, 301 | 302 | 303 | 307 | 308)) else {
             return Ok(resp);
         };
-        let next = if next.starts_with('/') {
-            let host = host_of(&current.url).unwrap_or_default();
-            format!("https://{host}{next}")
-        } else {
-            next
-        };
+        let next = resolve(&current.url, &next);
         let first_host = host_of(&req.url);
         current = Request {
             method: "GET",

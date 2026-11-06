@@ -16,6 +16,10 @@ fn cache() -> (crate::utils::temp::TempDir, Cache) {
 fn feeds(r: &Request) -> Result<Response> {
     let u = r.url.as_str();
     let ok = |v: serde_json::Value| Ok(Response::ok(v.to_string()));
+    if u == crate::sources::file::url("epss") {
+        let rows: String = (0..1000).map(|i| format!("CVE-2026-{i},0.01,0.5\n")).collect();
+        return Ok(Response::ok(format!("cve,epss,percentile\n{rows}")));
+    }
     if u == crate::sources::file::url("cisa-kev") {
         return ok(json!({"vulnerabilities": [{"cveID": "CVE-2026-1"}]}));
     }
@@ -61,7 +65,8 @@ fn a_sync_refreshes_every_feed_and_names_what_failed() {
     c.put_query("npm", "left-pad", "1.0.0", &[]).unwrap();
     let seen = std::sync::Mutex::new(Vec::new());
     let got = run(&c, &net, true, &|s| seen.lock().unwrap().push(s.to_string())).unwrap();
-    let mut want = vec!["CISA KEV", "OpenSSF malicious packages", "Firefox releases", "VS Code extension lists", "OSV"];
+    let mut want =
+        vec!["CISA KEV", "EPSS", "OpenSSF malicious packages", "Firefox releases", "VS Code extension lists", "OSV"];
     if cfg!(target_os = "macos") {
         want.extend(["Homebrew casks", "Chrome releases"]);
     }

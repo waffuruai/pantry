@@ -45,6 +45,7 @@ These are the only hosts the binary will connect to: every source is declared in
 |---|---|---|
 | [OSV.dev](https://osv.dev) (`api.osv.dev`) | Known vulnerabilities, affected and fixed versions, severity, aliases, for every ecosystem OSV covers (crates.io, npm, PyPI, Go, RubyGems, Maven, Debian, Ubuntu, Alpine, SUSE, and more) | The (ecosystem, name, version) of what is installed or locked. No file contents, paths or secrets. Workspace members and local packages are not sent |
 | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | The `KEV` mark: vulnerabilities seen exploited in the wild, which the report puts first | Nothing; the catalog is downloaded |
+| [EPSS](https://www.first.org/epss/) (FIRST; scores by Empirical Security, `epss.empiricalsecurity.com`) | For every CVE, the probability it is exploited in the next 30 days and its percentile: the reports' EPSS column, and the order within a severity; daily | Nothing; the whole file (about 3 MB) is downloaded, so no CVE list leaves the machine |
 | [endoflife.date](https://endoflife.date) | End-of-life dates for runtimes and datastores | The product name |
 | [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages) | Known malicious package names, per ecosystem | Nothing; the index is cloned with git |
 | [deps.dev](https://deps.dev) | Dependency licenses, with `--licenses` | The (ecosystem, name, version) of your repos' dependencies |

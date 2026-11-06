@@ -17,6 +17,7 @@ pub mod hidden;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
+pub mod severity;
 pub mod supply_chain;
 pub mod suspects;
 
@@ -449,6 +450,9 @@ impl<'a> Scan<'a> {
         self.status("Fetching CISA's known-exploited list");
         let kev = kev::kev(&self.cache, self.net, self.opts.offline);
         self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
+        self.status("Fetching EPSS's exploit predictions");
+        let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
+        self.guard("EPSS (exploit predictions)", epss, 0)?;
         let (log, note, status) = (self.log, self.note, self.status);
         self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
@@ -460,6 +464,8 @@ impl<'a> Scan<'a> {
         if !self.opts.no_malware {
             crate::checks::malware::run(&mut self);
         }
+        self.status("Rating the findings");
+        crate::checks::severity::enrich(&self.cache, &mut self.findings);
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
         let totals = (self.unfixed, self.unknown_licenses);

@@ -164,6 +164,10 @@ pub fn record_scan_totals(
                 f.fix_cmd
             ],
         )?;
+        cache.conn.execute(
+            "UPDATE exposures SET cvss = ?, cvss_version = ?, epss = ?, epss_percentile = ? WHERE key = ?",
+            params![f.cvss, f.cvss_version, f.epss, f.epss_percentile, key],
+        )?;
     }
     // Open exposures of this scope the scan didn't list are over, when every
     // source answered: a source that couldn't be asked may be where they were.
@@ -299,6 +303,12 @@ pub struct Exposure {
     pub dep_direct: Option<bool>,
     pub affected_range: String,
     pub fix_cmd: String,
+    /// As on the finding: its CVSS score and version, its EPSS score and
+    /// percentile.
+    pub cvss: Option<f64>,
+    pub cvss_version: String,
+    pub epss: Option<f64>,
+    pub epss_percentile: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -345,7 +355,7 @@ pub struct ScanRow {
 pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, severity, kev, fixed, note, first_at, last_at, resolved_at, \
-         dep_scope, dep_direct, affected_range, fix_cmd \
+         dep_scope, dep_direct, affected_range, fix_cmd, cvss, cvss_version, epss, epss_percentile \
          FROM exposures WHERE last_at >= ? OR resolved_at >= ? OR resolved_at IS NULL \
          ORDER BY resolved_at IS NOT NULL, first_at",
     )?;
@@ -372,6 +382,10 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
             dep_direct: r.get::<_, Option<i64>>(14)?.map(|d| d != 0),
             affected_range: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
             fix_cmd: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+            cvss: r.get(17)?,
+            cvss_version: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
+            epss: r.get(19)?,
+            epss_percentile: r.get(20)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

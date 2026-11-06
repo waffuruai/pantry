@@ -368,7 +368,7 @@ var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'
 // The order every report shares (reporters/view.rs): what acts on its own, what is on the machine, what the repos lock, what the harnesses run, then the rest.
 var KIND_ORDER = ['clipper','malware','posture','persistence','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
   'project','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
-var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, IMPORTANT:2, MODERATE:3, MEDIUM:3, LOW:4};
+var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, MEDIUM:3, LOW:4};
 
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -405,7 +405,7 @@ function advLinks(id){
    known exploited, end of life, severity, the rest ---------- */
 function bucket(f){
   if(['clipper','malware','suspect-code','hidden-text','repo-hook'].indexOf(f.kind)>=0 && f.status==='fail')return 0;
-  if(f.severity==='MALICIOUS'||f.vuln_id==='MALICIOUS')return 1;
+  if(f.severity==='MALICIOUS'||f.vuln_id==='MALICIOUS'||f.vuln_id.indexOf('MAL-')===0)return 1;
   if(f.kind==='secret'&&f.status==='fail')return 2;
   if(f.kev)return 3;
   if(f.vuln_id==='EOL')return 4;
@@ -413,7 +413,11 @@ function bucket(f){
   return 10;
 }
 function rank(f){return (f.status==='fail'?0:100)+bucket(f)}
-function byRank(a,b){return rank(a)-rank(b)||a.n-b.n}
+// within a rank, the likelier to be exploited (EPSS) first
+function byRank(a,b){return rank(a)-rank(b)||(b.epss||0)-(a.epss||0)||a.n-b.n}
+function num(v){return typeof v==='number'&&isFinite(v)?v:null}
+function cvssText(f){return f.cvss==null?'':'CVSS '+f.cvss.toFixed(1)+(f.cvss_version?' (v'+f.cvss_version+')':'')}
+function epssText(f){return f.epss==null?'':'EPSS '+(f.epss>=0.001?(f.epss*100).toFixed(1)+'%':'<0.1%')+(f.epss_percentile!=null?' ('+Math.round(f.epss_percentile*100)+'th pct)':'')}
 function sevClass(s){return s?' '+String(s).toLowerCase():''}
 function cmpVersion(a,b){ // numeric-aware, enough to pick the highest fixed version
   var x=String(a).split(/[.\-+]/),y=String(b).split(/[.\-+]/);
@@ -441,6 +445,7 @@ function normalize(raw, meta){
     return {n:i+1, kind:kind, component:f.component||'', version:f.version||'', location:f.location||'',
       vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?'unchecked':(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
+      cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile),
       dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
       key:String(i)};
   });
@@ -494,12 +499,14 @@ function parseCSV(text){
   if(!rows.length)return null;
   var h=rows[0].map(function(s){return s.trim()});
   var required=['id','aliases','url','component','kind','affected_version','safe_version','severity','kev','status','location'];
-  if(h.length!==required.length || new Set(h).size!==h.length || !required.every(function(k){return h.indexOf(k)>=0}) || rows.slice(1).some(function(r){return r.length!==h.length}))throw new Error('csv');
+  var optional=['cvss','cvss_version','epss','epss_percentile'];
+  if(new Set(h).size!==h.length || !required.every(function(k){return h.indexOf(k)>=0}) || !h.every(function(k){return required.indexOf(k)>=0||optional.indexOf(k)>=0}) || rows.slice(1).some(function(r){return r.length!==h.length}))throw new Error('csv');
   return rows.slice(1).map(function(r){var o=Object.create(null);h.forEach(function(k,j){o[k]=r[j]==null?'':r[j]});return o;});
 }
 function csvToReport(list){
   return {schema:1, impl:'', version:'', unfixed:0, unknown_licenses:0, checked:{}, findings:list.map(function(o){return {kind:o.kind, component:o.component, version:o.affected_version,
     location:o.location, vuln_id:o.id, status:o.status, fixed:o.safe_version, kev:o.kev==='1'||o.kev==='true', severity:o.severity,
+    cvss:o.cvss?Number(o.cvss):null, cvss_version:o.cvss_version||'', epss:o.epss?Number(o.epss):null, epss_percentile:o.epss_percentile?Number(o.epss_percentile):null,
     note:'', fix_cmd:'', fix_auto:false};})};
 }
 
@@ -673,6 +680,8 @@ function detailHTML(row,print){
     var id=links.length?links.map(function(l){return '<a href="'+esc(l.url)+'" target="_blank" rel="noopener noreferrer">'+esc(l.id)+'</a>'}).join(' '):esc(f.vuln_id||'—');
     var bits='<span class="id">'+id+'</span>'+(f.kev?badge('kev','KEV'):'')+sevBadge(f.severity)+(f.status!==row.state?stateBadge(f.state):'');
     if(isBundle(f.kind))bits+='<span class="mono" style="font-size:13px">'+esc(f.component.split(' › ').slice(1).join(' › '))+(f.version?' '+esc(f.version):'')+(f.fixed?' → '+esc(f.fixed):'')+'</span>';
+    if(f.cvss!=null)bits+='<span class="rng">'+esc(cvssText(f))+'</span>';
+    if(f.epss!=null)bits+='<span class="rng" title="The chance it is exploited in the next 30 days (FIRST EPSS)">'+esc(epssText(f))+'</span>';
     if(f.affected_range)bits+='<span class="rng">affected '+esc(f.affected_range)+'</span>';
     if(f.fixed&&!isBundle(f.kind))bits+='<span class="rng">fixed in '+esc(f.fixed)+'</span>';
     if(f.note&&f!==top)bits+='<span class="nt">'+ticks(f.note)+'</span>';

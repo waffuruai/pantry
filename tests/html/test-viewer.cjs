@@ -49,7 +49,7 @@ const every=[
   finding('clipper','ClipGrab','CLIPPER-PERSISTENCE','fail',{fix_cmd:"Don't send funds from this machine; remove ClipGrab"}),
   finding('extension','evil.helper','MALICIOUS','fail',{severity:'MALICIOUS',kev:true,fix_cmd:'code --uninstall-extension evil.helper',fix_auto:true}),
   finding('secret','repo-b/.env','aws-access-token','fail',{fix_cmd:'If it\'s real: rotate it, then purge it from history. If not: add abc:.env:aws-access-token:3 to ~/w/repo-b/.gitleaksignore'}),
-  finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock'}),
+  finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock',cvss:9.8,cvss_version:'3.1',epss:0.0213,epss_percentile:0.84}),
   finding('project','smallvec','CVE-2019-15551','fail',{severity:'HIGH',fixed:'1.0.0',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,location:'/Users/me/w/app/Cargo.lock'}),
   finding('runtime','python','EOL','fail',{version:'3.8',fixed:'3.13',fix_cmd:'mise install python@3.13'}),
   finding('brew','openssl@3','CVE-2026-1','fail',{severity:'HIGH',fixed:'3.5.2',fix_cmd:'brew upgrade openssl@3',fix_auto:true}),
@@ -60,11 +60,11 @@ const every=[
   finding('document','Downloads/invoice.pdf','DOC-JS-ON-OPEN','fail',{fix_cmd:'Open Downloads/invoice.pdf only in Preview or a sandbox'}),
   finding('compiler','gcc','CVE-2026-2','warn',{severity:'LOW',fixed:'15.1',fix_cmd:'brew upgrade gcc',fix_auto:true}),
   finding('manager','mise','OUTDATED','warn',{fix_cmd:'brew upgrade mise'}),
-  finding('pkgmgr','pip','CVE-2026-3','warn',{severity:'MODERATE',fixed:'25.1',fix_cmd:'python3 -m pip install --upgrade pip',fix_auto:true}),
+  finding('pkgmgr','pip','CVE-2026-3','warn',{severity:'MEDIUM',fixed:'25.1',fix_cmd:'python3 -m pip install --upgrade pip',fix_auto:true}),
   finding('tool','gitleaks','MISSING','warn',{fix_cmd:'brew install gitleaks'}),
   finding('datastore','postgresql','CVE-2026-4','warn',{severity:'HIGH',fix_cmd:'Mitigate: restrict pg_hba.conf until a fix ships'}),
-  finding('harness','claude-code','CVE-2026-5','warn',{severity:'MODERATE',fixed:'2.1',fix_cmd:'npm install -g @anthropic-ai/claude-code@2.1',fix_auto:true}),
-  finding('package','requests','CVE-2026-6','warn',{severity:'MODERATE',fixed:'2.33',fix_cmd:'pip install --user --upgrade requests',fix_auto:true}),
+  finding('harness','claude-code','CVE-2026-5','warn',{severity:'MEDIUM',fixed:'2.1',fix_cmd:'npm install -g @anthropic-ai/claude-code@2.1',fix_auto:true}),
+  finding('package','requests','CVE-2026-6','warn',{severity:'MEDIUM',fixed:'2.33',fix_cmd:'pip install --user --upgrade requests',fix_auto:true}),
   finding('app','Slack','OUTDATED','warn',{fix_cmd:'Update Slack: Slack > Check for Updates'}),
   finding('browser','Firefox','BROWSER','warn',{fix_cmd:'Update Firefox from its menu'}),
   finding('image','app:latest › libssl3','CVE-2026-7','warn',{severity:'HIGH',fixed:'3.0.14',fix_cmd:'Rebuild app:latest from a current base image'}),
@@ -138,6 +138,7 @@ const smallvec=every.findIndex(f=>f.component==='smallvec');
 click({open:String(smallvec)});
 const opened=areas().find(x=>x[0]==='project')[1];
 assert(opened.includes('CVE-2019-15551') && opened.includes('href="https://www.cve.org/CVERecord?id=CVE-2021-25900"'));
+assert(opened.includes('CVSS 9.8 (v3.1)') && opened.includes('EPSS 2.1% (84th pct)'),'scores beside the advisory');
 assert(opened.includes('affected &gt;=1.6.0, &lt;1.6.1') && opened.includes('<dt>Dependency scope</dt><dd>runtime</dd>') && opened.includes('Direct'));
 assert(opened.includes('<span class="who">by hand</span><code>cd /Users/me/w/app &amp;&amp; cargo update -p smallvec --precise 1.6.1</code>'));
 click({open:String(smallvec)});

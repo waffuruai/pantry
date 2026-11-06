@@ -136,7 +136,7 @@ With `-o FILE`, the parent must exist. Output is staged beside the destination (
 | `impl` | string | `rust` |
 | `version` | string | The implementation's version |
 | `checked` | object string → int | What was checked and how many (labels are display text; callers SHOULD NOT parse them) |
-| `unfixed` | int | Applicable advisories with no released fix. Those rated Critical or High (by the advisory's label, else its CVSS 3.x vector) or listed in CISA KEV also appear in `findings` as `warn` with `fixed` empty and the mitigation (bundled `mitigations.txt`, else a line saying to keep checking) as `fix_cmd`; the rest are only counted. A program exposed to such an advisory by what it does (a Go 1.24+ module listening with Multipath TCP on, `CVE-2026-98432`) counts here too, as a `project` warning with `fixed` empty and the opt-out as `fix_cmd`, `fix_auto` false. Added 2026-11-01 |
+| `unfixed` | int | Applicable advisories with no released fix. Those rated Critical or High (by the advisory's label, else its CVSS 3.x or 4.0 score) or listed in CISA KEV also appear in `findings` as `warn` with `fixed` empty and the mitigation (bundled `mitigations.txt`, else a line saying to keep checking) as `fix_cmd`; the rest are only counted. A program exposed to such an advisory by what it does (a Go 1.24+ module listening with Multipath TCP on, `CVE-2026-98432`) counts here too, as a `project` warning with `fixed` empty and the opt-out as `fix_cmd`, `fix_auto` false. Added 2026-11-01 |
 | `unknown_licenses` | int | Repo dependencies with no identifiable license; 0 unless `--licenses` |
 | `findings` | array of Finding | Everything that applies, failing or warning |
 
@@ -154,7 +154,11 @@ The optional HTML presentation bundle preserves the scan envelope unchanged. It 
 | `status` | string | `fail` or `warn` |
 | `fixed` | string | The safe version; `""` when none |
 | `kev` | bool | In CISA KEV (also true for malicious packages) |
-| `severity` | string | Usually `CRITICAL`, `HIGH`, `MODERATE`, `LOW` or `MALICIOUS`; a source's own label (dnf: `IMPORTANT`) or `""` otherwise |
+| `severity` | string | CVSS's words: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (or `NONE` for a warning an advisory scores 0). An advisory's comes from its record's own label, mapped to these words (GitHub's `MODERATE` is `MEDIUM`, a distro's `IMPORTANT` is `HIGH`, a malicious package is `CRITICAL`), else from the record or its aliases' CVSS 3.x or 4.0 score; wpantry's own checks rate theirs by what they mean for the machine. Changed 2026-11-05: `MODERATE`, `IMPORTANT` and `MALICIOUS` are no longer used, and every finding has one |
+| `cvss` | number or null | The advisory's CVSS base score (0.0–10.0), the newest version its record or aliases carry; `null` for wpantry's own checks and advisories without a vector. Added 2026-11-05 |
+| `cvss_version` | string | `3.0`, `3.1`, `4.0`, or `3.x` (a score published without its vector); `""` with no score. Added 2026-11-05 |
+| `epss` | number or null | The [EPSS](https://www.first.org/epss/) probability (0–1) that the advisory's CVE is exploited in the next 30 days, the highest of its CVE ids'; likelihood, shown beside the severity and never folded into it. `null` without a CVE or a cached score. Added 2026-11-05 |
+| `epss_percentile` | number or null | That score's percentile among all scored CVEs (0–1). Added 2026-11-05 |
 | `note` | string | One line for a human |
 | `fix_cmd` | string | Command or step that fixes it; `""` when none |
 | `fix_auto` | bool | `fix` may run `fix_cmd` unattended |
@@ -162,7 +166,7 @@ The optional HTML presentation bundle preserves the scan envelope unchanged. It 
 | `dep_direct` | bool or null | The project's own dependency (`true`) or one another pulled in (`false`); `null` when the lockfile doesn't say. Added 2026-10-31 |
 | `affected_range` | string | The advisory's range the installed or locked version fell in, as `>=A, <B` (`<=B` for a last-affected bound, `=V` for a listed version); `""` when the finding has none (markers, GIT ranges). Added 2026-10-31 |
 
-The three dependency keys were added under the additive rule: older callers ignore them, and `schema` stays 1.
+The three dependency keys and the four score keys were added under the additive rule: older callers ignore them, and `schema` stays 1.
 
 A source that couldn't be reached is a finding with `kind == "unchecked"`, `status == "warn"`: never silence, never "clean".
 
@@ -179,7 +183,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `meta` | `key` TEXT PK, `value` TEXT (`breach_consent`, `malicious_at`, `<feed>_at`, `<feed>_etag`, `eol_at:<product>`, `vuln_etag:<id>`, `persistence_at:<source>`) |
 | `vulns` | `id` TEXT PK, `aliases` TEXT (space-separated), `summary`, `details`, `severity`, `published`, `modified`, `url`, `record` TEXT (full OSV JSON) |
 | `queries` | `ecosystem`, `package`, `version` TEXT (PK together), `checked_at` REAL (Unix time), `vuln_ids` TEXT (space-separated) |
-| `findings` | `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `fixed` TEXT, `kev` INTEGER, `severity`, `note`, `fix_cmd` TEXT, `fix_auto` INTEGER, `dep_scope` TEXT, `dep_direct` INTEGER (NULL when unknown), `affected_range` TEXT. The last three were added 2026-10-31; a cache from before gains them on open |
+| `findings` | `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `fixed` TEXT, `kev` INTEGER, `severity`, `note`, `fix_cmd` TEXT, `fix_auto` INTEGER, `dep_scope` TEXT, `dep_direct` INTEGER (NULL when unknown), `affected_range` TEXT, `cvss` REAL, `cvss_version` TEXT, `epss` REAL, `epss_percentile` REAL. The dependency columns were added 2026-10-31 and the score columns 2026-11-05; a cache from before gains them on open |
 | `kev` | `cve` TEXT PK, `added`, `name` |
 | `eol` | `product`, `cycle` TEXT (PK together), `eol`, `latest` |
 | `casks` | `app` TEXT PK, `token`, `version` |
@@ -187,7 +191,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `malicious` | `ecosystem`, `name`, `id` TEXT; index `malicious_name (ecosystem, name)` |
 | `persistence` | `key` TEXT PK (a SHA-256 of the source, the location and what tells the item apart: a startup file's line is kept only as this hash), `source` TEXT (`launchd`, `app-login`, `cron`, `at`, `periodic`, `emond`, `authorization`, `kext`, `system-extension`, `quicklook`, `spotlight`, `shell`, `launchd-env`, `systemd`, `autostart`, `preload`), `location` TEXT, `program` TEXT, `first_at` REAL, `last_at` REAL: the persistence baseline, one row per item the last machine scan that read its source found; `meta` `persistence_at:<source>` says when that was. Added 2026-11-04 |
 | `scans` | `id` INTEGER PK, `started_at` REAL, `finished_at` REAL, `host`, `user`, `version`, `scope` TEXT, `counts` TEXT (JSON), `fails` INTEGER, `warns` INTEGER, `unchecked` INTEGER (sources that couldn't be asked; a scan with any resolves no exposure and verifies no fix): one row per scan |
-| `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL, `dep_scope` TEXT, `dep_direct` INTEGER, `affected_range` TEXT, `fix_cmd` TEXT: a finding across scans; resolved by a scan of the same scope that no longer lists it |
+| `exposures` | `key` TEXT PK (`kind|component|location|vuln_id`), `scope`, `kind`, `component`, `version`, `location`, `vuln_id`, `status`, `severity` TEXT, `kev` INTEGER, `fixed`, `note` TEXT, `first_scan` INTEGER, `first_at` REAL, `last_scan` INTEGER, `last_at` REAL, `resolved_scan` INTEGER, `resolved_at` REAL, `dep_scope` TEXT, `dep_direct` INTEGER, `affected_range` TEXT, `fix_cmd` TEXT, `cvss` REAL, `cvss_version` TEXT, `epss` REAL, `epss_percentile` REAL (the latest scan's): a finding across scans; resolved by a scan of the same scope that no longer lists it |
 | `fixes` | `id` INTEGER PK, `scan_id` INTEGER, `at` REAL, `command` TEXT, `mode` TEXT, `ok` INTEGER, `verified_scan` INTEGER (the complete scan after a fix that exited 0 in which none of its `targets` were listed; NULL otherwise), `targets` TEXT (JSON array of `exposures.key`): the unattended fixes `--fix` ran |
 | `events` | `id` INTEGER PK, `at` REAL, `kind` TEXT (`scan`, `fix`, `clipper`, …), `detail` TEXT (JSON) |
 | `hash_verdict` | `sha256`, `source` TEXT (PK together), `verdict` TEXT (`malware`, `good`, `unknown`), `family` TEXT, `checked_at` REAL: online answers about flagged files, reused for a day. Added 2026-11-04 |

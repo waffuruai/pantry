@@ -97,8 +97,8 @@ fn severity_rank(s: &str) -> Option<u32> {
     match s {
         "MALICIOUS" => Some(0),
         "CRITICAL" => Some(1),
-        "HIGH" | "IMPORTANT" => Some(2),
-        "MODERATE" | "MEDIUM" => Some(3),
+        "HIGH" => Some(2),
+        "MEDIUM" => Some(3),
         "LOW" => Some(4),
         _ => None,
     }
@@ -112,7 +112,7 @@ pub fn rank(f: &Finding) -> u32 {
     let acts = matches!(f.kind.as_str(), "clipper" | "malware" | "suspect-code" | "hidden-text" | "repo-hook");
     let bucket = if acts && f.status == "fail" {
         0
-    } else if f.severity == "MALICIOUS" || f.vuln_id == "MALICIOUS" {
+    } else if f.severity == "MALICIOUS" || f.vuln_id == "MALICIOUS" || f.vuln_id.starts_with("MAL-") {
         1
     } else if f.kind == "secret" && f.status == "fail" {
         2
@@ -145,6 +145,22 @@ pub struct Row<'a> {
     /// What fixes the row: the command of the finding whose fix covers the
     /// rest, else any finding's command, else "update to <version>".
     pub fix: String,
+    /// The highest CVSS score among its findings, with its version, and the
+    /// highest EPSS score and percentile.
+    pub cvss: Option<(f64, String)>,
+    pub epss: Option<(f64, f64)>,
+}
+
+/// A CVSS score as reports show it: `9.3` (the version in its own column
+/// or a tooltip), "" without one.
+pub fn cvss_text(c: Option<&(f64, String)>) -> String {
+    c.map(|(v, _)| format!("{v:.1}")).unwrap_or_default()
+}
+
+/// An EPSS score as reports show it: the probability as a percentage,
+/// `12.3%`; "" without one.
+pub fn epss_text(e: Option<(f64, f64)>) -> String {
+    e.map(|(s, _)| if s >= 0.001 { format!("{:.1}%", s * 100.0) } else { "<0.1%".into() }).unwrap_or_default()
 }
 
 impl<'a> Row<'a> {
@@ -296,7 +312,9 @@ pub fn view(findings: &[Finding]) -> View<'_> {
     // ranked here is borrowed from that slice.
     let base = findings.as_ptr() as usize;
     let index = |f: &Finding| (f as *const Finding as usize - base) / std::mem::size_of::<Finding>().max(1);
-    let by_rank = |a: &&Finding, b: &&Finding| (rank(a), index(a)).cmp(&(rank(b), index(b)));
+    // Within a rank, the likelier to be exploited (EPSS) first.
+    let likely = |f: &Finding| ((1.0 - f.epss.unwrap_or(0.0)) * 1e6) as u64;
+    let by_rank = |a: &&Finding, b: &&Finding| (rank(a), likely(a), index(a)).cmp(&(rank(b), likely(b), index(b)));
     let mut kinds: Vec<&str> = Vec::new();
     for f in findings.iter().filter(|f| f.kind != "unchecked") {
         if !kinds.contains(&f.kind.as_str()) {
@@ -325,6 +343,8 @@ pub fn view(findings: &[Finding]) -> View<'_> {
                         severity: "",
                         ids: Vec::new(),
                         fix: String::new(),
+                        cvss: None,
+                        epss: None,
                     }),
                 }
             }
@@ -345,6 +365,16 @@ pub fn view(findings: &[Finding]) -> View<'_> {
                     }
                 }
                 r.fix = fix_of(&r.findings);
+                r.cvss = r
+                    .findings
+                    .iter()
+                    .filter_map(|f| f.cvss.map(|v| (v, f.cvss_version.clone())))
+                    .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                r.epss = r
+                    .findings
+                    .iter()
+                    .filter_map(|f| f.epss.map(|e| (e, f.epss_percentile.unwrap_or(0.0))))
+                    .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             }
             rows.sort_by(|a, b| by_rank(&a.top(), &b.top()));
             let all: Vec<&Finding> = rows.iter().flat_map(|r| r.findings.iter().copied()).collect();

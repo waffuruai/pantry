@@ -7,6 +7,7 @@
 pub mod breaches;
 pub mod distros;
 pub mod endoflife;
+pub mod epss;
 pub mod extensions;
 pub mod fetch;
 pub mod file;

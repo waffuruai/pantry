@@ -3,7 +3,7 @@
 # compiled from this file's, and a test fails when they disagree.
 #
 #   id            unique, kebab-case: names the source in findings and `wpantry sources`
-#   kind          what it gives: advisories | kev | eol | releases | malicious-packages
+#   kind          what it gives: advisories | kev | exploit-prediction | eol | releases | malicious-packages
 #                 | licenses | breaches | yara | hashes | hosts | filenames | hash-lookup
 #   format        how it is read
 #   url           the file, or the API's base; `{}` marks where a request puts its part
@@ -166,6 +166,17 @@ license = "unspecified"
 redistribute = false
 max_bytes = 134217728
 sends = "extension"
+
+[[source]]
+id = "epss"
+kind = "exploit-prediction"
+format = "epss-csv"
+url = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+tier = "default"
+refresh = "1d"
+license = "free and open (FIRST EPSS; scores by Empirical Security)"
+redistribute = false
+max_bytes = 67108864
 
 [[source]]
 id = "deps-dev"

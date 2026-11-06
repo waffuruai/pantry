@@ -76,3 +76,34 @@ fn alike_commands_batch_and_sudo_stays_apart() {
         ]
     );
 }
+
+#[test]
+fn a_row_carries_its_highest_scores_and_likelier_first() {
+    let mut a = f("package", "lodash", "GHSA-a", "fail");
+    a.severity = "HIGH".into();
+    (a.cvss, a.cvss_version, a.epss, a.epss_percentile) = (Some(7.5), "3.1".into(), Some(0.02), Some(0.8));
+    let mut b = f("package", "lodash", "GHSA-b", "fail");
+    b.severity = "HIGH".into();
+    (b.cvss, b.cvss_version, b.epss, b.epss_percentile) = (Some(8.7), "4.0".into(), Some(0.4), Some(0.99));
+    let all = [a, b];
+    let v = view(&all);
+    let row = &v.areas[0].rows[0];
+    assert_eq!(row.ids, ["GHSA-b", "GHSA-a"], "same severity: the likelier to be exploited first");
+    assert_eq!(row.cvss, Some((8.7, "4.0".to_string())));
+    assert_eq!(row.epss, Some((0.4, 0.99)));
+    assert_eq!((cvss_text(row.cvss.as_ref()), epss_text(row.epss)), ("8.7".to_string(), "40.0%".to_string()));
+    assert_eq!(
+        (cvss_text(None), epss_text(None), epss_text(Some((0.0002, 0.1)))),
+        (String::new(), String::new(), "<0.1%".to_string())
+    );
+}
+
+#[test]
+fn osv_malicious_records_rank_with_malware() {
+    let mut mal = f("package", "evil", "MAL-2026-1", "fail");
+    mal.severity = "CRITICAL".into();
+    let mut crit = f("package", "lodash", "GHSA-c", "fail");
+    crit.severity = "CRITICAL".into();
+    crit.kev = true;
+    assert!(rank(&mal) < rank(&crit));
+}

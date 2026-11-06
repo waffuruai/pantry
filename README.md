@@ -90,12 +90,14 @@ Pantry stands on open source code and open data. The code we read and wrote agai
 - [osv-scanner](https://github.com/google/osv-scanner) and [osv-scalibr](https://github.com/google/osv-scalibr) (Google, Apache-2.0): how lockfiles and Linux package databases map to OSV ecosystems. wpantry's readers were written against their test fixtures, and the Python implementation ran osv-scanner itself before the Rust port.
 - [Mergen](https://github.com/sametsazak/mergen) (MIT): which macOS security settings an unprivileged process can read and fix, behind the posture checks.
 - [gitleaks](https://github.com/gitleaks/gitleaks) (MIT): the secret scan, run as an external tool with our bundled rules.
+- [FIRST's CVSS v4.0 calculator](https://github.com/FIRSTdotorg/cvss-v4-calculator) (BSD-2-Clause, Copyright (c) 2023 FIRST.ORG, Inc., Red Hat, and contributors): CVSS 4.0 scoring in [`cvss.rs`](rust/crates/wpantry/src/utils/cvss.rs) is a port of its lookup table and scoring, with the licence kept in that file; CVSS 3.x follows FIRST's specification.
 - [YARA](https://github.com/VirusTotal/yara) and [YARA-X](https://github.com/VirusTotal/yara-x) (VirusTotal, BSD-3-Clause): the rule language the malware scan reads. Our engine, [wpantry-yara](rust/crates/wpantry-yara), is written here; it follows YARA's semantics and adopts YARA-X's stricter rules for our own rules, and was tested match-for-match against YARA 4.5.7. Ideas for the scanner came from Florian Roth's [Loki-RS](https://github.com/Neo23x0/Loki-RS), [yarGen](https://github.com/Neo23x0/yarGen-Go) and [signature-base](https://github.com/Neo23x0/signature-base); no code was copied.
 
 The data it asks, each under its publisher's terms:
 
 - [OSV.dev](https://osv.dev) and the [OSV schema](https://ossf.github.io/osv-schema/) (Google and the OpenSSF): the vulnerability database behind every package question, aggregating the GitHub Advisory Database, RustSec, PyPA, the Go vulnerability database and the distributions' own trackers.
 - [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog): the `KEV` mark.
+- [EPSS](https://www.first.org/epss/) (FIRST; scores published daily by Empirical Security): the likelihood each CVE is exploited, shown beside its severity.
 - [endoflife.date](https://endoflife.date) (MIT): end-of-life dates.
 - [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages) (Apache-2.0): known malicious package names.
 - [deps.dev](https://deps.dev), the [Homebrew](https://brew.sh) formulae API and `brew vulns`, the [Arch Linux security tracker](https://security.archlinux.org), the Chrome and Firefox release feeds, the PostgreSQL security page, the VS Code Marketplace and [Open VSX](https://open-vsx.org), [Have I Been Pwned](https://haveibeenpwned.com) and [XposedOrNot](https://xposedornot.com).

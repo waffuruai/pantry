@@ -193,3 +193,15 @@ fn a_refused_connection_is_offline() {
         assert!(matches!(http.send_once(&req), Err(Error::Offline(m)) if m.starts_with("https://127.0.0.1:1/")));
     }
 }
+
+#[test]
+fn a_relative_redirect_resolves_against_the_url_it_answered() {
+    let base = "https://epss.empiricalsecurity.com/dir/epss_scores-current.csv.gz?x=1";
+    assert_eq!(
+        resolve(base, "epss_scores-2026-11-05.csv.gz"),
+        "https://epss.empiricalsecurity.com/dir/epss_scores-2026-11-05.csv.gz"
+    );
+    assert_eq!(resolve(base, "/other.gz"), "https://epss.empiricalsecurity.com/other.gz");
+    assert_eq!(resolve(base, "https://elsewhere.example/a"), "https://elsewhere.example/a");
+    assert_eq!(resolve("https://h.example", "a.gz"), "https://h.example/a.gz", "a URL with no path");
+}

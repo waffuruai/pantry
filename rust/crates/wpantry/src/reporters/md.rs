@@ -61,7 +61,7 @@ fn findings(t: &mut String, v: &View, r: &Report) {
     for a in &v.areas {
         let kev = if a.kev { ", known exploited" } else { "" };
         t.push_str(&format!("\n## {} ({} fail, {} warn{kev})\n\n", a.label, a.fails, a.warns));
-        t.push_str("| | Component | Version | Advisory | Severity | Why | Fix |\n|---|---|---|---|---|---|---|\n");
+        t.push_str("| | Component | Version | Advisory | Severity | CVSS | EPSS | Why | Fix |\n|---|---|---|---|---|---|---|---|---|\n");
         for row in &a.rows {
             let mark = if row.fails { "✗" } else { "⚠" };
             let name = if row.location.is_empty() {
@@ -77,11 +77,13 @@ fn findings(t: &mut String, v: &View, r: &Report) {
                 ids.push_str(" (KEV)");
             }
             t.push_str(&format!(
-                "| {mark} | {} | {} | {} | {} | {} | {} |\n",
+                "| {mark} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 cell(&name),
                 cell(row.version),
                 cell(&ids),
                 cell(row.severity),
+                view::cvss_text(row.cvss.as_ref()),
+                view::epss_text(row.epss),
                 cell(&cut(&row.top().note, 140)),
                 code(&row.fix)
             ));

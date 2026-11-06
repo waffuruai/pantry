@@ -159,7 +159,7 @@ impl Style {
                     .split(' ')
                     .map(|t| match t.trim_end_matches(',') {
                         "KEV" | "CRITICAL" | "HIGH" | "MALICIOUS" => self.red(t),
-                        "MODERATE" | "MEDIUM" => self.yellow(t),
+                        "MEDIUM" => self.yellow(t),
                         _ => t.to_string(),
                     })
                     .collect();

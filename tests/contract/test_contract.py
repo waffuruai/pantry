@@ -32,7 +32,9 @@ NAME = BIN.name
 ENVELOPE = {"schema", "impl", "version", "checked", "unfixed", "unknown_licenses", "findings"}
 FINDING = {"kind": str, "component": str, "version": str, "location": str, "vuln_id": str, "status": str,
            "fixed": str, "kev": bool, "severity": str, "note": str, "fix_cmd": str, "fix_auto": bool,
-           "dep_scope": str, "dep_direct": (bool, type(None)), "affected_range": str}
+           "dep_scope": str, "dep_direct": (bool, type(None)), "affected_range": str,
+           "cvss": (float, int, type(None)), "cvss_version": str, "epss": (float, int, type(None)),
+           "epss_percentile": (float, int, type(None))}
 SCOPES = {"runtime", "dev", "optional", "unknown"}
 TOOL = {"name": str, "required": bool, "found": bool, "path": str, "version": str, "purpose": str}
 CACHE = {
@@ -40,13 +42,17 @@ CACHE = {
     "vulns": ["id", "aliases", "summary", "details", "severity", "published", "modified", "url", "record"],
     "queries": ["ecosystem", "package", "version", "checked_at", "vuln_ids"],
     "findings": ["kind", "component", "version", "location", "vuln_id", "status", "fixed", "kev", "severity", "note",
-                 "fix_cmd", "fix_auto", "dep_scope", "dep_direct", "affected_range"],
+                 "fix_cmd", "fix_auto", "dep_scope", "dep_direct", "affected_range", "cvss", "cvss_version", "epss",
+                 "epss_percentile"],
     "kev": ["cve", "added", "name"],
     "eol": ["product", "cycle", "eol", "latest"],
     "casks": ["app", "token", "version"],
     "runs": ["source", "fingerprint", "ran_at", "result"],
     "malicious": ["ecosystem", "name", "id"],
 }
+# A finding row as the tests write it: the columns before the scores.
+INSERT_FINDING = (f"INSERT INTO findings ({', '.join(CACHE['findings'][:15])}) "
+                  f"VALUES ({', '.join('?' * 15)})")
 
 
 def git_repo(path: Path, worktree=False) -> Path:
@@ -597,10 +603,10 @@ class Contract(unittest.TestCase):
         self.project_run()
         conn = sqlite3.connect(str(self.db))
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
                       "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("app", "manual", "1.0.0", "/opt/manual", "GHSA-manual", "fail", "1.0.1", 0, "HIGH",
                       "needs a person", "sudo something", 0, "", None, ""))
         conn.commit()
@@ -633,10 +639,10 @@ class Contract(unittest.TestCase):
                      ("GHSA-demo", "CVE-2020-99999", "demo bug", "", "HIGH", "", "",
                       "https://osv.dev/vulnerability/GHSA-demo", "{}"))
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("app", "demo", "1.0.0", "/opt/demo", "GHSA-demo", "fail", "1.0.1", 0, "HIGH",
                       "demo bug (fixed in 1.0.1)", "true", 1, "", None, ""))
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("app", "other", "2.0.0", "/opt/other", "GHSA-other", "fail", "2.0.1", 0, "HIGH",
                       "another bug", "false", 1, "", None, ""))
         conn.commit()
@@ -997,7 +1003,7 @@ class Contract(unittest.TestCase):
         except sqlite3.OperationalError:
             pass  # this SQLite has no FTS5; the binary's may
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("project", "vite", "8.0.0", "/w/pnpm-lock.yaml", "CVE-2026-1", "fail", "8.0.1", 1, "HIGH",
                       "traversal", "cd /w && pnpm update vite@8.0.1", 0, "dev", 1, "<8.0.1"))
         conn.commit()
@@ -1034,9 +1040,10 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 1)
         rows = list(csv.reader(f.open(newline="")))
         self.assertEqual(rows[0], ["id", "aliases", "url", "component", "kind", "affected_version", "safe_version",
-                                   "severity", "kev", "status", "location"])
+                                   "severity", "kev", "status", "location", "cvss", "cvss_version", "epss",
+                                   "epss_percentile"])
         self.assertEqual(rows[1], ["CVE-2026-1", "CVE-2026-1", "https://osv.dev/vulnerability/GHSA-b", "vite", "project",
-                                   "8.0.0", "8.0.1", "HIGH", "1", "fail", "/w/pnpm-lock.yaml"])
+                                   "8.0.0", "8.0.1", "HIGH", "1", "fail", "/w/pnpm-lock.yaml", "", "", "", ""])
 
         self.assertIn("not decided", self.run_bin("breach")[1])
         self.assertEqual(self.run_bin("breach", "--enable")[0], 0)
@@ -1059,7 +1066,7 @@ class Contract(unittest.TestCase):
             except sqlite3.OperationalError:
                 pass  # this SQLite has no FTS5; the binary's may
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("project", "zlib", "1.2.0", "/w/Cargo.lock", "CVE-2026-1", "fail", "1.2.1", 1, "HIGH",
                       "overflow", "cargo update zlib", 0, "runtime", 1, "<1.2.1"))
         conn.execute("INSERT INTO kev VALUES (?, ?, ?)", ("CVE-2026-1", "2026-01-01", "zlib"))
@@ -1090,7 +1097,7 @@ class Contract(unittest.TestCase):
         self.project_run()
         conn = sqlite3.connect(str(self.db))
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("project", "zlib", "1.2.0", '/w/a,b/"q"/Cargo.lock', "CVE-2026-2", "warn", "", 0, "",
                       "", "", 0, "unknown", None, ""))
         conn.commit()
@@ -1103,7 +1110,7 @@ class Contract(unittest.TestCase):
         self.assertIn('"/w/a,b/""q""/Cargo.lock"', text)
         rows = list(csv.reader(io.StringIO(text)))
         self.assertEqual(rows[1], ["CVE-2026-2", "", "https://www.cve.org/CVERecord?id=CVE-2026-2", "zlib", "project",
-                                   "1.2.0", "", "", "0", "warn", '/w/a,b/"q"/Cargo.lock'])
+                                   "1.2.0", "", "", "0", "warn", '/w/a,b/"q"/Cargo.lock', "", "", "", ""])
 
     def test_report_lists_exposures_fixes_and_scans(self):
         """The Markdown report's three logs with rows in them, the CSV exposure
@@ -1114,11 +1121,12 @@ class Contract(unittest.TestCase):
         def exposure(key, vuln, resolved):
             done = (1, now - 86400) if resolved else (None, None)
             return (key, "repos:~", "project", "vite", "8.0.0", "/w/pnpm-lock.yaml", vuln, "fail", "HIGH", 1, "8.0.1",
-                    "note", 1, now - 5 * 86400, 1, now - 86400, *done, "dev", 1, "<8.0.1", "pnpm update vite@8.0.1")
+                    "note", 1, now - 5 * 86400, 1, now - 86400, *done, "dev", 1, "<8.0.1", "pnpm update vite@8.0.1",
+                    7.5, "3.1", 0.12, 0.9)
 
         conn = sqlite3.connect(str(self.db))
-        conn.execute("INSERT INTO exposures VALUES (" + ", ".join("?" * 22) + ")", exposure("k1", "CVE-2026-1", False))
-        conn.execute("INSERT INTO exposures VALUES (" + ", ".join("?" * 22) + ")", exposure("k2", "CVE-2026-2", True))
+        conn.execute("INSERT INTO exposures VALUES (" + ", ".join("?" * 26) + ")", exposure("k1", "CVE-2026-1", False))
+        conn.execute("INSERT INTO exposures VALUES (" + ", ".join("?" * 26) + ")", exposure("k2", "CVE-2026-2", True))
         cols = "(id, scan_id, at, command, mode, ok, verified_scan, targets, user, host)"
         conn.execute(f"INSERT INTO fixes {cols} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (1, 1, now - 3600, "pnpm update `vite`", "auto", 1, 2, "k2", "eric", "mac"))
@@ -1130,9 +1138,9 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("## Exposure log", out)
         self.assertIn("1 open, 1 resolved; median time to resolve 4 days", out)
-        self.assertIn("| First seen | Resolved | Severity | Component | Version | Advisory | KEV | Status |", out)
-        self.assertRegex(out, r"\| \d{4}-\d\d-\d\d \d\d:\d\d UTC \| open \| HIGH \| vite \| 8\.0\.0 \| CVE-2026-1 \| yes \| fail \|")
-        self.assertRegex(out, r"\| \d{4}-\d\d-\d\d \d\d:\d\d UTC \| \d{4}-[^|]+ UTC \| HIGH \| vite \| 8\.0\.0 \| CVE-2026-2 \| yes \|")
+        self.assertIn("| First seen | Resolved | Severity | Component | Version | Advisory | CVSS | EPSS | KEV | Status |", out)
+        self.assertRegex(out, r"\| \d{4}-\d\d-\d\d \d\d:\d\d UTC \| open \| HIGH \| vite \| 8\.0\.0 \| CVE-2026-1 \| 7\.5 \(v3\.1\) \| 12\.0% \| yes \| fail \|")
+        self.assertRegex(out, r"\| \d{4}-\d\d-\d\d \d\d:\d\d UTC \| \d{4}-[^|]+ UTC \| HIGH \| vite \| 8\.0\.0 \| CVE-2026-2 \| 7\.5 \(v3\.1\) \| 12\.0% \| yes \|")
         self.assertIn("## Remediation log", out)
         self.assertIn("| eric@mac | `pnpm update 'vite'` | auto | ok | #2 |", out)
         self.assertIn("| - | `brew upgrade x` | auto | failed | - |", out)
@@ -1147,10 +1155,11 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         rows = list(csv.reader(io.StringIO(out)))
         self.assertEqual(len(rows), 3, out)
-        self.assertEqual(rows[0], ["first_seen", "resolved", "severity", "component", "version", "vuln_id", "kev", "status",
-                                   "fixed", "days_exposed", "last_seen", "kind", "location"])
-        self.assertEqual(rows[1][1:10], ["open", "HIGH", "vite", "8.0.0", "CVE-2026-1", "yes", "fail", "8.0.1", "5"])
-        self.assertEqual(rows[1][11:], ["project", "/w/pnpm-lock.yaml"])
+        self.assertEqual(rows[0], ["first_seen", "resolved", "severity", "component", "version", "vuln_id", "cvss", "epss",
+                                   "kev", "status", "fixed", "days_exposed", "last_seen", "kind", "location"])
+        self.assertEqual(rows[1][1:6], ["open", "HIGH", "vite", "8.0.0", "CVE-2026-1"])
+        self.assertEqual(rows[1][6:12], ["7.5 (v3.1)", "12.0%", "yes", "fail", "8.0.1", "5"])
+        self.assertEqual(rows[1][13:], ["project", "/w/pnpm-lock.yaml"])
         self.assertNotEqual(rows[2][1], "open", "resolved: its date")
         f = Path(self.tmp.name, "r.json")
         code, out, err = self.run_bin("report", "exposure", "--json", "-o", str(f))
@@ -1217,7 +1226,7 @@ class Contract(unittest.TestCase):
                       "https://osv.dev/vulnerability/GHSA-k", json.dumps(record(None))))
         conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "kern", "1.0.0", 4_000_000_000, "GHSA-k"))
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("project", "kern", "1.0.0", "/w/package-lock.json", "CVE-2026-98432", "warn", "", 0, "CRITICAL",
                       "TCP use-after-free (no fix released for npm yet)", "Until the fix lands: …", 0, "", None, ""))
         conn.commit()
@@ -1259,7 +1268,7 @@ class Contract(unittest.TestCase):
                      ("GHSA-z", "CVE-2026-55555", "widget overflow", "", "CRITICAL", "", "", "", json.dumps(rec)))
         conn.execute("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", ("npm", "widget", "1.0.0", 4_000_000_000, "GHSA-z"))
         conn.execute("DELETE FROM findings")
-        conn.execute("INSERT INTO findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(INSERT_FINDING,
                      ("project", "widget", "1.0.0", "/w/package-lock.json", "CVE-2026-55555", "warn", "", 0, "CRITICAL",
                       "widget overflow (no fix released for npm yet)", "", 0, "", None, ""))
         conn.commit()

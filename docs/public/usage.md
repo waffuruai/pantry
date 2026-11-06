@@ -172,6 +172,7 @@ Run it hourly from cron or a timer and alert on exit 10 (`0 * * * * wpantry watc
  "unfixed": 3, "unknown_licenses": 0,
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
                "vuln_id": "CVE-2021-25900", "status": "fail", "fixed": "1.6.1", "kev": true, "severity": "CRITICAL",
+               "cvss": 9.8, "cvss_version": "3.1", "epss": 0.0213, "epss_percentile": 0.84,
                "note": "…", "fix_cmd": "…", "fix_auto": false}]
 }
 ```
@@ -440,9 +441,9 @@ A report from the cache; it never scans. `scan` and `fix` show `findings` the sa
 
 | What | Shows |
 |---|---|
-| `findings` (default) | The latest scan: the findings grouped into areas in the order to fix them, each area a table (component, version, advisory, severity, fix) with where and why under each row; what couldn't be checked; the update plan, alike commands batched and `sudo` ones apart |
+| `findings` (default) | The latest scan: the findings grouped into areas in the order to fix them, each area a table (component, version, advisory, severity, CVSS, EPSS, fix) with where and why under each row; what couldn't be checked; the update plan, alike commands batched and `sudo` ones apart |
 | `history` | The exposure, remediation and audit logs, without the findings |
-| `exposure` | What applied, from first seen to resolved: first seen, resolved, severity, component, version, advisory, then the rest |
+| `exposure` | What applied, from first seen to resolved: first seen, resolved, severity, component, version, advisory, CVSS, EPSS, then the rest |
 | `remediation` | Each fix: when, who ran it (user and host), the command, the result, the scan that verified it |
 | `audit` | Every scan (when, host, user, version, scope, counts) and event |
 | `summary` | One page for a CSO, an auditor or an insurer: open findings by severity against the remediation targets (Critical 14 days, High 30, Medium 90, Low 180), what is overdue, times to resolve, whether the scans ran, who fixed what, and the SOC 2 and ISO 27001 controls it is evidence for |

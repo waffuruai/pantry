@@ -14,7 +14,6 @@ fn postgres_table() {
     assert_eq!(got[0].fixed, ["18.6", "17.11", "16.15"]);
     assert_eq!((got[0].component.as_str(), got[0].score), ("core server", 8.8));
     assert_eq!(got[0].summary, "Heap overflow");
-    assert_eq!(severity_from_score(8.8), "HIGH");
     assert_eq!(unescape_html("a &amp; b &#39;c&#x27; &bogus;"), "a & b 'c' &bogus;");
 }
 
@@ -122,8 +121,4 @@ fn postgres_table_is_fetched_as_html() {
     let got = postgres(&c, &net, false).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!((got[0].cve.as_str(), got[0].score, got[0].vector.as_str()), ("CVE-2026-1", 7.5, "AV:N"));
-    assert_eq!(severity_from_score(9.5), "CRITICAL");
-    assert_eq!(severity_from_score(5.0), "MODERATE");
-    assert_eq!(severity_from_score(0.5), "LOW");
-    assert_eq!(severity_from_score(0.0), "");
 }

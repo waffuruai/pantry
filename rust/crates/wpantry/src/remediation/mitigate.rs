@@ -383,14 +383,14 @@ fn cve_2026_98432(host: &dyn Host, _: &Settings, mode: Mode, confirm: Confirm, s
         }
         Mode::DryRun | Mode::Apply => {
             if fixed && rule == Some(true) {
-                return Ok(Done::Nothing("the kernel has the fix and the stopgap is still in place: wpantry mitigate CVE-2026-98432 --undo takes it away".into()));
+                return Ok(Done::Nothing("the kernel has the fix and the stopgap is still in place: wpantry fix CVE-2026-98432 --undo takes it away".into()));
             }
             if fixed {
                 return Ok(Done::Nothing("the kernel has the fix; the stopgap isn't needed".into()));
             }
             if rule == Some(true) && unit_there && (!mptcp_built || mptcp.trim() == "0") {
                 return Ok(Done::Nothing(format!(
-                    "the stopgap is already in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --undo"
+                    "the stopgap is already in place. Update the kernel when the fix ships, then: wpantry fix {CVE} --undo"
                 )));
             }
             let verb = if mode == Mode::DryRun { "would write" } else { "will write" };
@@ -433,9 +433,7 @@ fn cve_2026_98432(host: &dyn Host, _: &Settings, mode: Mode, confirm: Confirm, s
                 host.root(&["sysctl", "-q", "-w", "net.mptcp.enabled=0"])?;
                 say(&format!("  ✓ MPTCP off ({SYSCTL_FILE})"));
             }
-            say(&format!(
-                "  stopgap in place. Update the kernel when the fix ships, then: wpantry mitigate {CVE} --undo"
-            ));
+            say(&format!("  stopgap in place. Update the kernel when the fix ships, then: wpantry fix {CVE} --undo"));
             Ok(Done::Applied)
         }
     }

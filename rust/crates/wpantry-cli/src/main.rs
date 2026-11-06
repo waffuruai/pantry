@@ -134,7 +134,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         offline: a.offline,
         jobs: a.jobs,
         licenses: a.check_licenses,
-        ask: !(quiet || a.dryrun || a.no_input),
+        ask: !(quiet || a.dry_run || a.no_input),
     };
     let first = scan(opts.clone(), quiet, &net)?;
     // The scan is done; what it found is shown as `wpantry report` shows it.
@@ -144,7 +144,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
     {
         eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
     }
-    if quiet || !(a.fix || a.dryrun) {
+    if quiet || !(a.fix || a.dry_run) {
         return Ok(status);
     }
     // Before changing anything, ask, when someone is there to answer.
@@ -159,10 +159,10 @@ fn cmd_scan(a: Check) -> Result<i32> {
         let what = if cmds.len() == 1 { "this update".to_string() } else { format!("these {} updates", cmds.len()) };
         progress::Progress::new(false).ask(&format!("Run {what} now?"), true).unwrap_or(false)
     };
-    let applied = remediation::apply(&first.findings, a.dryrun, &confirm, &mut |l| show(l));
+    let applied = remediation::apply(&first.findings, a.dry_run, &confirm, &mut |l| show(l));
     // then the stopgaps wpantry has, for the hosts they are for
-    let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dryrun, a.yes, interactive)?;
-    if a.dryrun {
+    let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dry_run, a.yes, interactive)?;
+    if a.dry_run {
         return Ok(status);
     }
     if !applied.ran.is_empty() || !stopgaps_ran.is_empty() {
@@ -544,7 +544,7 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
                 state
             ));
             match (&w.fixed, &w.mitigation) {
-                (Some(_), _) => say("    Fix: run wpantry fix --dryrun for the step"),
+                (Some(_), _) => say("    Fix: run wpantry fix --dry-run for the step"),
                 (None, Some(m)) => say(&format!("    Meanwhile: {m}")),
                 (None, None) => {
                     say("    Meanwhile: reduce exposure where you can and keep checking (wpantry watch, or a schedule)")
@@ -762,7 +762,7 @@ fn cmd_fix_list() -> Result<i32> {
         wpantry::history::stamp(report.scan.row.finished_at)
     ));
     show("");
-    show("Update plan (wpantry fix runs the automatic ones; --dryrun shows each command first):");
+    show("Update plan (wpantry fix runs the automatic ones; --dry-run shows each command first):");
     if view.batches.is_empty() {
         show("  nothing to update");
     }
@@ -784,7 +784,9 @@ fn cmd_fix_list() -> Result<i32> {
             format!("not needed: the last scan didn't find {}", s.id)
         } else {
             match (s.run)(&mitigate::Real, &settings, Mode::DryRun, &|_| false, &mut |_| {}) {
-                Ok(Done::Applied) => format!("needed here: wpantry fix {} --dryrun shows what it would change", s.name),
+                Ok(Done::Applied) => {
+                    format!("needed here: wpantry fix {} --dry-run shows what it would change", s.name)
+                }
                 Ok(Done::Nothing(why)) | Ok(Done::NotHere(why)) => why,
                 Ok(Done::Declined) => "unreachable on a dry run".into(),
                 Err(e) => format!("can't tell: {e}"),
@@ -1057,7 +1059,7 @@ fn main() {
             EXIT_OK
         }
         Parsed::Usage(text) => {
-            eprint!("{}", text.replace(": error: ", &format!(": {} ", Style::stderr().red("error:"))));
+            eprint!("{}", text.replace("\nerror: ", &format!("\n{} ", Style::stderr().red("error:"))));
             EXIT_USAGE
         }
         // A crash is an internal error, never "clean" or "fail".

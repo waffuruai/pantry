@@ -310,7 +310,7 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
         vec![(
             Role::Fail,
             format!(
-                "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry fix --dryrun{incomplete}"
+                "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry fix --dry-run{incomplete}"
             ),
         )]
     } else if !v.gaps.is_empty() {

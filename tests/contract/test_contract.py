@@ -173,23 +173,30 @@ class Contract(unittest.TestCase):
     def test_exit_2_on_usage_errors(self):
         for argv in (["--bogus"], ["scan", "--licenses", str(self.home / "nope.txt")], ["search"], ["report", "--md", "--csv"],
                      ["breach", "--enable", "--disable"], ["search", "x", "--limit", "many"], ["version", "extra"],
-                     ["scna"], ["fix", "--fix"]):
+                     ["scna"], ["fix", "--fix"], ["check"], ["export"], ["mitigate"], ["fix", "--dryrun"],
+                     ["scan", "--license"]):
             code, _, err = self.run_bin(*argv)
             self.assertEqual(code, 2, argv)
-            self.assertIn("usage:", err, argv)
-        for cmd in ("scan", "check", "fix"):
+            self.assertIn("Usage:", err, argv)
+            self.assertIn("error: ", err, argv)
+        code, _, err = self.run_bin("scan", "--no-machin")
+        self.assertIn("(Did you mean --no-machine?)", err)
+        for cmd in ("scan", "fix", "report"):
             code, out, _ = self.run_bin(cmd, "--help")
             self.assertEqual(code, 0, cmd)
-            self.assertTrue(out.startswith(f"usage: {NAME} {cmd} [-h]"), out)
+            self.assertTrue(out.startswith(f"Usage: {NAME} {cmd} [options]"), out)
 
     def test_no_arguments_print_the_help(self):
         code, out, err = self.run_bin()
         self.assertEqual(code, 0, err)
-        self.assertTrue(out.startswith(f"usage: {NAME} [-h] {{scan,check,fix,"), out)
+        self.assertTrue(out.startswith(f"Usage: {NAME} [options] [command]"), out)
+        self.assertNotIn("\n  check", out)
         self.assertEqual(self.run_bin("--help"), (code, out, err))
         self.assertEqual(self.run_bin("-h"), (code, out, err))
         self.assertEqual(self.run_bin("help"), (code, out, err))
         self.assertEqual(self.run_bin("help", "fix"), self.run_bin("fix", "--help"))
+        version = json.loads(self.run_bin("version", "--json")[1])["version"]
+        self.assertEqual(self.run_bin("--version"), (0, f"{NAME} {version}\n", ""))
         self.assertFalse(self.db.exists(), "no scan ran")
 
     def test_exit_3_when_the_cache_cant_be_opened(self):
@@ -270,7 +277,7 @@ class Contract(unittest.TestCase):
 
     def test_html_dry_run_and_final_recheck(self):
         path = self.home / "report.html"
-        code, out, _ = self.project_run("--dryrun", "--html", "-o", str(path), cmd="fix")
+        code, out, _ = self.project_run("--dry-run", "--html", "-o", str(path), cmd="fix")
         self.assertEqual(code, 0)
         self.assertEqual(self.html_bundle(path)["phase"], "scan", "a dry run changes nothing")
         # Empty, offline scope has no fixes to execute: the re-check is the last scan, and no fix ran.
@@ -506,24 +513,11 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("Re-checking after the updates", out)
         self.assertEqual(out.count("Incomplete"), 2, "the report, then the re-check's")
-        # the spellings from before `fix`, kept for scripts, behave as it does
+        # the spellings from before `fix` are gone: one command, one name
         scope = ("--no-machine", "--path", str(self.home), "--offline", "--no-input")
-        for old in (("scan", "--fix"), ("check", "--fix"), ("--fix",), ("--update",), ("check", "--update")):
-            code, out2, err = self.run_bin(*old, *scope)
-            self.assertEqual(code, 0, (old, err))
-            # The same report but for the scan's number and time.
-            same = lambda t: re.sub(r"Security scan #\d+  \S+ \S+ UTC", "Security scan", t)
-            self.assertEqual(same(out2), same(out), old)
-
-    def test_check_is_scan(self):
-        git_repo(self.home / "app")
-        scan = self.project_run("--json")
-        check = self.project_run("--json", cmd="check")
-        self.assertEqual(check[0], scan[0])
-        self.assertEqual(self.envelope(check[1])["findings"], self.envelope(scan[1])["findings"])
-        self.assertEqual(self.project_run(cmd="check")[0], self.project_run()[0])
-        # options with no subcommand are still the scan's
-        self.assertEqual(self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--no-input")[0], scan[0])
+        for old in (("scan", "--fix"), ("check",), ("--fix",), ("--update",), ("--no-machine",)):
+            code, _, err = self.run_bin(*old, *scope)
+            self.assertEqual(code, 2, (old, err))
 
     def test_schedule_dry_run_and_cache_prune(self):
         code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "quarter", "--at", "07:05")
@@ -586,18 +580,16 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("no VS Code-family editor", out)
 
-    def test_mitigate_is_fix(self):
-        code, _, err = self.run_bin("mitigate", "kernel")
+    def test_fix_one_id_errors(self):
+        code, _, err = self.run_bin("fix", "kernel")
         self.assertEqual(code, 2, err)
         code, _, err = self.run_bin("fix", "CVE-2026-98432", "--dry-run", "--undo")
         self.assertEqual(code, 2, err)
-        code, _, err = self.run_bin("fix", "list", "--remove")
+        code, _, err = self.run_bin("fix", "list", "--undo")
         self.assertEqual(code, 2, err)
-        code, out, _ = self.run_bin("mitigate", "--help")
+        code, out, _ = self.run_bin("fix", "--help")
         self.assertEqual(code, 0)
         self.assertIn("--dry-run", out)
-        self.assertIn("mitigate is the same command", out)
-        self.assertEqual(out, self.run_bin("fix", "--help")[1])
 
     def test_fix_list_names_the_plan_and_the_stopgaps(self):
         self.project_run()
@@ -613,7 +605,6 @@ class Contract(unittest.TestCase):
         conn.close()
         code, out, err = self.run_bin("fix", "list")
         self.assertEqual(code, 0, out + err)
-        self.assertEqual(out, self.run_bin("mitigate", "list")[1], "mitigate is fix")
         self.assertIn("CVE-2026-98432", out)
         if platform.system() != "Linux":
             self.assertIn("a Linux kernel bug; nothing to do on", out)
@@ -624,7 +615,7 @@ class Contract(unittest.TestCase):
 
     def test_mitigate_errors_for_an_advisory_nothing_is_known_about(self):
         self.project_run()
-        code, out, err = self.run_bin("mitigate", "CVE-1999-0001", "--dry-run")
+        code, out, err = self.run_bin("fix", "CVE-1999-0001", "--dry-run")
         self.assertEqual(code, 1, out + err)
         self.assertIn("nothing known for CVE-1999-0001 here", out)
         self.assertIn("no stopgap", out)
@@ -647,12 +638,12 @@ class Contract(unittest.TestCase):
                       "another bug", "false", 1, "", None, ""))
         conn.commit()
         conn.close()
-        code, out, err = self.run_bin("mitigate", "cve-2020-99999", "--dry-run")
+        code, out, err = self.run_bin("fix", "cve-2020-99999", "--dry-run")
         self.assertEqual(code, 0, out + err)
         self.assertIn("CVE-2020-99999: 1 finding in the last scan (demo 1.0.0)", out)
         self.assertIn("would run: true", out)
         self.assertNotIn("false", out, "only the advisory asked about")
-        code, out, err = self.run_bin("mitigate", "GHSA-demo", "--yes")
+        code, out, err = self.run_bin("fix", "GHSA-demo", "--yes")
         self.assertEqual(code, 0, out + err)
         self.assertIn("→ true", out)
         conn = sqlite3.connect(str(self.db))
@@ -660,7 +651,7 @@ class Contract(unittest.TestCase):
         conn.close()
         self.assertEqual(rows, [("true", "mitigate", 1)])
         # a fix that fails: exit 1
-        code, out, err = self.run_bin("mitigate", "GHSA-other", "--yes")
+        code, out, err = self.run_bin("fix", "GHSA-other", "--yes")
         self.assertEqual(code, 1, out + err)
         self.assertIn("failed: false", out)
 
@@ -669,7 +660,7 @@ class Contract(unittest.TestCase):
         the rule and MPTCP and prints the plan without writing anything; on
         another OS it says so. Either way exit 0: a dry run is a look."""
         self.project_run()
-        code, out, err = self.run_bin("mitigate", "CVE-2026-98432", "--dry-run")
+        code, out, err = self.run_bin("fix", "CVE-2026-98432", "--dry-run")
         self.assertEqual(code, 0, out + err)
         self.assertIn("wpantry has a stopgap for it", out)
         if platform.system() == "Linux":
@@ -943,8 +934,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(env["unknown_licenses"], 0)
         allow = Path(self.tmp.name, "licenses.txt")
         allow.write_text("MIT\n")
-        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"], ["--license"],
-                      ["--license", str(allow)]):
+        for extra in (["--licenses"], ["--licenses", str(allow)], ["--licenses", "--json"]):
             code, _, err = self.run_bin("scan", "--no-machine", "--path", str(proj), "--offline", "--json", *extra)
             self.assertNotEqual(code, 2, (extra, err))
 
@@ -1010,7 +1000,7 @@ class Contract(unittest.TestCase):
         conn.close()
 
         jl = Path(self.tmp.name, "f.jsonl")
-        code, out, err = self.run_bin("export", "exposure", "--jsonl", "-o", str(jl))
+        code, out, err = self.run_bin("report", "exposure", "--jsonl", "-o", str(jl))
         self.assertEqual(code, 1, err)
         rows = [json.loads(line) for line in jl.read_text().splitlines()]
         self.assertEqual(len(rows), 1, rows)
@@ -1023,7 +1013,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(row["record"]["summary"], rec["summary"], "the full OSV record rides along")
         self.assertIsNone(row["fix"])
         self.assertIsNone(row["first_seen"], "no scan recorded this hand-written finding")
-        self.assertEqual(self.run_bin("export", "--jsonl", "--csv")[0], 2, "one format at a time")
+        self.assertEqual(self.run_bin("report", "--jsonl", "--csv")[0], 2, "one format at a time")
 
         code, out, _ = self.run_bin("search", "traversal", "--json")
         self.assertEqual(code, 0)
@@ -1036,7 +1026,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0)
 
         f = Path(self.tmp.name, "f.csv")
-        code, out, _ = self.run_bin("export", "--csv", "-o", str(f))
+        code, out, _ = self.run_bin("report", "--csv", "-o", str(f))
         self.assertEqual(code, 1)
         rows = list(csv.reader(f.open(newline="")))
         self.assertEqual(rows[0], ["id", "aliases", "url", "component", "kind", "affected_version", "safe_version",
@@ -1103,7 +1093,7 @@ class Contract(unittest.TestCase):
         conn.commit()
         conn.close()
         f = Path(self.tmp.name, "bare.csv")
-        code, out, err = self.run_bin("export", "--csv", "-o", str(f))
+        code, out, err = self.run_bin("report", "--csv", "-o", str(f))
         self.assertEqual(code, 0, err)
         self.assertIn("wrote the report to", err)
         text = f.read_text()
@@ -1199,7 +1189,7 @@ class Contract(unittest.TestCase):
         self.assertEqual((f["dep_scope"], f["dep_direct"], f["affected_range"]), ("dev", True, ">=1.0.0, <1.2.6"))
         self.assertEqual(code, 1)
         jl = Path(self.tmp.name, "deps.jsonl")
-        self.assertEqual(self.run_bin("export", "--jsonl", "-o", str(jl))[0], 1)
+        self.assertEqual(self.run_bin("report", "--jsonl", "-o", str(jl))[0], 1)
         rows = [json.loads(line) for line in jl.read_text().splitlines()]
         row = next(r for r in rows if r["vuln_id"] == "CVE-2026-7")
         self.assertEqual((row["dep_scope"], row["dep_direct"], row["record"]["id"]), ("dev", True, "GHSA-m"))
@@ -1332,11 +1322,11 @@ class Contract(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("git"), "no git")
     def test_dryrun_changes_nothing(self):
-        code, out, _ = self.project_run("--dryrun", cmd="fix")
+        code, out, _ = self.project_run("--dry-run", cmd="fix")
         self.assertIn(code, (0, 1))
         self.assertNotIn("Re-checking", out)
         # mitigate all is fix with the same flags
-        code, out2, _ = self.run_bin("mitigate", "all", "--dry-run", "--no-machine", "--path", str(self.home), "--offline", "--no-input")
+        code, out2, _ = self.run_bin("fix", "all", "--dry-run", "--no-machine", "--path", str(self.home), "--offline", "--no-input")
         self.assertIn(code, (0, 1))
         self.assertNotIn("Re-checking", out2)
         self.assertEqual("Update plan" in out, "Update plan" in out2)

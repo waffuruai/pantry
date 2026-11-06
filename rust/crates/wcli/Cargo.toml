@@ -1,0 +1,15 @@
+[package]
+name = "wcli"
+description = "Command-line parsing for Waffuru's tools, after commander.js: a command tree from specs, help, suggestions, no dependencies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["cli", "arguments", "parser", "subcommands"]
+categories = ["command-line-interface"]
+
+[dependencies]
+
+[lints]
+workspace = true

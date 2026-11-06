@@ -702,6 +702,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcli"
+version = "0.3.0"
+
+[[package]]
 name = "webpki-root-certs"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -833,6 +837,7 @@ name = "wpantry-cli"
 version = "0.3.0"
 dependencies = [
  "rusqlite",
+ "wcli",
  "wpantry",
 ]
 

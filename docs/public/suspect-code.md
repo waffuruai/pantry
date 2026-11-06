@@ -1,5 +1,8 @@
 # Suspicious code
 
+> [!WARNING]
+> ⚠️ **A clean run doesn't mean your computer is clean.** These checks look for known shapes of malicious code and text, and they won't catch every pattern; attackers keep inventing new ones. Spotted a behaviour in the wild that Pantry misses? We welcome pull requests that add it ([contributing](../../CONTRIBUTING.md)).
+
 Some code is written to be hard to read, to do more than it says, or to make a reviewer (a person or an AI) look away. Pantry looks for those shapes in the repos' own source and, on a machine scan, in every installed editor extension, agent plugin and browser extension.
 
 A few patterns are malicious almost anywhere: code that runs a string it has just decoded always fails. Most of the others also show up in honest code (a hex table in a codec, a decoder in a base64 library), so context decides: the same pattern can be routine in one language or file and suspicious in another. So a finding:

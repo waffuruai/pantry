@@ -57,6 +57,31 @@ repos = ["~/Development/mine"]   # every hook that warns under this path
 
 Accepted hooks are counted, not listed. A hook whose command changes is listed again. A hook that fails can't be accepted.
 
+## Policy files
+
+Policy files tune what a scan accepts or checks. Each is a TOML file you write and pass with its option; it replaces Pantry's bundled default for that scan. Keep yours with your other Pantry settings, in `~/.config/wpantry/`.
+
+| Option | What it does | Keys | Bundled default |
+|---|---|---|---|
+| `--suspect-policy` | Suspicious code you've reviewed warns instead of failing ([suspect code](suspect-code.md#the-policy-file)) | `ids`, `paths` | empty |
+| `--hooks-policy` | Repo hooks you've read stop being reported (see above) | `hooks`, `repos` | empty |
+| `--posture-policy` | Machine settings checks to skip ([machine settings](posture.md)) | `skip` | empty |
+| `--install-scripts` | npm packages whose install scripts are allowed | `allow` | [`install-scripts.toml`](../../rust/crates/wpantry/assets/defaults/install-scripts.toml) |
+| `--licenses FILE` | Dependency licenses allowed without review (only with `--licenses`) | `allow` | [`licenses.toml`](../../rust/crates/wpantry/assets/defaults/licenses.toml) |
+| `--repo-hooks` | Indicators of hijacked repos | `files`, `packages`, `hosts`, `sha256` | [`repo-hooks.toml`](../../rust/crates/wpantry/assets/defaults/repo-hooks.toml) |
+
+To start one, copy the bundled default linked above (its comments explain each key) into `~/.config/wpantry/` and edit it:
+
+```bash
+mkdir -p ~/.config/wpantry
+$EDITOR ~/.config/wpantry/install-scripts.toml
+wpantry scan --install-scripts ~/.config/wpantry/install-scripts.toml
+```
+
+- A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
+- Pantry doesn't load these files on its own: pass them to every scan. A scheduled scan doesn't apply them.
+- A missing file, or one that isn't TOML, is a usage error (exit 2).
+
 ## Reading the report
 
 While it scans, a progress line shows what it's doing (only on a terminal). Then the findings, grouped into areas in the order to fix them:
@@ -309,13 +334,14 @@ Options:
   --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
   --gitleaks-config <file>  gitleaks policy (default: the bundled gitleaks.toml)
   --licenses [file]         also check dependency licenses, against the file or the bundled
-                            licenses.txt
-  --install-scripts <file>  install-script policy (default: the bundled install-scripts.txt)
-  --repo-hooks <file>       indicators of hijacked repos (default: the bundled repo-hooks.txt)
-  --hooks-policy <file>     repo hooks you've read and accept, one per line
-  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail
+                            licenses.toml
+  --install-scripts <file>  install-script policy, TOML (default: the bundled install-scripts.toml)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: the bundled
+                            repo-hooks.toml)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML
   --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
-  --posture-policy <file>   posture checks to skip, one id per line
+  --posture-policy <file>   posture checks to skip, TOML
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules
@@ -370,13 +396,14 @@ Options:
   --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
   --gitleaks-config <file>  gitleaks policy (default: the bundled gitleaks.toml)
   --licenses [file]         also check dependency licenses, against the file or the bundled
-                            licenses.txt
-  --install-scripts <file>  install-script policy (default: the bundled install-scripts.txt)
-  --repo-hooks <file>       indicators of hijacked repos (default: the bundled repo-hooks.txt)
-  --hooks-policy <file>     repo hooks you've read and accept, one per line
-  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail
+                            licenses.toml
+  --install-scripts <file>  install-script policy, TOML (default: the bundled install-scripts.toml)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: the bundled
+                            repo-hooks.toml)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML
   --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
-  --posture-policy <file>   posture checks to skip, one id per line
+  --posture-policy <file>   posture checks to skip, TOML
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules

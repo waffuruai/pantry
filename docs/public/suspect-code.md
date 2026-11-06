@@ -47,12 +47,37 @@ On a machine scan the same rules run as **installed** code over every VS Code-fa
 
 ## The policy file
 
-`--suspect-policy FILE` replaces the bundled `suspect.toml` (empty by default). A finding that matches warns instead of failing, and says so. Nothing can be dropped: a reviewer should still see it.
+A suspect policy accepts code you've reviewed. It overrides the checks above for the ids and files you name: a matching finding warns instead of failing. It never hides anything: the finding still appears, with "(exempted by the suspect policy: still a warning)" on its note.
+
+Use it when a check fails on code you've read and trust, such as a build script that needs `sudo`, or a legacy folder you can't change yet.
+
+**Create one.** It's a TOML file. Keep it with your other Pantry settings, at `~/.config/wpantry/suspect.toml`:
 
 ```toml
-ids = ["PRIV-ESCALATION"]     # or "SUSPECT-PRIV-ESCALATION"
-paths = ["scripts/legacy/"]   # matched against the file's path in the repo
+# Suspicious code we've reviewed: these warn instead of failing.
+ids = [
+  "PRIV-ESCALATION",    # every finding with this id, in every repo
+]
+paths = [
+  "scripts/legacy/",    # every finding in a file whose path in its repo contains this
+]
 ```
+
+- `ids`: finding ids from the table above, with or without the `SUSPECT-` prefix, in any case.
+- `paths`: text matched against each file's path inside its repo.
+- Both are optional. Leave one out, or set it to `[]`, to match nothing by it.
+
+**Use it.** Pass it to every scan:
+
+```bash
+wpantry scan --suspect-policy ~/.config/wpantry/suspect.toml
+```
+
+- It replaces the bundled default (empty); it doesn't add to it.
+- Pantry doesn't load it on its own, so a scheduled scan doesn't apply it.
+- A missing file, or one that isn't TOML, is a usage error (exit 2).
+
+The other policy files work the same way: [policy files](usage.md#policy-files).
 
 ## What it is not
 

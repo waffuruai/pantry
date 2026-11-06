@@ -205,7 +205,7 @@ pub struct Options {
 }
 
 /// What a finished scan found.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Outcome {
     /// This scan's row in the cache's `scans` table.
     pub scan_id: i64,
@@ -462,7 +462,15 @@ impl<'a> Scan<'a> {
         }
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
-        let scan_id = crate::history::record_scan(&self.cache, started_at, &self.findings, &self.counts, &self.opts)?;
+        let totals = (self.unfixed, self.unknown_licenses);
+        let scan_id = crate::history::record_scan_totals(
+            &self.cache,
+            started_at,
+            &self.findings,
+            &self.counts,
+            totals,
+            &self.opts,
+        )?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,

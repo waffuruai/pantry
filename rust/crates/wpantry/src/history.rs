@@ -85,16 +85,48 @@ pub fn record_scan(
     counts: &[(String, i64)],
     opts: &Options,
 ) -> Result<i64> {
+    record_scan_totals(cache, started_at, findings, counts, (0, 0), opts)
+}
+
+/// [`record_scan`], with the advisories that have no fix yet and the
+/// dependencies with no license wpantry knows (`totals`), which the
+/// report prints.
+pub fn record_scan_totals(
+    cache: &Cache,
+    started_at: f64,
+    findings: &[Finding],
+    counts: &[(String, i64)],
+    totals: (i64, i64),
+    opts: &Options,
+) -> Result<i64> {
     let at = now();
     let scope = scope_of(opts);
     let fails = findings.iter().filter(|f| f.status == "fail").count() as i64;
     let warns = findings.iter().filter(|f| f.status == "warn").count() as i64;
     let unchecked = findings.iter().filter(|f| f.kind == "unchecked").count() as i64;
     let counts_json = Value::Object(counts.iter().map(|(k, n)| (k.clone(), json!(n))).collect()).to_string();
+    // The counts again in the order they were counted, for the report.
+    let checked = Value::Array(counts.iter().map(|(k, n)| json!([k, n])).collect()).to_string();
+    let options = crate::reporters::html::scope_json(opts).dumps();
     cache.conn.execute(
-        "INSERT INTO scans (started_at, finished_at, host, user, version, scope, counts, fails, warns, unchecked) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![started_at, at, host(), user(), crate::VERSION, scope, counts_json, fails, warns, unchecked],
+        "INSERT INTO scans (started_at, finished_at, host, user, version, scope, counts, fails, warns, unchecked, \
+         checked, unfixed, unknown_licenses, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            started_at,
+            at,
+            host(),
+            user(),
+            crate::VERSION,
+            scope,
+            counts_json,
+            fails,
+            warns,
+            unchecked,
+            checked,
+            totals.0,
+            totals.1,
+            options
+        ],
     )?;
     let id = cache.conn.last_insert_rowid();
     let mut seen: Vec<String> = Vec::new();
@@ -284,7 +316,7 @@ pub struct Event {
     pub detail: Value,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScanRow {
     pub id: i64,
     pub started_at: f64,
@@ -366,6 +398,42 @@ pub fn events(cache: &Cache, since: f64) -> Result<Vec<Event>> {
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// What a report needs of one scan beyond its row: the counts in the
+/// order they were counted, the two totals the report prints, and the
+/// scope it ran with (as the HTML report shows it).
+#[derive(Clone, Debug, Default)]
+pub struct ScanDetail {
+    pub row: ScanRow,
+    pub counts: Vec<(String, i64)>,
+    pub unfixed: i64,
+    pub unknown_licenses: i64,
+    pub options: Value,
+}
+
+/// Scan `id`'s row and detail.
+pub fn scan_detail(cache: &Cache, id: i64) -> Result<Option<ScanDetail>> {
+    let row = scans(cache, f64::MIN)?.into_iter().find(|s| s.id == id);
+    let Some(row) = row else { return Ok(None) };
+    let (checked, unfixed, unknown, options): (Option<String>, Option<i64>, Option<i64>, Option<String>) =
+        cache.conn.query_row(
+            "SELECT checked, unfixed, unknown_licenses, options FROM scans WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+    let parse = |t: Option<String>| t.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
+    let counts = parse(checked)
+        .as_array()
+        .map(|a| a.iter().filter_map(|p| Some((p.get(0)?.as_str()?.to_string(), p.get(1)?.as_i64()?))).collect())
+        .unwrap_or_default();
+    Ok(Some(ScanDetail {
+        row,
+        counts,
+        unfixed: unfixed.unwrap_or(0),
+        unknown_licenses: unknown.unwrap_or(0),
+        options: parse(options),
+    }))
 }
 
 pub fn scans(cache: &Cache, since: f64) -> Result<Vec<ScanRow>> {

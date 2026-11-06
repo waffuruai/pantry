@@ -267,8 +267,8 @@ class Advisories(unittest.TestCase):
         for k in keys:
             self.assertEqual(k, k.lower().replace("_", "-").replace(".", "-"), k)
         out = Path(self.tmp.name, "f.csv")
-        code, _, _ = self.run_bin("export", "--csv", str(out))
-        self.assertEqual(code, 0)
+        code, _, err = self.run_bin("export", "--csv", "-o", str(out))
+        self.assertEqual(code, 1, "export exits as the scan did: these fail")
         with out.open(newline="") as fh:
             rows = list(csv.DictReader(fh))
         for eco, name, affected, fixed, rec_id in CONTROLS:

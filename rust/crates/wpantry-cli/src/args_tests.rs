@@ -59,26 +59,41 @@ fn malware_options_and_the_rules_command() {
 #[test]
 fn no_arguments_print_the_help_and_options_alone_scan() {
     assert_eq!(p(&[]), Parsed::Help(help("")));
-    assert_eq!(p(&["--json"]), Parsed::Run(Command::Scan(Check { json: true, ..Default::default() })));
+    assert_eq!(
+        p(&["--json"]),
+        Parsed::Run(Command::Scan(Check {
+            show: Show { format: Shown::Json, ..Default::default() },
+            ..Default::default()
+        }))
+    );
     let Parsed::Run(Command::Scan(c)) = p(&["--path", "/a", "--path=/b", "--no-mac", "--json"]) else { panic!() };
     assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
-    assert!(c.no_machine && c.json && !c.offline && !c.check_licenses);
+    assert!(c.no_machine && c.show.format == Shown::Json && !c.offline && !c.check_licenses);
     let Parsed::Run(Command::Scan(c)) = p(&["--licenses", "--json"]) else { panic!() };
-    assert!(c.check_licenses && c.licenses.is_none() && c.json, "--licenses alone uses the bundled allowlist");
+    assert!(
+        c.check_licenses && c.licenses.is_none() && c.show.format == Shown::Json,
+        "--licenses alone uses the bundled allowlist"
+    );
     let Parsed::Run(Command::Scan(c)) = p(&["--license", "--json"]) else { panic!() };
-    assert!(c.check_licenses && c.licenses.is_none() && c.json, "--license is --licenses");
+    assert!(c.check_licenses && c.licenses.is_none() && c.show.format == Shown::Json, "--license is --licenses");
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     let Parsed::Run(Command::Scan(c)) = p(&[&format!("--license={file}")]) else { panic!() };
     assert!(c.check_licenses && c.licenses == Some(PathBuf::from(file)));
 }
 
 #[test]
-fn html_is_optional_and_composes_with_json() {
-    let Parsed::Run(Command::Scan(c)) = p(&["--ht=report with spaces.html", "--json"]) else { panic!() };
-    assert!(c.json);
-    assert_eq!(c.html, Some(PathBuf::from("report with spaces.html")));
-    for bad in [&["--html"][..], &["--html="], &["--html=-"]] {
-        assert!(matches!(p(bad), Parsed::Usage(_)));
+fn one_format_a_file_and_the_history_are_the_report_options() {
+    let Parsed::Run(Command::Scan(c)) = p(&["--html", "-o", "report with spaces.html"]) else { panic!() };
+    assert_eq!(
+        c.show,
+        Show { format: Shown::Html, out: Some(PathBuf::from("report with spaces.html")), history: None }
+    );
+    let Parsed::Run(Command::Scan(c)) = p(&["--out=r.txt"]) else { panic!() };
+    assert_eq!(c.show.format, Shown::Txt, "a file gets plain text");
+    let Parsed::Run(Command::Scan(c)) = p(&["fix", "--md", "--history"]) else { panic!() };
+    assert_eq!((c.fix, c.show.format, c.show.history), (true, Shown::Md, Some(90)));
+    for bad in [&["--html", "--json"][..], &["-o"], &["--out=-"], &["--since", "x"]] {
+        assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
     }
 }
 
@@ -88,7 +103,6 @@ fn usage_errors() {
         &["--bogus"][..],
         &["search"],
         &["search", "--limit", "x", "q"],
-        &["export"],
         &["breach", "--enable", "--disable"],
         &["check", "--licenses", "/nonexistent/x.txt"],
         &["version", "extra"],
@@ -108,7 +122,14 @@ fn usage_errors() {
 fn scan_check_and_fix() {
     let all = ["--path", "/a", "--no-machine", "--offline", "--json", "--no-input", "--jobs", "2", "--no-posture"];
     let Parsed::Run(Command::Scan(scan)) = p(&[&["scan"][..], &all].concat()) else { panic!() };
-    assert!(!scan.fix && scan.no_machine && scan.offline && scan.json && scan.no_input && scan.no_posture);
+    assert!(
+        !scan.fix
+            && scan.no_machine
+            && scan.offline
+            && scan.show.format == Shown::Json
+            && scan.no_input
+            && scan.no_posture
+    );
     assert_eq!(p(&[&["check"][..], &all].concat()), Parsed::Run(Command::Scan(scan)), "check is scan");
     let fix =
         |dryrun: bool, yes: bool| Parsed::Run(Command::Scan(Check { fix: true, dryrun, yes, ..Default::default() }));
@@ -219,8 +240,9 @@ fn search_export_breach_and_sync_errors() {
         Parsed::Run(Command::Search { query: "-q".into(), applicable: true, limit: -2, json: true })
     );
     assert_eq!(
-        p(&["export", "--jsonl", "f.jsonl", "--all"]),
-        Parsed::Run(Command::Export { csv: None, jsonl: Some("f.jsonl".into()), all: true })
+        p(&["export", "--jsonl", "--history"]),
+        Parsed::Run(Command::Report(Show { format: Shown::Jsonl, out: None, history: Some(90) })),
+        "export is report"
     );
     assert_eq!(p(&["breach", "--enable"]), Parsed::Run(Command::Breach { enable: true, disable: false }));
     assert_eq!(p(&["sync", "--refresh", "--json"]), Parsed::Run(Command::Sync { refresh: true, json: true }));
@@ -229,25 +251,21 @@ fn search_export_breach_and_sync_errors() {
 
 #[test]
 fn report_options() {
+    assert_eq!(p(&["report"]), Parsed::Run(Command::Report(Show::default())));
     assert_eq!(
-        p(&["report"]),
-        Parsed::Run(Command::Report { sections: vec!["all".into()], since_days: 90, format: "md".into(), out: None })
+        p(&["report", "--csv", "--since", "30d", "-o", "r.csv"]),
+        Parsed::Run(Command::Report(Show { format: Shown::Csv, out: Some("r.csv".into()), history: Some(30) })),
+        "--since asks for the history"
     );
     assert_eq!(
-        p(&["report", "--exposure", "--audit", "--since", "30d", "--format=csv", "-o", "r.csv"]),
-        Parsed::Run(Command::Report {
-            sections: vec!["exposure".into(), "audit".into()],
-            since_days: 30,
-            format: "csv".into(),
-            out: Some("r.csv".into())
-        })
+        p(&["report", "--txt"]),
+        Parsed::Run(Command::Report(Show { format: Shown::Txt, ..Default::default() }))
     );
-    let Parsed::Run(Command::Report { sections, .. }) = p(&["report", "--remediation", "--all"]) else { panic!() };
-    assert_eq!(sections, ["all"]);
     for (bad, msg) in [
         (&["report", "x"][..], "unrecognized arguments: x"),
         (&["report", "--since", "0"], "argument --since: expected a number of days, got '0'"),
-        (&["report", "--format", "pdf"], "invalid choice: 'pdf' (choose from md, json, csv)"),
+        (&["report", "--md", "--csv"], "argument --md: not allowed with argument --csv"),
+        (&["report", "--exposure"], "unrecognized arguments: --exposure"),
     ] {
         let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
         assert!(text.contains(msg), "{bad:?}: {text}");
@@ -372,7 +390,7 @@ fn schedule_cache_update_and_harden_options() {
             "argument --hours: expected a number of hours, got 'lots'",
         ),
         (&["schedule", "--every"], "argument --every: expected one argument"),
-        (&["report", "--a"], "ambiguous option: --a could match --audit, --all"),
+        (&["report", "--h"], "ambiguous option: --h could match --help, --html, --history"),
     ] {
         let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
         assert!(text.contains(msg), "{bad:?}: {text}");

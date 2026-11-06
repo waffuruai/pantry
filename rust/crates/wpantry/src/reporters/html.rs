@@ -1,14 +1,10 @@
-//! Optional, self-contained report. Stage next to the destination so errors
-//! leave any previous report intact; never follow the destination's symlink.
-use crate::checks::{Options, Outcome};
-use crate::db::Cache;
-use crate::error::Result;
-use crate::history;
+//! The standalone HTML report: one page, offline, the scan's findings, its
+//! scope, the update plan and the history, rendered in the browser from a
+//! bundle embedded in the page.
+use super::Report;
+use crate::checks::Options;
 use crate::utils::json::{J, obj};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 const TEMPLATE: &str = include_str!("../../assets/report/report.html");
 const TOKEN: &str = "{{PANTRY_BUNDLE}}";
@@ -20,50 +16,9 @@ const FONTS: [(&str, &[u8]); 4] = [
     ("{{FONT_SANS}}", include_bytes!("../../assets/report/fonts/geist-latin-wght-normal.woff2")),
     ("{{FONT_MONO}}", include_bytes!("../../assets/report/fonts/geist-mono-latin-wght-normal.woff2")),
 ];
-/// How far back the history sections look, as `wpantry report` does.
-const HISTORY_DAYS: f64 = 90.0;
-
-pub struct Output {
-    destination: PathBuf,
-    staging: PathBuf,
-    file: File,
-}
-
-impl Output {
-    pub fn new(destination: &Path) -> io::Result<Self> {
-        if destination.is_dir() {
-            return Err(io::Error::other("HTML output must be a file, not a directory"));
-        }
-        let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let staging = parent.join(format!(".wpantry-report-{}-{nonce}.tmp", std::process::id()));
-        let mut open = OpenOptions::new();
-        open.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            open.mode(0o600);
-        }
-        let file = open
-            .open(&staging)
-            .map_err(|e| io::Error::new(e.kind(), format!("HTML output {}: {e}", destination.display())))?;
-        Ok(Self { destination: destination.to_path_buf(), staging, file })
-    }
-
-    fn write(mut self, text: &str) -> io::Result<()> {
-        self.file.write_all(text.as_bytes())?;
-        self.file.flush()?;
-        std::fs::rename(&self.staging, &self.destination)?;
-        eprintln!("HTML report written to {}", self.destination.display());
-        Ok(())
-    }
-}
-
-impl Drop for Output {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.staging);
-    }
-}
+/// How far back the page's history looks when the report wasn't asked for
+/// more (`--history --since DAYS`).
+pub const HISTORY_DAYS: i64 = 90;
 
 fn render(bundle: &J) -> String {
     // JSON escaping alone does not protect an HTML script element's end tag.
@@ -92,51 +47,34 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// What the cache remembers across scans, for the report's patched and
-/// history sections: the exposures, the fixes `wpantry fix` ran and the scans
-/// of the last [`HISTORY_DAYS`], plus the host and user of this scan. Null
-/// when the cache can't be read: the report still describes the scan.
-fn history_json(report: &Outcome) -> (J, String, String) {
-    let Ok(cache) = Cache::open(None) else { return (J::Null, String::new(), String::new()) };
-    let scan_id = report.scan_id;
-    // The open exposures this scan lists are its findings, shown under At
-    // risk; the log carries the rest: resolved ones, and open ones of
-    // another scope. A machine scan can list tens of thousands.
-    let listed: std::collections::HashSet<String> = report.findings.iter().map(history::key_of).collect();
-    let key = |e: &history::Exposure| format!("{}|{}|{}|{}", e.kind, e.component, e.location, e.vuln_id);
-    let since = crate::utils::os::now() - HISTORY_DAYS * crate::db::DAY;
-    let out = match (history::exposures(&cache, since), history::fixes(&cache, since), history::scans(&cache, since)) {
-        (Ok(exposures), Ok(fixes), Ok(scans)) => {
-            let this = scans.iter().find(|s| s.id == scan_id);
-            let (host, user) = this.map(|s| (s.host.clone(), s.user.clone())).unwrap_or_default();
-            let open = exposures.iter().filter(|e| e.resolved_at.is_none()).count();
-            let kept = exposures.iter().filter(|e| e.resolved_at.is_some() || !listed.contains(&key(e)));
-            let h = obj([
-                ("since_days", J::Int(HISTORY_DAYS as i64)),
-                ("open", J::Int(open as i64)),
-                ("exposures", J::Arr(kept.map(|e| J::from(&e.to_json())).collect())),
-                ("fixes", J::Arr(fixes.iter().map(|f| J::from(&f.to_json())).collect())),
-                ("scans", J::Arr(scans.iter().map(|s| J::from(&s.to_json())).collect())),
-            ]);
-            (h, host, user)
-        }
-        _ => (J::Null, String::new(), String::new()),
-    };
-    let _ = cache.close();
-    out
+/// What the cache remembers across scans, for the page's patched and
+/// history sections: the exposures (those this scan doesn't list: it shows
+/// its own findings under At risk), the fixes and the scans. Null without
+/// a history.
+fn history_json(report: &Report) -> J {
+    let Some(h) = &report.history else { return J::Null };
+    let listed: std::collections::HashSet<String> =
+        report.outcome.findings.iter().map(crate::history::key_of).collect();
+    let key = |e: &crate::history::Exposure| format!("{}|{}|{}|{}", e.kind, e.component, e.location, e.vuln_id);
+    let open = h.exposures.iter().filter(|e| e.resolved_at.is_none()).count();
+    let kept = h.exposures.iter().filter(|e| e.resolved_at.is_some() || !listed.contains(&key(e)));
+    obj([
+        ("since_days", J::Int(h.since_days)),
+        ("open", J::Int(open as i64)),
+        ("exposures", J::Arr(kept.map(|e| J::from(&e.to_json())).collect())),
+        ("fixes", J::Arr(h.fixes.iter().map(|f| J::from(&f.to_json())).collect())),
+        ("scans", J::Arr(h.scans.iter().map(|s| J::from(&s.to_json())).collect())),
+    ])
 }
 
-pub fn finish(output: Option<Output>, report: &Outcome, opts: &Options, phase: &str) -> Result<()> {
-    let Some(output) = output else { return Ok(()) };
-    let (history, host, user) = history_json(report);
-    output.write(&render(&bundle(report, opts, phase, history, &host, &user)))?;
-    Ok(())
+/// The page for `report`.
+pub fn page(report: &Report) -> String {
+    render(&bundle(report))
 }
 
-/// Everything the viewer renders: the scan (the `scan --json` envelope,
-/// unchanged), its scope, the update plan (one step per command, the
-/// findings it covers by index), and what the cache remembers.
-fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str, user: &str) -> J {
+/// What a scan ran with, as the page's Scope section shows it; kept with
+/// each scan in the cache so a report renders it later.
+pub fn scope_json(opts: &Options) -> J {
     let paths = opts
         .paths
         .as_ref()
@@ -146,7 +84,33 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
     let policy_path =
         |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "bundled".into());
     let strings = |xs: Vec<String>| J::Arr(xs.into_iter().map(J::from).collect());
-    let plan: Vec<J> = crate::remediation::steps(&report.findings)
+    obj([
+        ("machine", opts.machine.into()),
+        ("offline", opts.offline.into()),
+        ("licenses", opts.licenses.into()),
+        ("posture", (opts.machine && !opts.no_posture).into()),
+        ("posture_exclusions", strings(opts.policy.posture_skip())),
+        ("suspect_exemptions", obj([("ids", strings(suspect.ids)), ("paths", strings(suspect.paths))])),
+        (
+            "policy_files",
+            obj([
+                ("gitleaks", policy_path(&opts.policy.gitleaks_config).into()),
+                ("licenses", policy_path(&opts.policy.licenses).into()),
+                ("install_scripts", policy_path(&opts.policy.install_scripts).into()),
+                ("repo_hooks", policy_path(&opts.policy.repo_hooks).into()),
+                ("posture", policy_path(&opts.policy.posture).into()),
+                ("suspect", policy_path(&opts.policy.suspect).into()),
+            ]),
+        ),
+        ("paths", J::Arr(paths)),
+    ])
+}
+
+/// Everything the viewer renders: the scan (the `scan --json` envelope,
+/// unchanged), its scope, the update plan (one step per command, the
+/// findings it covers by index), and what the cache remembers.
+fn bundle(report: &Report) -> J {
+    let plan: Vec<J> = crate::remediation::steps(&report.outcome.findings)
         .iter()
         .map(|s| {
             obj([
@@ -156,45 +120,24 @@ fn bundle(report: &Outcome, opts: &Options, phase: &str, history: J, host: &str,
             ])
         })
         .collect();
+    let scan = &report.scan.row;
     obj([
         (
             "runs",
             J::Arr(vec![obj([
                 ("title", "Security scan".into()),
                 ("file", "wpantry scan".into()),
-                ("report", super::json::envelope(report)),
+                ("report", super::json::envelope(&report.outcome)),
             ])]),
         ),
         ("generated_at", J::Int((crate::utils::os::now() * 1000.0) as i64)),
-        ("phase", phase.into()),
-        ("scan_id", J::Int(report.scan_id)),
-        ("host", host.into()),
-        ("user", user.into()),
+        ("phase", report.phase().into()),
+        ("scan_id", J::Int(report.outcome.scan_id)),
+        ("host", scan.host.as_str().into()),
+        ("user", scan.user.as_str().into()),
         ("plan", J::Arr(plan)),
-        ("history", history),
-        (
-            "scope",
-            obj([
-                ("machine", opts.machine.into()),
-                ("offline", opts.offline.into()),
-                ("licenses", opts.licenses.into()),
-                ("posture", (opts.machine && !opts.no_posture).into()),
-                ("posture_exclusions", strings(opts.policy.posture_skip())),
-                ("suspect_exemptions", obj([("ids", strings(suspect.ids)), ("paths", strings(suspect.paths))])),
-                (
-                    "policy_files",
-                    obj([
-                        ("gitleaks", policy_path(&opts.policy.gitleaks_config).into()),
-                        ("licenses", policy_path(&opts.policy.licenses).into()),
-                        ("install_scripts", policy_path(&opts.policy.install_scripts).into()),
-                        ("repo_hooks", policy_path(&opts.policy.repo_hooks).into()),
-                        ("posture", policy_path(&opts.policy.posture).into()),
-                        ("suspect", policy_path(&opts.policy.suspect).into()),
-                    ]),
-                ),
-                ("paths", J::Arr(paths)),
-            ]),
-        ),
+        ("history", history_json(report)),
+        ("scope", J::from(&report.scan.options)),
     ])
 }
 

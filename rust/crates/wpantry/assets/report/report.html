@@ -363,10 +363,10 @@ var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'
   os:'Operating system', compiler:'Compilers', manager:'Version managers', pkgmgr:'Package managers', tool:'Tools', datastore:'Datastores',
   harness:'Agent harnesses', package:'Global packages', brew:'Homebrew', app:'Apps', browser:'Browsers', extension:'Editor extensions',
   image:'Container images', bundled:'Bundled packages', 'repo-hook':'Repo hooks', posture:'Security settings', 'hidden-text':'Hidden text',
-  'suspect-code':'Suspicious code', document:'Documents and images', clipper:'Clipboard hijackers', persistence:'Persistence', 'install-script':'Install scripts',
+  'suspect-code':'Suspicious code', document:'Documents and images', clipper:'Clipboard hijackers', malware:'Malware', persistence:'Persistence', 'install-script':'Install scripts',
   license:'Licenses', config:'Configuration', account:'Accounts'};
-// The terminal report's order: what is on the machine, what the repos lock, what the harnesses run, then the rest.
-var KIND_ORDER = ['clipper','posture','persistence','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
+// The order every report shares (reporters/view.rs): what acts on its own, what is on the machine, what the repos lock, what the harnesses run, then the rest.
+var KIND_ORDER = ['clipper','malware','posture','persistence','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
   'project','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
 var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, IMPORTANT:2, MODERATE:3, MEDIUM:3, LOW:4};
 
@@ -404,7 +404,7 @@ function advLinks(id){
    a repo that runs code on open, malicious packages, provider secrets,
    known exploited, end of life, severity, the rest ---------- */
 function bucket(f){
-  if(['clipper','suspect-code','hidden-text','repo-hook'].indexOf(f.kind)>=0 && f.status==='fail')return 0;
+  if(['clipper','malware','suspect-code','hidden-text','repo-hook'].indexOf(f.kind)>=0 && f.status==='fail')return 0;
   if(f.severity==='MALICIOUS'||f.vuln_id==='MALICIOUS')return 1;
   if(f.kind==='secret'&&f.status==='fail')return 2;
   if(f.kev)return 3;

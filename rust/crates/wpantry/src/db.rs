@@ -57,6 +57,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "fix_cmd", "TEXT"),
     ("fixes", "targets", "TEXT"),
     ("scans", "unchecked", "INTEGER"),
+    ("scans", "checked", "TEXT"),
+    ("scans", "unfixed", "INTEGER"),
+    ("scans", "unknown_licenses", "INTEGER"),
+    ("scans", "options", "TEXT"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

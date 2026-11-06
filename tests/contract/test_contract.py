@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import os
 import platform
 import shutil
@@ -164,7 +165,7 @@ class Contract(unittest.TestCase):
     # exit codes ------------------------------------------------------------
 
     def test_exit_2_on_usage_errors(self):
-        for argv in (["--bogus"], ["scan", "--licenses", str(self.home / "nope.txt")], ["search"], ["export"],
+        for argv in (["--bogus"], ["scan", "--licenses", str(self.home / "nope.txt")], ["search"], ["report", "--md", "--csv"],
                      ["breach", "--enable", "--disable"], ["search", "x", "--limit", "many"], ["version", "extra"],
                      ["scna"], ["fix", "--fix"]):
             code, _, err = self.run_bin(*argv)
@@ -195,7 +196,7 @@ class Contract(unittest.TestCase):
     def test_exit_0_when_only_warnings_and_unchecked(self):
         code, out, _ = self.project_run()
         self.assertEqual(code, 0, out)
-        self.assertIn("not checked", out)
+        self.assertIn("Not checked", out)
         self.assertIn("Incomplete", out)
 
     # scan --json ----------------------------------------------------------
@@ -237,9 +238,13 @@ class Contract(unittest.TestCase):
             conn.execute("INSERT INTO vulns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (rec["id"], "", rec["summary"], "", "", "", "", "", json.dumps(rec)))
         path = self.home / "report with spaces.html"
-        code, out, err = self.project_run("--json", "--html", str(path))
-        report = self.envelope(out)
+        code, out, err = self.project_run("--html", "-o", str(path))
         self.assertEqual(code, 1)
+        self.assertNotIn("<html", out, "the page went to the file")
+        self.assertIn(f"wrote the report to {path}", err)
+        code, out, _ = self.run_bin("report", "--json")
+        self.assertEqual(code, 1, "report exits as the scan did")
+        report = self.envelope(out)
         bundle = self.html_bundle(path)
         self.assertEqual(bundle["runs"][0]["report"], report)
         self.assertTrue(any(f["kind"] == "unchecked" for f in report["findings"]))
@@ -251,21 +256,25 @@ class Contract(unittest.TestCase):
                             for f in bundle["runs"][0]["report"]["findings"]))
         self.assertEqual(bundle["phase"], "scan")
         self.assertGreater(bundle["generated_at"], 1000000000000)
-        self.assertIn(str(path), err)
-        self.assertNotIn("HTML report", out)
+        # report renders the same page from the cache, without scanning.
+        again = self.home / "again.html"
+        code, _, err = self.run_bin("report", "--html", "-o", str(again))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.html_bundle(again)["runs"], bundle["runs"])
 
     def test_html_dry_run_and_final_recheck(self):
         path = self.home / "report.html"
-        code, out, _ = self.project_run("--dryrun", "--html", str(path), cmd="fix")
+        code, out, _ = self.project_run("--dryrun", "--html", "-o", str(path), cmd="fix")
         self.assertEqual(code, 0)
-        self.assertEqual(self.html_bundle(path)["phase"], "before updates (dry run)")
-        self.assertIn("Incomplete", out)
-        # Empty, offline scope has no fixes to execute.
-        code, out, _ = self.project_run("--html", str(path), cmd="fix")
+        self.assertEqual(self.html_bundle(path)["phase"], "scan", "a dry run changes nothing")
+        # Empty, offline scope has no fixes to execute: the re-check is the last scan, and no fix ran.
+        code, out, err = self.project_run(cmd="fix")
         self.assertEqual(code, 0)
         self.assertIn("Re-checking", out)
+        self.assertIn("Incomplete", out)
+        code, _, _ = self.run_bin("report", "--html", "-o", str(path))
         bundle = self.html_bundle(path)
-        self.assertEqual(bundle["phase"], "after updates")
+        self.assertEqual(bundle["phase"], "scan")
         with sqlite3.connect(str(self.db)) as conn:
             latest = conn.execute("SELECT MAX(id) FROM scans").fetchone()[0]
         self.assertEqual(bundle["scan_id"], latest, "HTML must identify the final history scan")
@@ -279,11 +288,11 @@ class Contract(unittest.TestCase):
         suspect = Path(self.tmp.name, "suspect.txt")
         suspect.write_text("PRIV-ESCALATION\npath:trusted.js\n")
         path = Path(self.tmp.name, "report.html")
-        code, out, err = self.project_run("--json", "--html", str(path), "--no-posture",
+        code, out, err = self.project_run("--html", "-o", str(path), "--no-posture",
                                           "--posture-policy", str(posture), "--suspect-policy", str(suspect))
         self.assertIn(code, (0, 1), err)
         bundle = self.html_bundle(path)
-        self.assertEqual(bundle["runs"][0]["report"], self.envelope(out))
+        self.assertEqual(bundle["runs"][0]["report"], self.envelope(self.run_bin("report", "--json")[1]))
         self.assertTrue(any(f["kind"] == "repo-hook" for f in bundle["runs"][0]["report"]["findings"]))
         self.assertFalse(bundle["scope"]["posture"])
         self.assertEqual(bundle["scope"]["posture_exclusions"], ["POSTURE-FIREWALL"])
@@ -291,14 +300,14 @@ class Contract(unittest.TestCase):
         self.assertEqual(bundle["scope"]["policy_files"]["posture"], str(posture))
         self.assertEqual(bundle["scope"]["policy_files"]["repo_hooks"], "bundled")
 
-    def test_html_file_errors_fail_before_scan(self):
+    def test_report_file_errors_fail_before_scan(self):
         for bad in (str(self.home), str(self.home / "missing" / "report.html")):
-            code, out, err = self.project_run("--html", bad)
+            code, out, err = self.project_run("--html", "-o", bad)
             self.assertEqual(code, 3, err)
             self.assertEqual(out, "")
             self.assertFalse(self.db.exists())
-        for bad in (["--html"], ["--html="], ["--html=-"]):
-            self.assertEqual(self.run_bin(*bad)[0], 2)
+        for bad in (["-o"], ["--out="], ["--out=-"], ["--html=x"]):
+            self.assertEqual(self.run_bin(*bad)[0], 2, bad)
 
     def test_html_is_opt_in_and_preserves_old_file_on_scan_error(self):
         self.project_run()
@@ -306,7 +315,8 @@ class Contract(unittest.TestCase):
         path = self.home / "report.html"
         path.write_text("previous report")
         env = dict(self.env, WPANTRY_DB="/dev/null/w.db")
-        code, _, _ = self.run_bin("scan", "--no-machine", "--path", str(self.home), "--offline", "--html", str(path), env=env)
+        code, _, _ = self.run_bin("scan", "--no-machine", "--path", str(self.home), "--offline", "--html", "-o", str(path),
+                                  env=env)
         self.assertEqual(code, 3)
         self.assertEqual(path.read_text(), "previous report")
         self.assertEqual(list(self.home.glob(".wpantry-report-*.tmp")), [])
@@ -408,22 +418,28 @@ class Contract(unittest.TestCase):
     def test_report_keeps_scan_history(self):
         self.project_run()
         self.project_run()
-        code, out, err = self.run_bin("report", "--format", "json", "--since", "7")
+        code, out, err = self.run_bin("report", "--json", "--since", "7")
         self.assertEqual(code, 0, err)
         data = json.loads(out)
-        self.assertEqual(set(data), {"schema", "version", "since_days", "exposures", "fixes", "scans", "events"})
-        self.assertEqual(len(data["scans"]), 2, data["scans"])
-        self.assertTrue(all(s["scope"].startswith("repos:") for s in data["scans"]), data["scans"])
-        self.assertEqual([e["kind"] for e in data["events"]], ["scan", "scan"])
-        code, out, err = self.run_bin("report", "--audit")
+        self.assertEqual(set(data), ENVELOPE | {"history"})
+        self.assertEqual(set(data["history"]), {"since_days", "exposures", "fixes", "scans", "events"})
+        self.assertEqual(len(data["history"]["scans"]), 2, data["history"]["scans"])
+        self.assertTrue(all(s["scope"].startswith("repos:") for s in data["history"]["scans"]))
+        self.assertEqual([e["kind"] for e in data["history"]["events"]], ["scan", "scan"])
+        self.assertEqual(set(self.envelope(self.run_bin("report", "--json")[1])), ENVELOPE, "no history unless asked")
+        code, out, err = self.run_bin("report", "--md", "--history")
         self.assertEqual(code, 0, err)
         self.assertIn("## Audit log", out)
-        self.assertNotIn("## Exposure log", out)
-        code, out, err = self.run_bin("report", "--exposure", "--format", "csv")
+        self.assertIn("## Exposure log", out)
+        self.assertNotIn("## Audit log", self.run_bin("report", "--md")[1])
+        code, out, err = self.run_bin("report", "--csv", "--history")
         self.assertEqual(code, 0, err)
         self.assertTrue(out.startswith("kind,component,version,location,vuln_id,"), out[:80])
-        code, _, err = self.run_bin("report", "--format", "pdf")
-        self.assertEqual(code, 2, err)
+        code, out, err = self.run_bin("report")
+        self.assertEqual(code, 0, err)
+        self.assertIn("==> Security scan #2", out, "the terminal report of the latest scan")
+        for bad in (["report", "--format", "md"], ["report", "--pdf"]):
+            self.assertEqual(self.run_bin(*bad)[0], 2, bad)
         conn = sqlite3.connect(str(self.db))
         for table in ("scans", "exposures", "fixes", "events"):
             self.assertTrue(conn.execute(f"PRAGMA table_info({table})").fetchall(), table)
@@ -476,7 +492,9 @@ class Contract(unittest.TestCase):
         for old in (("scan", "--fix"), ("check", "--fix"), ("--fix",), ("--update",), ("check", "--update")):
             code, out2, err = self.run_bin(*old, *scope)
             self.assertEqual(code, 0, (old, err))
-            self.assertEqual(out2, out, old)
+            # The same report but for the scan's number and time.
+            same = lambda t: re.sub(r"Security scan #\d+  \S+ \S+ UTC", "Security scan", t)
+            self.assertEqual(same(out2), same(out), old)
 
     def test_check_is_scan(self):
         git_repo(self.home / "app")
@@ -959,8 +977,8 @@ class Contract(unittest.TestCase):
         conn.close()
 
         jl = Path(self.tmp.name, "f.jsonl")
-        code, out, err = self.run_bin("export", "--jsonl", str(jl), "--all")
-        self.assertEqual(code, 0, err)
+        code, out, err = self.run_bin("export", "--jsonl", "--history", "-o", str(jl))
+        self.assertEqual(code, 1, err)
         rows = [json.loads(line) for line in jl.read_text().splitlines()]
         self.assertEqual(len(rows), 1, rows)
         row = rows[0]
@@ -972,7 +990,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(row["record"]["summary"], rec["summary"], "the full OSV record rides along")
         self.assertIsNone(row["fix"])
         self.assertIsNone(row["first_seen"], "no scan recorded this hand-written finding")
-        self.assertEqual(self.run_bin("export", "--jsonl", str(jl), "--csv", str(Path(self.tmp.name, "g.csv")))[0], 0)
+        self.assertEqual(self.run_bin("export", "--jsonl", "--csv")[0], 2, "one format at a time")
 
         code, out, _ = self.run_bin("search", "traversal", "--json")
         self.assertEqual(code, 0)
@@ -985,8 +1003,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(code, 0)
 
         f = Path(self.tmp.name, "f.csv")
-        code, out, _ = self.run_bin("export", "--csv", str(f))
-        self.assertEqual(code, 0)
+        code, out, _ = self.run_bin("export", "--csv", "-o", str(f))
+        self.assertEqual(code, 1)
         rows = list(csv.reader(f.open(newline="")))
         self.assertEqual(rows[0], ["id", "aliases", "url", "component", "kind", "affected_version", "safe_version",
                                    "severity", "kev", "status", "location"])
@@ -1051,9 +1069,9 @@ class Contract(unittest.TestCase):
         conn.commit()
         conn.close()
         f = Path(self.tmp.name, "bare.csv")
-        code, out, err = self.run_bin("export", "--csv", str(f))
+        code, out, err = self.run_bin("export", "--csv", "-o", str(f))
         self.assertEqual(code, 0, err)
-        self.assertIn("wrote 1 findings", out)
+        self.assertIn("wrote the report to", err)
         text = f.read_text()
         self.assertIn('"/w/a,b/""q""/Cargo.lock"', text)
         rows = list(csv.reader(io.StringIO(text)))
@@ -1078,7 +1096,7 @@ class Contract(unittest.TestCase):
         conn.execute("INSERT INTO fixes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (2, 1, now - 1800, "brew upgrade x", "auto", 0, None, "k1"))
         conn.commit()
         conn.close()
-        code, out, err = self.run_bin("report")
+        code, out, err = self.run_bin("report", "--md", "--history")
         self.assertEqual(code, 0, err)
         self.assertIn("## Exposure log", out)
         self.assertIn("1 open, 1 resolved; median time to resolve 4 days", out)
@@ -1091,7 +1109,7 @@ class Contract(unittest.TestCase):
         self.assertIn("### Scans", out)
         self.assertIn("### Events", out)
         self.assertIn("| scan |", out)
-        code, out, err = self.run_bin("report", "--exposure", "--format", "csv")
+        code, out, err = self.run_bin("report", "--csv", "--history")
         self.assertEqual(code, 0, err)
         rows = list(csv.reader(io.StringIO(out)))
         self.assertEqual(len(rows), 3, out)
@@ -1099,10 +1117,11 @@ class Contract(unittest.TestCase):
         self.assertEqual(rows[1][11], "", "open: not resolved")
         self.assertNotEqual(rows[2][11], "")
         f = Path(self.tmp.name, "r.json")
-        code, out, err = self.run_bin("report", "--format", "json", "-o", str(f))
+        code, out, err = self.run_bin("report", "--json", "--history", "-o", str(f))
         self.assertEqual(code, 0, err)
-        self.assertIn("wrote the report", out)
-        self.assertEqual(len(json.loads(f.read_text())["exposures"]), 2)
+        self.assertIn("wrote the report", err)
+        self.assertEqual(out, "")
+        self.assertEqual(len(json.loads(f.read_text())["history"]["exposures"]), 2)
 
     def test_findings_carry_the_dependency_relationship(self):
         """A dev dependency the root asks for: dep_scope dev, dep_direct true, and
@@ -1135,7 +1154,7 @@ class Contract(unittest.TestCase):
         self.assertEqual((f["dep_scope"], f["dep_direct"], f["affected_range"]), ("dev", True, ">=1.0.0, <1.2.6"))
         self.assertEqual(code, 1)
         jl = Path(self.tmp.name, "deps.jsonl")
-        self.assertEqual(self.run_bin("export", "--jsonl", str(jl))[0], 0)
+        self.assertEqual(self.run_bin("export", "--jsonl", "-o", str(jl))[0], 1)
         rows = [json.loads(line) for line in jl.read_text().splitlines()]
         row = next(r for r in rows if r["vuln_id"] == "CVE-2026-7")
         self.assertEqual((row["dep_scope"], row["dep_direct"], row["record"]["id"]), ("dev", True, "GHSA-m"))

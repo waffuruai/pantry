@@ -312,7 +312,7 @@ class Contract(unittest.TestCase):
             self.assertEqual(code, 3, err)
             self.assertEqual(out, "")
             self.assertFalse(self.db.exists())
-        for bad in (["-o"], ["--out="], ["--out=-"], ["--html=x"]):
+        for bad in (["-o"], ["--out="], ["--html=x"]):
             self.assertEqual(self.run_bin(*bad)[0], 2, bad)
 
     def test_html_is_opt_in_and_preserves_old_file_on_scan_error(self):
@@ -526,7 +526,7 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.run_bin("--no-machine", "--path", str(self.home), "--offline", "--no-input")[0], scan[0])
 
     def test_schedule_dry_run_and_cache_prune(self):
-        code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "weekly", "--at", "07:05")
+        code, out, err = self.run_bin("schedule", "install", "--dry-run", "--every", "quarter", "--at", "07:05")
         self.assertEqual(code, 0, err)
         self.assertIn("schedule", out)
         # launchd (integers), systemd (HH:MM) or cron (M H) spell the time differently.

@@ -79,8 +79,8 @@ not checked
 
 ```bash
 wpantry report                              # the terminal report: areas, a table each, the update plan
-wpantry report --md -o report.md            # the same as Markdown, in a file
-wpantry report --html -o report.html        # one offline page (open it in a browser)
+wpantry report --md                        # the same as Markdown, in <when>_pantry_report.md here
+wpantry report --html                      # one offline page in <when>_pantry_report.html (open it in a browser)
 wpantry report --json                       # the schema-1 envelope scan --json prints
 wpantry report --csv -o findings.csv        # one row per finding
 wpantry report --jsonl -o findings.jsonl    # one object per finding, joined with its OSV record and lifecycle
@@ -91,7 +91,7 @@ wpantry report exposure --csv --since 365 -o exposure.csv     # what was exposed
 wpantry report remediation --csv -o fixes.csv                 # each fix: when, who, the result, the scan that verified it
 wpantry report audit --json                 # every scan and event
 wpantry report all --md                     # the findings, then every log
-wpantry scan --html -o report.html          # scan, then write the page
+wpantry scan --html                        # scan, then write the page
 ```
 
 Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `wpantry fix` records the fixes it ran, who ran them and the scan that verified them. The word after `report` picks what it covers, the flags how it looks.
@@ -102,7 +102,7 @@ Every scan is kept: when it ran, what it covered, and each finding from the scan
 ```bash
 wpantry sync                          # refresh the feeds and every answer the cache holds
 wpantry schedule install              # daily at 09:30: sync, then scan (never fix)
-wpantry schedule install --every weekly --at 07:00
+wpantry schedule install --every week --at 07:00
 wpantry schedule status               # scheduled? when did it last run, what did it find
 wpantry schedule uninstall
 wpantry cache prune                   # drop what no scan has used in 90 days, compact the file
@@ -133,7 +133,7 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 
 `wpantry fix --dryrun` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry fix` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
-For a browser report, run `wpantry report --html -o report.html` (or `wpantry scan --html -o report.html` to scan first). The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
+For a browser report, run `wpantry report --html` (or `wpantry scan --html` to scan first): it writes `<when>_pantry_report.html` in the current directory, or the file `-o FILE` names. The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
 
 The plan is wpantry's own (`wpantry fix --dryrun` prints the same one): one fix per component, `mise` never upgraded for you, many secret hits in one file one decision. **Hand this to an AI agent** under By hand copies a prompt with every finding, the plan and the coverage context of the scan for the agent of your choice; preview it and remove local paths you do not want to share. Copying sends nothing and runs nothing.
 
@@ -391,15 +391,15 @@ Refresh the cache: the feeds, end-of-life dates and OSV answers for what was sca
 ### schedule
 
 ```
-usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] {install,status,uninstall,run}
+usage: wpantry schedule [-h] [--every PERIOD] [--at HH:MM] [--dry-run] {install,status,uninstall,run}
 ```
 
 Run sync and scan on a schedule (launchd, a systemd user timer, or cron); a scheduled run never fixes anything (that is `wpantry fix`). `install` sets it up, `status` says whether it is installed and what the last run found, `uninstall` takes it away, `run` is what the scheduler runs.
 
 | Option | Effect |
 |---|---|
-| `--every WHEN` | `hourly`, `daily` (default) or `weekly` |
-| `--at HH:MM` | The time of day (default 09:30; weekly: Mondays) |
+| `--every PERIOD` | `hour`, `day` (default), `week`, `month`, `quarter` or `year`, each from the period's start: a week on Monday, a month on the 1st, a quarter on 1 January, April, July and October, a year on 1 January |
+| `--at HH:MM` | The time of day (default 09:30) |
 | `--dry-run` | Print the job definition without installing it |
 
 ### cache
@@ -458,7 +458,7 @@ A report from the cache; it never scans. `scan` and `fix` show `findings` the sa
 | `--csv` | One table: the findings, or the log asked for (`history` and `all`: the exposure log and the findings), or the summary's figures |
 | `--md` | Markdown, the same sections |
 | `--html` | The scan's offline page, with 14 days of history (`--since DAYS` for more) |
-| `-o`, `--out FILE` | Write there instead of stdout (the terminal report becomes `--txt`) |
+| `-o`, `--out FILE` | Write there (the terminal report becomes `--txt`); `-o -` is stdout. Without `-o`, a format is written to `<when>_pantry_report.<ext>` (such as `20261105T143000Z_pantry_report.html`, the time in UTC) in the current directory when stdout is a terminal, and to stdout when stdout is a pipe or a file (an agent, `| jq`, `> out.json`); `-o -` sends it to stdout on a terminal too. |
 | `--since DAYS` | How far back the logs go (default 14) |
 
 ## Troubleshooting

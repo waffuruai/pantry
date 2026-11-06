@@ -50,6 +50,10 @@ pub struct Show {
     pub part: wpantry::reporters::Part,
     pub format: Shown,
     pub out: Option<PathBuf>,
+    /// `-o -`: to stdout even on a terminal. Otherwise a format other than
+    /// the terminal's goes to a file (`<when>_pantry_report.<ext>`) on a
+    /// terminal, and to stdout when stdout is a pipe or a file.
+    pub stdout: bool,
     /// `--since DAYS`: the logs' reach.
     pub since: i64,
 }
@@ -60,6 +64,7 @@ impl Default for Show {
             part: wpantry::reporters::Part::Findings,
             format: Shown::Tui,
             out: None,
+            stdout: false,
             since: wpantry::reporters::HISTORY_DAYS,
         }
     }
@@ -221,7 +226,7 @@ const SCAN_USAGE: [&str; 4] = [
 /// `check` and `fix`.
 macro_rules! report_options {
     () => {
-        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one table: the findings, or the log asked for\n  --md                  Markdown\n  --html                one offline HTML page (best with -o FILE)\n  -o, --out FILE        write the report there instead of stdout\n  --since DAYS          how far back the logs go (default 14)"
+        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one table: the findings, or the log asked for\n  --md                  Markdown\n  --html                one offline HTML page\n  -o, --out FILE        write the report there (- for stdout). Without it, a format is written to <when>_pantry_report.<ext> here when stdout is a terminal, and to stdout when it is a pipe or a file\n  --since DAYS          how far back the logs go (default 14)"
     };
 }
 
@@ -257,7 +262,7 @@ pub fn usage(cmd: &str) -> String {
             "usage: wpantry rules [-h] [--update] [--json]\n       wpantry rules gen [--category CAT] [--family NAME] [--name RULE] [--out FILE] SAMPLE [SAMPLE ...]\n       wpantry rules goodware"
         }
         "schedule" => {
-            "usage: wpantry schedule [-h] [--every WHEN] [--at HH:MM] [--dry-run] {install,status,uninstall,run}"
+            "usage: wpantry schedule [-h] [--every PERIOD] [--at HH:MM] [--dry-run] {install,status,uninstall,run}"
         }
         "sync" => "usage: wpantry sync [-h] [--refresh] [--json]",
         "cache" => "usage: wpantry cache [-h] [--older-than DAYS] {prune}",
@@ -320,7 +325,7 @@ fn help(cmd: &str) -> String {
             "refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan --offline has fresh answers\n\noptions:\n  -h, --help  show this help message and exit\n  --refresh   ask every source again, even when its answer is fresh\n  --json      print what was refreshed as JSON"
         }
         "schedule" => {
-            "run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes (that is wpantry fix)\n\npositional arguments:\n  {install,status,uninstall,run}\n\noptions:\n  -h, --help         show this help message and exit\n  --every WHEN       hourly, daily (default) or weekly\n  --at HH:MM         the time of day (default 09:30; weekly: Mondays)\n  --dry-run          print the job definition without installing it"
+            "run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes (that is wpantry fix)\n\npositional arguments:\n  {install,status,uninstall,run}\n\noptions:\n  -h, --help         show this help message and exit\n  --every PERIOD     hour, day (default), week, month, quarter or year, each from its start (a week on Monday, a month on the 1st, a quarter on 1 January, April, July and October, a year on 1 January)\n  --at HH:MM         the time of day (default 09:30)\n  --dry-run          print the job definition without installing it"
         }
         "cache" => {
             "maintain the cache\n\npositional arguments:\n  {prune}               drop what no scan has used in a while, then compact the file\n\noptions:\n  -h, --help            show this help message and exit\n  --older-than DAYS     what counts as unused (default 90)"
@@ -361,8 +366,10 @@ fn show(flag: &dyn Fn(&str) -> bool, value: &dyn Fn(&str) -> Option<String>) -> 
         [one] => *one,
         [a, b, ..] => return Err(format!("argument {}: not allowed with argument {}", b.flag(), a.flag())),
     };
+    let stdout = value("--out").as_deref() == Some("-");
     let out = match value("--out") {
-        Some(v) if v.is_empty() || v == "-" => return Err("argument -o/--out: expected a file path".into()),
+        Some(v) if v.is_empty() => return Err("argument -o/--out: expected a file path, or - for stdout".into()),
+        Some(v) if v == "-" => None,
         Some(v) => Some(expand(&v)),
         None => None,
     };
@@ -375,7 +382,7 @@ fn show(flag: &dyn Fn(&str) -> bool, value: &dyn Fn(&str) -> Option<String>) -> 
             _ => return Err(format!("argument --since: expected a number of days, got '{v}'")),
         },
     };
-    Ok(Show { part: wpantry::reporters::Part::Findings, format, out, since })
+    Ok(Show { part: wpantry::reporters::Part::Findings, format, out, stdout, since })
 }
 
 /// (option, takes a value) for each subcommand.
@@ -583,7 +590,7 @@ pub fn parse(argv: &[String]) -> Parsed {
         let value = if takes {
             match inline {
                 Some(v) => Some(v),
-                None if i < argv.len() && !argv[i].starts_with('-') => {
+                None if i < argv.len() && (!argv[i].starts_with('-') || argv[i] == "-") => {
                     i += 1;
                     Some(argv[i - 1].clone())
                 }
@@ -755,10 +762,11 @@ pub fn parse(argv: &[String]) -> Parsed {
                 [] => return fail("the following arguments are required: action".into()),
                 [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
             };
-            let every = value("--every").unwrap_or_else(|| "daily".into());
-            if !["hourly", "daily", "weekly"].contains(&every.as_str()) {
+            let every = value("--every").unwrap_or_else(|| "day".into());
+            if crate::schedule::Every::parse(&every).is_none() {
                 return fail(format!(
-                    "argument --every: invalid choice: '{every}' (choose from hourly, daily, weekly)"
+                    "argument --every: invalid choice: '{every}' (choose from {})",
+                    crate::schedule::Every::NAMES.join(", ")
                 ));
             }
             let at = value("--at").unwrap_or_else(|| "09:30".into());

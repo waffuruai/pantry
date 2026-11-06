@@ -247,6 +247,12 @@ pub fn render(cache: &Cache, report: &Report, format: Format) -> Result<String> 
 /// A file a report is written to: staged beside it and renamed into place,
 /// so an error leaves any earlier copy whole; never through a symlink at
 /// the destination.
+/// The file a report is written to when no `-o` names one: in the current
+/// directory, `<when>_pantry_report.<ext>` (`20261105T143000Z_pantry_report.html`).
+pub fn file_name(ext: &str, t: f64) -> String {
+    format!("{}_pantry_report.{ext}", history::file_stamp(t))
+}
+
 pub struct Output {
     destination: PathBuf,
     staging: PathBuf,

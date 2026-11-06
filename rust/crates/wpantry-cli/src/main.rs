@@ -88,6 +88,18 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result
     out
 }
 
+/// Where a report goes when no `-o FILE` says: a format other than the
+/// terminal's is written to `<when>_pantry_report.<ext>` in the current
+/// directory when stdout is a `terminal`, and to stdout when it is a pipe
+/// or a file (an agent's, `| jq`, `> out.json`) or `-o -` asked for it.
+fn resolve(mut show: Show, terminal: bool, now: f64) -> Show {
+    if show.out.is_none() && !show.stdout && terminal && show.format != Shown::Tui {
+        let ext = show.format.flag().trim_start_matches('-');
+        show.out = Some(std::path::PathBuf::from(wpantry::reporters::file_name(ext, now)));
+    }
+    show
+}
+
 /// Whether the report goes to stdout in a format a program reads: then
 /// nothing else is printed there and nothing is asked.
 fn quiet(show: &Show) -> bool {
@@ -998,7 +1010,10 @@ fn cmd_skill() -> Result<i32> {
 
 fn dispatch(cmd: Command) -> Result<i32> {
     match cmd {
-        Command::Scan(c) => cmd_scan(c),
+        Command::Scan(mut c) => {
+            c.show = resolve(c.show, std::io::stdout().is_terminal(), wpantry::utils::os::now());
+            cmd_scan(c)
+        }
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
         Command::Watch { json, offline } => cmd_watch(json, offline),
@@ -1011,7 +1026,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),
             _ => cmd_rules(update, json),
         },
-        Command::Report(show) => cmd_report(&show),
+        Command::Report(show) => cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now())),
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
         Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),

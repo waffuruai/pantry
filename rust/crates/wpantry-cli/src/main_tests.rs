@@ -54,3 +54,18 @@ fn the_envelope_carries_the_counts_and_findings() {
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0]["vuln_id"].as_str(), Some("CVE-2026-1"));
 }
+
+#[test]
+fn a_format_on_a_terminal_goes_to_a_dated_file_and_a_pipe_gets_stdout() {
+    let html = Show { format: Shown::Html, ..Show::default() };
+    let t = 1_762_353_000.0; // 2025-11-05 14:30:00 UTC
+    let to_file = resolve(html.clone(), true, t);
+    assert_eq!(to_file.out, Some(std::path::PathBuf::from("20251105T143000Z_pantry_report.html")));
+    assert_eq!(resolve(html.clone(), false, t).out, None, "a pipe or a file: stdout");
+    assert_eq!(resolve(Show { stdout: true, ..html.clone() }, true, t).out, None, "-o - asked for stdout");
+    let named = Show { out: Some("r.html".into()), ..html };
+    assert_eq!(resolve(named, true, t).out, Some(std::path::PathBuf::from("r.html")));
+    assert_eq!(resolve(Show::default(), true, t).out, None, "the terminal's tables stay on the terminal");
+    let csv = resolve(Show { format: Shown::Csv, ..Show::default() }, true, t);
+    assert_eq!(csv.out.unwrap().to_string_lossy(), "20251105T143000Z_pantry_report.csv");
+}

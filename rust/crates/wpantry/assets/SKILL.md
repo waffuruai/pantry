@@ -25,7 +25,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Ignore cached answers | `wpantry scan --refresh` |
 | Search cached advisories, ranked | `wpantry search "tarfile traversal" --json` |
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
-| The latest scan again, without scanning (a format: `--json`, `--md`, `--csv`, `--jsonl`, `--html`; `-o FILE` writes it) | `wpantry report --json` |
+| The latest scan again, without scanning (a format: `--json`, `--md`, `--csv`, `--jsonl`, `--html`; on a terminal it is written to `<when>_pantry_report.<ext>` here, to stdout through a pipe; `-o FILE` names the file, `-o -` forces stdout) | `wpantry report --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry report --csv -o findings.csv` |
 | Findings as JSON Lines, each joined with its OSV record, dependency scope, lifecycle and fix outcome (`exposure` adds the resolved ones) | `wpantry report exposure --jsonl -o findings.jsonl` |
 | Re-ask OSV about the Critical/High advisories that had no fix; exit 10 when one landed | `wpantry watch --json` |

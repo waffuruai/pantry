@@ -266,6 +266,12 @@ th{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color
 td.mono{font-size:12px;overflow-wrap:anywhere}
 td .badge{vertical-align:baseline}
 
+/* the fleet callout */
+.fleet{margin-top:48px;border:1px solid var(--off);border-left:3px solid var(--gold);border-radius:var(--r);background:var(--card);padding:16px 20px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px}
+.fleet p{margin:0;color:var(--soft);flex:1 1 320px}
+.fleet b{color:var(--ink);font-weight:500}
+.fleet a{font:13px var(--mono);white-space:nowrap}
+
 /* footer */
 .foot{margin-top:56px;padding:22px 0 40px;border-top:1px solid var(--off);color:var(--muted);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 18px}
 .foot b{color:var(--ink);font-weight:500}
@@ -883,8 +889,12 @@ function jumpHTML(r){
   if(historyHTML(r))items.push(['history','History','']);
   return '<nav class="jump" aria-label="Sections">'+items.map(function(x,i){return '<a href="#'+x[0]+'"><b>'+(i+1)+'</b>'+esc(x[1])+(x[2]?'<span class="c">'+esc(x[2])+'</span>':'')+'</a>'}).join('')+'</nav>';
 }
+// On screen only: a printed report is evidence, not an advert.
+function fleetHTML(print){
+  return print?'':'<aside class="fleet"><p><b>Looking after a fleet of computers, or running a business?</b> We can make keeping them all patched and checked easier.</p><a href="https://waffuru.ai/contact" target="_blank" rel="noopener noreferrer">Contact us →</a></aside>';
+}
 function pageHTML(r,print){
-  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+
+  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+
     '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span></footer>';
 }
 function render(){

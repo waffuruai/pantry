@@ -40,8 +40,6 @@ flowchart TB
 - the HTTP pool keeps a connection per parallel fetch;
 - folders are read where a command would only list them (the Homebrew Cellar and Caskroom, `npm root -g`).
 
-Timings, 2026-10-28, org workspace on a developer Mac: warm 4 to 5 s, cold 136 to 149 s; Linux containers warm 1 to 3 s. A cold run's floor is the network and exporting container images; a warm run's is npm and the tool probes.
-
 **Ask.**
 
 - **Batch.** The OSV client posts `querybatch` with at most 1000 queries a request and follows `next_page_token` per query. A record is fetched (`GET /v1/vulns/{id}`, at most 8 in flight, `If-None-Match` with the stored ETag) only when its id is new or its `modified` time changed.

@@ -678,5 +678,5 @@ Options:
 
 - **Everything is "not checked"**: you're offline, or a proxy blocks `api.osv.dev`. Re-run online, or `--offline` to use what's cached.
 - **`gitleaks` MISSING**: install it (`brew install gitleaks`, or see its README); the secret scan can't run without it.
-- **It's slow on the first run**: the first run downloads advisories and clones the malicious-package index; later runs read only what changed. `--path` and `--no-machine` narrow a run.
+- **It's slow on the first run**: the first run downloads advisories, clones the malicious-package index and reads every repo's git history for secrets; later runs read only what changed. On macOS a scan keeps the Mac from idle sleep (`caffeinate`) until it ends; closing the lid still sleeps it. `--path` and `--no-machine` narrow a run.
 - **A finding is wrong**: open an issue with a minimal reproducer (never paste a real report; see [CONTRIBUTING.md](../../CONTRIBUTING.md)). Security reports go through [SECURITY.md](../../SECURITY.md).

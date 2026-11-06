@@ -111,6 +111,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
     if let Some(path) = &a.show.out {
         drop(Output::new(path)?);
     }
+    wpantry::utils::process::stay_awake();
     let net = wpantry::utils::net::Http::new();
     let quiet = quiet(&a.show);
     let opts = Options {

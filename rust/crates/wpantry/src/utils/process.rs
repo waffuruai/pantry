@@ -164,3 +164,19 @@ pub fn app_cli(app_names: &[&str], cli_rel: &str) -> String {
 #[cfg(test)]
 #[path = "process_tests.rs"]
 mod tests;
+
+/// Keep the machine from sleeping while this process runs: a first scan
+/// can take an hour, and a Mac left alone sleeps through it. macOS's
+/// `caffeinate` holds the assertion and ends with us (`-w`); elsewhere,
+/// and when it can't start, nothing happens.
+pub fn stay_awake() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/caffeinate")
+            .args(["-i", "-w", &std::process::id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}

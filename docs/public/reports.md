@@ -2,7 +2,7 @@
 
 `wpantry report` shows the latest scan; `wpantry report history` (or `exposure`, `remediation`, `audit` alone, or `all` with the findings) shows the three logs the cache keeps across scans, and `wpantry report summary` one page over all of them, in any format (`--md`, `--json`, `--csv`, `--html`, …). Nothing is sent anywhere; the report is a file you keep or hand to an auditor, a CSO or an insurer.
 
-![Every report comes from one cache: the SQLite file's tables (vulns and queries, findings, scans, exposures, fixes, events) feed wpantry scan and its --json, export --csv and --jsonl, report's exposure, remediation and audit logs, search, and the HTML report](../images/reports.png)
+![Every report comes from one cache: the SQLite file's tables (vulns and queries, findings, scans, exposures, fixes, events) feed wpantry scan and fix, wpantry report (the findings in the terminal or as JSON, JSON Lines, CSV, Markdown or HTML), report history and its exposure, remediation and audit logs, report summary, the HTML report, and search](../images/reports.png)
 
 [Full size](../images/reports.png) · [SVG source](../images/reports.svg)
 

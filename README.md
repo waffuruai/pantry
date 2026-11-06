@@ -2,15 +2,15 @@
 
 Waffuru's security vulnerability scanner, built on the OSV database and other CVE sources. Its command is `wpantry`.
 
-![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; it writes terminal text, JSON, JSON Lines, CSV, HTML and Markdown reports. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](docs/images/architecture.png)
+![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; wpantry report writes terminal tables with severity, CVSS and EPSS, JSON, JSON Lines, CSV, HTML and Markdown from it. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](docs/images/architecture.png)
 
 [Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/architecture.md)
 
-Pantry finds the vulnerabilities that actually apply to your computer. It inventories what is installed and what your git repos lock, asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. Answers live in a local SQLite cache, so a second run the same day takes seconds. Nothing that isn't installed is reported, and a source it can't reach is reported "not checked", never clean.
+Pantry finds the vulnerabilities that actually apply to your computer. It inventories what is installed and what your git repos lock, asks [OSV.dev](https://osv.dev), [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) and [endoflife.date](https://endoflife.date) only about those exact versions, rates each finding on CVSS's scale (LOW, MEDIUM, HIGH, CRITICAL) with its CVSS score and [EPSS](https://www.first.org/epss/) exploit likelihood beside it, and fails only when something here has a known vulnerability with a released fix, is past end of life, is a known malicious package, or is a committed secret. Answers live in a local SQLite cache, so a second run the same day takes seconds. Nothing that isn't installed is reported, and a source it can't reach is reported "not checked", never clean.
 
 | What you get | What it checks |
 |---|---|
-| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `--fix` never updates it) |
+| Know which installed things need updating, and the exact safe version | Runtimes and compilers (every version managers keep, not just PATH), package managers, CLI tools, datastores, Docker, global pip/npm/gem/cargo/pipx packages, Homebrew formulae (`brew vulns`, or read from the Cellar where mise poured them without `brew`); mise itself against OSV and its latest release (behind warns; `wpantry fix` never updates it) |
 | Catch vulnerable dependencies before they ship | Lockfiles in every git repo: Cargo, npm, pnpm, yarn, bun, deno, Swift, Go, uv, poetry, pip, Bundler, Composer, Maven, Gradle, NuGet and more |
 | Catch malware, not just CVEs | YARA rules (ours and YARA Forge's 12,000) over Downloads, Desktop, temp directories, login items and repo programs (`--deep`: all of `~`); every package name against the OpenSSF malicious-packages index; VS Code's malicious-extension list |
 | Find leaked credentials in history | Secrets committed anywhere in each repo's git history (`gitleaks`) |
@@ -45,22 +45,25 @@ Both verify the release before installing: mise against the release's signed pac
 ```bash
 wpantry scan                                       # this computer: machine + every git repo under ~
 wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
-wpantry scan --json --no-input                     # findings for tools and agents
-wpantry search "tarfile" --applicable              # ranked search of cached advisories
-wpantry report --csv -o findings.csv              # id, url, component, affected and safe version
-wpantry watch                                      # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
-wpantry fix --dryrun                               # the update plan, change nothing
+wpantry report                                     # the latest scan again, without scanning
+wpantry report --html                              # one offline page, written to <when>_pantry_report.html here
+wpantry report summary --md                        # one page for a CSO or an auditor
+wpantry scan --json --no-input | jq .              # findings for tools and agents (a pipe gets stdout)
+wpantry fix --dry-run                              # the update plan, change nothing
 wpantry fix                                        # apply the unattended fixes, then re-check
+wpantry schedule install --every week              # sync and scan every Monday at 09:30
 wpantry help                                       # every command (wpantry help fix for one)
 ```
 
 Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).
 
-**Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy`, `--posture-policy` and `--hooks-policy` (the repo hooks you have read and accept). Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`; `--license` works too.
+**Reports.** `wpantry scan` and `wpantry fix` end in the report; `wpantry report` shows the latest scan again, or its `history`, one log (`exposure`, `remediation`, `audit`) or the `summary`, as terminal tables or `--txt`, `--json`, `--jsonl`, `--csv`, `--md`, `--html`. On a terminal a format is written to `<when>_pantry_report.<ext>` in the current directory; through a pipe it goes to stdout; `-o FILE` names the file. [docs/public/reports.md](docs/public/reports.md).
 
-**Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings and the side feeds; never a mirror of OSV.
+**Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy`, `--posture-policy` and `--hooks-policy` (the repo hooks you have read and accept). Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`.
 
-**What leaves the machine.** Package names and versions go to OSV.dev; feeds are fetched; the binary connects to no host outside a compiled-in list, over TLS your machine's trust store verifies. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
+**Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings, the history behind the reports, and the side feeds (CISA KEV, EPSS, …); never a mirror of OSV.
+
+**What leaves the machine.** Package names and versions go to OSV.dev; feeds (CISA KEV and EPSS whole, not per CVE) are fetched; the binary connects to no host outside a compiled-in list, over TLS your machine's trust store verifies. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
 
 **Agents.** `wpantry skill` prints the agent skill ([rust/crates/wpantry/assets/SKILL.md](rust/crates/wpantry/assets/SKILL.md)).
 
@@ -68,7 +71,7 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 ## Docs
 
-- [Install and verify a release](docs/public/install.md), [use wpantry](docs/public/usage.md), [what it checks and its sources](docs/public/checks-and-sources.md), and [the machine's settings it checks](docs/public/posture.md).
+- [Install and verify a release](docs/public/install.md), [use wpantry](docs/public/usage.md), [reports](docs/public/reports.md), [what it checks and its sources](docs/public/checks-and-sources.md), and [the machine's settings it checks](docs/public/posture.md).
 - [How it works](docs/architecture.md): the picture and a run in five steps; the detail is [docs/internal/architecture.md](docs/internal/architecture.md).
 - For maintainers: the [release playbook](docs/internal/release.md), [publishing to crates.io](docs/internal/crates-io.md) and [dependency rules](docs/internal/dependencies.md).
 

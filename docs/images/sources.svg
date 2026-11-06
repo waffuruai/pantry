@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
 <title id="title">Where Pantry&#x27;s answers come from</title>
-<desc id="desc">Left to right: the inventory of what is installed and what the repos lock becomes a list of (ecosystem, name, version) triples; the SQLite cache answers any it asked within a day; the rest go to OSV.dev in batches, with records fetched only when new or changed, and the side feeds (CISA KEV, endoflife.date, the OpenSSF malicious-packages index, deps.dev, the Homebrew catalog, browser release feeds, GitHub releases) are refreshed on their own schedule; judgement groups an advisory&#x27;s aliases into one finding and picks the safe version with the ecosystem&#x27;s comparator; the report fails, warns, or says not checked. Only the triples leave the machine. Local tools run here and send nothing.</desc>
+<desc id="desc">Left to right: the inventory of what is installed and what the repos lock becomes a list of (ecosystem, name, version) triples; the SQLite cache answers any it asked within a day; the rest go to OSV.dev in batches, with records fetched only when new or changed, and the side feeds (CISA KEV, EPSS, endoflife.date, the OpenSSF malicious-packages index, deps.dev, the Homebrew catalog, browser release feeds, GitHub releases) are refreshed on their own schedule; judgement groups an advisory&#x27;s aliases into one finding, picks the safe version with the ecosystem&#x27;s comparator, and rates it in CVSS&#x27;s words with its CVSS and EPSS scores beside; the report fails, warns, or says not checked. Only the triples leave the machine. Local tools run here and send nothing.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d2ccc1"/></marker>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6cb4ee"/></marker>
@@ -42,7 +42,7 @@
 <rect x="528" y="282" width="220" height="136" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="528.5" y="282.5" width="219" height="135" rx="8" fill="none" stroke="#6cb4ee" stroke-width="1.5"/>
 <text x="546" y="310" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="600" fill="#ede8df">Feeds</text>
-<text x="546" y="334" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">CISA KEV · endoflife.date</text>
+<text x="546" y="334" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">CISA KEV · EPSS · endoflife.date</text>
 <text x="546" y="351" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">OpenSSF malicious-packages</text>
 <text x="546" y="368" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">deps.dev (--licenses only)</text>
 <text x="546" y="385" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">Homebrew · browser releases</text>
@@ -56,6 +56,7 @@
 <text x="802" y="266" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">version that repairs them all,</text>
 <text x="802" y="283" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">by the ecosystem&#x27;s own</text>
 <text x="802" y="300" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">version order.</text>
+<text x="802" y="317" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">Rated on CVSS&#x27;s scale.</text>
 <text x="1020" y="166" font-family="'Geist Mono', Menlo, monospace" font-size="12" letter-spacing="1.5" fill="#e8a33d">5  REPORT</text>
 <rect x="1020" y="180" width="124" height="150" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="1020.5" y="180.5" width="123" height="149" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>

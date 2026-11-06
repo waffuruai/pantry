@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850" role="img" aria-labelledby="title desc">
 <title id="title">How Pantry scans your computer</title>
-<desc id="desc">Verified sources (advisories and CVEs from OSV.dev, CISA KEV and others; indicators of compromise from OpenSSF, signature-base and Feodo Tracker; YARA malware rules; other known attack vectors) feed wpantry, a fast file scanner that runs on a schedule or when triggered by you, an agent or a watchdog. It reads this computer and every git repo once, judges what it found, and keeps the sources it checked, the files it checked, the exposures and their mitigations in one SQLite cache. It writes reports as terminal text, JSON, JSON Lines, CSV, HTML and Markdown. Separately, a resident watchdog or sidecar gathers what files can&#x27;t show and triggers scans, and JSON reports can be sent to an external reporting service that shows many machines in aggregate.</desc>
+<desc id="desc">Verified sources (advisories and CVEs from OSV.dev, CISA KEV, EPSS and others; indicators of compromise from OpenSSF, signature-base and Feodo Tracker; YARA malware rules; other known attack vectors) feed wpantry, a fast file scanner that runs on a schedule or when triggered by you, an agent or a watchdog. It reads this computer and every git repo once, judges what it found, and keeps the sources it checked, the files it checked, the exposures and their mitigations in one SQLite cache. wpantry report writes them from the cache as terminal tables (severity, CVSS and EPSS per finding), JSON, JSON Lines, CSV, HTML and Markdown, with the exposure, remediation and audit logs and a summary for auditors. Separately, a resident watchdog or sidecar gathers what files can&#x27;t show and triggers scans, and JSON reports can be sent to an external reporting service that shows many machines in aggregate.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d2ccc1"/></marker>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6cb4ee"/></marker>
@@ -21,7 +21,7 @@
 <rect x="56" y="180" width="300" height="100" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="56.5" y="180.5" width="299" height="99" rx="8" fill="none" stroke="#6cb4ee" stroke-width="1.5"/>
 <text x="74" y="208" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="18" font-weight="600" fill="#ede8df">CVEs and advisories</text>
-<text x="74" y="232" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#d2ccc1">OSV.dev · CISA KEV · endoflife.date</text>
+<text x="74" y="232" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#d2ccc1">OSV.dev · CISA KEV · EPSS · endoflife.date</text>
 <text x="74" y="251" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#d2ccc1">Arch · PostgreSQL · app and browser releases</text>
 <rect x="56" y="294" width="300" height="100" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="56.5" y="294.5" width="299" height="99" rx="8" fill="none" stroke="#6cb4ee" stroke-width="1.5"/>
@@ -75,9 +75,9 @@
 <text x="844" y="166" font-family="'Geist Mono', Menlo, monospace" font-size="12" fill="#e8a33d" letter-spacing="1.5">3  REPORTS</text>
 <rect x="844" y="180" width="300" height="76" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="844.5" y="180.5" width="299" height="75" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
-<text x="862" y="207" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#ede8df">Terminal text</text>
-<text x="862" y="228" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">grouped findings and the fix for each,</text>
-<text x="862" y="244" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">exit 0 / 1 / 2 / 3</text>
+<text x="862" y="207" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#ede8df">wpantry report</text>
+<text x="862" y="228" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">severity, CVSS and EPSS per finding,</text>
+<text x="862" y="244" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">the fix for each; exit 0 / 1 / 2 / 3</text>
 <rect x="844" y="271" width="300" height="76" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="844.5" y="271.5" width="299" height="75" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
 <text x="862" y="298" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#ede8df">JSON</text>
@@ -86,8 +86,8 @@
 <rect x="844" y="362" width="300" height="76" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="844.5" y="362.5" width="299" height="75" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
 <text x="862" y="389" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#ede8df">JSON Lines · CSV</text>
-<text x="862" y="410" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">wpantry export:</text>
-<text x="862" y="426" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">one row per finding</text>
+<text x="862" y="410" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">report --jsonl, --csv: one row a</text>
+<text x="862" y="426" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">finding, or a log</text>
 <rect x="844" y="453" width="300" height="76" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="844.5" y="453.5" width="299" height="75" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
 <text x="862" y="480" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#ede8df">HTML</text>
@@ -96,8 +96,8 @@
 <rect x="844" y="544" width="300" height="76" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="844.5" y="544.5" width="299" height="75" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
 <text x="862" y="571" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#ede8df">Markdown</text>
-<text x="862" y="592" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">wpantry report: exposure,</text>
-<text x="862" y="608" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">remediation and audit logs</text>
+<text x="862" y="592" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">report --md; history and</text>
+<text x="862" y="608" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">summary for auditors</text>
 <path d="M784,400 H814" fill="none" stroke="#d2ccc1" stroke-width="1.5"/>
 <path d="M814,218 V582" fill="none" stroke="#d2ccc1" stroke-width="1.5"/>
 <path d="M814,218 H842" fill="none" stroke="#d2ccc1" stroke-width="1.5" marker-end="url(#arrow)"/>

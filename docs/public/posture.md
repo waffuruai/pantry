@@ -1,6 +1,6 @@
 # The machine's own security settings
 
-With the machine inventory, Pantry reads the settings that decide whether an exploit matters: disk encryption, the firewall, remote logins, password-less login, automatic updates.
+With a scan of your machine, Pantry reads the system and OS level settings to see if there is any hardening that could or should be done to make your system more secure: disk encryption, the firewall, remote logins, password-less login, automatic updates.
 
 - **Read-only:** `defaults read`, `launchctl print-disabled`, `fdesetup status`, config files. Nothing is changed.
 - **Verdict:** a failing Critical or High check fails the scan (exit 1); Medium and Low warn. A check that can't tell says "couldn't tell", never pass.

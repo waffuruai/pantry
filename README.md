@@ -53,7 +53,7 @@ Only package names and versions go to OSV.dev. Feeds are downloaded whole. Pantr
 
 ## Docs
 
-- [Install](docs/public/install.md), [usage](docs/public/usage.md), [reports](docs/public/reports.md), [checks and sources](docs/public/checks-and-sources.md), [machine settings](docs/public/posture.md), [malware rules](docs/public/malware-rules.md)
+- [Install](docs/public/install.md), [usage](docs/public/usage.md), [reports](docs/public/reports.md), [checks and sources](docs/public/checks-and-sources.md), [machine settings](docs/public/posture.md), [malware](docs/public/malware.md)
 - [How it works](docs/public/architecture.md)
 - For agents: `wpantry skill` prints the [agent skill](rust/crates/wpantry/assets/SKILL.md)
 - For maintainers: [release](docs/internal/release.md), [crates.io](docs/internal/crates-io.md), [dependencies](docs/internal/dependencies.md), [CLI contract](specs/cli-contract.md)

@@ -8,6 +8,6 @@
 - [Reports](reports.md): the exposure, remediation and audit logs, and the summary.
 - [Suspicious code](suspect-code.md): the source-level checks and their policy file.
 - [Documents and images](documents.md): PDF, Office, RTF and image checks.
-- [Malware rules](malware-rules.md): the YARA rules and how to add your own.
+- [Malware](malware.md): what the malware scan checks, its sources and limits, and how to add rules.
 
 The interface every implementation keeps: the [CLI contract](../../specs/cli-contract.md).

@@ -309,3 +309,51 @@ jobs:
           fi
           gh workflow run release.yml --repo waffuruai/website --ref main \
             -f product=pantry -f tag="$GITHUB_REF_NAME"
+
+  # The Homebrew tap (waffuruai/homebrew-tap, docs/internal/release.md): its
+  # formula installs the published binaries, so it is rendered from the
+  # release's SHA256SUMS by packaging/homebrew/bump.sh. With HOMEBREW_TAP_TOKEN
+  # (a fine-grained token on the tap alone: Contents and Pull requests, write)
+  # packaging/homebrew/tap-pr.sh pushes a branch and opens the bump PR there;
+  # without it, the job warns and keeps the rendered formula as an artifact to
+  # copy by hand. The release is out either way, so this job never fails the
+  # workflow, and tap-pr.sh is safe to rerun (tests/packaging/test-tap-pr.sh).
+  tap:
+    name: Homebrew tap
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    # The token is an environment secret: `needs` orders jobs but gives this
+    # one no access to it. So the job waits for the environment's approval
+    # too, a second one after publish, this time for the push to the tap.
+    environment: release
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAP: waffuruai/homebrew-tap
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Render the formula from the release's SHA256SUMS
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir release
+          mkdir -p Formula
+          packaging/homebrew/bump.sh -o Formula/wpantry.rb packaging/homebrew/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
+          packaging/homebrew/bump.sh --check Formula/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
+          cat Formula/wpantry.rb
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homebrew-formula
+          path: Formula/wpantry.rb
+          if-no-files-found: error
+
+      - name: Open the bump PR on the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: packaging/homebrew/tap-pr.sh Formula/wpantry.rb "$GITHUB_REF_NAME"

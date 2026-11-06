@@ -26,7 +26,13 @@ curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.2.0/install
 less install.sh && sh install.sh
 ```
 
-**With Homebrew**: coming; see [#10](https://github.com/waffuruai/pantry/issues/10). Windows: see [#11](https://github.com/waffuruai/pantry/issues/11).
+**With Homebrew** (macOS and Linux, no mise):
+
+```bash
+brew install waffuruai/tap/wpantry
+```
+
+The formula installs the same release binary the other two ways do and checks its SHA-256 against the digest the formula carries, which the release workflow copied from that release's `SHA256SUMS`. Homebrew verifies the digest, not the signature; to check provenance as well, run `gh attestation verify "$(brew --prefix wpantry)/bin/wpantry" --repo waffuruai/pantry` after installing (the binary is unchanged, so the attestation still matches). `brew upgrade wpantry` follows new releases once the tap's bump PR for them is merged. Windows: see [#11](https://github.com/waffuruai/pantry/issues/11).
 
 wpantry needs nothing else to run. It uses `git`, `gitleaks` and `openssl` for some checks: `wpantry tools` lists which are missing, and a missing one is reported, never skipped silently.
 
@@ -150,4 +156,4 @@ cargo build --release --locked                  # target/release/wpantry
 
 ## Upgrade and uninstall
 
-`wpantry update` says whether a newer release exists and, after you say yes (`--yes` skips the question; `--check` only asks), installs it: the download is checked against the release's `SHA256SUMS` and then verified by packslip (with the release signer pinned), `gh attestation verify` (against `release.yml` at the tag) or cosign, whichever you have; with none installed it refuses rather than trust a checksum alone. An install mise or cargo made is updated through mise (`mise use -g packslip:github.com/waffuruai/pantry@<version>`) or cargo; a Homebrew one through `brew upgrade`. `wpantry check` prints a line when a newer release is cached (`WPANTRY_NO_UPDATE_CHECK=1` turns that off). The old binary stays beside the new one as `wpantry.old` until the next update. To uninstall, delete the binary; the cache is `~/.cache/wpantry/` (or `$XDG_CACHE_HOME/wpantry/`, or wherever `WPANTRY_DB` points) and can be deleted too.
+`wpantry update` says whether a newer release exists and, after you say yes (`--yes` skips the question; `--check` only asks), installs it: the download is checked against the release's `SHA256SUMS` and then verified by packslip (with the release signer pinned), `gh attestation verify` (against `release.yml` at the tag) or cosign, whichever you have; with none installed it refuses rather than trust a checksum alone. An install mise or cargo made is updated through mise (`mise use -g packslip:github.com/waffuruai/pantry@<version>`) or cargo; a Homebrew one through `brew upgrade wpantry` (`brew uninstall wpantry` removes it). `wpantry check` prints a line when a newer release is cached (`WPANTRY_NO_UPDATE_CHECK=1` turns that off). The old binary stays beside the new one as `wpantry.old` until the next update. To uninstall, delete the binary; the cache is `~/.cache/wpantry/` (or `$XDG_CACHE_HOME/wpantry/`, or wherever `WPANTRY_DB` points) and can be deleted too.

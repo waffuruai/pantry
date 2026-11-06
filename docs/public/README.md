@@ -1,5 +1,6 @@
 # Pantry: public docs
 
+- [How it works](architecture.md): the picture, a run in five steps, and how it is put together: readers, comparators, the cache, the binary, the tests.
 - [Install and verify](install.md): download a release and check its checksum, attestation and signature; or install from crates.io or source.
 - [Use](usage.md): quick start, scope, the report, exit codes, fixing, JSON, options, the cache, troubleshooting.
 - [What it checks and its sources](checks-and-sources.md): every check, every source and what is sent, what runs locally.

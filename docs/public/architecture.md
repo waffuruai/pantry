@@ -1,18 +1,68 @@
-# How Pantry works, in detail
+# How Pantry works
 
-Pantry is one Rust binary that inventories a computer and its git repos, asks a few public sources about exactly those versions, and reports what has a known fix, is past end of life, is malicious, is a leaked secret, or is a setting that leaves the machine open. This page is how it is put together.
+Pantry is one Rust binary. It reads what is installed on this computer and what its git repos lock, asks a few public sources about exactly those versions, judges the answers with each ecosystem's own version rules, and reports what applies.
 
-| For | Read |
-|---|---|
-| The short version, with the picture | [docs/architecture.md](../architecture.md) |
-| What it checks, which sources it asks | [public/checks-and-sources.md](../public/checks-and-sources.md) |
-| How to run it | [public/usage.md](../public/usage.md) |
-| The surface it promises to keep | [specs/cli-contract.md](../../specs/cli-contract.md) |
-| The source files | [rust/README.md](../../rust/README.md) |
+- Answers live in one SQLite cache, kept current from OSV's change lists: a later run fetches only what changed.
+- A source it can't reach is reported "not checked", never clean.
 
-![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; it writes terminal text, JSON, JSON Lines, CSV, HTML and Markdown reports. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](../images/architecture.png)
+Pantry is three things in a line:
+
+1. **Sources**: verified CVEs, IOCs, YARA malware rules and other known attack vectors.
+2. **`wpantry`**: a fast file scanner, run on a schedule or when triggered. Its cache keeps the sources and files it checked, the exposures it found, and how and when each was mitigated.
+3. **Reports**: terminal tables, JSON, JSON Lines, CSV, HTML, Markdown.
+
+It watches nothing live and needs no permission beyond reading files. Live telemetry, the clipboard included, belongs to a resident watchdog or sidecar, which can trigger a scan. JSON reports can go to an external reporting service that aggregates many machines.
+
+![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; wpantry report writes terminal tables, JSON, JSON Lines, CSV, HTML and Markdown from it. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](../images/architecture.png)
 
 [Full size](../images/architecture.png) · [SVG source](../images/architecture.svg)
+
+## A run
+
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 560, "nodeSpacing": 40, "rankSpacing": 36}}}%%
+flowchart TB
+  scope["<b>1 SCOPE</b><br/>Walk ~ to depth 6, skipping Library, caches, toolchains, node_modules and app bundles,<br/>or the --path directories. Inventory the machine unless --no-machine."]
+  read["<b>2 READ, in parallel</b><br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages;<br/>apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings;<br/>container images; documents and code. gitleaks runs on repos whose HEAD moved."]
+  ask["<b>3 ASK</b><br/>(ecosystem, name, version) to OSV in batches of 1000, only new or changed records fetched;<br/>KEV, EPSS, end-of-life, the malicious index, licenses and release feeds.<br/>Answers kept current from OSV's change lists: only what changed since the last run is read."]
+  judge["<b>4 JUDGE</b><br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own<br/>comparator; fail, warn, or not checked."]
+  report["<b>5 REPORT</b><br/>Severity on CVSS&#39;s scale with CVSS and EPSS beside it; wpantry report renders the cache: areas of tables, JSON, CSV, Markdown, HTML;<br/>exit 0 clean, 1 fails, 2 usage, 3 internal. wpantry fix runs the unattended fixes, then re-checks."]
+  scope --> read --> ask --> judge --> report
+```
+
+**Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens.
+
+**Read.** A run is almost all waiting: on subprocesses (tool versions, npm, Python, openssl, gitleaks, Homebrew) and on HTTP. So:
+
+- independent probes run at once (`utils::parallel::par_map`, results kept in order);
+- the trust stores and Software Update run beside the inventory;
+- gitleaks scans stale repos while the dependency checks wait on the network;
+- the HTTP pool keeps a connection per parallel fetch;
+- folders are read where a command would only list them (the Homebrew Cellar and Caskroom, `npm root -g`).
+
+Timings, 2026-10-28, org workspace on a developer Mac: warm 4 to 5 s, cold 136 to 149 s; Linux containers warm 1 to 3 s. A cold run's floor is the network and exporting container images; a warm run's is npm and the tool probes.
+
+**Ask.**
+
+- **Batch.** The OSV client posts `querybatch` with at most 1000 queries a request and follows `next_page_token` per query. A record is fetched (`GET /v1/vulns/{id}`, at most 8 in flight, `If-None-Match` with the stored ETag) only when its id is new or its `modified` time changed.
+- **Change lists.** An answer is cached per (ecosystem, name, version) and kept current from OSV's change lists (`sources::osv_changes`). Per ecosystem there is a cursor (the newest change applied) and a chain start. A scan or `sync`:
+  1. reads the list from the top down to the cursor, less a day's overlap for late exports, in 64 KiB ranges, skipping what it applied before;
+  2. downloads the changed records that are held or name a package here (others are not kept);
+  3. applies each to this machine's versions, matched locally with the ecosystem's order. A record only OSV can match (git ranges, an unknown order) sends those versions back to `querybatch`.
+- **Freshness.** An answer given after its ecosystem's chain started stays current while the list keeps being read. More than 5,000 changes since the last read, or `--refresh`, starts a new chain and asks again. A list read in the last 15 minutes isn't reread. Without a list (git repos, your own advisory APIs) an answer is reused for a day. Failures are never cached.
+- **Feeds** use the same memo: a key, a time to live, and an input fingerprint, so a cached result is reused offline or after a failure only for the same input (a changed repo HEAD, Homebrew listing or image gets a fresh answer).
+
+**Judge.** Records are grouped by id, aliases and upstream CVE, so one vulnerability from two databases is one finding, named by its bare CVE when a record carries one. The fix a finding recommends is the version that repairs every record in the group, ordered by the ecosystem's own comparator. OSV decides whether a version is affected; Pantry only orders fixed versions to pick the safe one and to compare against "latest".
+
+**Report.**
+
+- **Fails:** a released fix, end of life, a malicious package, a committed secret from a provider-specific rule, a Critical or High posture setting.
+- **Warns:** no fix yet (including a program exposed to an unfixed kernel advisory by what it does: a Go 1.24+ module listening with Multipath TCP on), an outdated app, an unpinned MCP server, an install script, a generic secret rule, a Medium or Low posture setting.
+- **Not checked:** a source that couldn't be reached and had nothing cached, or a file that couldn't be read.
+- **Severity:** every finding is rated on CVSS's scale (LOW, MEDIUM, HIGH, CRITICAL) by `checks::severity` after the checks run. An advisory takes its record's label, else its CVSS 3.x or 4.0 score (`utils::cvss`), or that of the records it aliases, or its CVE's (`sources::cve_scores`: OSV's record for the CVE, then CVE.org's; kept a week). Pantry's own checks take theirs from one table. The CVSS score and EPSS likelihood (`sources::epss`, the whole daily file, never a per-CVE request) sit beside it and never change it.
+- **Rendering:** every report is rendered from the cache by `reporters` (`wpantry report`; `scan` and `fix` call it when they finish).
+
+## The parts
 
 ```mermaid
 flowchart LR
@@ -50,50 +100,6 @@ flowchart LR
 - A library crate, `wpantry`, and a thin binary, `wpantry-cli`. The library has no global state and never prints; the CLI owns stdout, stderr and exit codes.
 - Embedders depend on the library at an exact `0.x` version and accept breakage between minors. The [CLI contract](../../specs/cli-contract.md) is the only stable surface; the contract suite runs the binary rather than reading its internals.
 - Not SAST, reachability analysis, guided remediation, an SBOM reader or an offline OSV mirror. gitleaks and `brew vulns` run as external tools, not ports. Windows is [#11](https://github.com/waffuruai/pantry/issues/11).
-
-## A run
-
-```mermaid
-flowchart TB
-  scope["1 SCOPE<br/>Walk ~ to depth 6, no symlinks, skipping Library, caches, toolchains, node_modules and app bundles; or the --path directories. Inventory the machine unless --no-machine."]
-  read["2 READ, in parallel<br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages; apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings; container images. gitleaks runs on repos whose HEAD moved."]
-  ask["3 ASK<br/>(ecosystem, name, version) to OSV in batches of 1000; only new or changed records fetched; KEV, EPSS, end-of-life, the malicious index, licenses and release feeds. Answers kept current from OSV's change lists."]
-  judge["4 JUDGE<br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own comparator; fail, warn, or unchecked."]
-  report["5 REPORT<br/>Severity on CVSS&#39;s scale with CVSS and EPSS beside it; wpantry report renders the cache as areas of tables, JSON, CSV, Markdown or HTML; exit 0 clean, 1 fails, 2 usage, 3 internal. wpantry fix runs the unattended fixes, then re-checks."]
-  scope --> read --> ask --> judge --> report
-```
-
-**Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens.
-
-**Read.** A run is almost all waiting: on subprocesses (tool versions, npm, Python, openssl, gitleaks, Homebrew) and on HTTP. So:
-
-- independent probes run at once (`utils::parallel::par_map`, results kept in order);
-- the trust stores and Software Update run beside the inventory;
-- gitleaks scans stale repos while the dependency checks wait on the network;
-- the HTTP pool keeps a connection per parallel fetch;
-- folders are read where a command would only list them (the Homebrew Cellar and Caskroom, `npm root -g`).
-
-Timings, 2026-10-28, org workspace on a developer Mac: warm 4 to 5 s, cold 136 to 149 s; Linux containers warm 1 to 3 s. A cold run's floor is the network and exporting container images; a warm run's is npm and the tool probes.
-
-**Ask.**
-
-- **Batch.** The OSV client posts `querybatch` with at most 1000 queries a request and follows `next_page_token` per query. A record is fetched (`GET /v1/vulns/{id}`, at most 8 in flight, `If-None-Match` with the stored ETag) only when its id is new or its `modified` time changed.
-- **Change lists.** An answer is cached per (ecosystem, name, version) and kept current from OSV's change lists (`sources::osv_changes`). Per ecosystem there is a cursor (the newest change applied) and a chain start. A scan or `sync`:
-  1. reads the list from the top down to the cursor, less a day's overlap for late exports, in 64 KiB ranges, skipping what it applied before;
-  2. downloads the changed records that are held or name a package here (others are not kept);
-  3. applies each to this machine's versions, matched locally with the ecosystem's order. A record only OSV can match (git ranges, an unknown order) sends those versions back to `querybatch`.
-- **Freshness.** An answer given after its ecosystem's chain started stays current while the list keeps being read. More than 5,000 changes since the last read, or `--refresh`, starts a new chain and asks again. A list read in the last 15 minutes isn't reread. Without a list (git repos, your own advisory APIs) an answer is reused for a day. Failures are never cached.
-- **Feeds** use the same memo: a key, a time to live, and an input fingerprint, so a cached result is reused offline or after a failure only for the same input (a changed repo HEAD, Homebrew listing or image gets a fresh answer).
-
-**Judge.** Records are grouped by id, aliases and upstream CVE, so one vulnerability from two databases is one finding, named by its bare CVE when a record carries one. The fix a finding recommends is the version that repairs every record in the group, ordered by the ecosystem's own comparator. OSV decides whether a version is affected; Pantry only orders fixed versions to pick the safe one and to compare against "latest".
-
-**Report.**
-
-- **Fails:** a released fix, end of life, a malicious package, a committed secret from a provider-specific rule, a Critical or High posture setting.
-- **Warns:** no fix yet (including a program exposed to an unfixed kernel advisory by what it does: a Go 1.24+ module listening with Multipath TCP on), an outdated app, an unpinned MCP server, an install script, a generic secret rule, a Medium or Low posture setting.
-- **Not checked:** a source that couldn't be reached and had nothing cached, or a file that couldn't be read.
-- **Severity:** every finding is rated on CVSS's scale (LOW, MEDIUM, HIGH, CRITICAL) by `checks::severity` after the checks run. An advisory takes its record's label, else its CVSS 3.x or 4.0 score (`utils::cvss`), or that of the records it aliases, or its CVE's (`sources::cve_scores`: OSV's record for the CVE, then CVE.org's; kept a week). Pantry's own checks take theirs from one table. The CVSS score and EPSS likelihood (`sources::epss`, the whole daily file, never a per-CVE request) sit beside it and never change it.
-- **Rendering:** every report is rendered from the cache by `reporters` (`wpantry report`; `scan` and `fix` call it when they finish).
 
 ## Missing evidence is never clean
 
@@ -158,7 +164,7 @@ Container images:
 3. The same lockfile and OS-database readers run on the result, without layer attribution. The kernel's source package (only headers in a container) is left out.
 4. The container and directory are removed, even on error. Answers are memoized per image id for 30 days.
 
-The machine inventory finds runtimes and tools on PATH and in every version manager (mise, asdf, pyenv, nvm, volta, uv, rustup, …), global packages (each Python's `site-packages` metadata read under `-I -S`, npm, cargo, pipx, gem), apps and browsers (plists, the Homebrew cask catalog), Electron bundles, pending OS updates, Docker, editor extensions, and the MCP servers, plugins and skills of the coding agents. The trust-store check reads the system, OpenSSL, Homebrew, certifi, pip and Node stores through `openssl`. The posture checks are read-only probes of the settings the CIS benchmarks name ([public/posture.md](../public/posture.md)).
+The machine inventory finds runtimes and tools on PATH and in every version manager (mise, asdf, pyenv, nvm, volta, uv, rustup, …), global packages (each Python's `site-packages` metadata read under `-I -S`, npm, cargo, pipx, gem), apps and browsers (plists, the Homebrew cask catalog), Electron bundles, pending OS updates, Docker, editor extensions, and the MCP servers, plugins and skills of the coding agents. The trust-store check reads the system, OpenSSL, Homebrew, certifi, pip and Node stores through `openssl`. The posture checks are read-only probes of the settings the CIS benchmarks name ([public/posture.md](posture.md)).
 
 ## Comparing versions
 
@@ -183,22 +189,22 @@ One SQLite file per machine (`~/.cache/wpantry/wpantry.db`, `$XDG_CACHE_HOME`, o
 
 ## The binary
 
-What goes into the binary is reviewed like the code ([internal/dependencies.md](dependencies.md)):
+What goes into the binary is reviewed like the code ([internal/dependencies.md](../internal/dependencies.md)):
 
 - Five direct dependencies: `serde`, `serde_json` without `derive`, `rusqlite` bundled, `ureq`, `rustls` with `ring`. Each pinned `=x.y.z`, enforced by `tests/pins.rs`.
 - `Cargo.lock` committed; every build `--locked` on the exact toolchain `rust/rust-toolchain.toml` names; `cargo deny` and `cargo vet` gate every merge.
 - Everything else is written here: lockfile parsers and TOML and YAML line subsets, comparators, argument parsing, a regex subset, SHA-256, FNV fingerprints, civil dates, tar and plist readers, and the `Net` trait with one `ureq` implementation and one recording fake for tests.
 - `unsafe` is forbidden crate-wide.
 
-A release ([internal/release.md](release.md)):
+A release ([internal/release.md](../internal/release.md)):
 
 - is built from a tag with `lto`, `codegen-units = 1`, `strip`, `--remap-path-prefix` and `SOURCE_DATE_EPOCH` from the commit, twice from two paths, and fails on any difference;
-- ships each target with `SHA256SUMS`, a GitHub build-provenance attestation and a sigstore bundle, plus a signed packslip for the release; `install.sh` and mise verify them before installing ([public/install.md](../public/install.md));
+- ships each target with `SHA256SUMS`, a GitHub build-provenance attestation and a sigstore bundle, plus a signed packslip for the release; `install.sh` and mise verify them before installing ([public/install.md](install.md));
 - v0.2.0 sizes: 3.5 MiB aarch64 Linux (musl, static), 4.0 MiB x86-64 Linux, 6.5 MiB macOS universal.
 
 Programs run as scanners or data sources: `gitleaks`, `git`, `openssl`, `brew`, `docker` or `podman`, and `rpm`; the inventory also runs inventoried tools' version and listing commands and the OS update tools. Every program is an argument vector through `utils::process::exec`, stdin closed, with a timeout; never a shell string.
 
-The network client (`net::Http`) connects only to the hosts in `net::HOSTS`, the list [public/checks-and-sources.md](../public/checks-and-sources.md#sources) shows. Any other URL is refused before connecting; a test checks every source's URL against the list. Server certificates are verified by the platform's trust store (the keychain on macOS, the system bundle on Linux) through `rustls-platform-verifier`, so a CA the machine distrusts (with `wpantry fix ca-trust` or by hand) is distrusted by Pantry's own requests too.
+The network client (`net::Http`) connects only to the hosts in `net::HOSTS`, the list [public/checks-and-sources.md](checks-and-sources.md#sources) shows. Any other URL is refused before connecting; a test checks every source's URL against the list. Server certificates are verified by the platform's trust store (the keychain on macOS, the system bundle on Linux) through `rustls-platform-verifier`, so a CA the machine distrusts (with `wpantry fix ca-trust` or by hand) is distrusted by Pantry's own requests too.
 
 ## Tests
 
@@ -230,5 +236,13 @@ The Rust port's PRD and design are archived in [specs/archived/](../../specs/arc
 - **Feeds under hostile data**: the response, depth, line and file caps were in place; the per-feed hardening (fix versions substituted into commands, capped reads of repo files, plists and caches, control characters in reports) is [#39](https://github.com/waffuruai/pantry/pull/39).
 - **Recorded online cases**: the contract suite ran offline only. [#71](https://github.com/waffuruai/pantry/pull/71) adds eleven OSV records and a KEV entry recorded on 2026-10-30, seeded into the cache, with lockfiles at the last affected and first fixed version of each.
 - **ops**: built `wpantry` from a pinned commit until the first signed release. Closed: ops pins release 0.2.0 and installs it through mise's packslip backend with the release workflow's signing identity pinned.
-- **Shared audits**: whether to import other organizations' `cargo vet` audits, which carry their auditors' published identities. Decided: imported (Mozilla, Google, the Bytecode Alliance), since those identities are public where the audits are; the rest is audited or exempted here ([internal/dependencies.md](dependencies.md)).
+- **Shared audits**: whether to import other organizations' `cargo vet` audits, which carry their auditors' published identities. Decided: imported (Mozilla, Google, the Bytecode Alliance), since those identities are public where the audits are; the rest is audited or exempted here ([internal/dependencies.md](../internal/dependencies.md)).
 - The PRD's tracking issues were never filed; its criteria are met or closed above, so none are needed.
+
+## Where to read more
+
+- [What it checks and its sources](checks-and-sources.md), [usage](usage.md), [install](install.md), [machine settings](posture.md), [reports](reports.md).
+- [The CLI contract](../../specs/cli-contract.md): command line, exit codes, JSON and cache file; the only stable surface.
+- [The source map](../../rust/README.md).
+
+Diagrams use the [Waffuru design language](https://waffuru.ai/brand): SVG source in [`docs/images/`](../images/), 1200 px wide, with a 2× PNG beside it.

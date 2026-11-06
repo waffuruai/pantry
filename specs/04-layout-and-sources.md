@@ -35,7 +35,7 @@ flowchart LR
   FD --> X["remediation/: fix plans, mitigate, harden (moved)"]
 ```
 
-Today: [docs/architecture.md](../docs/architecture.md). Every file's move is in [design/source-layout.md](design/source-layout.md); the sources file is in [design/sources-file.md](design/sources-file.md).
+Today: [docs/public/architecture.md](../docs/public/architecture.md). Every file's move is in [design/source-layout.md](design/source-layout.md); the sources file is in [design/sources-file.md](design/sources-file.md).
 
 ## Terms
 

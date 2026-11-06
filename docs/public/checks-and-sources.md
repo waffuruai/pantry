@@ -2,7 +2,7 @@
 
 Pantry inventories what is installed on your computer and what your git repos lock, then asks a few public sources about only those exact versions. This page lists every check and every source.
 
-See also: [usage.md](usage.md) (running it), [install.md](install.md), [architecture.md](../architecture.md).
+See also: [usage.md](usage.md) (running it), [install.md](install.md), [architecture.md](architecture.md).
 
 ## What it checks
 

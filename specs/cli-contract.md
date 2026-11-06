@@ -2,7 +2,7 @@
 
 Status: frozen at schema 1, 2026-10-25. Owner: Eric.
 
-The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (how it is built: [docs/architecture.md](../docs/architecture.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals.
+The command line, its exit codes, its JSON and its cache file are wpantry's only stable surface. Callers (ops, Syrup, wsentinel, agents) depend on this page and nothing else. The product is Pantry, and its command is `wpantry` (how it is built: [docs/public/architecture.md](../docs/public/architecture.md)). It MUST pass the contract tests, which run the binary and check its output rather than its internals.
 
 ## Change rule
 

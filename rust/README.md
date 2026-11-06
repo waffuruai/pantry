@@ -1,6 +1,6 @@
 # Pantry in Rust
 
-The crates behind the `wpantry` binary and the [CLI contract](../specs/cli-contract.md). How it works: [architecture](../docs/architecture.md). Dependency rules: [dependencies](../docs/internal/dependencies.md).
+The crates behind the `wpantry` binary and the [CLI contract](../specs/cli-contract.md). How it works: [architecture](../docs/public/architecture.md). Dependency rules: [dependencies](../docs/internal/dependencies.md).
 
 ```
 rust/

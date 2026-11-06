@@ -4,7 +4,7 @@ Waffuru's vulnerability scanner for your computer and your code. It finds what a
 
 ![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; wpantry report writes terminal tables, JSON, JSON Lines, CSV, HTML and Markdown from it. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](docs/images/architecture.png)
 
-[Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/architecture.md)
+[Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/public/architecture.md)
 
 ## What it does
 
@@ -54,7 +54,7 @@ Only package names and versions go to OSV.dev. Feeds are downloaded whole. Pantr
 ## Docs
 
 - [Install](docs/public/install.md), [usage](docs/public/usage.md), [reports](docs/public/reports.md), [checks and sources](docs/public/checks-and-sources.md), [machine settings](docs/public/posture.md), [malware rules](docs/public/malware-rules.md)
-- [How it works](docs/architecture.md), and [in detail](docs/internal/architecture.md)
+- [How it works](docs/public/architecture.md)
 - For agents: `wpantry skill` prints the [agent skill](rust/crates/wpantry/assets/SKILL.md)
 - For maintainers: [release](docs/internal/release.md), [crates.io](docs/internal/crates-io.md), [dependencies](docs/internal/dependencies.md), [CLI contract](specs/cli-contract.md)
 

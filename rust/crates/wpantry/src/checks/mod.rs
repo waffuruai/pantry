@@ -123,6 +123,13 @@ pub fn listed(path: Option<&Path>, bundled: &str, key: &str) -> Vec<String> {
     crate::utils::toml::list(&text, "", key).unwrap_or_default().into_iter().map(|e| e.trim().to_string()).collect()
 }
 
+/// The user's own policy file `name` (`suspect.toml`, …) in the config
+/// folder ([`crate::sources::file::config_dir`]), when there is one: used
+/// when its option isn't given.
+pub fn user_policy(name: &str) -> Option<PathBuf> {
+    Some(crate::sources::file::config_dir().join(name)).filter(|p| p.is_file())
+}
+
 /// Why a policy file can't be used, or None: it must be TOML (a list from
 /// before, one entry a line, isn't).
 pub fn policy_error(path: &Path) -> Option<String> {

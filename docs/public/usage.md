@@ -46,7 +46,7 @@ wpantry scan --path ~/Downloads/some-repo --no-machine
 
 Nothing is run or fixed for you: read the file the finding names, then remove the hook or trust it.
 
-To accept a hook you've read, add it to your hooks policy (`--hooks-policy FILE`, TOML). Each `OPEN-HOOK` and `INSTALL-HOOK` finding ends with the entry to paste:
+To accept a hook you've read, add it to your hooks policy, `~/.config/wpantry/hooks.toml` (see [policy files](#policy-files)). Each `OPEN-HOOK` and `INSTALL-HOOK` finding ends with the entry to paste:
 
 ```toml
 hooks = [
@@ -59,28 +59,28 @@ Accepted hooks are counted, not listed. A hook whose command changes is listed a
 
 ## Policy files
 
-Policy files tune what a scan accepts or checks. Each is a TOML file you write and pass with its option; it replaces Pantry's bundled default for that scan. Keep yours with your other Pantry settings, in `~/.config/wpantry/`.
+Policy files tune what a scan accepts or checks. Each is a TOML file in `~/.config/wpantry/` (or `$XDG_CONFIG_HOME/wpantry/`), named as below. Pantry loads it on every scan, scheduled ones included, in place of its bundled default. An option names another file for one run.
 
-| Option | What it does | Keys | Bundled default |
-|---|---|---|---|
-| `--suspect-policy` | Suspicious code you've reviewed warns instead of failing ([suspect code](suspect-code.md#the-policy-file)) | `ids`, `paths` | empty |
-| `--hooks-policy` | Repo hooks you've read stop being reported (see above) | `hooks`, `repos` | empty |
-| `--posture-policy` | Machine settings checks to skip ([machine settings](posture.md)) | `skip` | empty |
-| `--install-scripts` | npm packages whose install scripts are allowed | `allow` | [`install-scripts.toml`](../../rust/crates/wpantry/assets/defaults/install-scripts.toml) |
-| `--licenses FILE` | Dependency licenses allowed without review (only with `--licenses`) | `allow` | [`licenses.toml`](../../rust/crates/wpantry/assets/defaults/licenses.toml) |
-| `--repo-hooks` | Indicators of hijacked repos | `files`, `packages`, `hosts`, `sha256` | [`repo-hooks.toml`](../../rust/crates/wpantry/assets/defaults/repo-hooks.toml) |
+| File | Option | What it does | Keys | Bundled default |
+|---|---|---|---|---|
+| `suspect.toml` | `--suspect-policy` | Suspicious code you've reviewed warns instead of failing ([suspect code](suspect-code.md#the-policy-file)) | `ids`, `paths` | empty |
+| `hooks.toml` | `--hooks-policy` | Repo hooks you've read stop being reported (see above) | `hooks`, `repos` | empty |
+| `posture.toml` | `--posture-policy` | Machine settings checks to skip ([machine settings](posture.md)) | `skip` | empty |
+| `install-scripts.toml` | `--install-scripts` | npm packages whose install scripts are allowed | `allow` | [`install-scripts.toml`](../../rust/crates/wpantry/assets/defaults/install-scripts.toml) |
+| `licenses.toml` | `--licenses FILE` | Dependency licenses allowed without review (checked only with `--licenses`) | `allow` | [`licenses.toml`](../../rust/crates/wpantry/assets/defaults/licenses.toml) |
+| `repo-hooks.toml` | `--repo-hooks` | Indicators of hijacked repos | `files`, `packages`, `hosts`, `sha256` | [`repo-hooks.toml`](../../rust/crates/wpantry/assets/defaults/repo-hooks.toml) |
 
-To start one, copy the bundled default linked above (its comments explain each key) into `~/.config/wpantry/` and edit it:
+To start one, copy the bundled default linked above (its comments explain each key) into `~/.config/wpantry/` and edit it. The next scan uses it:
 
 ```bash
 mkdir -p ~/.config/wpantry
 $EDITOR ~/.config/wpantry/install-scripts.toml
-wpantry scan --install-scripts ~/.config/wpantry/install-scripts.toml
+wpantry scan
 ```
 
 - A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
-- Pantry doesn't load these files on its own: pass them to every scan. A scheduled scan doesn't apply them.
-- A missing file, or one that isn't TOML, is a usage error (exit 2).
+- A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
+- `gitleaks.toml` in the same folder replaces the bundled gitleaks config (`--gitleaks-config`); it's in gitleaks' own format.
 
 ## Reading the report
 
@@ -251,11 +251,11 @@ See [upgrade](install.md#upgrade).
 - Package names and versions go to OSV.dev.
 - The id of a CVE that applies and has no CVSS score goes to OSV.dev, then CVE.org.
 - Feeds are downloaded whole.
-- The breach check sends your email address only after you say yes.
+- The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
 
 Source by source: [what is sent](checks-and-sources.md#sources). Every request names `wpantry` in its User-Agent and times out after 30 seconds.
 
-## Environment
+## Environment Variables
 
 | Variable | Effect |
 |---|---|
@@ -332,16 +332,21 @@ Options:
   --since <days>            how far back the logs go (default: 14)
   --no-input                never prompt
   --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
-  --gitleaks-config <file>  gitleaks policy (default: the bundled gitleaks.toml)
-  --licenses [file]         also check dependency licenses, against the file or the bundled
-                            licenses.toml
-  --install-scripts <file>  install-script policy, TOML (default: the bundled install-scripts.toml)
-  --repo-hooks <file>       indicators of hijacked repos, TOML (default: the bundled
-                            repo-hooks.toml)
-  --hooks-policy <file>     repo hooks you've read and accept, TOML
-  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML
+  --gitleaks-config <file>  gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the
+                            bundled one)
+  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
+                            in ~/.config/wpantry, else the bundled one)
+  --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML (default: hooks.toml in
+                            ~/.config/wpantry)
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
+                            suspect.toml in ~/.config/wpantry)
   --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
-  --posture-policy <file>   posture checks to skip, TOML
+  --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
+                            ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules
@@ -394,16 +399,21 @@ Options:
   --since <days>            how far back the logs go (default: 14)
   --no-input                never prompt
   --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
-  --gitleaks-config <file>  gitleaks policy (default: the bundled gitleaks.toml)
-  --licenses [file]         also check dependency licenses, against the file or the bundled
-                            licenses.toml
-  --install-scripts <file>  install-script policy, TOML (default: the bundled install-scripts.toml)
-  --repo-hooks <file>       indicators of hijacked repos, TOML (default: the bundled
-                            repo-hooks.toml)
-  --hooks-policy <file>     repo hooks you've read and accept, TOML
-  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML
+  --gitleaks-config <file>  gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the
+                            bundled one)
+  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
+                            in ~/.config/wpantry, else the bundled one)
+  --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML (default: hooks.toml in
+                            ~/.config/wpantry)
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
+                            suspect.toml in ~/.config/wpantry)
   --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
-  --posture-policy <file>   posture checks to skip, TOML
+  --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
+                            ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules

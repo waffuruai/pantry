@@ -54,7 +54,7 @@ A suspect policy accepts code you've reviewed. It overrides the checks above for
 
 Use it when a check fails on code you've read and trust, such as a build script that needs `sudo`, or a legacy folder you can't change yet.
 
-**Create one.** It's a TOML file. Keep it with your other Pantry settings, at `~/.config/wpantry/suspect.toml`:
+**Create one.** It's a TOML file at `~/.config/wpantry/suspect.toml` (or `$XDG_CONFIG_HOME/wpantry/`), where every scan finds it:
 
 ```toml
 # Suspicious code we've reviewed: these warn instead of failing.
@@ -70,15 +70,14 @@ paths = [
 - `paths`: text matched against each file's path inside its repo.
 - Both are optional. Leave one out, or set it to `[]`, to match nothing by it.
 
-**Use it.** Pass it to every scan:
+**Use it.** Every scan, scheduled ones included, loads it from there. To use another file for one run:
 
 ```bash
-wpantry scan --suspect-policy ~/.config/wpantry/suspect.toml
+wpantry scan --suspect-policy ./reviewed.toml
 ```
 
 - It replaces the bundled default (empty); it doesn't add to it.
-- Pantry doesn't load it on its own, so a scheduled scan doesn't apply it.
-- A missing file, or one that isn't TOML, is a usage error (exit 2).
+- A file that isn't TOML is a usage error (exit 2).
 
 The other policy files work the same way: [policy files](usage.md#policy-files).
 

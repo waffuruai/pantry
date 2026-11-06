@@ -1049,6 +1049,15 @@ fn suspect_code_fails_where_out_of_place_and_policy_downgrades() {
     let found = sorted_strs(&of_kind(&env, "suspect-code"), &["vuln_id", "status"]);
     let statuses: Vec<&str> = found.iter().map(|f| f[1].as_str()).collect();
     assert_eq!(statuses, ["warn"; 5], "{found:?}");
+    // The same policy in the config folder applies with no option (a
+    // scheduled scan passes none).
+    let config = t.home.join(".config/wpantry/suspect.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::rename(&policy, &config).unwrap();
+    let env = scan_repo(&t, &repo, &[]).json();
+    let found = sorted_strs(&of_kind(&env, "suspect-code"), &["vuln_id", "status"]);
+    let statuses: Vec<&str> = found.iter().map(|f| f[1].as_str()).collect();
+    assert_eq!(statuses, ["warn"; 5], "from ~/.config/wpantry: {found:?}");
 }
 
 /// A Go 1.24+ module that listens for TCP is exposed to CVE-2026-98432

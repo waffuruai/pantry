@@ -181,14 +181,19 @@ fn entries(text: &str) -> Result<Vec<(Source, Vec<String>)>> {
 static BUNDLED: LazyLock<Vec<Source>> =
     LazyLock::new(|| parse(crate::defaults::SOURCES).expect("the bundled sources file reads (tested)"));
 
-/// The user's sources file: `$XDG_CONFIG_HOME/wpantry/sources.toml`, or
-/// `~/.config/wpantry/sources.toml`.
-pub fn user_file() -> PathBuf {
+/// Where the user's own Pantry files live: `$XDG_CONFIG_HOME/wpantry`, or
+/// `~/.config/wpantry`.
+pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::utils::files::home().join(".config"))
-        .join("wpantry/sources.toml")
+        .join("wpantry")
+}
+
+/// The user's sources file: `sources.toml` in [`config_dir`].
+pub fn user_file() -> PathBuf {
+    config_dir().join("sources.toml")
 }
 
 /// The kinds and formats a user's source may have: what wpantry can read

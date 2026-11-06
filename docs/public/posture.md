@@ -5,7 +5,7 @@ With a scan of your machine, Pantry reads the system and OS level settings to se
 - **Read-only:** `defaults read`, `launchctl print-disabled`, `fdesetup status`, config files. Nothing is changed.
 - **Verdict:** a failing Critical or High check fails the scan (exit 1); Medium and Low warn. A check that can't tell says "couldn't tell", never pass.
 - **Fixes:** *user* fixes are your own account's settings, and `wpantry fix` may apply them. *admin* fixes need `sudo` or a System Settings pane and are printed for you.
-- **Skipping:** `--no-posture` skips all checks. `--posture-policy FILE` replaces the bundled `posture.toml` and lists ids to skip (the ids below; the `POSTURE-` prefix is optional):
+- **Skipping:** `--no-posture` skips all checks. `~/.config/wpantry/posture.toml` (or `--posture-policy FILE`) lists ids to skip, in place of the bundled default (the ids below; the `POSTURE-` prefix is optional):
 
   ```toml
   skip = ["REMOTE-LOGIN"]   # a server that means to run ssh

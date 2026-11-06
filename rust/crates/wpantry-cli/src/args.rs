@@ -248,14 +248,14 @@ fn scan_opts() -> Vec<Opt> {
     opts.extend([
         Opt::new("--no-input", "never prompt"),
         Opt::new("--jobs <n>", "gitleaks scans at once (default: half the cores, at most 4)"),
-        Opt::new("--gitleaks-config <file>", "gitleaks policy (default: the bundled gitleaks.toml)"),
-        Opt::new("--licenses [file]", "also check dependency licenses, against the file or the bundled licenses.toml"),
-        Opt::new("--install-scripts <file>", "install-script policy, TOML (default: the bundled install-scripts.toml)"),
-        Opt::new("--repo-hooks <file>", "indicators of hijacked repos, TOML (default: the bundled repo-hooks.toml)"),
-        Opt::new("--hooks-policy <file>", "repo hooks you've read and accept, TOML"),
-        Opt::new("--suspect-policy <file>", "suspicious-code ids and paths that warn instead of fail, TOML"),
+        Opt::new("--gitleaks-config <file>", "gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--licenses [file]", "also check dependency licenses, against the file (default: licenses.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--install-scripts <file>", "install-script policy, TOML (default: install-scripts.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--repo-hooks <file>", "indicators of hijacked repos, TOML (default: repo-hooks.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--hooks-policy <file>", "repo hooks you've read and accept, TOML (default: hooks.toml in ~/.config/wpantry)"),
+        Opt::new("--suspect-policy <file>", "suspicious-code ids and paths that warn instead of fail, TOML (default: suspect.toml in ~/.config/wpantry)"),
         Opt::new("--no-posture", "skip the machine's security settings (FileVault, firewall, sharing, …)"),
-        Opt::new("--posture-policy <file>", "posture checks to skip, TOML"),
+        Opt::new("--posture-policy <file>", "posture checks to skip, TOML (default: posture.toml in ~/.config/wpantry)"),
         Opt::new(
             "--no-malware",
             "skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)",
@@ -464,28 +464,37 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
     };
     let paths: Vec<PathBuf> = m.values("path").into_iter().map(expand).collect();
     c.path = (!paths.is_empty()).then_some(paths);
-    for (name, slot) in [
-        ("gitleaks-config", &mut c.gitleaks_config),
-        ("licenses", &mut c.licenses),
-        ("install-scripts", &mut c.install_scripts),
-        ("repo-hooks", &mut c.repo_hooks),
-        ("posture-policy", &mut c.posture_policy),
-        ("suspect-policy", &mut c.suspect_policy),
-        ("hooks-policy", &mut c.hooks_policy),
+    // Each policy: the file its option names, else the user's own in the
+    // config folder (`~/.config/wpantry/<file>`), else the bundled default.
+    for (name, file, slot) in [
+        ("gitleaks-config", "gitleaks.toml", &mut c.gitleaks_config),
+        ("licenses", "licenses.toml", &mut c.licenses),
+        ("install-scripts", "install-scripts.toml", &mut c.install_scripts),
+        ("repo-hooks", "repo-hooks.toml", &mut c.repo_hooks),
+        ("posture-policy", "posture.toml", &mut c.posture_policy),
+        ("suspect-policy", "suspect.toml", &mut c.suspect_policy),
+        ("hooks-policy", "hooks.toml", &mut c.hooks_policy),
     ] {
-        if let Some(v) = m.value(name) {
-            let p = expand(v);
-            if !p.is_file() {
-                return Err(m.error(&format!("option '--{name}': no such file: {v}")));
+        let p = match m.value(name) {
+            Some(v) => {
+                let p = expand(v);
+                if !p.is_file() {
+                    return Err(m.error(&format!("option '--{name}': no such file: {v}")));
+                }
+                p
             }
-            // gitleaks reads its own config; the rest are Pantry's TOML.
-            if name != "gitleaks-config"
-                && let Some(why) = wpantry::checks::policy_error(&p)
-            {
-                return Err(m.error(&format!("option '--{name}': {v}: {why}")));
-            }
-            *slot = Some(p);
+            None => match wpantry::checks::user_policy(file) {
+                Some(p) => p,
+                None => continue,
+            },
+        };
+        // gitleaks reads its own config; the rest are Pantry's TOML.
+        if name != "gitleaks-config"
+            && let Some(why) = wpantry::checks::policy_error(&p)
+        {
+            return Err(m.error(&format!("option '--{name}': {}: {why}", p.display())));
         }
+        *slot = Some(p);
     }
     Ok(c)
 }

@@ -10,18 +10,17 @@ mod args;
 mod progress;
 mod schedule;
 mod style;
+mod tui;
 mod update;
 
-use args::{Check, Command, Parsed, Target};
-use rusqlite::types::ValueRef;
+use args::{Check, Command, Parsed, Show, Shown, Target};
 use std::io::{IsTerminal, Write};
 use style::Style;
 use wpantry::checks::{Options, Outcome, Policy, Scan};
 use wpantry::db::{self, Cache};
 use wpantry::error::Result;
 use wpantry::remediation;
-use wpantry::reporters::json::envelope;
-use wpantry::reporters::{html, text};
+use wpantry::reporters::{Format, Output};
 use wpantry::utils::json::{J, obj};
 use wpantry::{IMPL, SCHEMA, VERSION};
 
@@ -89,9 +88,19 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result
     out
 }
 
+/// Whether the report goes to stdout in a format a program reads: then
+/// nothing else is printed there and nothing is asked.
+fn quiet(show: &Show) -> bool {
+    show.out.is_none() && !matches!(show.format, Shown::Tui | Shown::Txt)
+}
+
 fn cmd_scan(a: Check) -> Result<i32> {
-    let html = a.html.as_deref().map(html::Output::new).transpose()?;
+    // A report file that can't be written fails now, before the scan.
+    if let Some(path) = &a.show.out {
+        drop(Output::new(path)?);
+    }
     let net = wpantry::utils::net::Http::new();
+    let quiet = quiet(&a.show);
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
@@ -113,21 +122,17 @@ fn cmd_scan(a: Check) -> Result<i32> {
         offline: a.offline,
         jobs: a.jobs,
         licenses: a.check_licenses,
-        ask: !(a.json || a.dryrun || a.no_input),
+        ask: !(quiet || a.dryrun || a.no_input),
     };
-    let first = scan(opts.clone(), a.json, &net)?;
-    if a.json {
-        html::finish(html, &first, &opts, "scan")?;
-        emit(&envelope(&first).dumps_indent(1));
-        return Ok(if first.findings.iter().any(|f| f.status == "fail") { EXIT_FAIL } else { EXIT_OK });
-    }
-    let db = db::path().to_string_lossy().into_owned();
-    let status = text::report(&first, &db, &mut |l| show(l));
-    if let Some(n) = update::notice(&net, a.offline) {
+    let first = scan(opts.clone(), quiet, &net)?;
+    // The scan is done; what it found is shown as `wpantry report` shows it.
+    let status = cmd_report(&a.show)?;
+    if a.show.format == Shown::Tui
+        && let Some(n) = update::notice(&net, a.offline)
+    {
         eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
     }
-    if !(a.fix || a.dryrun) {
-        html::finish(html, &first, &opts, "scan")?;
+    if quiet || !(a.fix || a.dryrun) {
         return Ok(status);
     }
     // Before changing anything, ask, when someone is there to answer.
@@ -146,7 +151,6 @@ fn cmd_scan(a: Check) -> Result<i32> {
     // then the stopgaps wpantry has, for the hosts they are for
     let (stopgap_status, stopgaps_ran) = stopgaps(&first.findings, a.dryrun, a.yes, interactive)?;
     if a.dryrun {
-        html::finish(html, &first, &opts, "before updates (dry run)")?;
         return Ok(status);
     }
     if !applied.ran.is_empty() || !stopgaps_ran.is_empty() {
@@ -174,9 +178,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         cache.close()?;
     }
     // A fix that failed fails the run even when the re-check comes back clean.
-    let rechecked = text::report(&again, &db, &mut |l| show(l));
-    let phase = if applied.status == 0 { "after updates" } else { "after updates (an update command failed)" };
-    html::finish(html, &again, &opts, phase)?;
+    let rechecked = cmd_report(&a.show)?;
     Ok(if rechecked != 0 { rechecked } else { applied.status.max(stopgap_status) })
 }
 
@@ -309,60 +311,6 @@ fn cmd_search(query: &str, applicable_only: bool, limit: i64, json: bool) -> Res
     Ok(EXIT_OK)
 }
 
-fn csv_field(s: &str) -> String {
-    if s.contains([',', '"', '\r', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
-}
-
-fn cmd_export(csv: Option<&str>, jsonl: Option<&str>, all: bool) -> Result<i32> {
-    if let Some(path) = jsonl {
-        let cache = Cache::open(None)?;
-        let (text, n) = wpantry::reporters::jsonl::jsonl(&cache, all)?;
-        std::fs::write(path, text)?;
-        let what = if all { "findings and resolved exposures" } else { "findings" };
-        show(&format!("✓ wrote {n} {what} to {path}"));
-    }
-    match csv {
-        Some(path) => export_csv(path),
-        None => Ok(EXIT_OK),
-    }
-}
-
-fn export_csv(path: &str) -> Result<i32> {
-    let cache = Cache::open(None)?;
-    let rows: Vec<Vec<String>> = {
-        let mut stmt = cache.conn.prepare(
-            "SELECT f.vuln_id, v.aliases, v.url, f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location \
-             FROM findings f LEFT JOIN vulns v ON v.id = f.vuln_id OR (' ' || v.aliases || ' ') LIKE ('% ' || f.vuln_id || ' %') \
-             GROUP BY f.vuln_id, f.component, f.version, f.location",
-        )?;
-        stmt.query_map([], |r| {
-            (0..11)
-                .map(|i| {
-                    Ok(match r.get_ref(i)? {
-                        ValueRef::Null => String::new(),
-                        ValueRef::Integer(n) => n.to_string(),
-                        ValueRef::Real(x) => x.to_string(),
-                        ValueRef::Text(t) | ValueRef::Blob(t) => String::from_utf8_lossy(t).into_owned(),
-                    })
-                })
-                .collect()
-        })?
-        .collect::<std::result::Result<_, _>>()?
-    };
-    let mut text =
-        String::from("id,aliases,url,component,kind,affected_version,safe_version,severity,kev,status,location\r\n");
-    for mut r in rows.clone() {
-        if r[2].is_empty() && r[0].starts_with("CVE-") {
-            r[2] = format!("https://www.cve.org/CVERecord?id={}", r[0]);
-        }
-        text.push_str(&r.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
-        text.push_str("\r\n");
-    }
-    std::fs::write(path, text)?;
-    show(&format!("✓ wrote {} findings to {path}", rows.len()));
-    Ok(EXIT_OK)
-}
-
 fn cmd_breach(enable: bool, disable: bool) -> Result<i32> {
     let cache = Cache::open(None)?;
     if enable || disable {
@@ -414,123 +362,38 @@ fn cmd_tools(json: bool) -> Result<i32> {
     Ok(if found.iter().any(|t| t.required && !t.found) { EXIT_FAIL } else { EXIT_OK })
 }
 
-/// `report`: the exposure, remediation and audit logs from the cache's
-/// history tables, as Markdown (default), JSON or CSV.
-fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&str>) -> Result<i32> {
-    use wpantry::history::{self, stamp};
+/// `report` (and `export`, and `scan` and `fix` when they finish): the latest
+/// scan from the cache, as the terminal's tables or in a format, to stdout
+/// or a file. 1 when something in it fails, or there is no scan yet.
+fn cmd_report(show: &Show) -> Result<i32> {
     let cache = Cache::open(None)?;
-    let since = wpantry::utils::os::now() - since_days as f64 * wpantry::db::DAY;
-    let want = |s: &str| sections.iter().any(|x| x == s || x == "all");
-    let exposures = if want("exposure") { history::exposures(&cache, since)? } else { Vec::new() };
-    let fixes = if want("remediation") { history::fixes(&cache, since)? } else { Vec::new() };
-    let (scans, events) = if want("audit") {
-        (history::scans(&cache, since)?, history::events(&cache, since)?)
-    } else {
-        (Vec::new(), Vec::new())
+    // The logs, when the report shows them; the HTML page always carries them.
+    let days = (show.part.logs() || show.format == Shown::Html).then_some(show.since);
+    let Some(mut report) = wpantry::reporters::latest(&cache, days)? else {
+        cache.close()?;
+        eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
+        return Ok(EXIT_FAIL);
     };
-    let text = match format {
-        "json" => {
-            history::report_json(&cache, want("exposure"), want("remediation"), want("audit"), since, since_days)?
+    report.part = show.part;
+    let text = match show.format {
+        Shown::Tui | Shown::Txt => {
+            let terminal = show.format == Shown::Tui && show.out.is_none();
+            let style = if terminal { Style::stdout() } else { Style::new(false) };
+            let width = if terminal && std::io::stdout().is_terminal() { tui::width() } else { tui::DEFAULT_WIDTH };
+            let db = db::path().to_string_lossy().into_owned();
+            tui::lines(&report, &db, width).iter().map(|l| tui::paint(l, style) + "\n").collect::<String>()
         }
-        "csv" => {
-            let mut t = String::from(
-                "kind,component,version,location,vuln_id,status,severity,kev,fixed,first_seen,last_seen,resolved,days_exposed\r\n",
-            );
-            for e in &exposures {
-                let row = [
-                    e.kind.as_str(),
-                    &e.component,
-                    &e.version,
-                    &e.location,
-                    &e.vuln_id,
-                    &e.status,
-                    &e.severity,
-                    if e.kev { "true" } else { "false" },
-                    &e.fixed,
-                    &stamp(e.first_at),
-                    &stamp(e.last_at),
-                    &e.resolved_at.map(stamp).unwrap_or_default(),
-                    &e.days_exposed.to_string(),
-                ];
-                t.push_str(&row.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
-                t.push_str("\r\n");
-            }
-            t
-        }
-        _ => {
-            let mut t = format!(
-                "# wpantry report\n\nGenerated {} by wpantry {VERSION}; the last {since_days} days.\n",
-                stamp(wpantry::utils::os::now())
-            );
-            if want("exposure") {
-                let open = exposures.iter().filter(|e| e.resolved_at.is_none()).count();
-                let closed: Vec<&history::Exposure> = exposures.iter().filter(|e| e.resolved_at.is_some()).collect();
-                let median = {
-                    let mut d: Vec<f64> = closed.iter().map(|e| e.days_exposed).collect();
-                    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    d.get(d.len() / 2).copied().unwrap_or(0.0)
-                };
-                t.push_str(&format!(
-                    "\n## Exposure log\n\n{open} open, {} resolved; median time to resolve {median} days.\n\n| Component | Version | Advisory | Severity | Status | First seen | Resolved | Days |\n|---|---|---|---|---|---|---|---|\n",
-                    closed.len()
-                ));
-                for e in &exposures {
-                    t.push_str(&format!(
-                        "| {} | {} | {}{} | {} | {} | {} | {} | {} |\n",
-                        md(&e.component),
-                        md(&e.version),
-                        md(&e.vuln_id),
-                        if e.kev { " (KEV)" } else { "" },
-                        md(&e.severity),
-                        if e.resolved_at.is_some() { "resolved" } else { &e.status },
-                        stamp(e.first_at),
-                        e.resolved_at.map(stamp).unwrap_or_else(|| "open".into()),
-                        e.days_exposed
-                    ));
-                }
-            }
-            if want("remediation") {
-                t.push_str("\n## Remediation log\n\n| When | Command | Mode | Result | Verified by scan |\n|---|---|---|---|---|\n");
-                for f in &fixes {
-                    t.push_str(&format!(
-                        "| {} | `{}` | {} | {} | {} |\n",
-                        stamp(f.at),
-                        f.command.replace('`', "'"),
-                        f.mode,
-                        if f.ok { "ok" } else { "failed" },
-                        f.verified_scan.map(|s| format!("#{s}")).unwrap_or_else(|| "-".into())
-                    ));
-                }
-            }
-            if want("audit") {
-                t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns | Unchecked |\n|---|---|---|---|---|---|---|---|---|\n");
-                for s in &scans {
-                    t.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                        s.id,
-                        stamp(s.finished_at),
-                        md(&s.host),
-                        md(&s.user),
-                        s.version,
-                        md(&s.scope),
-                        s.fails,
-                        s.warns,
-                        s.unchecked
-                    ));
-                }
-                t.push_str("\n### Events\n\n| When | Event | Detail |\n|---|---|---|\n");
-                for e in &events {
-                    t.push_str(&format!("| {} | {} | {} |\n", stamp(e.at), e.kind, md(&e.detail.to_string())));
-                }
-            }
-            t
-        }
+        Shown::Json => wpantry::reporters::render(&cache, &report, Format::Json)?,
+        Shown::Jsonl => wpantry::reporters::render(&cache, &report, Format::Jsonl)?,
+        Shown::Csv => wpantry::reporters::render(&cache, &report, Format::Csv)?,
+        Shown::Md => wpantry::reporters::render(&cache, &report, Format::Md)?,
+        Shown::Html => wpantry::reporters::render(&cache, &report, Format::Html)?,
     };
     cache.close()?;
-    match out {
+    match &show.out {
         Some(path) => {
-            std::fs::write(path, &text)?;
-            show(&format!("✓ wrote the report to {path}"));
+            Output::new(path)?.write(&text)?;
+            eprintln!("{}", Style::stderr().line(&format!("✓ wrote the report to {}", path.display())));
         }
         None => {
             // A pipe that closes early (`| head`) ends the output, not the process.
@@ -542,12 +405,7 @@ fn cmd_report(sections: &[String], since_days: i64, format: &str, out: Option<&s
             }
         }
     }
-    Ok(EXIT_OK)
-}
-
-/// A table cell: no pipes, newlines or control characters.
-fn md(s: &str) -> String {
-    s.replace('|', "\\|").chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    Ok(report.status())
 }
 
 /// `sync`: refresh what the cache knows, with the progress line.
@@ -681,8 +539,22 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 /// `harden ca-trust`: distrust the leaked roots in the system trust store
 /// (the shell script it replaced did the same), asking for sudo only to install
 /// the result.
+/// A `harden` fix in the remediation log: what ran, who ran it, whether it
+/// worked.
+fn record_harden(command: &str, ok: bool) -> Result<()> {
+    let cache = Cache::open(None)?;
+    wpantry::history::record_fix(&cache, wpantry::history::latest_scan(&cache)?, command, "harden", ok, &[])?;
+    cache.close()
+}
+
 fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
-    wpantry::remediation::ca_trust::fix(bundle, &|line| show(line))?;
+    let done = wpantry::remediation::ca_trust::fix(bundle, &|line| show(line));
+    let command = match bundle {
+        Some(b) => format!("wpantry harden ca-trust --bundle {}", b.display()),
+        None => "wpantry harden ca-trust".into(),
+    };
+    record_harden(&command, done.is_ok())?;
+    done?;
     if bundle.is_none() {
         show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
     }
@@ -691,7 +563,9 @@ fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
 
 /// `harden extension-cooldown`: the one posture fix that edits files.
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::remediation::editors::set_extension_cooldown(hours)?;
+    let changed = wpantry::remediation::editors::set_extension_cooldown(hours);
+    record_harden(&format!("wpantry harden extension-cooldown --hours {hours}"), changed.is_ok())?;
+    let changed = changed?;
     if changed.is_empty() {
         let editors = wpantry::checks::machine::any::dev_settings::editor_settings();
         if editors.is_empty() {
@@ -1079,16 +953,16 @@ fn cmd_rules_gen(
     cache.close()?;
     match out {
         Some(path) => {
-            std::fs::write(path, &output.rule.text)?;
+            std::fs::write(path, &output.text)?;
             std::fs::write(path.with_extension("test.toml"), &output.test_toml)?;
             note(&format!(
                 "wrote {} ({} strings, {} code snippets) and its test file",
                 path.display(),
-                output.rule.strings,
-                output.rule.opcodes
+                output.strings,
+                output.opcodes
             ));
         }
-        None => say(&output.rule.text),
+        None => say(&output.text),
     }
     if !output.false_positives.is_empty() {
         for f in &output.false_positives {
@@ -1110,7 +984,6 @@ fn dispatch(cmd: Command) -> Result<i32> {
     match cmd {
         Command::Scan(c) => cmd_scan(c),
         Command::Search { query, applicable, limit, json } => cmd_search(&query, applicable, limit, json),
-        Command::Export { csv, jsonl, all } => cmd_export(csv.as_deref(), jsonl.as_deref(), all),
         Command::Breach { enable, disable } => cmd_breach(enable, disable),
         Command::Watch { json, offline } => cmd_watch(json, offline),
         Command::Version { json } => cmd_version(json),
@@ -1122,9 +995,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),
             _ => cmd_rules(update, json),
         },
-        Command::Report { sections, since_days, format, out } => {
-            cmd_report(&sections, since_days, &format, out.as_deref())
-        }
+        Command::Report(show) => cmd_report(&show),
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
         Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),

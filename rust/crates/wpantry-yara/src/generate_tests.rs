@@ -1,5 +1,4 @@
 use super::*;
-use crate::ScanOptions;
 
 #[test]
 fn extracts_ascii_and_wide_strings() {
@@ -37,23 +36,20 @@ fn describe<'a>(hashes: &'a [String]) -> Describe<'a> {
 }
 
 #[test]
-fn generates_a_rule_that_matches_its_samples_and_not_goodware() {
+fn drafts_a_rule_from_what_the_samples_share_and_goodware_lacks() {
     let a = b"#!/bin/sh\npkill -f xmrig\nPOOL=stratum+tcp://evil.example:3333\nWALLET=TNpE8YMAVPC9gioq2BrZ3ogGEzivERxLCx\necho \"common line\"\n";
     let b = b"#!/bin/sh\npkill -f xmrig\nPOOL=stratum+tcp://evil.example:3333\nWALLET=TNpE8YMAVPC9gioq2BrZ3ogGEzivERxLCx\necho other\n";
     let mut good = HashMap::new();
     good.insert(b"echo \"common line\"".to_vec(), 9u64);
     let hashes = vec!["ab".repeat(32)];
     let g = generate(&[a, b], &good, &describe(&hashes)).unwrap();
-    assert!(g.strings >= 2 && g.opcodes == 0);
-    assert!(g.text.contains("category = \"suspicious\"") && g.text.contains("proposed_category = \"miner\""));
-    assert!(g.text.contains("score = 60") && g.text.contains("os = \"any\""));
-    assert!(!g.text.contains("common line"), "goodware strings are dropped");
-    let mut c = Compiler::new();
-    assert_eq!(c.add_source("t", &g.text, Syntax::Strict), 1);
-    let rules = c.build();
-    assert_eq!(rules.scan(a, &ScanOptions::default()).matches.len(), 1);
-    assert_eq!(rules.scan(b, &ScanOptions::default()).matches.len(), 1);
-    assert!(rules.scan(b"#!/bin/sh\necho hello there\n", &ScanOptions::default()).matches.is_empty());
+    assert!(g.strings.len() >= 2 && g.opcodes.is_empty());
+    let meta = |k: &str| g.meta.iter().find(|(m, _)| m == k).map(|(_, v)| v.clone());
+    assert_eq!(meta("category"), Some(MetaValue::Text("suspicious".into())));
+    assert_eq!(meta("proposed_category"), Some(MetaValue::Text("miner".into())));
+    assert_eq!((meta("score"), meta("os")), (Some(MetaValue::Int(60)), Some(MetaValue::Text("any".into()))));
+    assert!(g.strings.iter().all(|(s, _)| !s.windows(11).any(|w| w == b"common line")), "goodware strings are dropped");
+    assert!(g.condition.ends_with("of ($s*)"), "{}", g.condition);
 }
 
 #[test]
@@ -65,11 +61,9 @@ fn executables_get_their_magic_and_code_snippets() {
     assert_eq!(ops, vec![code[..16].to_vec()]);
     let hashes = vec![];
     let g = generate(&[&elf], &HashMap::new(), &describe(&hashes)).unwrap();
-    assert!(g.text.contains("uint32(0) == 0x464C457F") && g.text.contains("$op1 = { 01 02 03"));
-    assert!(g.text.contains("os = \"linux\""));
-    let mut c = Compiler::new();
-    c.add_source("t", &g.text, Syntax::Strict);
-    assert_eq!(c.build().scan(&elf, &ScanOptions::default()).matches.len(), 1);
+    assert!(g.condition.starts_with("uint32(0) == 0x464C457F"), "{}", g.condition);
+    assert_eq!(g.opcodes, [code[..16].to_vec()]);
+    assert!(g.meta.contains(&("os".into(), MetaValue::Text("linux".into()))));
 }
 
 #[test]
@@ -77,5 +71,4 @@ fn nothing_usable_is_none() {
     let hashes = vec![];
     assert!(generate(&[], &HashMap::new(), &describe(&hashes)).is_none());
     assert!(generate(&[b"\x00\x01\x02"], &HashMap::new(), &describe(&hashes)).is_none());
-    assert_eq!(literal(b"a\"b\\c\td\x01"), r#""a\"b\\c\td\x01""#);
 }

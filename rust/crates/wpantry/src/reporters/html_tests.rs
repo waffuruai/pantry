@@ -1,5 +1,7 @@
 use super::*;
+use crate::checks::Outcome;
 use crate::finding::Finding;
+use crate::history::{ScanDetail, ScanRow};
 
 #[test]
 fn hostile_text_stays_json_data() {
@@ -142,12 +144,24 @@ fn fixture() -> Outcome {
 #[test]
 fn bundle_carries_the_scan_its_plan_and_its_history() {
     let scan = fixture();
-    let b = bundle(&scan, &Options::default(), "scan", J::Null, "mac", "eric");
+    let report = Report {
+        outcome: scan.clone(),
+        scan: ScanDetail {
+            row: ScanRow { id: 7, host: "mac".into(), user: "eric".into(), ..Default::default() },
+            options: serde_json::from_str(&scope_json(&Options::default()).dumps()).unwrap(),
+            ..Default::default()
+        },
+        after_fixes: false,
+        history: None,
+        part: crate::reporters::Part::Findings,
+    };
+    let b = bundle(&report);
     let text = b.dumps();
     let v = crate::utils::json::parse(text.as_bytes(), usize::MAX).unwrap();
     assert_eq!(v["runs"][0]["report"]["findings"].as_array().unwrap().len(), scan.findings.len());
     assert_eq!((v["host"].as_str(), v["user"].as_str(), v["scan_id"].as_i64()), (Some("mac"), Some("eric"), Some(7)));
     assert!(v["history"].is_null());
+    assert_eq!((v["phase"].as_str(), v["scope"]["machine"].as_bool()), (Some("scan"), Some(false)), "the stored scope");
     let plan = v["plan"].as_array().unwrap();
     let step =
         |cmd: &str| plan.iter().find(|s| s["command"] == cmd).unwrap_or_else(|| panic!("no step for {cmd}: {text}"));
@@ -171,36 +185,4 @@ fn bundle_carries_the_scan_its_plan_and_its_history() {
     // The rendered page is still well formed with a real bundle in it.
     let html = render(&b);
     assert_eq!(well_formed(&strip(&strip(&html, "script"), "style")), None);
-}
-
-#[test]
-fn staging_preserves_previous_report_and_cleans_up() {
-    let dir = std::env::temp_dir().join(format!("pantry-html-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let dest = dir.join("report.html");
-    std::fs::write(&dest, "previous").unwrap();
-    let output = Output::new(&dest).unwrap();
-    let staged = output.staging.clone();
-    assert_eq!(std::fs::read_to_string(&dest).unwrap(), "previous");
-    drop(output);
-    assert!(!staged.exists());
-    Output::new(&dest).unwrap().write("next").unwrap();
-    assert_eq!(std::fs::read_to_string(&dest).unwrap(), "next");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o600);
-    }
-    #[cfg(unix)]
-    {
-        let link = dir.join("link.html");
-        std::os::unix::fs::symlink(&dest, &link).unwrap();
-        Output::new(&link).unwrap().write("separate").unwrap();
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "next");
-        assert_eq!(std::fs::read_to_string(&link).unwrap(), "separate");
-        assert!(!std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-    }
-    assert!(Output::new(&dir).is_err());
-    assert!(Output::new(&dir.join("missing/report.html")).is_err());
-    std::fs::remove_dir_all(dir).unwrap();
 }

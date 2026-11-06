@@ -3,6 +3,7 @@ use wpantry::finding::Finding;
 
 #[test]
 fn csv_fields_quote_only_what_needs_it() {
+    use wpantry::reporters::csv::field as csv_field;
     assert_eq!(csv_field("plain"), "plain");
     assert_eq!(csv_field(""), "");
     assert_eq!(csv_field("a,b"), "\"a,b\"");
@@ -13,6 +14,7 @@ fn csv_fields_quote_only_what_needs_it() {
 
 #[test]
 fn table_cells_keep_one_line_without_pipes() {
+    use wpantry::reporters::md::cell as md;
     assert_eq!(md("a|b"), "a\\|b");
     assert_eq!(md("two\nlines\tand\x1b[0m"), "two lines and [0m");
     assert_eq!(md("plain"), "plain");
@@ -36,8 +38,11 @@ fn the_envelope_carries_the_counts_and_findings() {
         unfixed: 1,
         unknown_licenses: 4,
     };
-    let env =
-        wpantry::utils::json::parse(envelope(&scan).dumps().as_bytes(), wpantry::utils::json::MAX_DOCUMENT).unwrap();
+    let env = wpantry::utils::json::parse(
+        wpantry::reporters::json::envelope(&scan).dumps().as_bytes(),
+        wpantry::utils::json::MAX_DOCUMENT,
+    )
+    .unwrap();
     assert_eq!(env["schema"].as_i64(), Some(SCHEMA));
     assert_eq!(env["impl"].as_str(), Some(IMPL));
     assert_eq!(env["version"].as_str(), Some(VERSION));

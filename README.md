@@ -47,7 +47,7 @@ wpantry scan                                       # this computer: machine + ev
 wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
 wpantry scan --json --no-input                     # findings for tools and agents
 wpantry search "tarfile" --applicable              # ranked search of cached advisories
-wpantry export --csv findings.csv                  # id, url, component, affected and safe version
+wpantry report --csv -o findings.csv              # id, url, component, affected and safe version
 wpantry watch                                      # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 wpantry fix --dryrun                               # the update plan, change nothing
 wpantry fix                                        # apply the unattended fixes, then re-check

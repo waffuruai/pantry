@@ -11,7 +11,7 @@ rust/
 ├── supply-chain/         cargo vet: audits, imports, exemptions
 └── crates/
     ├── wpantry/          library: scope, readers, sources, judgement, cache, findings
-    └── wpantry-cli/      the `wpantry` binary: arguments, report, JSON envelope, exit codes
+    └── wpantry-cli/      the `wpantry` binary: arguments, the terminal report (`tui`), exit codes
 ```
 
 ## Build and test
@@ -47,7 +47,7 @@ Grouped by what the code does ([specs/design/source-layout.md](../specs/design/s
 | `checks/files/` | The files pass every content check shares: one walk per root, a `FileView` per file (stat once, open once), each check's plan, per-file step and finish (`pass`), and the per-file cache, one record per root (`cache`) |
 | `checks/malware/` | The YARA scan: `mod.rs` (the rules prepared before the files are read, and the pass), `targets` (what it reads, as files-pass jobs), `yara` (the rules, and what they find in one file), `verdict` (the finding and the hash lookups), `observe` (a file's hashes and the hosts, addresses and URLs it names, kept in the files cache), `indicators` (those looked up in the indicator store; the file-name patterns), `rulegen` (the goodware database for `rules gen`) |
 | `checks/email.rs` | The opt-in breach check of the user's email address: consent and which addresses |
-| `reporters/` | How a scan is shown: `text` (the grouped terminal report), `json` (the `--json` envelope), `jsonl` (`export`), `html` (the standalone report; its template and fonts are `assets/report/`) |
+| `reporters/` | How a scan is shown, always from the cache (`mod.rs`: `latest`, `render`, the output file): `view` (the grouping every report shares: areas, rows, the update plan's batches), `json` (the `--json` envelope), `jsonl`, `csv`, `md`, `html` (the standalone page; its template and fonts are `assets/report/`) and `yara` (a generated rule's text) |
 | `remediation/` | Fixing: `mod.rs` (the update plan, its steps and shell quoting, `wpantry fix` applying it), `mitigate` (stopgaps while a fix is pending), `ca_trust` and `editors` (the `wpantry harden` fixes) |
 | `utils/` | What everything leans on: `files`, `dates`, `process`, `os`, `parallel`, `temp`, `homebrew`, `net` (the `Net` trait and the host allowlist), `walk` (the bounded repo walk), and the in-tree readers: `json`, `toml`, `plist`, `re`, `sha256`, `archive/` (zip, deflate), `addresses` |
 
@@ -55,13 +55,14 @@ Tests sit beside the code they cover; golden lockfiles are in `crates/wpantry/te
 
 The default policy files, the distrusted CA certificates and the agent skill live in `crates/wpantry/assets/` so the crate packages on its own; `ca-trust/` reads the certificates from there. Each crate carries a copy of the repository's `LICENSE`, checked by `tests/assets.rs`.
 
-**HTML reports.** `wpantry scan --html report.html` writes an optional standalone browser report, alongside normal terminal output or `--json`. See [the HTML spec](../specs/02-html-report.md).
+**Reports.** `wpantry report` shows the latest scan from the cache (`scan` and `fix` call it when they finish): the terminal's tables by default, or `--json`, `--jsonl`, `--csv`, `--md`, `--html` (`-o FILE` writes it); `wpantry report history`, `exposure`, `remediation`, `audit`, `summary` and `all` show the logs kept across scans (). `wpantry report --html -o report.html` is the standalone browser report. See [the HTML spec](../specs/02-html-report.md).
 
 ## The binary, `crates/wpantry-cli/src`
 
 | Module | Does |
 |---|---|
-| `main` | The subcommands (`scan` and its alias `check`, `fix`, `search`, `export`, `breach`, `tools`, `skill`, `version`, …), the exit codes, the `fix` flow |
+| `main` | The subcommands (`scan` and its alias `check`, `fix`, `report` and its alias `export`, `search`, `breach`, `tools`, `skill`, `version`, …), the exit codes, the `fix` flow |
 | `args` | Argument parsing, by hand |
 | `progress` | The live progress line, drawn only on a terminal |
 | `style` | Colour, off for pipes, files, `--json` and `NO_COLOR` |
+| `tui` | The terminal report: the shared grouping (`reporters::view`) as a heading and table per area, sized to the terminal, lines as spans with roles that `style` colours |

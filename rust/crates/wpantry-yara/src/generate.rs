@@ -1,7 +1,8 @@
 //! YARA rules generated from samples, after yarGen's approach (ideas only):
 //! pull the strings and code snippets out of the samples, drop the ones
-//! known-good software also has, score the rest, and write the best into a
-//! rule that the compiler must accept in strict mode.
+//! known-good software also has, score the rest, and put the best into a
+//! rule draft ([`Draft`]). wpantry writes the draft's text (its YARA
+//! reporter) and checks that the compiler accepts it in strict mode.
 //!
 //! The goodware knowledge comes from the caller ([`Goodware`]): pantry builds
 //! it from this machine's own system binaries and keeps it in SQLite, so it
@@ -10,7 +11,6 @@
 //! someone reviews it.
 
 use crate::scan::FileType;
-use crate::{Compiler, Syntax};
 use std::collections::HashMap;
 
 /// Shortest string worth keeping, and longest kept.
@@ -210,12 +210,25 @@ pub fn score(s: &Extracted, goodware: &dyn Goodware) -> i64 {
     score - (seen.min(10) as i64) * 3
 }
 
-/// One generated rule: its text and how many strings and snippets it has.
-#[derive(Debug)]
-pub struct Generated {
-    pub text: String,
-    pub strings: usize,
-    pub opcodes: usize,
+/// A meta value of a generated rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetaValue {
+    Text(String),
+    Int(i64),
+}
+
+/// A generated rule, before it is written out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Draft {
+    pub name: String,
+    pub meta: Vec<(String, MetaValue)>,
+    /// The text strings (`$s1`, `$s2`, …): their bytes, and whether they
+    /// are matched as UTF-16 too.
+    pub strings: Vec<(Vec<u8>, bool)>,
+    /// The code snippets (`$op1`, …).
+    pub opcodes: Vec<Vec<u8>>,
+    /// The condition, over `$s*` and `$op*`.
+    pub condition: String,
 }
 
 /// What the generated rule should say about itself.
@@ -233,8 +246,8 @@ pub struct Describe<'a> {
 }
 
 /// A rule matching what `samples` share that goodware lacks, or `None` when
-/// they share nothing usable. It compiles in strict mode (checked here).
-pub fn generate(samples: &[&[u8]], goodware: &dyn Goodware, d: &Describe) -> Option<Generated> {
+/// they share nothing usable.
+pub fn generate(samples: &[&[u8]], goodware: &dyn Goodware, d: &Describe) -> Option<Draft> {
     if samples.is_empty() {
         return None;
     }
@@ -262,32 +275,10 @@ pub fn generate(samples: &[&[u8]], goodware: &dyn Goodware, d: &Describe) -> Opt
     if scored.is_empty() && ops.is_empty() {
         return None;
     }
-    let text = emit(samples, &scored, &ops, d);
-    // Never hand back a rule that doesn't compile.
-    let mut c = Compiler::new();
-    if c.add_source("generated", &text, Syntax::Strict) != 1 {
-        return None;
-    }
-    Some(Generated { text, strings: scored.len(), opcodes: ops.len() })
+    Some(draft(samples, &scored, ops, d))
 }
 
-/// A YARA text string literal for these bytes.
-fn literal(bytes: &[u8]) -> String {
-    let mut out = String::from("\"");
-    for &b in bytes {
-        match b {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            b'\t' => out.push_str("\\t"),
-            0x20..=0x7E => out.push(b as char),
-            _ => out.push_str(&format!("\\x{b:02X}")),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn emit(samples: &[&[u8]], strings: &[(i64, Extracted)], ops: &[Vec<u8>], d: &Describe) -> String {
+fn draft(samples: &[&[u8]], strings: &[(i64, Extracted)], ops: Vec<Vec<u8>>, d: &Describe) -> Draft {
     let largest = samples.iter().map(|s| s.len()).max().unwrap_or(0);
     // The size bound: twice the largest sample, rounded up to a kilobyte.
     let limit_kb = (largest * 2).div_ceil(1024).max(1);
@@ -299,12 +290,11 @@ fn emit(samples: &[&[u8]], strings: &[(i64, Extracted)], ops: &[Vec<u8>], d: &De
         FileType::MachO if same_type => ("macos", Some("(uint32(0) == 0xFEEDFACF or uint32(0) == 0xCAFEBABE)")),
         _ => ("any", None),
     };
-    let mut t = String::new();
-    t.push_str(&format!("rule {}\n{{\n    meta:\n", d.name));
-    t.push_str(&format!(
-        "        description = {}\n",
-        literal(format!("Generated from {} sample(s) of {}; unreviewed", samples.len(), d.family).as_bytes())
-    ));
+    let text = |s: &str| MetaValue::Text(s.to_string());
+    let mut meta = vec![(
+        "description".to_string(),
+        text(&format!("Generated from {} sample(s) of {}; unreviewed", samples.len(), d.family)),
+    )];
     for (k, v) in [
         ("author", d.author),
         ("reference", d.reference),
@@ -312,22 +302,13 @@ fn emit(samples: &[&[u8]], strings: &[(i64, Extracted)], ops: &[Vec<u8>], d: &De
         ("os", os),
         ("family", d.family),
         ("proposed_category", d.category),
+        ("category", "suspicious"),
     ] {
-        t.push_str(&format!("        {k} = {}\n", literal(v.as_bytes())));
+        meta.push((k.to_string(), text(v)));
     }
-    t.push_str("        category = \"suspicious\"\n");
-    t.push_str(&format!("        score = {UNREVIEWED_SCORE}\n"));
+    meta.push(("score".to_string(), MetaValue::Int(UNREVIEWED_SCORE)));
     for (i, h) in d.hashes.iter().enumerate() {
-        t.push_str(&format!("        hash{} = {}\n", i + 1, literal(h.as_bytes())));
-    }
-    t.push_str("\n    strings:\n");
-    for (i, (_, s)) in strings.iter().enumerate() {
-        let modifier = if s.wide { " wide" } else { "" };
-        t.push_str(&format!("        $s{} = {}{modifier}\n", i + 1, literal(&s.bytes)));
-    }
-    for (i, o) in ops.iter().enumerate() {
-        let hex: Vec<String> = o.iter().map(|b| format!("{b:02X}")).collect();
-        t.push_str(&format!("        $op{} = {{ {} }}\n", i + 1, hex.join(" ")));
+        meta.push((format!("hash{}", i + 1), text(h)));
     }
     // Most of the strings, or all of a few; any one code snippet helps.
     let need = strings.len().div_ceil(2).max(1).min(strings.len());
@@ -336,14 +317,18 @@ fn emit(samples: &[&[u8]], strings: &[(i64, Extracted)], ops: &[Vec<u8>], d: &De
         terms.push(m.to_string());
     }
     terms.push(format!("filesize < {limit_kb}KB"));
-    let body = match (strings.is_empty(), ops.is_empty()) {
+    terms.push(match (strings.is_empty(), ops.is_empty()) {
         (false, true) => format!("{need} of ($s*)"),
         (true, false) => "all of ($op*)".to_string(),
         _ => format!("({need} of ($s*) or all of ($op*))"),
-    };
-    terms.push(body);
-    t.push_str(&format!("\n    condition:\n        {}\n}}\n", terms.join(" and ")));
-    t
+    });
+    Draft {
+        name: d.name.to_string(),
+        meta,
+        strings: strings.iter().map(|(_, s)| (s.bytes.clone(), s.wide)).collect(),
+        opcodes: ops,
+        condition: terms.join(" and "),
+    }
 }
 
 #[cfg(test)]

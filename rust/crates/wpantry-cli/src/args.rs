@@ -11,6 +11,60 @@ pub const SUBCOMMANDS: &[&str] = &[
     "cache", "update", "report", "harden", "mitigate", "rules", "sources", "help",
 ];
 
+/// How a report is shown: the terminal's tables (the default), or a format
+/// a file or another program reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shown {
+    #[default]
+    Tui,
+    Txt,
+    Json,
+    Jsonl,
+    Csv,
+    Md,
+    Html,
+}
+
+impl Shown {
+    /// The flag that picks it.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Shown::Tui => "",
+            Shown::Txt => "--txt",
+            Shown::Json => "--json",
+            Shown::Jsonl => "--jsonl",
+            Shown::Csv => "--csv",
+            Shown::Md => "--md",
+            Shown::Html => "--html",
+        }
+    }
+}
+
+const FORMATS: [Shown; 6] = [Shown::Txt, Shown::Json, Shown::Jsonl, Shown::Csv, Shown::Md, Shown::Html];
+
+/// The report's options, shared by `report` (and `export`), `scan`, `check`
+/// and `fix`: what it covers (`report`'s word; the findings for a scan),
+/// which format, written where, and how far back the logs go.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Show {
+    pub part: wpantry::reporters::Part,
+    pub format: Shown,
+    pub out: Option<PathBuf>,
+    /// `--since DAYS`: the logs' reach.
+    pub since: i64,
+}
+
+impl Default for Show {
+    fn default() -> Show {
+        Show {
+            part: wpantry::reporters::Part::Findings,
+            format: Shown::Tui,
+            out: None,
+            since: wpantry::reporters::HISTORY_DAYS,
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 /// The scan's options: `scan`, its alias `check`, and `fix`.
 pub struct Check {
@@ -24,8 +78,8 @@ pub struct Check {
     pub dryrun: bool,
     pub refresh: bool,
     pub offline: bool,
-    pub json: bool,
-    pub html: Option<PathBuf>,
+    /// How the report is shown when the scan is done.
+    pub show: Show,
     pub no_input: bool,
     /// `--jobs N`: CPU-bound scans at once.
     pub jobs: Option<usize>,
@@ -70,11 +124,6 @@ pub enum Command {
         limit: i64,
         json: bool,
     },
-    Export {
-        csv: Option<String>,
-        jsonl: Option<String>,
-        all: bool,
-    },
     Breach {
         enable: bool,
         disable: bool,
@@ -95,12 +144,8 @@ pub enum Command {
         /// `--sources FILE`: the user's sources file to list with.
         file: Option<PathBuf>,
     },
-    Report {
-        sections: Vec<String>,
-        since_days: i64,
-        format: String,
-        out: Option<String>,
-    },
+    /// `report` (or `export`): the latest scan, shown.
+    Report(Show),
     Sync {
         refresh: bool,
         json: bool,
@@ -171,14 +216,26 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breac
 /// The scan's options in its usage line, shared by `scan`, `check` and
 /// `fix` (`fix` adds `--dryrun` and `--yes` in front).
 const SCAN_USAGE: [&str; 4] = [
-    "[--path DIR] [--no-machine] [--refresh] [--offline] [--json] [--html FILE] [--no-input] [--jobs N]",
+    "[--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]",
     "[--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]",
     "[--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]",
     "[--no-online-hash]",
 ];
 
 /// The scan's options in its help, shared by `scan`, `check` and `fix`.
-const SCAN_OPTIONS: &str = "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n  --json                print the findings as JSON (schema 1)\n  --html FILE           also save an offline HTML report (open FILE in a browser)\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)\n  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)\n  --sources FILE        your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)";
+/// The report options in a help text, shared by `report`, `export`, `scan`,
+/// `check` and `fix`.
+macro_rules! report_options {
+    () => {
+        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one table: the findings, or the log asked for\n  --md                  Markdown\n  --html                one offline HTML page (best with -o FILE)\n  -o, --out FILE        write the report there instead of stdout\n  --since DAYS          how far back the logs go (default 14)"
+    };
+}
+
+const SCAN_OPTIONS: &str = concat!(
+    "  --path DIR            check only the repos at or under DIR (repeatable; default: every git repo under ~)\n  --no-machine          skip the machine inventory: repo checks only\n  --refresh             ignore cached answers and ask every source again\n  --offline             use only the local cache\n",
+    report_options!(),
+    "\n  --no-input            never prompt\n  --jobs N              gitleaks scans at once (default: half the cores, at most 4)\n  --gitleaks-config FILE\n                        policy file (default: bundled gitleaks.toml)\n  --licenses [FILE], --license [FILE]\n                        also check dependency licenses (off by default), against FILE or the bundled licenses.txt\n  --install-scripts FILE\n                        policy file (default: bundled install-scripts.txt)\n  --repo-hooks FILE     indicators of hijacked repos (default: bundled repo-hooks.txt)\n  --hooks-policy FILE   repo hooks you've read and accept, one per line (default: none)\n  --suspect-policy FILE\n                        suspicious-code ids and paths that warn instead of fail (default: none)\n  --no-posture          skip the machine's security settings (FileVault, firewall, sharing, …)\n  --posture-policy FILE\n                        posture checks to skip, one id per line (default: none)\n  --no-malware          skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)\n  --deep                the malware scan reads everything under ~ with every system's rules (slower)\n  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)\n  --sources FILE        your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)"
+);
 
 pub fn usage(cmd: &str) -> String {
     let line: &str = match cmd {
@@ -191,7 +248,6 @@ pub fn usage(cmd: &str) -> String {
             );
         }
         "search" => "usage: wpantry search [-h] [--applicable] [--limit LIMIT] [--json] query",
-        "export" => "usage: wpantry export [-h] [--csv CSV] [--jsonl JSONL] [--all]",
         "breach" => "usage: wpantry breach [-h] [--enable | --disable]",
         "watch" => "usage: wpantry watch [-h] [--offline] [--json]",
         "version" => "usage: wpantry version [-h] [--json]",
@@ -207,8 +263,11 @@ pub fn usage(cmd: &str) -> String {
         "sync" => "usage: wpantry sync [-h] [--refresh] [--json]",
         "cache" => "usage: wpantry cache [-h] [--older-than DAYS] {prune}",
         "update" => "usage: wpantry update [-h] [--check] [--yes] [--no-input] [--offline] [--version VER]",
-        "report" => {
-            "usage: wpantry report [-h] [--exposure] [--remediation] [--audit] [--since DAYS] [--format FORMAT] [-o FILE]"
+        "report" | "export" => {
+            return format!(
+                "usage: wpantry {cmd} [-h] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS]\n{}{{findings,history,exposure,remediation,audit,summary,all}}",
+                " ".repeat(format!("usage: wpantry {cmd} ").len())
+            );
         }
         "harden" => "usage: wpantry harden [-h] [--hours N] [--bundle FILE] {extension-cooldown,ca-trust}",
         "mitigate" => {
@@ -242,9 +301,6 @@ fn help(cmd: &str) -> String {
         "search" => {
             "search cached advisories (for agents)\n\npositional arguments:\n  query\n\noptions:\n  -h, --help       show this help message and exit\n  --applicable     only advisories that apply here\n  --limit LIMIT\n  --json"
         }
-        "export" => {
-            "write the latest findings as CSV, or as JSON Lines joined with their OSV records, lifecycle and fix outcome\n\noptions:\n  -h, --help     show this help message and exit\n  --csv CSV      the summary columns, one finding per row\n  --jsonl JSONL  one JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix\n  --all          with --jsonl: also the resolved exposures the latest scan no longer lists"
-        }
         "breach" => {
             "show or set consent for the email breach check\n\noptions:\n  -h, --help  show this help message and exit\n  --enable\n  --disable"
         }
@@ -276,8 +332,12 @@ fn help(cmd: &str) -> String {
         "update" => {
             "check for a newer wpantry release and, after a yes, install it verified\n\noptions:\n  -h, --help       show this help message and exit\n  --check          only say whether a newer release exists (exit 10 when one does)\n  --yes            install without asking\n  --no-input       never ask: report only\n  --offline        use only the cached answer\n  --version VER    this release instead of the latest"
         }
-        "report" => {
-            "the exposure, remediation and audit logs kept across scans\n\noptions:\n  -h, --help        show this help message and exit\n  --exposure        what applied, from first seen to resolved (default: all three)\n  --remediation     the fixes wpantry fix ran, and the scans that verified them\n  --audit           every scan and event\n  --since DAYS      how far back (default 90)\n  --format FORMAT   md (default), json or csv (csv: the exposure log)\n  -o, --out FILE    write there instead of stdout"
+        "report" | "export" => {
+            return format!(
+                "{}\n\nthe latest scan's report, from the cache; it never scans (scan and fix show the same when they finish). export is the same command\n\npositional arguments:\n  findings              the latest scan's findings (the default)\n  history               the exposure, remediation and audit logs, without the findings\n  exposure              what applied, from first seen to resolved\n  remediation           the fixes run: when, who, the result, the scan that verified them\n  audit                 every scan and event\n  summary               one page for a CSO, an auditor or an insurer: where things stand, times to fix against the targets, who fixed what\n  all                   the findings, then every log\n\noptions:\n  -h, --help            show this help message and exit\n{}\n\nExit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3 internal error.\n",
+                usage(cmd),
+                report_options!()
+            );
         }
         "harden" => {
             "apply one of the fixes wpantry can make itself\n\npositional arguments:\n  {extension-cooldown,ca-trust}\n    extension-cooldown  set extensions.installCooldownHours in every VS Code-family editor's settings.json\n    ca-trust            distrust the leaked eMudhra roots in the system trust store (sudo asks to install the result)\n\noptions:\n  -h, --help     show this help message and exit\n  --hours N      extension-cooldown: the cooldown (default 72)\n  --bundle FILE  ca-trust: rewrite this PEM bundle instead of the system store"
@@ -286,7 +346,7 @@ fn help(cmd: &str) -> String {
             "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for scan\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              write the findings as CSV or JSON Lines\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the exposure, remediation and audit logs\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              the same as report\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the latest scan's report, or its history, a log or the summary (--json, --md, --html, …)\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -296,6 +356,32 @@ fn help(cmd: &str) -> String {
 /// `--license` for `--licenses`, `--update` for the scan's old `--fix`.
 const ALIASES: &[(&str, &str)] =
     &[("--license", "--licenses"), ("-o", "--out"), ("--update", "--fix"), ("--remove", "--undo")];
+
+/// The report options given: at most one format, a file to write, and the
+/// logs' reach.
+fn show(flag: &dyn Fn(&str) -> bool, value: &dyn Fn(&str) -> Option<String>) -> Result<Show, String> {
+    let picked: Vec<Shown> = FORMATS.iter().copied().filter(|f| flag(f.flag())).collect();
+    let format = match picked.as_slice() {
+        [] => Shown::Tui,
+        [one] => *one,
+        [a, b, ..] => return Err(format!("argument {}: not allowed with argument {}", b.flag(), a.flag())),
+    };
+    let out = match value("--out") {
+        Some(v) if v.is_empty() || v == "-" => return Err("argument -o/--out: expected a file path".into()),
+        Some(v) => Some(expand(&v)),
+        None => None,
+    };
+    // A file gets plain text, never the terminal's colours.
+    let format = if format == Shown::Tui && out.is_some() { Shown::Txt } else { format };
+    let since = match value("--since") {
+        None => wpantry::reporters::HISTORY_DAYS,
+        Some(v) => match v.trim().trim_end_matches('d').parse::<i64>() {
+            Ok(n) if n >= 1 => n,
+            _ => return Err(format!("argument --since: expected a number of days, got '{v}'")),
+        },
+    };
+    Ok(Show { part: wpantry::reporters::Part::Findings, format, out, since })
+}
 
 /// (option, takes a value) for each subcommand.
 fn options(cmd: &str) -> &'static [(&'static str, bool)] {
@@ -311,8 +397,14 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-machine", false),
             ("--refresh", false),
             ("--offline", false),
+            ("--txt", false),
             ("--json", false),
-            ("--html", true),
+            ("--jsonl", false),
+            ("--csv", false),
+            ("--md", false),
+            ("--html", false),
+            ("--out", true),
+            ("--since", true),
             ("--no-input", false),
             ("--jobs", true),
             ("--gitleaks-config", true),
@@ -336,8 +428,14 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--no-machine", false),
             ("--refresh", false),
             ("--offline", false),
+            ("--txt", false),
             ("--json", false),
-            ("--html", true),
+            ("--jsonl", false),
+            ("--csv", false),
+            ("--md", false),
+            ("--html", false),
+            ("--out", true),
+            ("--since", true),
             ("--no-input", false),
             ("--jobs", true),
             ("--gitleaks-config", true),
@@ -363,20 +461,20 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--out", true),
         ],
         "search" => &[("--help", false), ("--applicable", false), ("--limit", true), ("--json", false)],
-        "export" => &[("--help", false), ("--csv", true), ("--jsonl", true), ("--all", false)],
         "breach" => &[("--help", false), ("--enable", false), ("--disable", false)],
         "watch" => &[("--help", false), ("--offline", false), ("--json", false)],
         "version" | "tools" => &[("--help", false), ("--json", false)],
         "sources" => &[("--help", false), ("--json", false), ("--sources", true)],
-        "report" => &[
+        "report" | "export" => &[
             ("--help", false),
-            ("--exposure", false),
-            ("--remediation", false),
-            ("--audit", false),
-            ("--all", false),
-            ("--since", true),
-            ("--format", true),
+            ("--txt", false),
+            ("--json", false),
+            ("--jsonl", false),
+            ("--csv", false),
+            ("--md", false),
+            ("--html", false),
             ("--out", true),
+            ("--since", true),
         ],
         "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
         "schedule" => &[("--help", false), ("--every", true), ("--at", true), ("--dry-run", false)],
@@ -527,7 +625,6 @@ pub fn parse(argv: &[String]) -> Parsed {
                 dryrun: flag("--dryrun"),
                 refresh: flag("--refresh"),
                 offline: flag("--offline"),
-                json: flag("--json"),
                 no_input: flag("--no-input"),
                 check_licenses: flag("--licenses"),
                 no_posture: flag("--no-posture"),
@@ -537,12 +634,10 @@ pub fn parse(argv: &[String]) -> Parsed {
                 sources: value("--sources").map(|s| expand(&s)),
                 ..Default::default()
             };
-            if let Some(v) = value("--html") {
-                if v.is_empty() || v == "-" {
-                    return fail("argument --html: expected a file path, not stdout".into());
-                }
-                c.html = Some(expand(&v));
-            }
+            c.show = match show(&flag, &value) {
+                Ok(s) => s,
+                Err(e) => return fail(e),
+            };
             let paths: Vec<PathBuf> = given
                 .iter()
                 .filter(|(o, _)| *o == "--path")
@@ -589,16 +684,6 @@ pub fn parse(argv: &[String]) -> Parsed {
             };
             Command::Search { query, applicable: flag("--applicable"), limit, json: flag("--json") }
         }
-        "export" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let (csv, jsonl) = (value("--csv"), value("--jsonl"));
-            if csv.is_none() && jsonl.is_none() {
-                return fail("one of the following arguments is required: --csv, --jsonl".into());
-            }
-            Command::Export { csv, jsonl, all: flag("--all") }
-        }
         "breach" => {
             if !positional.is_empty() {
                 return fail(format!("unrecognized arguments: {}", positional.join(" ")));
@@ -609,30 +694,24 @@ pub fn parse(argv: &[String]) -> Parsed {
             }
             Command::Breach { enable, disable }
         }
-        "report" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
-            let mut sections: Vec<String> = ["exposure", "remediation", "audit"]
-                .iter()
-                .filter(|s| flag(&format!("--{s}")))
-                .map(|s| s.to_string())
-                .collect();
-            if sections.is_empty() || flag("--all") {
-                sections = vec!["all".into()];
-            }
-            let since_days = match value("--since") {
-                None => 90,
-                Some(v) => match v.trim().trim_end_matches('d').parse::<i64>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => return fail(format!("argument --since: expected a number of days, got '{v}'")),
+        "report" | "export" => {
+            let part = match positional.as_slice() {
+                [] => wpantry::reporters::Part::Findings,
+                [word] => match wpantry::reporters::Part::parse(word) {
+                    Some(p) => p,
+                    None => {
+                        return fail(format!(
+                            "argument what: invalid choice: '{word}' (choose from {})",
+                            wpantry::reporters::Part::NAMES.join(", ")
+                        ));
+                    }
                 },
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
             };
-            let format = value("--format").unwrap_or_else(|| "md".into());
-            if !["md", "json", "csv"].contains(&format.as_str()) {
-                return fail(format!("argument --format: invalid choice: '{format}' (choose from md, json, csv)"));
+            match show(&flag, &value) {
+                Ok(s) => Command::Report(Show { part, ..s }),
+                Err(e) => return fail(e),
             }
-            Command::Report { sections, since_days, format, out: value("--out") }
         }
         "sync" => {
             if !positional.is_empty() {

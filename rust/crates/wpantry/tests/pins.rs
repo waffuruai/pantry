@@ -3,7 +3,7 @@
 
 const WORKSPACE: &str = include_str!("../../../Cargo.toml");
 const TOOLCHAIN: &str = include_str!("../../../rust-toolchain.toml");
-const ALLOWED: &[&str] = &["serde", "serde_json", "rusqlite", "ureq", "rustls", "wpantry", "wpantry-yara"];
+const ALLOWED: &[&str] = &["serde", "serde_json", "rusqlite", "ureq", "rustls", "wcli", "wpantry", "wpantry-yara"];
 
 fn section<'a>(toml: &'a str, header: &str) -> Vec<&'a str> {
     toml.lines()
@@ -35,6 +35,7 @@ fn crates_take_dependencies_only_from_the_workspace() {
         include_str!("../Cargo.toml"),
         include_str!("../../wpantry-cli/Cargo.toml"),
         include_str!("../../wpantry-yara/Cargo.toml"),
+        include_str!("../../wcli/Cargo.toml"),
     ] {
         for header in ["[dependencies]", "[dev-dependencies]", "[build-dependencies]"] {
             for line in section(manifest, header) {

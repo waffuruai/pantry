@@ -553,7 +553,7 @@ pub fn stamp(t: f64) -> String {
 }
 
 /// `YYYYMMDDTHHMMSSZ` for a timestamp: ISO 8601's basic form, for a file
-/// name (no colons, and names sort by time).
+/// name (no colons; the names sort by time).
 pub fn file_stamp(t: f64) -> String {
     let secs = t.max(0.0) as i64;
     let rem = secs.rem_euclid(86400);

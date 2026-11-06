@@ -5,15 +5,31 @@ fn p(args: &[&str]) -> Parsed {
     parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
 }
 
+fn help(path: &[&str]) -> String {
+    program().help_for(path).expect("a command wpantry has")
+}
+
+/// The usage error for `args`, which must be one.
+fn usage(args: &[&str]) -> String {
+    match p(args) {
+        Parsed::Usage(text) => text,
+        other => panic!("{args:?}: {other:?}"),
+    }
+}
+
+fn scan(args: &[&str]) -> Check {
+    match p(args) {
+        Parsed::Run(Command::Scan(c)) => c,
+        other => panic!("{args:?}: {other:?}"),
+    }
+}
+
 #[test]
 fn malware_options_and_the_rules_command() {
-    let Parsed::Run(Command::Scan(c)) = p(&["scan", "--no-malware"]) else { panic!() };
+    let c = scan(&["scan", "--no-malware"]);
     assert!(c.no_malware && !c.deep);
-    let Parsed::Run(Command::Scan(c)) = p(&["check", "--deep"]) else { panic!() };
-    assert!(c.deep && !c.no_malware);
-    let Parsed::Run(Command::Scan(c)) = p(&["fix", "--deep", "--no-malware", "--no-online-hash"]) else { panic!() };
+    let c = scan(&["fix", "--deep", "--no-malware", "--no-online-hash"]);
     assert!(c.fix && c.deep && c.no_malware && c.no_online_hash);
-    assert!(matches!(p(&["scan", "--no-m"]), Parsed::Usage(_)), "--no-m is now ambiguous");
     let rules = |action: &str, samples: Vec<PathBuf>, update: bool, json: bool| Command::Rules {
         action: action.into(),
         samples,
@@ -32,7 +48,7 @@ fn malware_options_and_the_rules_command() {
         Parsed::Run(rules("gen", vec!["/a".into(), "/b".into()], false, false))
     );
     let Parsed::Run(Command::Rules { category, family, name, out, .. }) =
-        p(&["rules", "gen", "--category", "miner", "--family", "Kit", "--name", "R", "--out", "/o.yar", "/a"])
+        p(&["rules", "gen", "--category", "miner", "--family", "Kit", "--name", "R", "-o", "/o.yar", "/a"])
     else {
         panic!()
     };
@@ -40,167 +56,146 @@ fn malware_options_and_the_rules_command() {
         (category.as_str(), family.as_deref(), name.as_deref(), out),
         ("miner", Some("Kit"), Some("R"), Some("/o.yar".into()))
     );
-    assert!(matches!(p(&["rules", "gen"]), Parsed::Usage(_)));
-    assert!(matches!(p(&["rules", "extra"]), Parsed::Usage(_)));
-    assert!(matches!(p(&["rules", "goodware", "x"]), Parsed::Usage(_)));
-    assert!(usage("scan").contains("[--no-malware] [--deep]"));
-    assert!(help("rules").contains("--update"));
+    assert!(usage(&["rules", "gen"]).contains("missing required argument 'sample'"));
+    assert!(usage(&["rules", "extra"]).contains("unknown command 'extra'"));
+    assert!(usage(&["rules", "goodware", "x"]).contains("too many arguments for 'goodware'"));
+    assert!(help(&["scan"]).contains("--no-malware") && help(&["scan"]).contains("--deep"));
+    assert!(help(&["rules"]).contains("--update") && help(&["rules"]).contains("gen [options] <sample...>"));
     assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false, file: None }));
     assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true, file: None }));
     assert_eq!(
         p(&["sources", "--sources", "/s.toml"]),
         Parsed::Run(Command::Sources { json: false, file: Some("/s.toml".into()) })
     );
-    let Parsed::Run(Command::Scan(c)) = p(&["scan", "--sources", "/s.toml"]) else { panic!() };
-    assert_eq!(c.sources, Some("/s.toml".into()));
-    assert!(matches!(p(&["sources", "extra"]), Parsed::Usage(_)));
-    assert!(help("sources").contains("--json"));
+    assert_eq!(scan(&["scan", "--sources", "/s.toml"]).sources, Some("/s.toml".into()));
+    assert!(usage(&["sources", "extra"]).contains("too many arguments for 'sources'"));
 }
 
 #[test]
-fn no_arguments_print_the_help_and_options_alone_scan() {
-    assert_eq!(p(&[]), Parsed::Help(help("")));
-    assert_eq!(
-        p(&["--json"]),
-        Parsed::Run(Command::Scan(Check {
-            show: Show { format: Shown::Json, ..Default::default() },
-            ..Default::default()
-        }))
-    );
-    let Parsed::Run(Command::Scan(c)) = p(&["--path", "/a", "--path=/b", "--no-mac", "--json"]) else { panic!() };
+fn no_arguments_print_the_help_and_the_version_is_one_flag() {
+    assert_eq!(p(&[]), Parsed::Help(help(&[])));
+    assert_eq!(p(&["--version"]), Parsed::Help(format!("wpantry {}\n", wpantry::VERSION)));
+    assert!(usage(&["--json"]).contains("unknown option '--json'"), "options belong to a command");
+    let c = scan(&["scan", "--path", "/a", "--path=/b", "--no-machine", "--json"]);
     assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
     assert!(c.no_machine && c.show.format == Shown::Json && !c.offline && !c.check_licenses);
-    let Parsed::Run(Command::Scan(c)) = p(&["--licenses", "--json"]) else { panic!() };
-    assert!(
-        c.check_licenses && c.licenses.is_none() && c.show.format == Shown::Json,
-        "--licenses alone uses the bundled allowlist"
-    );
-    let Parsed::Run(Command::Scan(c)) = p(&["--license", "--json"]) else { panic!() };
-    assert!(c.check_licenses && c.licenses.is_none() && c.show.format == Shown::Json, "--license is --licenses");
+    assert!(usage(&["scan", "--path", "/a", "/b"]).contains("too many arguments for 'scan'"), "one directory a --path");
+    let c = scan(&["scan", "--licenses", "--json"]);
+    assert!(c.check_licenses && c.licenses.is_none(), "--licenses alone uses the bundled allowlist");
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-    let Parsed::Run(Command::Scan(c)) = p(&[&format!("--license={file}")]) else { panic!() };
+    let c = scan(&["scan", "--licenses", file]);
     assert!(c.check_licenses && c.licenses == Some(PathBuf::from(file)));
 }
 
 #[test]
 fn one_format_a_file_and_the_history_are_the_report_options() {
-    let Parsed::Run(Command::Scan(c)) = p(&["--html", "-o", "report with spaces.html"]) else { panic!() };
+    let c = scan(&["scan", "--html", "-o", "report with spaces.html"]);
     assert_eq!(
         c.show,
         Show { format: Shown::Html, out: Some(PathBuf::from("report with spaces.html")), ..Default::default() }
     );
-    let Parsed::Run(Command::Scan(c)) = p(&["--out=r.txt"]) else { panic!() };
-    assert_eq!(c.show.format, Shown::Txt, "a file gets plain text");
-    let Parsed::Run(Command::Scan(c)) = p(&["fix", "--md", "--since", "30"]) else { panic!() };
+    assert_eq!(scan(&["scan", "--out=r.txt"]).show.format, Shown::Txt, "a file gets plain text");
+    let c = scan(&["fix", "--md", "--since", "30"]);
     assert_eq!((c.fix, c.show.format, c.show.since), (true, Shown::Md, 30));
-    assert!(matches!(p(&["--history"]), Parsed::Usage(_)), "the logs are report's words now");
-    for bad in [&["--html", "--json"][..], &["-o"], &["--out="], &["--since", "x"]] {
-        assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
+    for (bad, msg) in [
+        (&["scan", "--html", "--json"][..], "option '--json' cannot be used with option '--html'"),
+        (&["scan", "-o"], "option '-o, --out <file>' argument missing"),
+        (&["scan", "--out="], "expects a file path, or - for stdout"),
+        (&["scan", "--since", "x"], "option '--since' expects a number of days, got 'x'"),
+        (&["scan", "--history"], "unknown option '--history'"),
+    ] {
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
     }
 }
 
 #[test]
-fn usage_errors() {
+fn usage_errors_name_the_closest_spelling() {
+    let msg = usage(&["scan", "--no-machin"]);
+    assert!(
+        msg.starts_with(
+            "Usage: wpantry scan [options]\nerror: unknown option '--no-machin'\n(Did you mean --no-machine?)"
+        ),
+        "{msg}"
+    );
+    let msg = usage(&["scna", "--json"]);
+    assert!(
+        msg.starts_with("Usage: wpantry [options] [command]\nerror: unknown command 'scna'\n(Did you mean scan?)"),
+        "{msg}"
+    );
     for bad in [
-        &["--bogus"][..],
-        &["search"],
+        &["search"][..],
         &["search", "--limit", "x", "q"],
         &["breach", "--enable", "--disable"],
-        &["check", "--licenses", "/nonexistent/x.txt"],
+        &["scan", "--licenses", "/nonexistent/x.txt"],
         &["version", "extra"],
-        &["--path"],
-        &["--no-machine=1"],
-        &["--n"],
+        &["scan", "--path"],
+        &["scan", "--no-machine=1"],
+        &["scan", "--no-m"],
+        &["report", "--h"],
     ] {
         assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
     }
-    let Parsed::Usage(msg) = p(&["--bogus"]) else { panic!() };
-    assert!(msg.starts_with("usage: wpantry scan") && msg.contains("error: unrecognized arguments: --bogus"));
-    let Parsed::Usage(msg) = p(&["scna", "--json"]) else { panic!() };
-    assert!(msg.starts_with(TOP_USAGE) && msg.contains("wpantry: error: argument command: invalid choice: 'scna'"));
 }
 
 #[test]
-fn scan_check_and_fix() {
-    let all = ["--path", "/a", "--no-machine", "--offline", "--json", "--no-input", "--jobs", "2", "--no-posture"];
-    let Parsed::Run(Command::Scan(scan)) = p(&[&["scan"][..], &all].concat()) else { panic!() };
-    assert!(
-        !scan.fix
-            && scan.no_machine
-            && scan.offline
-            && scan.show.format == Shown::Json
-            && scan.no_input
-            && scan.no_posture
-    );
-    assert_eq!(p(&[&["check"][..], &all].concat()), Parsed::Run(Command::Scan(scan)), "check is scan");
-    let fix =
-        |dryrun: bool, yes: bool| Parsed::Run(Command::Scan(Check { fix: true, dryrun, yes, ..Default::default() }));
-    assert_eq!(p(&["fix"]), fix(false, false));
-    assert_eq!(p(&["fix", "--dryrun", "--yes"]), fix(true, true));
-    // the spellings from before `fix`, kept for scripts
-    for old in [&["--fix"][..], &["--update"], &["scan", "--fix"], &["check", "--fix"], &["check", "--update"]] {
-        assert_eq!(p(old), fix(false, false), "{old:?}");
-    }
-    assert_eq!(p(&["check", "--fix", "--dryrun"]), fix(true, false));
-    assert_eq!(p(&["--fix", "--yes"]), fix(false, true));
-    for (cmd, head) in [
-        ("scan", "usage: wpantry scan [-h] [--path DIR]"),
-        ("check", "usage: wpantry check [-h] [--path DIR]"),
-        (
-            "fix",
-            "usage: wpantry fix [-h] [--dryrun] [--yes] [--undo] [--bundle FILE] [--hours N] [list|all|ID] [--path DIR]",
-        ),
+fn the_aliases_are_gone() {
+    for (old, msg) in [
+        (&["check"][..], "unknown command 'check'"),
+        (&["export", "--csv"], "unknown command 'export'"),
+        (&["mitigate", "list"], "unknown command 'mitigate'"),
+        (&["harden", "ca-trust"], "unknown command 'harden'"),
+        (&["scan", "--fix"], "unknown option '--fix'"),
+        (&["scan", "--update"], "unknown option '--update'"),
+        (&["scan", "--license"], "unknown option '--license'\n(Did you mean --licenses?)"),
+        (&["fix", "--dryrun"], "unknown option '--dryrun'\n(Did you mean --dry-run?)"),
+        (&["fix", "x-y-zzzz", "--remove"], "unknown option '--remove'"),
     ] {
-        let Parsed::Help(text) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
-        assert!(
-            text.starts_with(head) && text.contains("--no-malware") && text.contains("Exit codes:"),
-            "{cmd}: {text}"
-        );
-        assert_eq!(text.contains("--dryrun"), cmd == "fix", "{cmd}: only fix documents --dryrun");
-        assert!(!text.contains("--fix") && !text.contains("--update"), "{cmd}: the old flags stay undocumented");
+        assert!(usage(old).contains(msg), "{old:?}: {}", usage(old));
     }
-    let Parsed::Usage(text) = p(&["fix", "--fix"]) else { panic!() };
-    assert!(text.starts_with("usage: wpantry fix") && text.contains("unrecognized arguments: --fix"), "{text}");
 }
 
 #[test]
-fn help_and_subcommands() {
-    assert!(matches!(p(&["--help"]), Parsed::Help(_)));
-    assert!(matches!(p(&["search", "-h"]), Parsed::Help(_)));
-    assert_eq!(
-        p(&["search", "tls AND cert", "--limit", "5"]),
-        Parsed::Run(Command::Search { query: "tls AND cert".into(), applicable: false, limit: 5, json: false })
-    );
-    assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
-    assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
-    assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
-    assert!(matches!(p(&["watch", "x"]), Parsed::Usage(_)));
+fn scan_and_fix() {
+    let all = ["--path", "/a", "--no-machine", "--offline", "--json", "--no-input", "--jobs", "2", "--no-posture"];
+    let c = scan(&[&["scan"][..], &all].concat());
+    assert!(!c.fix && c.no_machine && c.offline && c.show.format == Shown::Json && c.no_input && c.no_posture);
+    assert_eq!(c.jobs, Some(2));
+    let fix =
+        |dry_run: bool, yes: bool| Parsed::Run(Command::Scan(Check { fix: true, dry_run, yes, ..Default::default() }));
+    assert_eq!(p(&["fix"]), fix(false, false));
+    assert_eq!(p(&["fix", "all"]), fix(false, false));
+    assert_eq!(p(&["fix", "--dry-run", "--yes"]), fix(true, true));
+    assert!(usage(&["scan", "--dry-run"]).contains("unknown option '--dry-run'"), "scan changes nothing");
+    let text = help(&["scan"]);
+    assert!(text.starts_with("Usage: wpantry scan [options]\n") && text.contains("Exit codes:"), "{text}");
+    let text = help(&["fix"]);
+    assert!(text.starts_with("Usage: wpantry fix [options] [target]\n") && text.contains("--dry-run"), "{text}");
 }
 
 #[test]
-fn every_subcommand_has_help_and_a_usage_line() {
-    for cmd in SUBCOMMANDS.iter().filter(|c| **c != "help") {
-        let Parsed::Help(text) = p(&[cmd, "-h"]) else { panic!("{cmd}") };
-        assert_eq!(p(&["help", cmd]), Parsed::Help(text.clone()), "help {cmd} is {cmd} -h");
-        // mitigate is fix under its older name, and says so.
-        let name = if *cmd == "mitigate" { "fix" } else { cmd };
-        assert!(text.starts_with(&format!("usage: wpantry {name} [-h]")), "{cmd}: {text}");
-        assert!(text.contains("-h, --help"), "{cmd}");
-        let Parsed::Help(long) = p(&[cmd, "--help"]) else { panic!("{cmd}") };
-        assert_eq!(long, text);
-    }
+fn every_command_has_help() {
+    let root = program();
     let Parsed::Help(top) = p(&["-h"]) else { panic!() };
-    assert!(top.starts_with(TOP_USAGE) && top.contains("Exit codes:"));
-    for same in [&["help"][..], &["help", "-h"], &["help", "help"], &["--help"]] {
+    assert!(top.starts_with("Usage: wpantry [options] [command]") && top.contains("Exit codes:"));
+    for same in [&["help"][..], &["--help"]] {
         assert_eq!(p(same), Parsed::Help(top.clone()), "{same:?}");
     }
-    for (bad, msg) in [
-        (&["help", "scna"][..], "invalid choice: 'scna'"),
-        (&["help", "scan", "fix"], "wpantry help: error: unrecognized arguments: fix"),
+    for cmd in [
+        "scan", "fix", "report", "search", "watch", "sync", "schedule", "rules", "sources", "breach", "cache",
+        "update", "version", "tools", "skill",
     ] {
-        let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-        assert!(text.starts_with(TOP_USAGE) && text.contains(msg), "{bad:?}: {text}");
+        let text = help(&[cmd]);
+        assert!(top.contains(&format!("\n  {cmd}")), "{cmd} is listed");
+        assert_eq!(p(&[cmd, "-h"]), Parsed::Help(text.clone()), "{cmd}");
+        assert_eq!(p(&["help", cmd]), Parsed::Help(text.clone()), "help {cmd} is {cmd} -h");
+        assert!(text.starts_with(&format!("Usage: wpantry {cmd} ")) && text.contains("-h, --help"), "{cmd}");
+        for line in text.lines() {
+            assert!(line.chars().count() <= wcli::WIDTH, "{cmd}: {line}");
+        }
     }
+    assert_eq!(p(&["help", "schedule", "install"]), Parsed::Help(help(&["schedule", "install"])));
+    assert!(root.help_for(&["check"]).is_none());
+    assert!(usage(&["help", "scna"]).contains("unknown command 'scna'"));
 }
 
 #[test]
@@ -208,52 +203,50 @@ fn check_options_and_their_errors() {
     let _home = wpantry::utils::files::test_home();
     let file = wpantry::utils::files::home().join("g.toml");
     std::fs::write(&file, "").unwrap();
-    let Parsed::Run(Command::Scan(c)) = p(&["--gitleaks-config", "~/g.toml", "--jobs=3", "--no-posture"]) else {
-        panic!()
-    };
+    let c = scan(&["scan", "--gitleaks-config", "~/g.toml", "--jobs=3", "--no-posture"]);
     assert_eq!((c.gitleaks_config, c.jobs, c.no_posture), (Some(file.clone()), Some(3), true));
-    let Parsed::Usage(text) = p(&["--install-scripts", "~", "--update"]) else { panic!() };
-    assert!(text.contains("argument --install-scripts: no such file: ~"), "a directory is no policy file: {text}");
+    assert!(usage(&["scan", "--install-scripts", "~"]).contains("option '--install-scripts': no such file: ~"));
     assert_eq!(expand("~"), wpantry::utils::files::home());
     assert_eq!(expand("/x"), PathBuf::from("/x"));
     for (bad, msg) in [
-        (&["check", "extra"][..], "unrecognized arguments: extra"),
-        (&["--jobs", "0"], "argument --jobs: expected a number of 1 or more, got 0"),
-        (&["--jobs", "many"], "argument --jobs: expected a number of 1 or more, got many"),
-        (&["--repo-hooks", "~/missing.txt"], "argument --repo-hooks: no such file: ~/missing.txt"),
-        (&["-x"], "unrecognized arguments: -x"),
-        (&["--off", "--", "--json"], "unrecognized arguments: --json"),
+        (&["scan", "extra"][..], "too many arguments for 'scan'. Expected 0 arguments but got 1: extra"),
+        (&["scan", "--jobs", "0"], "option '--jobs' expects a number of 1 or more, got '0'"),
+        (&["scan", "--jobs", "many"], "option '--jobs' expects a number of 1 or more, got 'many'"),
+        (&["scan", "--repo-hooks", "~/missing.txt"], "option '--repo-hooks': no such file: ~/missing.txt"),
+        (&["scan", "-x"], "unknown option '-x'"),
+        (&["scan", "--offline", "--", "--json"], "too many arguments for 'scan'"),
     ] {
-        let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-        assert!(text.contains(msg), "{bad:?}: {text}");
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
     }
 }
 
 #[test]
-fn search_export_breach_and_sync_errors() {
+fn search_breach_and_sync() {
     for (bad, msg) in [
-        (&["search", "a", "b"][..], "unrecognized arguments: b"),
-        (&["export", "x", "--csv"], "argument what: invalid choice: 'x'"),
-        (&["breach", "x"], "unrecognized arguments: x"),
-        (&["sync", "x"], "unrecognized arguments: x"),
-        (&["skill", "--json"], "unrecognized arguments: --json"),
-        (&["tools", "--js=1"], "argument --json: ignored explicit argument '1'"),
+        (&["search", "a", "b"][..], "too many arguments for 'search'"),
+        (&["breach", "x"], "too many arguments for 'breach'"),
+        (&["sync", "x"], "too many arguments for 'sync'"),
+        (&["skill", "--json"], "unknown option '--json'"),
+        (&["tools", "--json=1"], "option '--json' takes no value, got '1'"),
+        (&["search", "--limit", "x", "q"], "option '--limit <n>' argument 'x' is invalid"),
     ] {
-        let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-        assert!(text.contains(msg), "{bad:?}: {text}");
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
     }
     assert_eq!(
         p(&["search", "--applicable", "--limit=-2", "--json", "--", "-q"]),
         Parsed::Run(Command::Search { query: "-q".into(), applicable: true, limit: -2, json: true })
     );
     assert_eq!(
-        p(&["export", "exposure", "--jsonl"]),
-        Parsed::Run(Command::Report(Show { part: Part::Exposure, format: Shown::Jsonl, ..Default::default() })),
-        "export is report"
+        p(&["search", "tls AND cert", "--limit", "5"]),
+        Parsed::Run(Command::Search { query: "tls AND cert".into(), applicable: false, limit: 5, json: false })
     );
     assert_eq!(p(&["breach", "--enable"]), Parsed::Run(Command::Breach { enable: true, disable: false }));
+    assert!(usage(&["breach", "--disable", "--enable"]).contains("cannot be used with"));
     assert_eq!(p(&["sync", "--refresh", "--json"]), Parsed::Run(Command::Sync { refresh: true, json: true }));
     assert_eq!(p(&["tools"]), Parsed::Run(Command::Tools { json: false }));
+    assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
+    assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
+    assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
 }
 
 #[test]
@@ -274,42 +267,34 @@ fn report_options() {
         Parsed::Run(Command::Report(Show { format: Shown::Json, stdout: true, ..Default::default() }))
     );
     assert_eq!(
-        p(&["report", "--txt"]),
-        Parsed::Run(Command::Report(Show { format: Shown::Txt, ..Default::default() }))
+        p(&["report", "exposure", "--jsonl"]),
+        Parsed::Run(Command::Report(Show { part: Part::Exposure, format: Shown::Jsonl, ..Default::default() }))
     );
     for (bad, msg) in [
-        (&["report", "x"][..], "argument what: invalid choice: 'x'"),
-        (&["report", "--since", "0"], "argument --since: expected a number of days, got '0'"),
-        (&["report", "--md", "--csv"], "argument --md: not allowed with argument --csv"),
-        (&["report", "--exposure"], "unrecognized arguments: --exposure"),
-        (&["report", "logs"], "argument what: invalid choice: 'logs'"),
-        (&["report", "audit", "x"], "unrecognized arguments: x"),
+        (&["report", "x"][..], "argument 'x' is invalid for 'part'. Allowed choices are findings, history"),
+        (&["report", "--since", "0"], "option '--since' expects a number of days, got '0'"),
+        (&["report", "--md", "--csv"], "option '--csv' cannot be used with option '--md'"),
+        (&["report", "--exposure"], "unknown option '--exposure'"),
+        (&["report", "audit", "x"], "too many arguments for 'report'"),
     ] {
-        let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-        assert!(text.contains(msg), "{bad:?}: {text}");
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
     }
 }
 
 #[test]
-fn schedule_cache_update_and_fix_options() {
+fn schedule_cache_and_update() {
+    let sched = |every: &str, at: &str, dry_run: bool| {
+        Parsed::Run(Command::Schedule { action: "install".into(), every: every.into(), at: at.into(), dry_run })
+    };
+    assert_eq!(p(&["schedule", "install"]), sched("day", "09:30", false));
     assert_eq!(
-        p(&["schedule", "install"]),
-        Parsed::Run(Command::Schedule {
-            action: "install".into(),
-            every: "day".into(),
-            at: "09:30".into(),
-            dry_run: false
-        })
+        p(&["schedule", "install", "--every", "quarter", "--at", "7:05", "--dry-run"]),
+        sched("quarter", "7:05", true)
     );
-    assert_eq!(
-        p(&["schedule", "install", "--every", "week", "--at", "7:05", "--dry-run"]),
-        Parsed::Run(Command::Schedule {
-            action: "install".into(),
-            every: "week".into(),
-            at: "7:05".into(),
-            dry_run: true
-        })
-    );
+    for action in ["status", "uninstall", "run"] {
+        let Parsed::Run(Command::Schedule { action: a, .. }) = p(&["schedule", action]) else { panic!("{action}") };
+        assert_eq!(a, action);
+    }
     assert_eq!(p(&["cache", "prune"]), Parsed::Run(Command::Cache { action: "prune".into(), older_than: 90 }));
     assert_eq!(
         p(&["cache", "prune", "--older-than", "7"]),
@@ -325,98 +310,63 @@ fn schedule_cache_update_and_fix_options() {
             version: Some("v1.2.3".into())
         })
     );
-    let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| Command::Mitigate {
-        target,
-        dry_run,
-        yes,
-        no_input,
-        undo,
-        bundle: None,
-        hours: 72,
-    };
-    for cmd in ["fix", "mitigate"] {
-        assert_eq!(
-            p(&[cmd, "cve-2026-98432"]),
-            Parsed::Run(one(Target::Id("CVE-2026-98432".into()), false, false, false, false)),
-            "{cmd}: mitigate is fix"
-        );
-        assert_eq!(p(&[cmd, "list"]), Parsed::Run(one(Target::List, false, false, false, false)));
-    }
-    for dry in ["--dry-run", "--dryrun"] {
-        assert_eq!(
-            p(&["fix", dry, "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
-            Parsed::Run(one(Target::Id("GHSA-XXXX-YYYY-ZZZZ".into()), true, true, true, false))
-        );
-    }
-    for undo in ["--undo", "--remove"] {
-        assert_eq!(
-            p(&["mitigate", "CVE-2026-98432", undo]),
-            Parsed::Run(one(Target::Id("CVE-2026-98432".into()), false, false, false, true))
-        );
-    }
-    assert_eq!(
-        p(&["fix", "extension-cooldown", "--hours", "48"]),
-        Parsed::Run(Command::Mitigate {
-            target: Target::Id("EXTENSION-COOLDOWN".into()),
-            dry_run: false,
-            yes: false,
-            no_input: false,
-            undo: false,
-            bundle: None,
-            hours: 48
-        }),
-        "the former harden fixes, by name"
-    );
-    assert_eq!(
-        p(&["fix", "ca-trust", "--bundle", "/b.pem"]),
-        Parsed::Run(Command::Mitigate {
-            target: Target::Id("CA-TRUST".into()),
-            dry_run: false,
-            yes: false,
-            no_input: false,
-            undo: false,
-            bundle: Some(PathBuf::from("/b.pem")),
-            hours: 72
-        })
-    );
-    let Parsed::Run(Command::Scan(c)) = p(&["mitigate", "all", "--offline", "--no-machine", "--path", "/w", "--yes"])
-    else {
-        panic!("fix all is the whole run")
-    };
-    assert!(c.fix && c.offline && c.no_machine && c.yes && c.path == Some(vec![PathBuf::from("/w")]));
-    let Parsed::Run(Command::Scan(c)) = p(&["mitigate"]) else { panic!("mitigate alone is fix") };
-    assert!(c.fix);
     for (bad, msg) in [
-        (
-            &["mitigate", "kernel"][..],
-            "argument what: expected list, all, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got 'kernel'",
-        ),
-        (&["mitigate", "CVE-2026-98432", "now"], "unrecognized arguments: now"),
-        (&["mitigate", "CVE-2026-98432", "--dry-run", "--undo"], "--dry-run and --undo can't be combined"),
-        (&["fix", "list", "--remove"], "--undo takes one id"),
-        (&["fix", "extension-cooldown", "--hours", "lots"], "argument --hours: expected a number of hours, got 'lots'"),
-        (&["schedule"], "the following arguments are required: action"),
-        (
-            &["schedule", "dance"],
-            "argument action: invalid choice: 'dance' (choose from install, status, uninstall, run)",
-        ),
-        (&["schedule", "install", "run"], "unrecognized arguments: run"),
+        (&["schedule"][..], "missing command: one of install, status, uninstall, run"),
+        (&["schedule", "dance"], "unknown command 'dance'"),
+        (&["schedule", "install", "run"], "too many arguments for 'install'"),
         (
             &["schedule", "install", "--every", "sometimes"],
-            "argument --every: invalid choice: 'sometimes' (choose from hour, day, week, month, quarter, year)",
+            "argument 'sometimes' is invalid. Allowed choices are hour, day, week, month, quarter, year.",
         ),
-        (&["schedule", "install", "--at", "25:00"], "argument --at: expected HH:MM, got '25:00'"),
-        (&["schedule", "install", "--at", "9:5"], "argument --at: expected HH:MM, got '9:5'"),
-        (&["cache"], "the following arguments are required: action"),
-        (&["cache", "vacuum"], "argument action: invalid choice: 'vacuum' (choose from prune)"),
-        (&["cache", "prune", "all"], "unrecognized arguments: all"),
-        (&["cache", "prune", "--older-than", "0"], "argument --older-than: expected a number of days, got '0'"),
-        (&["update", "now"], "unrecognized arguments: now"),
-        (&["harden", "ca-trust"], "invalid choice: 'harden'"),
-        (&["schedule", "--every"], "argument --every: expected one argument"),
-        (&["report", "--h"], "ambiguous option: --h could match --help, --html"),
+        (&["schedule", "install", "--every", "weekly"], "is invalid"),
+        (&["schedule", "install", "--at", "25:00"], "option '--at <time>' expects HH:MM, got '25:00'"),
+        (&["schedule", "install", "--at", "9:5"], "expects HH:MM, got '9:5'"),
+        (&["schedule", "install", "--every"], "option '--every <period>' argument missing"),
+        (&["cache"], "missing command: one of prune"),
+        (&["cache", "vacuum"], "unknown command 'vacuum'"),
+        (&["cache", "prune", "all"], "too many arguments for 'prune'"),
+        (&["cache", "prune", "--older-than", "0"], "option '--older-than' expects a number of days, got '0'"),
+        (&["update", "now"], "too many arguments for 'update'"),
     ] {
-        let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
-        assert!(text.contains(msg), "{bad:?}: {text}");
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
+    }
+}
+
+#[test]
+fn fix_one_thing() {
+    let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| {
+        Parsed::Run(Command::Mitigate { target, dry_run, yes, no_input, undo, bundle: None, hours: 72 })
+    };
+    assert_eq!(p(&["fix", "cve-2026-98432"]), one(Target::Id("CVE-2026-98432".into()), false, false, false, false));
+    assert_eq!(p(&["fix", "list"]), one(Target::List, false, false, false, false));
+    assert_eq!(
+        p(&["fix", "--dry-run", "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
+        one(Target::Id("GHSA-XXXX-YYYY-ZZZZ".into()), true, true, true, false)
+    );
+    assert_eq!(
+        p(&["fix", "CVE-2026-98432", "--undo"]),
+        one(Target::Id("CVE-2026-98432".into()), false, false, false, true)
+    );
+    let Parsed::Run(Command::Mitigate { target, hours, .. }) = p(&["fix", "extension-cooldown", "--hours", "48"])
+    else {
+        panic!()
+    };
+    assert_eq!((target, hours), (Target::Id("EXTENSION-COOLDOWN".into()), 48));
+    let Parsed::Run(Command::Mitigate { bundle, .. }) = p(&["fix", "ca-trust", "--bundle", "/b.pem"]) else { panic!() };
+    assert_eq!(bundle, Some(PathBuf::from("/b.pem")));
+    let c = scan(&["fix", "all", "--offline", "--no-machine", "--path", "/w", "--yes"]);
+    assert!(c.fix && c.offline && c.no_machine && c.yes && c.path == Some(vec![PathBuf::from("/w")]));
+    for (bad, msg) in [
+        (
+            &["fix", "kernel"][..],
+            "argument 'target' expects all, list, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got 'kernel'",
+        ),
+        (&["fix", "CVE-2026-98432", "now"], "too many arguments for 'fix'"),
+        (&["fix", "CVE-2026-98432", "--dry-run", "--undo"], "--dry-run and --undo can't be combined"),
+        (&["fix", "list", "--undo"], "--undo takes one id"),
+        (&["fix", "--undo"], "--undo takes one id"),
+        (&["fix", "extension-cooldown", "--hours", "lots"], "option '--hours' expects a number of hours, got 'lots'"),
+    ] {
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
     }
 }

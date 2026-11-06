@@ -1,4 +1,4 @@
-//! `wpantry export --jsonl`: one JSON object per finding, joining what the
+//! `wpantry report --jsonl`: one JSON object per finding, joining what the
 //! cache knows about it (the finding, the full OSV record, the exposure's
 //! lifecycle across scans and the outcome of the fix `wpantry fix` ran), so a
 //! consumer (wsentinel's triage-verdict corpus) reads one record and never

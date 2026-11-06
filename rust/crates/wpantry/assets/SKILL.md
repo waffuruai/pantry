@@ -13,10 +13,10 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 
 | Goal | Command |
 |---|---|
-| Report what applies on this computer: machine + every git repo under `~` (exits 1 when something fails) | `wpantry scan` (`wpantry check` is the same) |
+| Report what applies on this computer: machine + every git repo under `~` (exits 1 when something fails) | `wpantry scan` |
 | One project only, no machine inventory | `wpantry scan --path ~/code/app --no-machine` |
 | A clone you didn't write, before opening it in an agent or editor (hooks that run on open fail) | `wpantry scan --path ~/Downloads/repo --no-machine` |
-| Show the update plan, change nothing | `wpantry fix --dryrun` |
+| Show the update plan, change nothing | `wpantry fix --dry-run` |
 | Apply the fixes that can run unattended, then re-check | `wpantry fix` (also installs the stopgaps, after a yes on the terminal; `--yes` skips the question) |
 | What wpantry can mitigate here, and what has an unattended fix | `wpantry fix list` |
 | One advisory: its unattended fixes, its stopgap, the steps left | `wpantry fix <ID> --dry-run`, then the user runs it without `--dry-run` |
@@ -25,7 +25,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Ignore cached answers | `wpantry scan --refresh` |
 | Search cached advisories, ranked | `wpantry search "tarfile traversal" --json` |
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
-| The latest scan again, without scanning (a format: `--json`, `--md`, `--csv`, `--jsonl`, `--html`; on a terminal it is written to `<when>_pantry_report.<ext>` here, to stdout through a pipe; `-o FILE` names the file, `-o -` forces stdout) | `wpantry report --json` |
+| The latest scan again, without scanning (a format: `--json`, `--md`, `--csv`, `--jsonl`, `--html`; on a terminal it is written to `pantry_report_<when>.<ext>` here, to stdout through a pipe; `-o FILE` names the file, `-o -` forces stdout) | `wpantry report --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry report --csv -o findings.csv` |
 | Findings as JSON Lines, each joined with its OSV record, dependency scope, lifecycle and fix outcome (`exposure` adds the resolved ones) | `wpantry report exposure --jsonl -o findings.jsonl` |
 | Re-ask OSV about the Critical/High advisories that had no fix; exit 10 when one landed | `wpantry watch --json` |

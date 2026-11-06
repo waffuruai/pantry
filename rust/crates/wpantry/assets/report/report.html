@@ -748,7 +748,7 @@ function patchingHTML(r,print){
   var out='<section class="sec" id="patching">'+label(3,'Patching')+'<h2>What can be <em>patched</em></h2>';
   out+='<p class="intro">What <code>wpantry fix</code> runs unattended, what the local history says has already been fixed, and what has no released fix yet.</p><div class="cols">';
   // runs for you
-  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry fix runs these, then re-checks. wpantry fix --dryrun lists them without changing anything.</p>':
+  var body=auto.length?whole(auto.map(function(s){return stepLine(s,print)}))+'<p class="hint">wpantry fix runs these, then re-checks. wpantry fix --dry-run lists them without changing anything.</p>':
     '<p>'+(r.partial?'CSV exports leave out suggested actions.':'Nothing in this scan runs unattended. The steps that need you are under By hand.')+'</p>';
   out+=col('Runs for you',auto.length,plural(auto.length,'command').replace(/^[\d,]+ /,''),body);
   // patched

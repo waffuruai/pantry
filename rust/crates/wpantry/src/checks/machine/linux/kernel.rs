@@ -68,7 +68,7 @@ fn tcp_ip_options(r: Runner) -> Outcome {
     if fixed {
         return Outcome::pass(if drops_ip_options(r) == Some(true) {
             format!(
-                "kernel {raw} has the fix for CVE-2026-98432; the stopgap is still in place (wpantry mitigate CVE-2026-98432 --undo takes it away)"
+                "kernel {raw} has the fix for CVE-2026-98432; the stopgap is still in place (wpantry fix CVE-2026-98432 --undo takes it away)"
             )
         } else {
             format!("kernel {raw} has the fix for CVE-2026-98432")
@@ -82,7 +82,7 @@ fn tcp_ip_options(r: Runner) -> Outcome {
         }
         None => {
             return Outcome::manual(format!(
-                "kernel {raw} is in CVE-2026-98432's affected range and the ruleset can't be read here (nft needs root): sudo nft list table inet cve_2026_98432, or wpantry mitigate CVE-2026-98432 --dry-run"
+                "kernel {raw} is in CVE-2026-98432's affected range and the ruleset can't be read here (nft needs root): sudo nft list table inet cve_2026_98432, or wpantry fix CVE-2026-98432 --dry-run"
             ));
         }
         Some(false) => {}
@@ -103,7 +103,7 @@ pub(super) const KERNEL_TCP_IP_OPTIONS: Check = Check {
     severity: Severity::Critical,
     probe: tcp_ip_options,
     fix: admin(
-        "Update the kernel when your distro ships the fix (upstream 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10); until then drop inbound TCP with IP options: sudo nft add table inet cve_2026_98432 && sudo nft 'add chain inet cve_2026_98432 pre { type filter hook prerouting priority raw - 10; policy accept; }' && sudo nft add rule inet cve_2026_98432 pre ip hdrlength gt 5 meta l4proto tcp counter drop  (wpantry mitigate CVE-2026-98432 persists it, turns MPTCP off and names the services to restart)",
+        "Update the kernel when your distro ships the fix (upstream 5.10.272, 5.15.223, 6.1.190, 6.6.159, 6.12.113, 6.18.56, 7.2.10); until then drop inbound TCP with IP options: sudo nft add table inet cve_2026_98432 && sudo nft 'add chain inet cve_2026_98432 pre { type filter hook prerouting priority raw - 10; policy accept; }' && sudo nft add rule inet cve_2026_98432 pre ip hdrlength gt 5 meta l4proto tcp counter drop  (wpantry fix CVE-2026-98432 persists it, turns MPTCP off and names the services to restart)",
     ),
     explain: "An unauthenticated remote root through a race in TCP's handshake; packets without IP options can't reach it",
 };

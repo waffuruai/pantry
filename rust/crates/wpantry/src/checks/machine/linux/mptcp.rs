@@ -156,7 +156,7 @@ pub(super) const MPTCP: Check = Check {
     severity: Severity::Medium,
     probe: mptcp,
     fix: admin(
-        "sudo sysctl -w net.mptcp.enabled=0 && echo 'net.mptcp.enabled = 0' | sudo tee /etc/sysctl.d/90-no-mptcp.conf; then restart every program the evidence lists (sudo ss -Mlnp shows them; wpantry mitigate CVE-2026-98432 --dry-run names their units): the sysctl only stops new MPTCP sockets",
+        "sudo sysctl -w net.mptcp.enabled=0 && echo 'net.mptcp.enabled = 0' | sudo tee /etc/sysctl.d/90-no-mptcp.conf; then restart every program the evidence lists (sudo ss -Mlnp shows them; wpantry fix CVE-2026-98432 --dry-run names their units): the sysctl only stops new MPTCP sockets",
     ),
     explain: "Multipath TCP is rarely used and widens the kernel's attack surface; Go 1.24+ servers listen with it by default",
 };

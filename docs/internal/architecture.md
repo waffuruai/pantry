@@ -14,9 +14,9 @@ flowchart LR
   end
   subgraph wp["wpantry"]
     readers["Readers<br/>lockfiles, OS package databases,<br/>plists, tar exports"]
-    judge["Judgement<br/>alias groups, per-ecosystem<br/>comparators, KEV, EOL"]
+    judge["Judgement<br/>alias groups, per-ecosystem<br/>comparators, KEV, EOL,<br/>severity, CVSS, EPSS"]
     cache[("SQLite cache<br/>one file, a day")]
-    out["Report, --json,<br/>exit code, fix plan"]
+    out["wpantry report: tables,<br/>JSON, CSV, Markdown, HTML,<br/>exit code, fix plan"]
   end
   subgraph tools["Local tools"]
     gl["gitleaks"]
@@ -26,7 +26,7 @@ flowchart LR
   end
   subgraph net["Public sources"]
     osv["OSV.dev"]
-    feeds["CISA KEV, endoflife.date,<br/>malicious-packages, deps.dev,<br/>release feeds"]
+    feeds["CISA KEV, EPSS, endoflife.date,<br/>malicious-packages, deps.dev,<br/>release feeds"]
   end
   machine --> readers
   repos --> readers
@@ -49,9 +49,9 @@ It is not SAST, reachability analysis, guided remediation, an SBOM reader or an 
 flowchart TB
   scope["1 SCOPE<br/>Walk ~ to depth 6, no symlinks, skipping Library, caches, toolchains, node_modules and app bundles; or the --path directories. Inventory the machine unless --no-machine."]
   read["2 READ, in parallel<br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages; apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings; container images. gitleaks runs on repos whose HEAD moved."]
-  ask["3 ASK<br/>(ecosystem, name, version) to OSV in batches of 1000; only new or changed records fetched; KEV, end-of-life, the malicious index, licenses and release feeds. Every answer memoized for a day."]
+  ask["3 ASK<br/>(ecosystem, name, version) to OSV in batches of 1000; only new or changed records fetched; KEV, EPSS, end-of-life, the malicious index, licenses and release feeds. Every answer memoized for a day."]
   judge["4 JUDGE<br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own comparator; fail, warn, or unchecked."]
-  report["5 REPORT<br/>Grouped by kind, one line per component with the reason and the fix; --json envelope; exit 0 clean, 1 fails, 2 usage, 3 internal. wpantry fix runs the unattended fixes, then re-checks."]
+  report["5 REPORT<br/>Severity on CVSS&#39;s scale with CVSS and EPSS beside it; wpantry report renders the cache as areas of tables, JSON, CSV, Markdown or HTML; exit 0 clean, 1 fails, 2 usage, 3 internal. wpantry fix runs the unattended fixes, then re-checks."]
   scope --> read --> ask --> judge --> report
 ```
 
@@ -63,7 +63,7 @@ flowchart TB
 
 **Judge.** Records are grouped by id, aliases and upstream CVE, so one vulnerability from two databases is one finding, named by its bare CVE when a record carries one. The fix a finding recommends is the version that repairs every record in the group, ordered by the ecosystem's own comparator. OSV decides whether a version is affected; wpantry only orders fixed versions to pick the safe one and to compare against "latest".
 
-**Report.** Failures are a released fix, end of life, a malicious package, a committed secret from a provider-specific rule, or a Critical or High posture setting. Warnings are no fix yet (including a program exposed to an unfixed kernel advisory by what it does: a Go 1.24+ module listening with Multipath TCP on), an outdated app, an unpinned MCP server, an install script, a generic secret rule, a Medium or Low posture setting. "Not checked" is a source that couldn't be reached and had nothing cached, or a file that couldn't be read.
+**Report.** Failures are a released fix, end of life, a malicious package, a committed secret from a provider-specific rule, or a Critical or High posture setting. Warnings are no fix yet (including a program exposed to an unfixed kernel advisory by what it does: a Go 1.24+ module listening with Multipath TCP on), an outdated app, an unpinned MCP server, an install script, a generic secret rule, a Medium or Low posture setting. "Not checked" is a source that couldn't be reached and had nothing cached, or a file that couldn't be read. Every finding is rated on CVSS's scale (LOW, MEDIUM, HIGH, CRITICAL) by `checks::severity` once the checks have run: an advisory by its record's label, else its CVSS 3.x or 4.0 score (`utils::cvss`), or that of the records it is an alias of; wpantry's own checks from one table. Its CVSS score and EPSS likelihood (`sources::epss`, the whole daily file, never a per-CVE request) are kept beside it and never change it. Every report is rendered from the cache by `reporters` (`wpantry report`; `scan` and `fix` call it when they finish).
 
 ## Missing evidence is never clean
 

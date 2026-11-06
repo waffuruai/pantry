@@ -63,7 +63,7 @@ Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 int
 
 **Cache.** `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds only OSV records for what is here, which versions were checked and when, the latest findings, the history behind the reports, and the side feeds (CISA KEV, EPSS, …); never a mirror of OSV.
 
-**What leaves the machine.** Package names and versions go to OSV.dev; feeds (CISA KEV and EPSS whole, not per CVE) are fetched; the binary connects to no host outside a compiled-in list, over TLS your machine's trust store verifies. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
+**What leaves the machine.** Package names and versions go to OSV.dev; the id of a CVE that applies here and has no CVSS score goes to OSV.dev and, if OSV has none, CVE.org, once a week; feeds (CISA KEV and EPSS whole, not per CVE) are fetched; the binary connects to no host outside a compiled-in list, over TLS your machine's trust store verifies. The optional email breach check sends your address to Have I Been Pwned (`HIBP_API_KEY`) or XposedOrNot, and only after you say yes. Source by source: [docs/public/checks-and-sources.md](docs/public/checks-and-sources.md#sources).
 
 **Agents.** `wpantry skill` prints the agent skill ([rust/crates/wpantry/assets/SKILL.md](rust/crates/wpantry/assets/SKILL.md)).
 
@@ -100,6 +100,7 @@ The data it asks, each under its publisher's terms:
 
 - [OSV.dev](https://osv.dev) and the [OSV schema](https://ossf.github.io/osv-schema/) (Google and the OpenSSF): the vulnerability database behind every package question, aggregating the GitHub Advisory Database, RustSec, PyPA, the Go vulnerability database and the distributions' own trackers.
 - [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog): the `KEV` mark.
+- [CVE®](https://www.cve.org) (The MITRE Corporation, under the [CVE Terms of Use](https://www.cve.org/Legal/TermsOfUse)), with the scores CISA adds to CVE records: a CVSS score for the CVEs whose advisories carry none. CVE is a registered trademark of The MITRE Corporation.
 - [EPSS](https://www.first.org/epss/) (FIRST; scores published daily by Empirical Security): the likelihood each CVE is exploited, shown beside its severity.
 - [endoflife.date](https://endoflife.date) (MIT): end-of-life dates.
 - [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages) (Apache-2.0): known malicious package names.

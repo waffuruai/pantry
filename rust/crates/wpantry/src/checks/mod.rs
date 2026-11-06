@@ -464,8 +464,8 @@ impl<'a> Scan<'a> {
         if !self.opts.no_malware {
             crate::checks::malware::run(&mut self);
         }
-        self.status("Rating the findings");
-        crate::checks::severity::enrich(&self.cache, &mut self.findings);
+        self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
+        crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);
         self.status("Saving the findings");
         self.cache.replace_findings(&self.findings)?;
         let totals = (self.unfixed, self.unknown_licenses);

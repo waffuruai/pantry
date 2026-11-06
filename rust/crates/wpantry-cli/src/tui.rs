@@ -28,10 +28,6 @@ pub enum Role {
 
 pub type Line = Vec<(Role, String)>;
 
-fn plain(s: impl Into<String>) -> Line {
-    vec![(Role::Plain, s.into())]
-}
-
 /// The terminal's width, when there is one; the report fits it.
 pub fn width() -> usize {
     if let Some(n) = std::env::var("COLUMNS").ok().and_then(|c| c.trim().parse::<usize>().ok()).filter(|n| *n >= 40) {
@@ -297,42 +293,79 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
         vec![(Role::Good, "✓ nothing with a released fix applies to what was scanned".into())]
     });
     if let Some(h) = &report.history {
-        history_lines(h, &mut out);
+        history_lines(h, width, &mut out);
     }
     out
 }
 
-fn history_lines(h: &wpantry::reporters::History, out: &mut Vec<Line>) {
+fn history_lines(h: &wpantry::reporters::History, width: usize, out: &mut Vec<Line>) {
     use wpantry::history::stamp;
+    use wpantry::reporters::{EXPOSURE_COLUMNS, exposure_cells};
     out.push(Vec::new());
     out.push(vec![(Role::Heading, format!("History, the last {} days", h.since_days))]);
+    // The exposure log, in the columns every format shares; the first seven
+    // fit a terminal, dates to the day.
     let open = h.exposures.iter().filter(|e| e.resolved_at.is_none()).count();
-    let resolved = h.exposures.len() - open;
-    out.push(plain(format!("  exposures: {open} open, {resolved} resolved")));
-    for e in h.exposures.iter().filter(|e| e.resolved_at.is_some()).take(20) {
-        out.push(vec![(
-            Role::Dim,
-            clean(&format!("    {} {} {} resolved after {} days", e.component, e.version, e.vuln_id, e.days_exposed)),
-        )]);
+    out.push(Vec::new());
+    out.push(vec![
+        (Role::Heading, "Exposure log".into()),
+        (Role::Dim, format!("  {open} open · {} resolved", h.exposures.len() - open)),
+    ]);
+    let day = |s: &str| if s == "open" { s.to_string() } else { s.chars().take(10).collect() };
+    let rows: Vec<[String; 7]> = h
+        .exposures
+        .iter()
+        .map(|e| {
+            let c = exposure_cells(e);
+            let advisory = if e.kev { format!("{} KEV", c[5]) } else { c[5].clone() };
+            [day(&c[0]), day(&c[1]), c[2].clone(), c[3].clone(), c[4].clone(), advisory, c[9].clone()]
+        })
+        .collect();
+    let heads: Vec<&str> =
+        [0, 1, 2, 3, 4, 5, 9].iter().map(|i| if *i == 9 { "Days" } else { EXPOSURE_COLUMNS[*i].1 }).collect();
+    let mut w: Vec<usize> =
+        (0..7).map(|i| rows.iter().map(|r| chars(&r[i])).max().unwrap_or(0).max(chars(heads[i]))).collect();
+    w[3] = w[3].min(32);
+    w[4] = w[4].min(16);
+    w[5] = w[5].min(24);
+    let used: usize = 2 + w.iter().map(|n| n + 2).sum::<usize>();
+    if used > width {
+        w[3] = w[3].saturating_sub(used - width).max(12);
     }
-    out.push(plain(format!("  fixes run: {}", h.fixes.len())));
+    let line = |cells: Vec<String>| cells.iter().zip(&w).map(|(c, n)| pad(c, *n)).collect::<Vec<_>>().join("  ");
+    out.push(vec![(
+        Role::Dim,
+        format!("  {}", line(heads.iter().map(|h| h.to_uppercase()).collect())).trim_end().into(),
+    )]);
+    for (r, e) in rows.iter().zip(&h.exposures) {
+        let role = if e.resolved_at.is_some() { Role::Good } else { Role::Plain };
+        let cells: Vec<String> = r.iter().map(|c| clean(c)).collect();
+        out.push(vec![(Role::Plain, "  ".into()), (role, line(cells).trim_end().to_string())]);
+    }
+    out.push(Vec::new());
+    out.push(vec![(Role::Heading, "Remediation log".into()), (Role::Dim, format!("  {} fixes run", h.fixes.len()))]);
     for f in &h.fixes {
         let (mark, role) = if f.ok { ("✓", Role::Good) } else { ("✗", Role::Fail) };
+        let verified = f.verified_scan.map(|s| format!("  verified by scan #{s}")).unwrap_or_default();
         out.push(vec![
-            (Role::Plain, "    ".into()),
+            (Role::Plain, "  ".into()),
             (role, mark.into()),
             (Role::Plain, format!(" {} ", stamp(f.at))),
             (Role::Command, clean(&f.command)),
+            (Role::Dim, verified),
         ]);
     }
-    out.push(plain(format!("  scans: {}", h.scans.len())));
-    for s in h.scans.iter().rev().take(10) {
+    out.push(Vec::new());
+    out.push(vec![(Role::Heading, "Audit log".into()), (Role::Dim, format!("  {} scans", h.scans.len()))]);
+    for s in h.scans.iter().rev() {
         out.push(vec![(
             Role::Dim,
             clean(&format!(
-                "    #{} {} {} · {} fail, {} warn, {} not checked",
+                "  #{} {} {}@{} · {} · {} fail, {} warn, {} not checked",
                 s.id,
                 stamp(s.finished_at),
+                s.user,
+                s.host,
                 s.scope,
                 s.fails,
                 s.warns,

@@ -119,22 +119,14 @@ fn history(t: &mut String, h: &History) {
         d.get(d.len() / 2).copied().unwrap_or(0.0)
     };
     t.push_str(&format!(
-        "\n## Exposure log\n\n{open} open, {} resolved; median time to resolve {median} days.\n\n| Component | Version | Advisory | Severity | Status | First seen | Resolved | Days |\n|---|---|---|---|---|---|---|---|\n",
+        "\n## Exposure log\n\n{open} open, {} resolved; median time to resolve {median} days.\n\n",
         closed.len()
     ));
+    let heads: Vec<&str> = super::EXPOSURE_COLUMNS.iter().map(|(_, h)| *h).collect();
+    t.push_str(&format!("| {} |\n|{}\n", heads.join(" | "), "---|".repeat(heads.len())));
     for e in &h.exposures {
-        t.push_str(&format!(
-            "| {} | {} | {}{} | {} | {} | {} | {} | {} |\n",
-            cell(&e.component),
-            cell(&e.version),
-            cell(&e.vuln_id),
-            if e.kev { " (KEV)" } else { "" },
-            cell(&e.severity),
-            if e.resolved_at.is_some() { "resolved" } else { &e.status },
-            stamp(e.first_at),
-            e.resolved_at.map(stamp).unwrap_or_else(|| "open".into()),
-            e.days_exposed
-        ));
+        let cells: Vec<String> = super::exposure_cells(e).iter().map(|c| cell(c)).collect();
+        t.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
     t.push_str(
         "\n## Remediation log\n\n| When | Command | Mode | Result | Verified by scan |\n|---|---|---|---|---|\n",

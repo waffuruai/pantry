@@ -91,7 +91,7 @@ fn one_format_a_file_and_the_history_are_the_report_options() {
     let Parsed::Run(Command::Scan(c)) = p(&["--out=r.txt"]) else { panic!() };
     assert_eq!(c.show.format, Shown::Txt, "a file gets plain text");
     let Parsed::Run(Command::Scan(c)) = p(&["fix", "--md", "--history"]) else { panic!() };
-    assert_eq!((c.fix, c.show.format, c.show.history), (true, Shown::Md, Some(90)));
+    assert_eq!((c.fix, c.show.format, c.show.history), (true, Shown::Md, Some(14)));
     for bad in [&["--html", "--json"][..], &["-o"], &["--out=-"], &["--since", "x"]] {
         assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
     }
@@ -241,7 +241,7 @@ fn search_export_breach_and_sync_errors() {
     );
     assert_eq!(
         p(&["export", "--jsonl", "--history"]),
-        Parsed::Run(Command::Report(Show { format: Shown::Jsonl, out: None, history: Some(90) })),
+        Parsed::Run(Command::Report(Show { format: Shown::Jsonl, out: None, history: Some(14) })),
         "export is report"
     );
     assert_eq!(p(&["breach", "--enable"]), Parsed::Run(Command::Breach { enable: true, disable: false }));

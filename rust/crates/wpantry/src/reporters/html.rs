@@ -17,8 +17,8 @@ const FONTS: [(&str, &[u8]); 4] = [
     ("{{FONT_MONO}}", include_bytes!("../../assets/report/fonts/geist-mono-latin-wght-normal.woff2")),
 ];
 /// How far back the page's history looks when the report wasn't asked for
-/// more (`--history --since DAYS`).
-pub const HISTORY_DAYS: i64 = 90;
+/// another reach (`--since DAYS`).
+pub use super::HISTORY_DAYS;
 
 fn render(bundle: &J) -> String {
     // JSON escaping alone does not protect an HTML script element's end tag.

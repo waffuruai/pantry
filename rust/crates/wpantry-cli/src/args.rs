@@ -214,7 +214,7 @@ const SCAN_USAGE: [&str; 4] = [
 /// `check` and `fix`.
 macro_rules! report_options {
     () => {
-        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one row per finding (with --history: the exposure log)\n  --md                  Markdown\n  --html                one offline HTML page (best with -o FILE)\n  -o, --out FILE        write the report there instead of stdout\n  --history             add the exposure, remediation and audit logs\n  --since DAYS          how far back the history goes (default 90)"
+        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one row per finding (with --history: the exposure log)\n  --md                  Markdown\n  --html                one offline HTML page (best with -o FILE)\n  -o, --out FILE        write the report there instead of stdout\n  --history             add the exposure, remediation and audit logs\n  --since DAYS          how far back the history goes (default 14)"
     };
 }
 
@@ -366,7 +366,7 @@ fn show(flag: &dyn Fn(&str) -> bool, value: &dyn Fn(&str) -> Option<String>) -> 
             _ => return Err(format!("argument --since: expected a number of days, got '{v}'")),
         },
     };
-    let history = (flag("--history") || since.is_some()).then(|| since.unwrap_or(90));
+    let history = (flag("--history") || since.is_some()).then(|| since.unwrap_or(wpantry::reporters::HISTORY_DAYS));
     Ok(Show { format, out, history })
 }
 

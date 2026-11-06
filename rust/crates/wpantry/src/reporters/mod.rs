@@ -23,6 +23,49 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// How far back the history goes unless `--since DAYS` says otherwise: two
+/// weeks, a sprint's worth of exposure and remediation.
+pub const HISTORY_DAYS: i64 = 14;
+
+/// The exposure log's columns, in the order every format shows them: when
+/// it was first seen, whether (and when) it was resolved, how bad it is,
+/// what it is; then the rest. `(CSV name, heading)`.
+pub const EXPOSURE_COLUMNS: [(&str, &str); 13] = [
+    ("first_seen", "First seen"),
+    ("resolved", "Resolved"),
+    ("severity", "Severity"),
+    ("component", "Component"),
+    ("version", "Version"),
+    ("vuln_id", "Advisory"),
+    ("kev", "KEV"),
+    ("status", "Status"),
+    ("fixed", "Fixed in"),
+    ("days_exposed", "Days exposed"),
+    ("last_seen", "Last seen"),
+    ("kind", "Kind"),
+    ("location", "Location"),
+];
+
+/// One exposure's cells, in [`EXPOSURE_COLUMNS`] order: "open" until it is
+/// resolved.
+pub fn exposure_cells(e: &Exposure) -> [String; 13] {
+    [
+        history::stamp(e.first_at),
+        e.resolved_at.map(history::stamp).unwrap_or_else(|| "open".into()),
+        e.severity.clone(),
+        e.component.clone(),
+        e.version.clone(),
+        e.vuln_id.clone(),
+        if e.kev { "yes" } else { "no" }.into(),
+        e.status.clone(),
+        e.fixed.clone(),
+        e.days_exposed.to_string(),
+        history::stamp(e.last_at),
+        e.kind.clone(),
+        e.location.clone(),
+    ]
+}
+
 /// The logs kept across scans, for `--history`.
 #[derive(Clone, Debug, Default)]
 pub struct History {

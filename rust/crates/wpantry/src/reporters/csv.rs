@@ -3,7 +3,7 @@
 
 use crate::db::Cache;
 use crate::error::Result;
-use crate::history::{Exposure, stamp};
+use crate::history::Exposure;
 use rusqlite::types::ValueRef;
 
 /// One CSV field, quoted when it must be.
@@ -49,27 +49,14 @@ pub fn findings(cache: &Cache) -> Result<String> {
     Ok(text)
 }
 
-/// The exposure log: what applied, from first seen to resolved.
+/// The exposure log: what applied, from first seen to resolved, in the
+/// columns every format shares ([`super::EXPOSURE_COLUMNS`]).
 pub fn exposures(exposures: &[Exposure]) -> String {
-    let mut t = String::from(
-        "kind,component,version,location,vuln_id,status,severity,kev,fixed,first_seen,last_seen,resolved,days_exposed\r\n",
-    );
+    let names: Vec<&str> = super::EXPOSURE_COLUMNS.iter().map(|(n, _)| *n).collect();
+    let mut t = line(&names);
     for e in exposures {
-        t.push_str(&line(&[
-            &e.kind,
-            &e.component,
-            &e.version,
-            &e.location,
-            &e.vuln_id,
-            &e.status,
-            &e.severity,
-            if e.kev { "true" } else { "false" },
-            &e.fixed,
-            &stamp(e.first_at),
-            &stamp(e.last_at),
-            &e.resolved_at.map(stamp).unwrap_or_default(),
-            &e.days_exposed.to_string(),
-        ]));
+        let cells = super::exposure_cells(e);
+        t.push_str(&line(&cells.iter().map(String::as_str).collect::<Vec<_>>()));
     }
     t
 }

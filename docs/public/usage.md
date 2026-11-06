@@ -84,7 +84,7 @@ wpantry report --html -o report.html        # one offline page (open it in a bro
 wpantry report --json                       # the schema-1 envelope scan --json prints
 wpantry report --csv -o findings.csv        # one row per finding
 wpantry report --jsonl -o findings.jsonl    # one object per finding, joined with its OSV record and lifecycle
-wpantry report --md --history               # and the exposure, remediation and audit logs, last 90 days
+wpantry report --md --history               # and the exposure, remediation and audit logs, last 14 days
 wpantry report --csv --since 365 -o exposures.csv   # the exposure log of the last year
 wpantry scan --html -o report.html          # scan, then write the page
 ```
@@ -428,10 +428,10 @@ The latest scan's report, from the cache; it never scans. `scan` and `fix` show 
 | `--jsonl` | One JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix |
 | `--csv` | One row per finding: id, aliases, url, component, kind, affected and safe version, severity, kev, status, location |
 | `--md` | Markdown: the areas as tables, the gaps, the plan |
-| `--html` | One offline page; with 90 days of history |
+| `--html` | One offline page; with 14 days of history (`--since DAYS` for more) |
 | `-o`, `--out FILE` | Write there instead of stdout (the terminal report becomes `--txt`) |
 | `--history` | Add the exposure, remediation and audit logs (`--json`: under `history`; `--csv`: the exposure log instead of the findings; `--jsonl`: the resolved exposures too) |
-| `--since DAYS` | How far back the history goes (default 90); implies `--history` |
+| `--since DAYS` | How far back the history goes (default 14); implies `--history` |
 
 ### harden
 

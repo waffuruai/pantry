@@ -66,7 +66,7 @@ fn the_latest_scan_reads_back_as_it_was() {
     assert!(md.contains("## Homebrew (1 fail, 0 warn)") && md.contains("`brew upgrade openssl`"), "{md}");
     assert!(md.contains("## Exposure log") && md.contains("## Update plan"), "{md}");
     assert!(render(&cache, &r, Format::Csv).unwrap().starts_with("id,aliases,url,"));
-    assert!(render(&cache, &with, Format::Csv).unwrap().starts_with("kind,component,version,"), "the exposure log");
+    assert!(render(&cache, &with, Format::Csv).unwrap().starts_with("first_seen,resolved,severity,component,"), "the exposure log");
     assert!(render(&cache, &r, Format::Html).unwrap().contains("pantry-bundle"));
     assert!(!render(&cache, &r, Format::Jsonl).unwrap().is_empty());
 }

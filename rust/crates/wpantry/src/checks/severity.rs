@@ -5,7 +5,9 @@
 //! of (an app's CVE is often filed as a GitHub advisory): the record's own
 //! label (GitHub's MODERATE is MEDIUM, Red Hat's IMPORTANT is HIGH), else
 //! the band its CVSS score falls in (3.x or 4.0, the newest it carries).
-//! Its EPSS score is the highest of its CVE ids'. EPSS is likelihood, not
+//! When none of them has a score, its CVE ids are asked about
+//! ([`crate::sources::cve_scores`]: OSV's record for the CVE, then
+//! CVE.org's). Its EPSS score is the highest of its CVE ids'. EPSS is likelihood, not
 //! impact: it is shown beside the severity and never changes it.
 //!
 //! wpantry's own checks get a severity from [`own`], one table: what they
@@ -14,6 +16,7 @@
 use crate::db::Cache;
 use crate::finding::Finding;
 use crate::utils::cvss;
+use crate::utils::net::Net;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -140,32 +143,47 @@ fn cves(id: &str, recs: &[Value]) -> Vec<String> {
     out
 }
 
-/// What one advisory's records give: (severity, CVSS, EPSS).
-type Scores = (String, Option<cvss::Score>, Option<(f64, f64)>);
+/// What one advisory's records give: (severity label, CVSS, EPSS), and its
+/// CVE ids.
+type Scores = (String, Option<cvss::Score>, Option<(f64, f64)>, Vec<String>);
 
 fn scores(cache: &Cache, id: &str) -> Scores {
     let recs = records(cache, id);
     let score = recs.iter().find_map(cvss::of_record);
-    let label = recs
-        .iter()
-        .map(crate::db::severity_of)
-        .find(|s| !s.is_empty())
-        .or_else(|| score.as_ref().map(|s| cvss::label(s.value).to_string()))
-        .unwrap_or_default();
-    let epss = cves(id, &recs)
+    let label = recs.iter().map(crate::db::severity_of).find(|s| !s.is_empty()).unwrap_or_default();
+    let ids = cves(id, &recs);
+    let epss = ids
         .iter()
         .filter_map(|c| crate::sources::epss::lookup(cache, c).ok().flatten())
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    (label, score, epss)
+    (label, score, epss, ids)
 }
 
-/// Set every finding's severity (in CVSS's words), CVSS and EPSS.
-pub fn enrich(cache: &Cache, findings: &mut [Finding]) {
+/// Set every finding's severity (in CVSS's words), CVSS and EPSS. An
+/// advisory with no score in the cache has its CVEs asked about (unless
+/// `offline`); one that still has none keeps its record's label, or gets
+/// wpantry's own rating.
+pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Finding]) {
     let mut known: HashMap<String, Scores> = HashMap::new();
+    for f in findings.iter().filter(|f| f.kind != "unchecked" && is_advisory(&f.vuln_id)) {
+        known.entry(f.vuln_id.clone()).or_insert_with(|| scores(cache, &f.vuln_id));
+    }
+    let unscored: Vec<String> = known.values().filter(|s| s.1.is_none()).flat_map(|s| s.3.iter().cloned()).collect();
+    if !unscored.is_empty() {
+        // An unreachable source leaves the scores empty; the next scan asks again.
+        let _ = crate::sources::cve_scores::fill(cache, net, offline, &unscored);
+        for s in known.values_mut().filter(|s| s.1.is_none()) {
+            s.1 =
+                s.3.iter()
+                    .filter_map(|c| crate::sources::cve_scores::lookup(cache, c).ok().flatten())
+                    .max_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
+        }
+    }
+    for s in known.values_mut().filter(|s| s.0.is_empty()) {
+        s.0 = s.1.as_ref().map(|sc| cvss::label(sc.value).to_string()).unwrap_or_default();
+    }
     for f in findings.iter_mut().filter(|f| f.kind != "unchecked") {
-        if is_advisory(&f.vuln_id) {
-            let (label, score, epss) =
-                known.entry(f.vuln_id.clone()).or_insert_with(|| scores(cache, &f.vuln_id)).clone();
+        if let Some((label, score, epss, _)) = known.get(&f.vuln_id).cloned() {
             if let Some(s) = score {
                 f.cvss = Some(s.value);
                 f.cvss_version = s.version;

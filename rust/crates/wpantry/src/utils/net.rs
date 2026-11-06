@@ -44,6 +44,7 @@ pub const HOSTS: &[&str] = &[
     "objects.githubusercontent.com",
     // EPSS's daily scores, for every CVE.
     "epss.empiricalsecurity.com",
+    "cveawg.mitre.org",
     // The malware scan's indicator lists and, with consent, hash lookups.
     "feodotracker.abuse.ch",
     "yaraify-api.abuse.ch",

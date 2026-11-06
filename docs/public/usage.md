@@ -83,7 +83,7 @@ Update plan  wpantry fix runs the automatic ones
 - `✗` fails: a released fix exists, it's end of life, it's malicious, or it's a committed secret from a provider-specific rule.
 - `⚠` warns: no fix yet, an outdated app, an unpinned MCP server, an install script, a generic secret rule to review.
 - `known exploited` (KEV) marks a vulnerability CISA has seen exploited in the wild. Fix those first.
-- **Severity** is on CVSS's scale: CRITICAL (9.0–10.0), HIGH (7.0–8.9), MEDIUM (4.0–6.9), LOW (0.1–3.9). An advisory's comes from its record's label (GitHub's MODERATE is MEDIUM), else from its CVSS 3.x or 4.0 score, or that of the records it is an alias of; wpantry's own checks rate theirs by what they mean for the machine. **CVSS** is the advisory's base score. **EPSS** is [FIRST's](https://www.first.org/epss/) estimate of the chance it is exploited in the next 30 days: likelihood, shown beside the severity and never folded into it; within a severity, the likelier one is listed first.
+- **Severity** is on CVSS's scale: CRITICAL (9.0–10.0), HIGH (7.0–8.9), MEDIUM (4.0–6.9), LOW (0.1–3.9). An advisory's comes from its record's label (GitHub's MODERATE is MEDIUM), else from its CVSS 3.x or 4.0 score, or that of the records it is an alias of, or (when none has one) its CVE's at OSV or CVE.org; wpantry's own checks rate theirs by what they mean for the machine. **CVSS** is the advisory's base score. **EPSS** is [FIRST's](https://www.first.org/epss/) estimate of the chance it is exploited in the next 30 days: likelihood, shown beside the severity and never folded into it; within a severity, the likelier one is listed first.
 - **not checked** lists sources that couldn't be reached and had nothing cached. Those areas are unknown, not clean; re-run when you're online.
 
 ## Reports: what the latest scan found, and what was done
@@ -228,7 +228,7 @@ A stopgap survives a reboot: the systemd unit reloads the rule before the networ
 
 ## What leaves your machine
 
-Package names and versions go to OSV.dev; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks-and-sources.md](checks-and-sources.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
+Package names and versions go to OSV.dev; the id of a CVE that applies and has no CVSS score goes to OSV.dev, then CVE.org; the feeds are downloaded; the breach check sends your email address only after you say yes. The complete list, source by source, is in [checks-and-sources.md](checks-and-sources.md#sources). Every request names wpantry in its User-Agent and times out after 30 seconds.
 
 ## Environment
 

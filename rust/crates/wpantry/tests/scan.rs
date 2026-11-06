@@ -87,6 +87,13 @@ fn repo_scan_end_to_end() {
             };
             return Ok(Response::ok(rec.to_string()));
         }
+        if r.url.starts_with("https://cveawg.mitre.org/api/cve/CVE-2021-25900") {
+            return Ok(Response::ok(
+                json!({"containers": {"adp": [{"providerMetadata": {"shortName": "CISA-ADP"}, "metrics": [
+                    {"cvssV3_1": {"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}}]}]}})
+                .to_string(),
+            ));
+        }
         if r.url.contains("epss") {
             let rows: String = (0..1000).map(|i| format!("CVE-2020-{i},0.01,0.5\n")).collect();
             return Ok(Response::ok(format!("cve,epss,percentile\nCVE-2021-25900,0.02,0.6\n{rows}")));
@@ -117,6 +124,11 @@ fn repo_scan_end_to_end() {
             f.severity.as_str()
         ),
         ("smallvec", "1.6.0", "CVE-2021-25900", "fail", "1.6.1", true, "CRITICAL")
+    );
+    assert_eq!(
+        (f.cvss, f.cvss_version.as_str(), f.epss),
+        (Some(9.8), "3.1", Some(0.02)),
+        "CVE.org's score: OSV's records had none"
     );
     assert_eq!(f.location, dir.join("Cargo.lock").to_string_lossy());
     assert_eq!(f.fix_cmd, format!("cd {} && cargo update -p smallvec --precise 1.6.1", dir.display()));

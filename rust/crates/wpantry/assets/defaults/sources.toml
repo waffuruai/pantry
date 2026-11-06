@@ -179,6 +179,18 @@ redistribute = false
 max_bytes = 67108864
 
 [[source]]
+id = "cve-org"
+kind = "scores"
+format = "cve-json-5"
+url = "https://cveawg.mitre.org/api/cve/"
+tier = "default"
+refresh = "7d"
+license = "CVE Terms of Use (free to use and redistribute, with attribution)"
+redistribute = false
+max_bytes = 8388608
+sends = "cve"
+
+[[source]]
 id = "deps-dev"
 kind = "licenses"
 format = "deps-dev-api"

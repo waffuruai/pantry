@@ -48,7 +48,7 @@ fn every_finding_gets_cvss_words_scores_and_a_severity() {
         finding("posture", "POSTURE-FIREWALL", "fail", "MEDIUM"),
         finding("unchecked", "UNCHECKED", "warn", ""),
     ];
-    enrich(&c, &mut all);
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
     let got: Vec<(&str, Option<f64>, &str, Option<f64>)> =
         all.iter().map(|f| (f.severity.as_str(), f.cvss, f.cvss_version.as_str(), f.epss)).collect();
     assert_eq!(
@@ -79,4 +79,28 @@ fn every_finding_gets_cvss_words_scores_and_a_severity() {
             && !is_advisory("EOL")
             && !is_advisory("OS-UPDATE")
     );
+}
+
+#[test]
+fn an_advisory_with_no_score_has_its_cve_asked_about() {
+    let (_d, c) = crate::sources::testing::cache();
+    // Go's record names the CVE and has no score; the finding names the CVE.
+    c.put_vuln(&serde_json::json!({"id": "GO-2026-4341", "aliases": ["CVE-2025-61726"]})).unwrap();
+    let net = crate::utils::net::Fake::new(|r| {
+        Ok(if r.url.contains("api.osv.dev") {
+            crate::utils::net::Response { status: 404, body: Vec::new(), etag: None }
+        } else {
+            crate::utils::net::Response::ok(
+                serde_json::json!({"containers": {"adp": [{"providerMetadata": {"shortName": "CISA-ADP"},
+                    "metrics": [{"cvssV3_1": {"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}}]}]}})
+                .to_string(),
+            )
+        })
+    });
+    let mut all = vec![finding("runtime", "CVE-2025-61726", "fail", "")];
+    enrich(&c, &net, false, &mut all);
+    assert_eq!((all[0].severity.as_str(), all[0].cvss, all[0].cvss_version.as_str()), ("HIGH", Some(7.5), "3.1"));
+    let mut offline = vec![finding("runtime", "CVE-2026-9", "fail", "")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut offline);
+    assert_eq!((offline[0].severity.as_str(), offline[0].cvss), ("HIGH", None), "no score: wpantry's own rating");
 }

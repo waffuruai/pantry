@@ -8,7 +8,7 @@ We acknowledge within 3 business days, tell you the severity and who is on it wi
 
 ## Scope
 
-In scope: the `wpantry` binary and the crates it is built from (`wpantry`, `wpantry-cli` in [`rust/`](rust/)), the release artifacts and their signatures, [`install.sh`](install.sh), and the scripts in [`ca-trust/`](ca-trust/). That includes any way to make wpantry run something it shouldn't, read or send more than it says, report a result that is wrong in a way that misleads you (a false "clean", a silenced finding), or accept an update, release or cache that was tampered with.
+In scope: the `wpantry` binary and the crates it is built from (`wpantry`, `wpantry-cli` in [`rust/`](rust/)), the release artifacts and their signatures, and [`install.sh`](install.sh). That includes any way to make wpantry run something it shouldn't, read or send more than it says, report a result that is wrong in a way that misleads you (a false "clean", a silenced finding), or accept an update, release or cache that was tampered with.
 
 Out of scope: the data sources it asks (OSV.dev, CISA, endoflife.date, Homebrew, GitHub, deps.dev, HIBP), gitleaks and the other tools it runs, the packages and advisories it reports on, a vulnerability in one of wpantry's own dependencies (report it upstream, and tell us if we ship it unpatched past the deadlines above), denial of service, social engineering, automated scanner output with no shown impact, and waffuru.ai and the other Waffuru repositories, which have their own policies. A finding on your own machine is a reason to update, not a vulnerability in wpantry.
 

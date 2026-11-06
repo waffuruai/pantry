@@ -1,6 +1,5 @@
 //! Is a certificate authority this machine trusts known to be compromised?
-//! (On its own: `ca-trust/check-ca-trust.sh` in the repo; `wpantry fix
-//! ca-trust` repairs what it finds.) A trust store fails when openssl can build a path from one of the
+//! (`wpantry fix ca-trust` repairs what it finds.) A trust store fails when openssl can build a path from one of the
 //! distrusted intermediates in `assets/distrusted-ca/` (today: the eMudhra
 //! intermediates whose private keys leaked) to a root the store holds: the
 //! trust decision every OpenSSL-, LibreSSL-, pip- or Node-based client
@@ -419,8 +418,7 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
 
 // Certificate authorities -------------------------------------------------------
 
-/// Trust stores that still trust a distrusted CA fail (Python ran this as
-/// `check-ca-trust.sh` beside the scan; here it is part of it).
+/// Trust stores that still trust a distrusted CA fail.
 pub fn ca_trust(scan: &mut Scan, stores: Result<Vec<Store>>) {
     scan.status("Checking trust stores for distrusted CAs");
     match stores {

@@ -26,18 +26,17 @@ run = "rust/target/release/wpantry tools"
 [tasks.test]
 description = "Test suites; `all` (the default) is the Rust tests, the CA trust test, the install.sh test, the scripts/ tests and the HTML viewer tests"
 usage = '''
-arg "[suite]" default="all" help="all, rust, ca-trust, install, scripts or html" {
-  choices "all" "rust" "ca-trust" "install" "scripts" "html"
+arg "[suite]" default="all" help="all, rust, install, scripts or html" {
+  choices "all" "rust" "install" "scripts" "html"
 }
 '''
 run = '''
 cargo_test() { (cd rust && env -u RUSTUP_TOOLCHAIN cargo test --locked); }
 scripts_test() { python3 -m unittest discover -s scripts; }
 case "${usage_suite:-all}" in
-  all) cargo_test && ca-trust/test-ca-trust.sh && tests/install/test-install.sh && scripts_test && node tests/html/test-viewer.cjs ;;
+  all) cargo_test && tests/install/test-install.sh && scripts_test && node tests/html/test-viewer.cjs ;;
   html) node tests/html/test-viewer.cjs ;;
   rust) cargo_test ;;
-  ca-trust) exec ca-trust/test-ca-trust.sh ;;
   install) exec tests/install/test-install.sh ;;
   scripts) scripts_test ;;
 esac
@@ -101,9 +100,8 @@ run = "python3 -m unittest discover -s tests/contract"
 [tasks.lint]
 description = "bash -n and shellcheck -x on the shell scripts, actionlint on the workflows"
 run = [
-  'for f in ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh; do bash -n "$f"; done',
-  # -x follows `source ca-common.sh`; .shellcheckrc resolves it relative to each script.
-  "shellcheck -x ca-trust/*.sh rust/release/*.sh install.sh tests/install/*.sh",
+  'for f in rust/release/*.sh install.sh tests/install/*.sh; do bash -n "$f"; done',
+  "shellcheck -x rust/release/*.sh install.sh tests/install/*.sh",
   "actionlint",
 ]
 

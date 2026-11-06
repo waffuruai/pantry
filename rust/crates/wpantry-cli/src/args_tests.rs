@@ -30,6 +30,7 @@ fn malware_options_and_the_rules_command() {
     assert!(c.no_malware && !c.deep);
     let c = scan(&["fix", "--deep", "--no-malware", "--no-online-hash"]);
     assert!(c.fix && c.deep && c.no_malware && c.no_online_hash);
+    assert!(scan(&["scan", "--allow-sleep"]).allow_sleep);
     let rules = |action: &str, samples: Vec<PathBuf>, update: bool, json: bool| Command::Rules {
         action: action.into(),
         samples,

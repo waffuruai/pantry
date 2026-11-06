@@ -68,3 +68,20 @@ fn app_clis_live_in_applications() {
     assert_eq!(app_cli(&["Wpantry Missing", "Wpantry Test"], "bin/cli"), cli.display().to_string());
     assert_eq!(app_cli(&["Wpantry Missing"], "bin/cli"), "");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_pipe_hands_over_each_line_and_ends_at_its_deadline() {
+    let mut got = Vec::new();
+    let printf = [OsStr::new("printf"), OsStr::new("a\\nbb\\n")];
+    pipe_lines(&printf, &[OsStr::new("cat")], Duration::from_secs(10), |l| got.push(l.to_vec())).unwrap();
+    assert_eq!(got, [b"a".to_vec(), b"bb".to_vec()]);
+    let sleep = [OsStr::new("sleep"), OsStr::new("10")];
+    let started = Instant::now();
+    let e = pipe_lines(&sleep, &[OsStr::new("cat")], Duration::from_millis(200), |_| {}).unwrap_err();
+    assert!(e.to_string().contains("timed out"), "{e}");
+    assert!(started.elapsed() < Duration::from_secs(5), "both are killed at the deadline");
+    assert!(
+        pipe_lines(&[OsStr::new("/no/such/program")], &[OsStr::new("cat")], Duration::from_secs(1), |_| {}).is_err()
+    );
+}

@@ -2,6 +2,7 @@ use super::*;
 use wpantry::checks::Outcome;
 use wpantry::finding::Finding;
 use wpantry::history::{ScanDetail, ScanRow};
+use wpantry::reporters::Part;
 
 fn report(findings: Vec<Finding>) -> Report {
     Report {
@@ -15,6 +16,7 @@ fn report(findings: Vec<Finding>) -> Report {
         scan: ScanDetail { row: ScanRow { id: 4, finished_at: 1.0, ..Default::default() }, ..Default::default() },
         after_fixes: false,
         history: None,
+        part: Part::Findings,
     }
 }
 

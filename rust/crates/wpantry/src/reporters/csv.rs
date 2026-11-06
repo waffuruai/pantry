@@ -3,7 +3,7 @@
 
 use crate::db::Cache;
 use crate::error::Result;
-use crate::history::Exposure;
+use crate::history::{Exposure, Fix, ScanRow, stamp};
 use rusqlite::types::ValueRef;
 
 /// One CSV field, quoted when it must be.
@@ -59,4 +59,47 @@ pub fn exposures(exposures: &[Exposure]) -> String {
         t.push_str(&line(&cells.iter().map(String::as_str).collect::<Vec<_>>()));
     }
     t
+}
+
+/// The remediation log: each fix, when, who ran it, its result and the
+/// scan that verified it.
+pub fn fixes(fixes: &[Fix]) -> String {
+    let mut t = line(&["when", "user", "host", "command", "mode", "ok", "verified_scan"]);
+    for f in fixes {
+        let verified = f.verified_scan.map(|v| v.to_string()).unwrap_or_default();
+        t.push_str(&line(&[
+            &stamp(f.at),
+            &f.user,
+            &f.host,
+            &f.command,
+            &f.mode,
+            if f.ok { "true" } else { "false" },
+            &verified,
+        ]));
+    }
+    t
+}
+
+/// The audit log's scans.
+pub fn scans(scans: &[ScanRow]) -> String {
+    let mut t = line(&["scan", "finished", "host", "user", "version", "scope", "fails", "warns", "unchecked"]);
+    for s in scans {
+        t.push_str(&line(&[
+            &s.id.to_string(),
+            &stamp(s.finished_at),
+            &s.host,
+            &s.user,
+            &s.version,
+            &s.scope,
+            &s.fails.to_string(),
+            &s.warns.to_string(),
+            &s.unchecked.to_string(),
+        ]));
+    }
+    t
+}
+
+/// The summary's figures, `metric,value`.
+pub fn summary(report: &super::Report) -> String {
+    super::summary::csv(&super::summary::summary(report))
 }

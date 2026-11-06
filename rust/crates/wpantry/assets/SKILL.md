@@ -27,10 +27,11 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Only advisories that apply here | `wpantry search openssl --applicable --json` |
 | The latest scan again, without scanning (a format: `--json`, `--md`, `--csv`, `--jsonl`, `--html`; `-o FILE` writes it) | `wpantry report --json` |
 | Findings as CSV (id, url, component, affected and safe version) | `wpantry report --csv -o findings.csv` |
-| Findings as JSON Lines, each joined with its OSV record, dependency scope, lifecycle and fix outcome (`--history` adds resolved exposures) | `wpantry report --jsonl --history -o findings.jsonl` |
+| Findings as JSON Lines, each joined with its OSV record, dependency scope, lifecycle and fix outcome (`exposure` adds the resolved ones) | `wpantry report exposure --jsonl -o findings.jsonl` |
 | Re-ask OSV about the Critical/High advisories that had no fix; exit 10 when one landed | `wpantry watch --json` |
 | Which external tools are installed | `wpantry tools` |
-| What was exposed, for how long, and what was fixed (audit evidence) | `wpantry report --json --history --since 90` |
+| What was exposed, for how long, and what was fixed (audit evidence) | `wpantry report history --json --since 90` |
+| One page for a CSO, an auditor or an insurer: open by severity against the targets, overdue, who fixed what | `wpantry report summary --md` |
 | Refresh the cache so `--offline` scans are current | `wpantry sync` |
 | Scan daily without anyone running it (sync + scan, never fix) | `wpantry schedule install`; `wpantry schedule status` |
 | The last scheduled run's findings | `~/.local/state/wpantry/last.json` |

@@ -84,12 +84,17 @@ wpantry report --html -o report.html        # one offline page (open it in a bro
 wpantry report --json                       # the schema-1 envelope scan --json prints
 wpantry report --csv -o findings.csv        # one row per finding
 wpantry report --jsonl -o findings.jsonl    # one object per finding, joined with its OSV record and lifecycle
-wpantry report --md --history               # and the exposure, remediation and audit logs, last 14 days
-wpantry report --csv --since 365 -o exposures.csv   # the exposure log of the last year
+wpantry report summary                      # one page for a CSO or an auditor: where things stand, times to fix, who fixed what
+wpantry report summary --md -o summary.md
+wpantry report history --md                 # the exposure, remediation and audit logs, last 14 days
+wpantry report exposure --csv --since 365 -o exposure.csv     # what was exposed, and for how long, over a year
+wpantry report remediation --csv -o fixes.csv                 # each fix: when, who, the result, the scan that verified it
+wpantry report audit --json                 # every scan and event
+wpantry report all --md                     # the findings, then every log
 wpantry scan --html -o report.html          # scan, then write the page
 ```
 
-Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `wpantry fix` records the fixes it ran and the scan that verified them; `--history` adds those logs to any format.
+Every scan is kept: when it ran, what it covered, and each finding from the scan that first saw it to the scan that no longer did. `wpantry fix` records the fixes it ran, who ran them and the scan that verified them. The word after `report` picks what it covers, the flags how it looks.
 
 [reports.md](reports.md) says what each log holds and how it maps onto SOC 2 evidence.
 ## Keeping the cache fresh, and scanning on a schedule
@@ -181,11 +186,11 @@ Answers live in one SQLite file: `~/.cache/wpantry/wpantry.db`, or `$XDG_CACHE_H
 wpantry search "tarfile traversal"            # rank cached advisories (SQLite FTS5 syntax: "exact phrase", tls AND cert, rust*)
 wpantry search openssl --applicable --json    # only those that apply here
 wpantry report --csv -o findings.csv          # id, aliases, url, component, kind, affected and safe version, …
-wpantry report --jsonl --history -o f.jsonl   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
+wpantry report exposure --jsonl -o f.jsonl   # one JSON object per finding, joined with its OSV record, lifecycle and fix outcome
 wpantry watch                                 # re-ask about the unfixed Critical/High advisories; exit 10 when a fix landed
 ```
 
-Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `wpantry fix` ran did; with `--history` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
+Each finding also says how the vulnerable dependency is depended on, where the lockfile records it: `dep_scope` (`runtime`, `dev`, `optional` or `unknown`), `dep_direct` (the project's own dependency, or pulled in by another; `null` when the lockfile doesn't say) and `affected_range` (the advisory's range the locked version fell in, such as `>=7.2.0, <9.0.0`). A dev-only dependency is rarely exposed where the code runs, so these three fields decide most of an advisory's applicability. npm, pnpm, Cargo, Composer, Pipfile, go.mod, Gemfile, uv and poetry lockfiles say some of this; `requirements-dev.txt` and its kin are read as dev. The JSON Lines export adds the full OSV `record`, when the exposure was first and last seen and resolved, and what the fix `wpantry fix` ran did; with `report exposure` the exposures a later scan resolved are rows too. It is what [wsentinel](https://github.com/waffuruai/wsentinel) builds its triage training data from.
 
 ## Advisories with no fix yet
 
@@ -256,7 +261,7 @@ usage: wpantry [-h] {scan,check,fix,search,export,breach,watch,version,tools,ski
 ### scan, check
 
 ```
-usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS] [--no-input] [--jobs N]
+usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]
                     [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
                     [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
@@ -269,7 +274,7 @@ usage: wpantry scan [-h] [--path DIR] [--no-machine] [--refresh] [--offline] [--
 | `--no-machine` | Skip the machine inventory: repo checks only |
 | `--refresh` | Ignore cached answers and ask every source again |
 | `--offline` | Use only the cache; anything never cached is "not checked" |
-| `--txt`, `--json`, `--jsonl`, `--csv`, `--md`, `--html`, `-o FILE`, `--history`, `--since DAYS` | How the report is shown when the scan is done, as [`report`](#report) shows it. `--json` (schema 1, see [JSON](#json)) never prompts. `-o FILE` is checked before the scan starts |
+| `--txt`, `--json`, `--jsonl`, `--csv`, `--md`, `--html`, `-o FILE`, `--since DAYS` | How the findings are shown when the scan is done, as [`report`](#report) shows it. `--json` (schema 1, see [JSON](#json)) never prompts. `-o FILE` is checked before the scan starts |
 | `--no-input` | Never prompt: the breach-check question is skipped, and `fix` runs without asking |
 | `--jobs N` | How many git histories gitleaks scans at once (default: half the cores, at most 4). Each scan gets a share of the cores, so a first run over many repos no longer takes the whole machine |
 | `--gitleaks-config FILE` | Your gitleaks config instead of the bundled `gitleaks.toml` (a repo's own `.gitleaks.toml` is reported, never obeyed) |
@@ -288,7 +293,7 @@ Policy files are one entry per line, `#` for comments. An install-scripts entry 
 ### fix
 
 ```
-usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS] [--no-input] [--jobs N]
+usage: wpantry fix [-h] [--dryrun] [--yes] [--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]
                    [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
                    [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
 ```
@@ -415,23 +420,33 @@ Check for a newer wpantry release and, after a yes, install it verified. See [Ke
 ### report
 
 ```
-usage: wpantry report [-h] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS]
+usage: wpantry report [-h] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS]
+                      {findings,history,exposure,remediation,audit,summary,all}
 ```
 
-The latest scan's report, from the cache; it never scans. `scan` and `fix` show the same when they finish, with the same options. Exit 1 when the latest scan has a failing finding (or there is none yet), 0 otherwise. See [reports.md](reports.md).
+A report from the cache; it never scans. `scan` and `fix` show `findings` the same way when they finish, with the same format options. Exit 1 when the latest scan has a failing finding (or there is none yet), 0 otherwise. See [reports.md](reports.md).
+
+| What | Shows |
+|---|---|
+| `findings` (default) | The latest scan: the findings grouped into areas in the order to fix them, each area a table (component, version, advisory, severity, fix) with where and why under each row; what couldn't be checked; the update plan, alike commands batched and `sudo` ones apart |
+| `history` | The exposure, remediation and audit logs, without the findings |
+| `exposure` | What applied, from first seen to resolved: first seen, resolved, severity, component, version, advisory, then the rest |
+| `remediation` | Each fix: when, who ran it (user and host), the command, the result, the scan that verified it |
+| `audit` | Every scan (when, host, user, version, scope, counts) and event |
+| `summary` | One page for a CSO, an auditor or an insurer: open findings by severity against the remediation targets (Critical 14 days, High 30, Medium 90, Low 180), what is overdue, times to resolve, whether the scans ran, who fixed what, and the SOC 2 and ISO 27001 controls it is evidence for |
+| `all` | The findings, then every log |
 
 | Option | Effect |
 |---|---|
-| (none) | The terminal report: the findings grouped into areas in the order to fix them, each area a table (component, version, advisory, severity, fix) with where and why under each row; what couldn't be checked; the update plan, alike commands batched and `sudo` ones apart. Coloured on a terminal and fitted to its width |
+| (none) | The terminal report, coloured on a terminal and fitted to its width |
 | `--txt` | The same as plain text, 120 columns |
-| `--json` | The schema-1 envelope `scan --json` prints |
-| `--jsonl` | One JSON object per finding: the finding, aliases, url, record, first_seen, last_seen, resolved_at, days_exposed, fix |
-| `--csv` | One row per finding: id, aliases, url, component, kind, affected and safe version, severity, kev, status, location |
-| `--md` | Markdown: the areas as tables, the gaps, the plan |
-| `--html` | One offline page; with 14 days of history (`--since DAYS` for more) |
+| `--json` | `findings`: the schema-1 envelope `scan --json` prints; `all`: with the logs under `history`; a log or the summary: that alone |
+| `--jsonl` | One JSON object per row: findings (with their OSV record, lifecycle and fix), exposures, fixes or scans |
+| `--csv` | One table: the findings, or the log asked for (`history` and `all`: the exposure log and the findings), or the summary's figures |
+| `--md` | Markdown, the same sections |
+| `--html` | The scan's offline page, with 14 days of history (`--since DAYS` for more) |
 | `-o`, `--out FILE` | Write there instead of stdout (the terminal report becomes `--txt`) |
-| `--history` | Add the exposure, remediation and audit logs (`--json`: under `history`; `--csv`: the exposure log instead of the findings; `--jsonl`: the resolved exposures too) |
-| `--since DAYS` | How far back the history goes (default 14); implies `--history` |
+| `--since DAYS` | How far back the logs go (default 14) |
 
 ### harden
 

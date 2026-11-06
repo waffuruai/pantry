@@ -43,13 +43,26 @@ impl Shown {
 const FORMATS: [Shown; 6] = [Shown::Txt, Shown::Json, Shown::Jsonl, Shown::Csv, Shown::Md, Shown::Html];
 
 /// The report's options, shared by `report` (and `export`), `scan`, `check`
-/// and `fix`: which format, written where, with the history or without.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// and `fix`: what it covers (`report`'s word; the findings for a scan),
+/// which format, written where, and how far back the logs go.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Show {
+    pub part: wpantry::reporters::Part,
     pub format: Shown,
     pub out: Option<PathBuf>,
-    /// `--history`: the logs of this many days after the findings.
-    pub history: Option<i64>,
+    /// `--since DAYS`: the logs' reach.
+    pub since: i64,
+}
+
+impl Default for Show {
+    fn default() -> Show {
+        Show {
+            part: wpantry::reporters::Part::Findings,
+            format: Shown::Tui,
+            out: None,
+            since: wpantry::reporters::HISTORY_DAYS,
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -203,7 +216,7 @@ const TOP_USAGE: &str = "usage: wpantry [-h] {scan,check,fix,search,export,breac
 /// The scan's options in its usage line, shared by `scan`, `check` and
 /// `fix` (`fix` adds `--dryrun` and `--yes` in front).
 const SCAN_USAGE: [&str; 4] = [
-    "[--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS] [--no-input] [--jobs N]",
+    "[--path DIR] [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]",
     "[--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]",
     "[--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]",
     "[--no-online-hash]",
@@ -214,7 +227,7 @@ const SCAN_USAGE: [&str; 4] = [
 /// `check` and `fix`.
 macro_rules! report_options {
     () => {
-        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one row per finding (with --history: the exposure log)\n  --md                  Markdown\n  --html                one offline HTML page (best with -o FILE)\n  -o, --out FILE        write the report there instead of stdout\n  --history             add the exposure, remediation and audit logs\n  --since DAYS          how far back the history goes (default 14)"
+        "  --txt                 the report as plain text, without colour\n  --json                the findings as JSON (schema 1)\n  --jsonl               one JSON object per finding, joined with its OSV record, lifecycle and fix\n  --csv                 one table: the findings, or the log asked for\n  --md                  Markdown\n  --html                one offline HTML page (best with -o FILE)\n  -o, --out FILE        write the report there instead of stdout\n  --since DAYS          how far back the logs go (default 14)"
     };
 }
 
@@ -252,7 +265,8 @@ pub fn usage(cmd: &str) -> String {
         "update" => "usage: wpantry update [-h] [--check] [--yes] [--no-input] [--offline] [--version VER]",
         "report" | "export" => {
             return format!(
-                "usage: wpantry {cmd} [-h] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--history] [--since DAYS]"
+                "usage: wpantry {cmd} [-h] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS]\n{}{{findings,history,exposure,remediation,audit,summary,all}}",
+                " ".repeat(format!("usage: wpantry {cmd} ").len())
             );
         }
         "harden" => "usage: wpantry harden [-h] [--hours N] [--bundle FILE] {extension-cooldown,ca-trust}",
@@ -320,7 +334,7 @@ fn help(cmd: &str) -> String {
         }
         "report" | "export" => {
             return format!(
-                "{}\n\nthe latest scan's report, from the cache; it never scans (scan and fix show the same when they finish). export is the same command\n\noptions:\n  -h, --help            show this help message and exit\n{}\n\nExit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3 internal error.\n",
+                "{}\n\nthe latest scan's report, from the cache; it never scans (scan and fix show the same when they finish). export is the same command\n\npositional arguments:\n  findings              the latest scan's findings (the default)\n  history               the exposure, remediation and audit logs, without the findings\n  exposure              what applied, from first seen to resolved\n  remediation           the fixes run: when, who, the result, the scan that verified them\n  audit                 every scan and event\n  summary               one page for a CSO, an auditor or an insurer: where things stand, times to fix against the targets, who fixed what\n  all                   the findings, then every log\n\noptions:\n  -h, --help            show this help message and exit\n{}\n\nExit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3 internal error.\n",
                 usage(cmd),
                 report_options!()
             );
@@ -332,7 +346,7 @@ fn help(cmd: &str) -> String {
             "do what this host can about advisories\n\npositional arguments:\n  {list,all,ID}\n    list        the stopgaps wpantry has and whether each applies here, and the advisories in the last scan with an unattended fix\n    all         everything: the same as wpantry fix (a scan, the unattended fixes, every stopgap that applies, a re-check)\n    ID          one advisory (CVE-…, GHSA-…; an alias works): its unattended fixes from the last scan, wpantry's stopgap for it where one exists (CVE-2026-98432: the nftables rule, MPTCP off, the services to restart, as root), the steps that need you\n\noptions:\n  -h, --help    show this help message and exit\n  --dry-run     print what would run or be written; change nothing\n  --yes         run and write without asking\n  --no-input    never ask: the unattended fixes run, the stopgaps are skipped unless --yes\n  --undo        ID only: take wpantry's stopgap away again once the real fix is installed (--remove is the same)\n  --offline, --no-machine, --path DIR\n                all only: as for scan\n\nExit codes: 0 everything that applies here was done (or, with --dry-run, printed), 1 a step is left for you, a fix failed, or nothing is known for the id here, 2 usage error."
         }
         _ => {
-            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              the same as report\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the latest scan's report (--json, --md, --html, …; --history adds the logs)\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
+            "wpantry: the vulnerabilities that apply to this computer. See README.md;\n\npositional arguments:\n  {scan,check,fix,search,export,breach,watch,version,tools,skill,sync,schedule,cache,update,report,harden,mitigate,rules,sources,help}\n    scan                scan this computer and report what applies; change nothing\n    check               the same as scan\n    fix                 scan, run the unattended fixes and the stopgaps, then re-check (--dryrun prints the plan)\n    search              search cached advisories (for agents)\n    export              the same as report\n    breach              show or set consent for the email breach check\n    watch               re-check the unfixed Critical/High advisories; exit 10 when a fix has landed\n    version             print the version, implementation and JSON schema\n    tools               list the external tools this implementation uses\n    skill               print the agent skill (SKILL.md)\n    sync                refresh the cache for offline scans\n    schedule            run sync and scan on a schedule\n    cache               maintain the cache (prune)\n    update              check for a newer release and install it verified\n    report              the latest scan's report, or its history, a log or the summary (--json, --md, --html, …)\n    harden              apply a fix wpantry can make itself (extension-cooldown, ca-trust)\n    mitigate            list, all, or one advisory: its unattended fixes, its stopgap, the steps left for you\n    rules               the YARA rules the malware scan uses (--update fetches)\n    sources             every outside source, when it was last fetched and what went wrong\n    help                this help, or with a command that command's (wpantry help fix)\n\noptions:\n  -h, --help            show this help message and exit\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."
         }
     };
     format!("{}\n\n{body}\n", usage(cmd))
@@ -344,7 +358,7 @@ const ALIASES: &[(&str, &str)] =
     &[("--license", "--licenses"), ("-o", "--out"), ("--update", "--fix"), ("--remove", "--undo")];
 
 /// The report options given: at most one format, a file to write, and the
-/// history's reach (`--since` alone asks for the history too).
+/// logs' reach.
 fn show(flag: &dyn Fn(&str) -> bool, value: &dyn Fn(&str) -> Option<String>) -> Result<Show, String> {
     let picked: Vec<Shown> = FORMATS.iter().copied().filter(|f| flag(f.flag())).collect();
     let format = match picked.as_slice() {
@@ -360,14 +374,13 @@ fn show(flag: &dyn Fn(&str) -> bool, value: &dyn Fn(&str) -> Option<String>) -> 
     // A file gets plain text, never the terminal's colours.
     let format = if format == Shown::Tui && out.is_some() { Shown::Txt } else { format };
     let since = match value("--since") {
-        None => None,
+        None => wpantry::reporters::HISTORY_DAYS,
         Some(v) => match v.trim().trim_end_matches('d').parse::<i64>() {
-            Ok(n) if n >= 1 => Some(n),
+            Ok(n) if n >= 1 => n,
             _ => return Err(format!("argument --since: expected a number of days, got '{v}'")),
         },
     };
-    let history = (flag("--history") || since.is_some()).then(|| since.unwrap_or(wpantry::reporters::HISTORY_DAYS));
-    Ok(Show { format, out, history })
+    Ok(Show { part: wpantry::reporters::Part::Findings, format, out, since })
 }
 
 /// (option, takes a value) for each subcommand.
@@ -391,7 +404,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--md", false),
             ("--html", false),
             ("--out", true),
-            ("--history", false),
             ("--since", true),
             ("--no-input", false),
             ("--jobs", true),
@@ -423,7 +435,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--md", false),
             ("--html", false),
             ("--out", true),
-            ("--history", false),
             ("--since", true),
             ("--no-input", false),
             ("--jobs", true),
@@ -463,7 +474,6 @@ fn options(cmd: &str) -> &'static [(&'static str, bool)] {
             ("--md", false),
             ("--html", false),
             ("--out", true),
-            ("--history", false),
             ("--since", true),
         ],
         "sync" => &[("--help", false), ("--refresh", false), ("--json", false), ("--no-input", false)],
@@ -685,11 +695,21 @@ pub fn parse(argv: &[String]) -> Parsed {
             Command::Breach { enable, disable }
         }
         "report" | "export" => {
-            if !positional.is_empty() {
-                return fail(format!("unrecognized arguments: {}", positional.join(" ")));
-            }
+            let part = match positional.as_slice() {
+                [] => wpantry::reporters::Part::Findings,
+                [word] => match wpantry::reporters::Part::parse(word) {
+                    Some(p) => p,
+                    None => {
+                        return fail(format!(
+                            "argument what: invalid choice: '{word}' (choose from {})",
+                            wpantry::reporters::Part::NAMES.join(", ")
+                        ));
+                    }
+                },
+                [_, rest @ ..] => return fail(format!("unrecognized arguments: {}", rest.join(" "))),
+            };
             match show(&flag, &value) {
-                Ok(s) => Command::Report(s),
+                Ok(s) => Command::Report(Show { part, ..s }),
                 Err(e) => return fail(e),
             }
         }

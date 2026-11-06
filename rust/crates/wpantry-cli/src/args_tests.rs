@@ -1,4 +1,5 @@
 use super::*;
+use wpantry::reporters::Part;
 
 fn p(args: &[&str]) -> Parsed {
     parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
@@ -86,12 +87,13 @@ fn one_format_a_file_and_the_history_are_the_report_options() {
     let Parsed::Run(Command::Scan(c)) = p(&["--html", "-o", "report with spaces.html"]) else { panic!() };
     assert_eq!(
         c.show,
-        Show { format: Shown::Html, out: Some(PathBuf::from("report with spaces.html")), history: None }
+        Show { format: Shown::Html, out: Some(PathBuf::from("report with spaces.html")), ..Default::default() }
     );
     let Parsed::Run(Command::Scan(c)) = p(&["--out=r.txt"]) else { panic!() };
     assert_eq!(c.show.format, Shown::Txt, "a file gets plain text");
-    let Parsed::Run(Command::Scan(c)) = p(&["fix", "--md", "--history"]) else { panic!() };
-    assert_eq!((c.fix, c.show.format, c.show.history), (true, Shown::Md, Some(14)));
+    let Parsed::Run(Command::Scan(c)) = p(&["fix", "--md", "--since", "30"]) else { panic!() };
+    assert_eq!((c.fix, c.show.format, c.show.since), (true, Shown::Md, 30));
+    assert!(matches!(p(&["--history"]), Parsed::Usage(_)), "the logs are report's words now");
     for bad in [&["--html", "--json"][..], &["-o"], &["--out=-"], &["--since", "x"]] {
         assert!(matches!(p(bad), Parsed::Usage(_)), "{bad:?}");
     }
@@ -226,7 +228,7 @@ fn check_options_and_their_errors() {
 fn search_export_breach_and_sync_errors() {
     for (bad, msg) in [
         (&["search", "a", "b"][..], "unrecognized arguments: b"),
-        (&["export", "x", "--csv", "f"], "unrecognized arguments: x"),
+        (&["export", "x", "--csv"], "argument what: invalid choice: 'x'"),
         (&["breach", "x"], "unrecognized arguments: x"),
         (&["sync", "x"], "unrecognized arguments: x"),
         (&["skill", "--json"], "unrecognized arguments: --json"),
@@ -240,8 +242,8 @@ fn search_export_breach_and_sync_errors() {
         Parsed::Run(Command::Search { query: "-q".into(), applicable: true, limit: -2, json: true })
     );
     assert_eq!(
-        p(&["export", "--jsonl", "--history"]),
-        Parsed::Run(Command::Report(Show { format: Shown::Jsonl, out: None, history: Some(14) })),
+        p(&["export", "exposure", "--jsonl"]),
+        Parsed::Run(Command::Report(Show { part: Part::Exposure, format: Shown::Jsonl, ..Default::default() })),
         "export is report"
     );
     assert_eq!(p(&["breach", "--enable"]), Parsed::Run(Command::Breach { enable: true, disable: false }));
@@ -253,19 +255,25 @@ fn search_export_breach_and_sync_errors() {
 fn report_options() {
     assert_eq!(p(&["report"]), Parsed::Run(Command::Report(Show::default())));
     assert_eq!(
-        p(&["report", "--csv", "--since", "30d", "-o", "r.csv"]),
-        Parsed::Run(Command::Report(Show { format: Shown::Csv, out: Some("r.csv".into()), history: Some(30) })),
-        "--since asks for the history"
+        p(&["report", "remediation", "--csv", "--since", "30d", "-o", "r.csv"]),
+        Parsed::Run(Command::Report(Show {
+            part: Part::Remediation,
+            format: Shown::Csv,
+            out: Some("r.csv".into()),
+            since: 30
+        }))
     );
     assert_eq!(
         p(&["report", "--txt"]),
         Parsed::Run(Command::Report(Show { format: Shown::Txt, ..Default::default() }))
     );
     for (bad, msg) in [
-        (&["report", "x"][..], "unrecognized arguments: x"),
+        (&["report", "x"][..], "argument what: invalid choice: 'x'"),
         (&["report", "--since", "0"], "argument --since: expected a number of days, got '0'"),
         (&["report", "--md", "--csv"], "argument --md: not allowed with argument --csv"),
         (&["report", "--exposure"], "unrecognized arguments: --exposure"),
+        (&["report", "logs"], "argument what: invalid choice: 'logs'"),
+        (&["report", "audit", "x"], "unrecognized arguments: x"),
     ] {
         let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
         assert!(text.contains(msg), "{bad:?}: {text}");
@@ -390,7 +398,7 @@ fn schedule_cache_update_and_harden_options() {
             "argument --hours: expected a number of hours, got 'lots'",
         ),
         (&["schedule", "--every"], "argument --every: expected one argument"),
-        (&["report", "--h"], "ambiguous option: --h could match --help, --html, --history"),
+        (&["report", "--h"], "ambiguous option: --h could match --help, --html"),
     ] {
         let Parsed::Usage(text) = p(bad) else { panic!("{bad:?}") };
         assert!(text.contains(msg), "{bad:?}: {text}");

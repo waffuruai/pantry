@@ -153,6 +153,7 @@ fn bundle_carries_the_scan_its_plan_and_its_history() {
         },
         after_fixes: false,
         history: None,
+        part: crate::reporters::Part::Findings,
     };
     let b = bundle(&report);
     let text = b.dumps();

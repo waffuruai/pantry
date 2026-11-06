@@ -11,6 +11,7 @@ pub mod html;
 pub mod json;
 pub mod jsonl;
 pub mod md;
+pub mod summary;
 pub mod view;
 pub mod yara;
 
@@ -76,6 +77,61 @@ pub struct History {
     pub events: Vec<Event>,
 }
 
+/// What a report covers: `wpantry report [WHAT]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Part {
+    /// The latest scan's findings.
+    #[default]
+    Findings,
+    /// The exposure, remediation and audit logs, without the findings.
+    History,
+    Exposure,
+    Remediation,
+    Audit,
+    /// One page for a CSO, an auditor or an insurer.
+    Summary,
+    /// The findings, then every log.
+    All,
+}
+
+impl Part {
+    pub const NAMES: [&'static str; 7] = ["findings", "history", "exposure", "remediation", "audit", "summary", "all"];
+
+    pub fn parse(s: &str) -> Option<Part> {
+        Some(match s {
+            "findings" => Part::Findings,
+            "history" => Part::History,
+            "exposure" => Part::Exposure,
+            "remediation" => Part::Remediation,
+            "audit" => Part::Audit,
+            "summary" => Part::Summary,
+            "all" => Part::All,
+            _ => return None,
+        })
+    }
+
+    pub fn findings(self) -> bool {
+        matches!(self, Part::Findings | Part::All)
+    }
+
+    pub fn exposure(self) -> bool {
+        matches!(self, Part::History | Part::Exposure | Part::All)
+    }
+
+    pub fn remediation(self) -> bool {
+        matches!(self, Part::History | Part::Remediation | Part::All)
+    }
+
+    pub fn audit(self) -> bool {
+        matches!(self, Part::History | Part::Audit | Part::All)
+    }
+
+    /// Whether it needs the logs kept across scans.
+    pub fn logs(self) -> bool {
+        self != Part::Findings
+    }
+}
+
 /// One scan, as every report renders it.
 #[derive(Clone, Debug)]
 pub struct Report {
@@ -85,6 +141,8 @@ pub struct Report {
     /// says "after updates".
     pub after_fixes: bool,
     pub history: Option<History>,
+    /// What to show of it; [`Part::Findings`] unless set.
+    pub part: Part,
 }
 
 impl Report {
@@ -125,7 +183,7 @@ pub fn latest(cache: &Cache, history_days: Option<i64>) -> Result<Option<Report>
     };
     let after_fixes = history::fixes(cache, f64::MIN)?.iter().any(|f| f.verified_scan == Some(id));
     let history = history_days.map(|d| history(cache, d)).transpose()?;
-    Ok(Some(Report { outcome, scan, after_fixes, history }))
+    Ok(Some(Report { outcome, scan, after_fixes, history, part: Part::Findings }))
 }
 
 /// A format another program or a file reads.
@@ -140,17 +198,29 @@ pub enum Format {
 
 /// `report` in `format`. JSON Lines and CSV join what the cache knows of
 /// each finding (its OSV record, aliases and lifecycle), so they read it.
+///
+/// CSV is one table: the findings (`findings`, `all`), the exposure log
+/// (`history`, `exposure`), the fix log, the scan log, or the summary's
+/// figures. JSON Lines is one object per row of the same. The HTML page is
+/// the scan's page, its history included, whatever the part.
 pub fn render(cache: &Cache, report: &Report, format: Format) -> Result<String> {
-    let with_history = report.history.is_some();
-    Ok(match format {
-        Format::Json => json::report(report).dumps_indent(1) + "\n",
-        Format::Jsonl => jsonl::jsonl(cache, with_history)?.0,
-        Format::Csv if with_history => {
-            csv::exposures(report.history.as_ref().map(|h| h.exposures.as_slice()).unwrap_or_default())
-        }
-        Format::Csv => csv::findings(cache)?,
-        Format::Md => md::report(report),
-        Format::Html => html::page(report),
+    let empty = History::default();
+    let h = report.history.as_ref().unwrap_or(&empty);
+    let lines = |rows: Vec<serde_json::Value>| rows.iter().map(|r| format!("{r}\n")).collect::<String>();
+    Ok(match (format, report.part) {
+        (Format::Json, _) => json::report(report).dumps_indent(1) + "\n",
+        (Format::Jsonl, Part::Findings) => jsonl::jsonl(cache, false)?.0,
+        (Format::Jsonl, Part::All | Part::History | Part::Exposure) => jsonl::jsonl(cache, true)?.0,
+        (Format::Jsonl, Part::Remediation) => lines(h.fixes.iter().map(Fix::to_json).collect()),
+        (Format::Jsonl, Part::Audit) => lines(h.scans.iter().map(ScanRow::to_json).collect()),
+        (Format::Jsonl, Part::Summary) => summary::json(&summary::summary(report)).dumps() + "\n",
+        (Format::Csv, Part::Findings | Part::All) => csv::findings(cache)?,
+        (Format::Csv, Part::History | Part::Exposure) => csv::exposures(&h.exposures),
+        (Format::Csv, Part::Remediation) => csv::fixes(&h.fixes),
+        (Format::Csv, Part::Audit) => csv::scans(&h.scans),
+        (Format::Csv, Part::Summary) => csv::summary(report),
+        (Format::Md, _) => md::report(report),
+        (Format::Html, _) => html::page(report),
     })
 }
 

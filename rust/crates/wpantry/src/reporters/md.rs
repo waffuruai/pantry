@@ -3,7 +3,7 @@
 //! exposure, remediation and audit logs after them.
 
 use super::view::{self, View};
-use super::{History, Report};
+use super::{History, Part, Report};
 use crate::history::{Exposure, stamp};
 use crate::utils::files::short;
 
@@ -23,6 +23,16 @@ fn cut(s: &str, n: usize) -> String {
 
 /// The report.
 pub fn report(r: &Report) -> String {
+    if r.part == Part::Summary {
+        return super::summary::md(&super::summary::summary(r));
+    }
+    if !r.part.findings() {
+        let mut t = String::from("# wpantry report\n");
+        if let Some(h) = &r.history {
+            history(&mut t, h, r.part);
+        }
+        return t;
+    }
     let scan = &r.scan.row;
     let mut t = format!(
         "# wpantry report\n\nScan #{} finished {} on {} by {}, wpantry {}; scope {}.\n",
@@ -38,8 +48,8 @@ pub fn report(r: &Report) -> String {
         t.push_str(&format!("\nChecked {}.\n", checked.join(", ")));
     }
     findings(&mut t, &view::view(&r.outcome.findings), r);
-    if let Some(h) = &r.history {
-        history(&mut t, h);
+    if let Some(h) = r.history.as_ref().filter(|_| r.part == Part::All) {
+        history(&mut t, h, r.part);
     }
     t
 }
@@ -109,8 +119,20 @@ fn findings(t: &mut String, v: &View, r: &Report) {
     }
 }
 
-fn history(t: &mut String, h: &History) {
+fn history(t: &mut String, h: &History, part: Part) {
     t.push_str(&format!("\n# History: the last {} days\n", h.since_days));
+    if part.exposure() {
+        exposure_log(t, h);
+    }
+    if part.remediation() {
+        remediation_log(t, h);
+    }
+    if part.audit() {
+        audit_log(t, h);
+    }
+}
+
+fn exposure_log(t: &mut String, h: &History) {
     let open = h.exposures.iter().filter(|e| e.resolved_at.is_none()).count();
     let closed: Vec<&Exposure> = h.exposures.iter().filter(|e| e.resolved_at.is_some()).collect();
     let median = {
@@ -128,19 +150,26 @@ fn history(t: &mut String, h: &History) {
         let cells: Vec<String> = super::exposure_cells(e).iter().map(|c| cell(c)).collect();
         t.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
+}
+
+fn remediation_log(t: &mut String, h: &History) {
     t.push_str(
-        "\n## Remediation log\n\n| When | Command | Mode | Result | Verified by scan |\n|---|---|---|---|---|\n",
+        "\n## Remediation log\n\n| When | Who | Command | Mode | Result | Verified by scan |\n|---|---|---|---|---|---|\n",
     );
     for f in &h.fixes {
         t.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} |\n",
             stamp(f.at),
+            cell(&super::summary::who(f)),
             code(&f.command),
             f.mode,
             if f.ok { "ok" } else { "failed" },
             f.verified_scan.map(|s| format!("#{s}")).unwrap_or_else(|| "-".into())
         ));
     }
+}
+
+fn audit_log(t: &mut String, h: &History) {
     t.push_str("\n## Audit log\n\n### Scans\n\n| # | Finished | Host | User | wpantry | Scope | Fails | Warns | Unchecked |\n|---|---|---|---|---|---|---|---|---|\n");
     for s in &h.scans {
         t.push_str(&format!(

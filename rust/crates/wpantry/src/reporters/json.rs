@@ -1,7 +1,7 @@
 //! The JSON report: the contract's envelope, schema 1
 //! (`specs/cli-contract.md`), and with `--history` the logs under `history`.
 
-use super::Report;
+use super::{Part, Report};
 use crate::checks::Outcome;
 use crate::utils::json::{J, obj};
 use crate::{IMPL, SCHEMA, VERSION};
@@ -19,22 +19,50 @@ pub fn envelope(scan: &Outcome) -> J {
     ])
 }
 
-/// The envelope, and the logs as `history` when the report has them:
-/// `{since_days, exposures, fixes, scans, events}`.
+/// The report as JSON, by its part: the envelope (`findings`); the
+/// envelope with the logs under `history` (`all`); the logs alone
+/// (`history`, `exposure`, `remediation`, `audit`: `{schema, version,
+/// since_days, exposures?, fixes?, scans?, events?}`); or the summary
+/// (`{schema, version, summary}`).
 pub fn report(report: &Report) -> J {
-    let mut out = envelope(&report.outcome);
-    if let (J::Obj(pairs), Some(h)) = (&mut out, &report.history) {
-        let list = |xs: Vec<serde_json::Value>| J::Arr(xs.iter().map(J::from).collect());
-        pairs.push((
-            "history".into(),
-            obj([
-                ("since_days", J::Int(h.since_days)),
-                ("exposures", list(h.exposures.iter().map(|e| e.to_json()).collect())),
-                ("fixes", list(h.fixes.iter().map(|f| f.to_json()).collect())),
-                ("scans", list(h.scans.iter().map(|s| s.to_json()).collect())),
-                ("events", list(h.events.iter().map(|e| e.to_json()).collect())),
-            ]),
-        ));
+    let empty = super::History::default();
+    let h = report.history.as_ref().unwrap_or(&empty);
+    let list = |xs: Vec<serde_json::Value>| J::Arr(xs.iter().map(J::from).collect());
+    let logs = |part: Part| {
+        let mut pairs: Vec<(String, J)> = vec![("since_days".into(), J::Int(h.since_days))];
+        if part.exposure() {
+            pairs.push(("exposures".into(), list(h.exposures.iter().map(|e| e.to_json()).collect())));
+        }
+        if part.remediation() {
+            pairs.push(("fixes".into(), list(h.fixes.iter().map(|f| f.to_json()).collect())));
+        }
+        if part.audit() {
+            pairs.push(("scans".into(), list(h.scans.iter().map(|s| s.to_json()).collect())));
+            pairs.push(("events".into(), list(h.events.iter().map(|e| e.to_json()).collect())));
+        }
+        J::Obj(pairs)
+    };
+    let head = || vec![("schema".to_string(), J::Int(SCHEMA)), ("version".to_string(), J::from(VERSION))];
+    match report.part {
+        Part::Findings => envelope(&report.outcome),
+        Part::All => {
+            let mut out = envelope(&report.outcome);
+            if let J::Obj(pairs) = &mut out {
+                pairs.push(("history".into(), logs(Part::All)));
+            }
+            out
+        }
+        Part::Summary => {
+            let mut pairs = head();
+            pairs.push(("summary".into(), super::summary::json(&super::summary::summary(report))));
+            J::Obj(pairs)
+        }
+        part => {
+            let mut pairs = head();
+            if let J::Obj(rest) = logs(part) {
+                pairs.extend(rest);
+            }
+            J::Obj(pairs)
+        }
     }
-    out
 }

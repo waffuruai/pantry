@@ -20,7 +20,7 @@ use wpantry::checks::{Options, Outcome, Policy, Scan};
 use wpantry::db::{self, Cache};
 use wpantry::error::Result;
 use wpantry::remediation;
-use wpantry::reporters::{Format, Output, html};
+use wpantry::reporters::{Format, Output};
 use wpantry::utils::json::{J, obj};
 use wpantry::{IMPL, SCHEMA, VERSION};
 
@@ -367,13 +367,14 @@ fn cmd_tools(json: bool) -> Result<i32> {
 /// or a file. 1 when something in it fails, or there is no scan yet.
 fn cmd_report(show: &Show) -> Result<i32> {
     let cache = Cache::open(None)?;
-    // The HTML page always carries some history; the others only when asked.
-    let days = show.history.or((show.format == Shown::Html).then_some(html::HISTORY_DAYS));
-    let Some(report) = wpantry::reporters::latest(&cache, days)? else {
+    // The logs, when the report shows them; the HTML page always carries them.
+    let days = (show.part.logs() || show.format == Shown::Html).then_some(show.since);
+    let Some(mut report) = wpantry::reporters::latest(&cache, days)? else {
         cache.close()?;
         eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
         return Ok(EXIT_FAIL);
     };
+    report.part = show.part;
     let text = match show.format {
         Shown::Tui | Shown::Txt => {
             let terminal = show.format == Shown::Tui && show.out.is_none();
@@ -538,8 +539,22 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 /// `harden ca-trust`: distrust the leaked roots in the system trust store
 /// (the shell script it replaced did the same), asking for sudo only to install
 /// the result.
+/// A `harden` fix in the remediation log: what ran, who ran it, whether it
+/// worked.
+fn record_harden(command: &str, ok: bool) -> Result<()> {
+    let cache = Cache::open(None)?;
+    wpantry::history::record_fix(&cache, wpantry::history::latest_scan(&cache)?, command, "harden", ok, &[])?;
+    cache.close()
+}
+
 fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
-    wpantry::remediation::ca_trust::fix(bundle, &|line| show(line))?;
+    let done = wpantry::remediation::ca_trust::fix(bundle, &|line| show(line));
+    let command = match bundle {
+        Some(b) => format!("wpantry harden ca-trust --bundle {}", b.display()),
+        None => "wpantry harden ca-trust".into(),
+    };
+    record_harden(&command, done.is_ok())?;
+    done?;
     if bundle.is_none() {
         show("  Re-run wpantry scan to confirm. A macOS update may restore the file: re-run this after one.");
     }
@@ -548,7 +563,9 @@ fn cmd_harden_ca_trust(bundle: Option<&std::path::Path>) -> Result<i32> {
 
 /// `harden extension-cooldown`: the one posture fix that edits files.
 fn cmd_harden_cooldown(hours: u32) -> Result<i32> {
-    let changed = wpantry::remediation::editors::set_extension_cooldown(hours)?;
+    let changed = wpantry::remediation::editors::set_extension_cooldown(hours);
+    record_harden(&format!("wpantry harden extension-cooldown --hours {hours}"), changed.is_ok())?;
+    let changed = changed?;
     if changed.is_empty() {
         let editors = wpantry::checks::machine::any::dev_settings::editor_settings();
         if editors.is_empty() {

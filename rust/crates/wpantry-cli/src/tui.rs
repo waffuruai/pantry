@@ -7,8 +7,8 @@
 //! cursor and approvals to the same rows and batches.
 
 use crate::style::{Style, clean};
-use wpantry::reporters::Report;
 use wpantry::reporters::view::{self, Area, Row, View};
+use wpantry::reporters::{Part, Report};
 use wpantry::utils::files::short;
 
 /// What a span is, for its colour.
@@ -203,8 +203,18 @@ fn area_lines(area: &Area, width: usize, out: &mut Vec<Line>) {
     }
 }
 
-/// The report's lines for a terminal `width` wide.
+/// The report's lines for a terminal `width` wide: what its part covers.
 pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
+    let empty = wpantry::reporters::History::default();
+    let h = report.history.as_ref().unwrap_or(&empty);
+    if report.part == Part::Summary {
+        return summary_lines(&wpantry::reporters::summary::summary(report), width);
+    }
+    if !report.part.findings() {
+        let mut out = vec![Vec::new()];
+        history_lines(h, width, report.part, &mut out);
+        return out;
+    }
     let r = &report.outcome;
     let v: View = view::view(&r.findings);
     let mut out: Vec<Line> = Vec::new();
@@ -292,17 +302,28 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
     } else {
         vec![(Role::Good, "✓ nothing with a released fix applies to what was scanned".into())]
     });
-    if let Some(h) = &report.history {
-        history_lines(h, width, &mut out);
+    if report.part == Part::All {
+        history_lines(h, width, Part::All, &mut out);
     }
     out
 }
 
-fn history_lines(h: &wpantry::reporters::History, width: usize, out: &mut Vec<Line>) {
-    use wpantry::history::stamp;
-    use wpantry::reporters::{EXPOSURE_COLUMNS, exposure_cells};
+fn history_lines(h: &wpantry::reporters::History, width: usize, part: Part, out: &mut Vec<Line>) {
     out.push(Vec::new());
-    out.push(vec![(Role::Heading, format!("History, the last {} days", h.since_days))]);
+    out.push(vec![(Role::Heading, format!("==> History, the last {} days", h.since_days))]);
+    if part.exposure() {
+        exposure_lines(h, width, out);
+    }
+    if part.remediation() {
+        remediation_lines(h, out);
+    }
+    if part.audit() {
+        audit_lines(h, out);
+    }
+}
+
+fn exposure_lines(h: &wpantry::reporters::History, width: usize, out: &mut Vec<Line>) {
+    use wpantry::reporters::{EXPOSURE_COLUMNS, exposure_cells};
     // The exposure log, in the columns every format shares; the first seven
     // fit a terminal, dates to the day.
     let open = h.exposures.iter().filter(|e| e.resolved_at.is_none()).count();
@@ -342,6 +363,10 @@ fn history_lines(h: &wpantry::reporters::History, width: usize, out: &mut Vec<Li
         let cells: Vec<String> = r.iter().map(|c| clean(c)).collect();
         out.push(vec![(Role::Plain, "  ".into()), (role, line(cells).trim_end().to_string())]);
     }
+}
+
+fn remediation_lines(h: &wpantry::reporters::History, out: &mut Vec<Line>) {
+    use wpantry::history::stamp;
     out.push(Vec::new());
     out.push(vec![(Role::Heading, "Remediation log".into()), (Role::Dim, format!("  {} fixes run", h.fixes.len()))]);
     for f in &h.fixes {
@@ -351,10 +376,15 @@ fn history_lines(h: &wpantry::reporters::History, width: usize, out: &mut Vec<Li
             (Role::Plain, "  ".into()),
             (role, mark.into()),
             (Role::Plain, format!(" {} ", stamp(f.at))),
+            (Role::Dim, format!("{}  ", clean(&wpantry::reporters::summary::who(f)))),
             (Role::Command, clean(&f.command)),
             (Role::Dim, verified),
         ]);
     }
+}
+
+fn audit_lines(h: &wpantry::reporters::History, out: &mut Vec<Line>) {
+    use wpantry::history::stamp;
     out.push(Vec::new());
     out.push(vec![(Role::Heading, "Audit log".into()), (Role::Dim, format!("  {} scans", h.scans.len()))]);
     for s in h.scans.iter().rev() {
@@ -373,6 +403,105 @@ fn history_lines(h: &wpantry::reporters::History, width: usize, out: &mut Vec<Li
             )),
         )]);
     }
+}
+
+/// The summary: where things stand by severity against the targets, the
+/// times to fix, whether the checks ran, who fixed what, and the controls.
+fn summary_lines(s: &wpantry::reporters::summary::Summary, width: usize) -> Vec<Line> {
+    use wpantry::history::stamp;
+    use wpantry::reporters::summary::{CONTROLS, name, who};
+    let mut out: Vec<Line> = vec![
+        Vec::new(),
+        vec![
+            (Role::Heading, "==> Security summary".into()),
+            (
+                Role::Dim,
+                format!("  the last {} days · latest scan #{} {}", s.since_days, s.scan_id, stamp(s.scan_finished)),
+            ),
+        ],
+        Vec::new(),
+        vec![(Role::Heading, "Where we stand".into())],
+        vec![(Role::Dim, "  SEVERITY    TARGET  FAILING  WARNING  OVERDUE  RESOLVED  LATE  MEDIAN DAYS".into())],
+    ];
+    for l in &s.levels {
+        let role = if l.overdue > 0 || (l.open_fail > 0 && matches!(l.severity, "CRITICAL" | "HIGH")) {
+            Role::Fail
+        } else {
+            Role::Plain
+        };
+        out.push(vec![
+            (Role::Plain, "  ".into()),
+            (role, pad(name(l.severity), 10)),
+            (
+                Role::Plain,
+                format!(
+                    "  {:>6}  {:>7}  {:>7}  {:>7}  {:>8}  {:>4}  {:>11}",
+                    l.target.map_or("-".into(), |d| format!("{d}d")),
+                    l.open_fail,
+                    l.open_warn,
+                    l.overdue,
+                    l.resolved,
+                    l.resolved_late,
+                    l.median_days
+                ),
+            ),
+        ]);
+    }
+    out.push(Vec::new());
+    out.push(vec![
+        (Role::Plain, "  known exploited, open now: ".into()),
+        (if s.kev_open > 0 { Role::Hot } else { Role::Good }, s.kev_open.to_string()),
+    ]);
+    if let Some((sev, c, v, id, d)) = &s.oldest {
+        out.push(vec![(
+            Role::Plain,
+            clean(&format!("  oldest open Critical or High: {c} {v} {id} ({}), open {d} days", name(sev))),
+        )]);
+    }
+    out.push(vec![(
+        Role::Plain,
+        format!("  time to resolve: median {} days, 90th percentile {} days", s.median_days, s.p90_days),
+    )]);
+    out.push(Vec::new());
+    out.push(vec![(Role::Heading, "Did the checks run".into())]);
+    out.push(vec![(
+        Role::Plain,
+        clean(&fit(&format!("  {} scans on {} by {}", s.scans, s.hosts.join(", "), s.users.join(", ")), width)),
+    )]);
+    out.push(vec![
+        (Role::Plain, "  days without a scan: ".into()),
+        (if s.days_without_scan > 0 { Role::Warn } else { Role::Good }, s.days_without_scan.to_string()),
+    ]);
+    out.push(vec![
+        (Role::Plain, "  not checked in the latest scan: ".into()),
+        if s.gaps.is_empty() {
+            (Role::Good, "nothing".into())
+        } else {
+            (Role::Warn, clean(&fit(&s.gaps.join(", "), width.saturating_sub(34))))
+        },
+    ]);
+    out.push(Vec::new());
+    out.push(vec![(Role::Heading, "Who fixed what".into())]);
+    if s.fixes.is_empty() {
+        out.push(vec![(Role::Dim, "  no fixes ran in the period".into())]);
+    }
+    for f in &s.fixes {
+        let (mark, role) = if f.ok { ("✓", Role::Good) } else { ("✗", Role::Fail) };
+        let verified = f.verified_scan.map(|v| format!("  verified by scan #{v}")).unwrap_or_default();
+        out.push(vec![
+            (Role::Plain, "  ".into()),
+            (role, mark.into()),
+            (Role::Plain, format!(" {}  {}  ", stamp(f.at), clean(&who(f)))),
+            (Role::Command, clean(&f.command)),
+            (Role::Dim, verified),
+        ]);
+    }
+    out.push(Vec::new());
+    out.push(vec![(Role::Heading, "Evidence for".into())]);
+    for (c, what) in CONTROLS {
+        out.push(vec![(Role::Plain, format!("  {c:<22}")), (Role::Dim, fit(what, width.saturating_sub(24)))]);
+    }
+    out
 }
 
 /// A line in `style`'s colours.

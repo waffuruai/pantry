@@ -224,18 +224,6 @@ The network client (`net::Http`) connects only to the hosts in `net::HOSTS`, the
 
   CI runs the same tasks on Linux and macOS, plus `cargo deny` and `cargo vet`.
 
-## What the port left open, and where it closed
-
-The Rust port's PRD and design are archived in [specs/archived/](../../specs/archived/01-rust-port.md). Checked against the code, releases and open pull requests on 2026-10-31:
-
-- **TLS roots**: the binary trusted Mozilla's bundle, not the machine's store, so a CA distrusted locally was still trusted by Pantry's own requests. Closed: server certificates are verified by the platform's trust store (above).
-- **Hosts**: the list of hosts the binary may contact was documentation only. Closed: `net::HOSTS` is enforced before any connection, with a test over every source's URL.
-- **Feeds under hostile data**: the response, depth, line and file caps were in place; the per-feed hardening (fix versions substituted into commands, capped reads of repo files, plists and caches, control characters in reports) is [#39](https://github.com/waffuruai/pantry/pull/39).
-- **Recorded online cases**: the contract suite ran offline only. [#71](https://github.com/waffuruai/pantry/pull/71) adds eleven OSV records and a KEV entry recorded on 2026-10-30, seeded into the cache, with lockfiles at the last affected and first fixed version of each.
-- **ops**: built `wpantry` from a pinned commit until the first signed release. Closed: ops pins release 0.2.0 and installs it through mise's packslip backend with the release workflow's signing identity pinned.
-- **Shared audits**: whether to import other organizations' `cargo vet` audits, which carry their auditors' published identities. Decided: imported (Mozilla, Google, the Bytecode Alliance), since those identities are public where the audits are; the rest is audited or exempted here ([internal/dependencies.md](../internal/dependencies.md)).
-- The PRD's tracking issues were never filed; its criteria are met or closed above, so none are needed.
-
 ## Where to read more
 
 - [What it checks and its sources](checks-and-sources.md), [usage](usage.md), [install](install.md), [machine settings](posture.md), [reports](reports.md).

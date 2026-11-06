@@ -837,6 +837,7 @@ name = "wpantry-cli"
 version = "0.3.0"
 dependencies = [
  "rusqlite",
+ "serde_json",
  "wcli",
  "wpantry",
 ]

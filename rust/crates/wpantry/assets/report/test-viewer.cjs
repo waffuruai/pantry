@@ -1,8 +1,8 @@
-// Run from any directory: node tests/html/test-viewer.cjs
+// Run from any directory: node rust/crates/wpantry/assets/report/test-viewer.cjs
 // Renders the viewer in a fake DOM: the structure of the page for a scan of
 // every kind, escaping, imports, the print document and the all-clear state.
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('path');
-const html=fs.readFileSync(path.join(__dirname,'../../rust/crates/wpantry/assets/report/report.html'),'utf8');
+const html=fs.readFileSync(path.join(__dirname,'report.html'),'utf8');
 const scripts=[...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)].map(x=>x[1]);
 const viewer=scripts[2];
 assert(viewer.includes("'use strict'"));

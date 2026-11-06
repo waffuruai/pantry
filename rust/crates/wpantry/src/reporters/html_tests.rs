@@ -36,7 +36,7 @@ fn fonts_are_embedded_and_no_token_is_left() {
 
 /// Every opened element is closed, in order, outside the script and
 /// style elements (the viewer's own output is checked by
-/// tests/html/test-viewer.cjs).
+/// assets/report/test-viewer.cjs).
 #[test]
 fn template_is_well_formed() {
     let html = render(&obj([]));

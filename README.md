@@ -46,7 +46,7 @@ Both verify the release before installing: mise against the release's signed pac
 wpantry scan                                       # this computer: machine + every git repo under ~
 wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
 wpantry report                                     # the latest scan again, without scanning
-wpantry report --html                              # one offline page, written to <when>_pantry_report.html here
+wpantry report --html                              # one offline page, written to pantry_report_<when>.html here
 wpantry report summary --md                        # one page for a CSO or an auditor
 wpantry scan --json --no-input | jq .              # findings for tools and agents (a pipe gets stdout)
 wpantry fix --dry-run                              # the update plan, change nothing
@@ -57,7 +57,7 @@ wpantry help                                       # every command (wpantry help
 
 Exit codes: 0 clean (warnings included), 1 something fails, 2 usage error, 3 internal error, 10 (`update --check`, `watch`) a newer release exists or a fix has landed. `wpantry update` checks for a newer release and installs it verified (`--check` only asks).
 
-**Reports.** `wpantry scan` and `wpantry fix` end in the report; `wpantry report` shows the latest scan again, or its `history`, one log (`exposure`, `remediation`, `audit`) or the `summary`, as terminal tables or `--txt`, `--json`, `--jsonl`, `--csv`, `--md`, `--html`. On a terminal a format is written to `<when>_pantry_report.<ext>` in the current directory; through a pipe it goes to stdout; `-o FILE` names the file. [docs/public/reports.md](docs/public/reports.md).
+**Reports.** `wpantry scan` and `wpantry fix` end in the report; `wpantry report` shows the latest scan again, or its `history`, one log (`exposure`, `remediation`, `audit`) or the `summary`, as terminal tables or `--txt`, `--json`, `--jsonl`, `--csv`, `--md`, `--html`. On a terminal a format is written to `pantry_report_<when>.<ext>` in the current directory; through a pipe it goes to stdout; `-o FILE` names the file. [docs/public/reports.md](docs/public/reports.md).
 
 **Scope.** By default wpantry checks the machine and every git repo it finds under your home directory, with a bounded walk (depth 6, no symlinks, skipping `Library`, caches, toolchains, `node_modules` and app bundles; it prints how many repos it found). `--path DIR` (repeatable) limits the repo checks to those directories; `--no-machine` skips the machine inventory. Policy files default to the bundled ones in [`rust/crates/wpantry/assets/defaults/`](rust/crates/wpantry/assets/defaults/) and can be replaced with `--gitleaks-config`, `--install-scripts`, `--repo-hooks`, `--suspect-policy`, `--posture-policy` and `--hooks-policy` (the repo hooks you have read and accept). Dependency licenses are not checked unless you pass `--licenses` (the bundled allowlist) or `--licenses FILE`.
 

@@ -54,7 +54,7 @@ pub struct Show {
     pub format: Shown,
     pub out: Option<PathBuf>,
     /// `-o -`: to stdout even on a terminal. Otherwise a format other than
-    /// the terminal's goes to a file (`<when>_pantry_report.<ext>`) on a
+    /// the terminal's goes to a file (`pantry_report_<when>.<ext>`) on a
     /// terminal, and to stdout when stdout is a pipe or a file.
     pub stdout: bool,
     /// `--since DAYS`: the logs' reach.
@@ -227,7 +227,7 @@ fn report_opts() -> Vec<Opt> {
         .collect();
     opts.push(Opt::new(
         "-o, --out <file>",
-        "write the report there; - for stdout. Without it, a format goes to <when>_pantry_report.<ext> here when stdout is a terminal, and to stdout when it is a pipe or a file",
+        "write the report there; - for stdout. Without it, a format goes to pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it is a pipe or a file",
     ));
     opts.push(Opt::new("--since <days>", "how far back the logs go").default("14"));
     opts

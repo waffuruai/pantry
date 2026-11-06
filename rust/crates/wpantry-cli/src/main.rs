@@ -89,7 +89,7 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result
 }
 
 /// Where a report goes when no `-o FILE` says: a format other than the
-/// terminal's is written to `<when>_pantry_report.<ext>` in the current
+/// terminal's is written to `pantry_report_<when>.<ext>` in the current
 /// directory when stdout is a `terminal`, and to stdout when it is a pipe
 /// or a file (an agent's, `| jq`, `> out.json`) or `-o -` asked for it.
 fn resolve(mut show: Show, terminal: bool, now: f64) -> Show {

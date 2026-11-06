@@ -8,7 +8,7 @@ wpantry finds the vulnerabilities that actually apply to your computer and your 
 wpantry scan                                       # this computer: machine + every git repo under ~
 wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
 wpantry report                                     # the latest scan again, without scanning
-wpantry report --html                              # one offline page: <when>_pantry_report.html in this directory
+wpantry report --html                              # one offline page: pantry_report_<when>.html in this directory
 wpantry fix --dry-run                              # what it would fix, changing nothing
 wpantry fix                                        # apply the fixes that can run unattended and the stopgaps wpantry has, then re-check
 wpantry fix list                                   # what can be fixed: the plan, and wpantry's own fixes and whether each applies
@@ -88,12 +88,12 @@ Update plan  wpantry fix runs the automatic ones
 
 ## Reports: what the latest scan found, and what was done
 
-`wpantry report` shows the latest scan from the cache; it never scans. `scan` and `fix` show the same when they finish, and take the same options. On a terminal a format other than the tables is written to `<when>_pantry_report.<ext>` in the current directory (the time in UTC, `20261105T143000Z_pantry_report.md`); through a pipe or into a file it goes to stdout; `-o FILE` names the file and `-o -` forces stdout.
+`wpantry report` shows the latest scan from the cache; it never scans. `scan` and `fix` show the same when they finish, and take the same options. On a terminal a format other than the tables is written to `pantry_report_<when>.<ext>` in the current directory (the time in UTC, `pantry_report_20261105T143000Z.md`); through a pipe or into a file it goes to stdout; `-o FILE` names the file and `-o -` forces stdout.
 
 ```bash
 wpantry report                              # the terminal report: areas, a table each, the update plan
-wpantry report --md                        # the same as Markdown, in <when>_pantry_report.md here
-wpantry report --html                      # one offline page in <when>_pantry_report.html (open it in a browser)
+wpantry report --md                        # the same as Markdown, in pantry_report_<when>.md here
+wpantry report --html                      # one offline page in pantry_report_<when>.html (open it in a browser)
 wpantry report --json                       # the schema-1 envelope scan --json prints
 wpantry report --csv -o findings.csv        # one row per finding
 wpantry report --jsonl -o findings.jsonl    # one object per finding, joined with its OSV record and lifecycle
@@ -146,7 +146,7 @@ An update is verified before anything is replaced (see [install.md](install.md#u
 
 `wpantry fix --dry-run` prints the plan: one fix per component (the one that clears all its advisories), split into what can run unattended and what needs you. `wpantry fix` runs the unattended ones (Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions), then re-checks. On a terminal it lists them first and asks `Run these N updates now? [Y/n]`; answer `n` and nothing changes. With `--no-input`, or no terminal, it runs them without asking. Everything that needs sudo, a vendor, or a change in a repo is printed as a step. A fix in a repo's lockfile is a code change: make it on a branch with that repo's tests.
 
-For a browser report, run `wpantry report --html` (or `wpantry scan --html` to scan first): it writes `<when>_pantry_report.html` in the current directory, or the file `-o FILE` names. The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
+For a browser report, run `wpantry report --html` (or `wpantry scan --html` to scan first): it writes `pantry_report_<when>.html` in the current directory, or the file `-o FILE` names. The page is the visual summary of that run, in Waffuru's design language, dark or light, and answers four questions in order: **1 Scanned**, the inventory counts by area, every source that could not be checked listed as a gap (never as clean), and the scope and policy of the scan; **2 At risk**, one row per component grouped by area, with areas and rows in the order the fixes should go (a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity), KEV and severity badges, and the advisories, affected range, dependency scope and fix behind each row; **3 Patching**, the commands `wpantry fix` runs unattended, what the local history says has been patched (fixes verified by a complete re-check, exposures resolved) and the advisories with no released fix and their mitigation; **4 By hand**, numbered steps with the exact command or setting and what each clears. When the cache has history, **5 History** carries the exposure and remediation logs of `wpantry report`.
 
 The plan is wpantry's own (`wpantry fix --dry-run` prints the same one): one fix per component, `mise` never upgraded for you, many secret hits in one file one decision. **Hand this to an AI agent** under By hand copies a prompt with every finding, the plan and the coverage context of the scan for the agent of your choice; preview it and remove local paths you do not want to share. Copying sends nothing and runs nothing.
 
@@ -302,7 +302,7 @@ Options:
   --md                      Markdown
   --html                    one offline HTML page
   -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            <when>_pantry_report.<ext> here when stdout is a terminal, and to stdout
+                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
                             when it is a pipe or a file
   --since <days>            how far back the logs go (default: 14)
   --no-input                never prompt
@@ -363,7 +363,7 @@ Options:
   --md                      Markdown
   --html                    one offline HTML page
   -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            <when>_pantry_report.<ext> here when stdout is a terminal, and to stdout
+                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
                             when it is a pipe or a file
   --since <days>            how far back the logs go (default: 14)
   --no-input                never prompt
@@ -410,7 +410,7 @@ Options:
   --md              Markdown
   --html            one offline HTML page
   -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
-                    <when>_pantry_report.<ext> here when stdout is a terminal, and to stdout when it
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
                     is a pipe or a file
   --since <days>    how far back the logs go (default: 14)
   -h, --help        print this help

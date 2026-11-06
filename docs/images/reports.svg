@@ -40,7 +40,7 @@
 <rect x="520.5" y="250.5" width="623" height="59" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
 <text x="538" y="285" font-family="'Geist Mono', Menlo, monospace" font-size="13" font-weight="600" fill="#ede8df">wpantry report</text>
 <text x="688" y="276" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">The latest scan's findings with severity, CVSS and EPSS: terminal tables,</text>
-<text x="688" y="294" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">or --json, --jsonl, --csv, --md, --html to &lt;when&gt;_pantry_report.&lt;ext&gt;.</text>
+<text x="688" y="294" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">or --json, --jsonl, --csv, --md, --html to pantry_report_&lt;when&gt;.&lt;ext&gt;.</text>
 <path d="M376,295 L440,295 L440,280 L520,280" fill="none" stroke="#d2ccc1" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="520" y="320" width="624" height="60" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
 <rect x="520.5" y="320.5" width="623" height="59" rx="8" fill="none" stroke="#e8a33d" stroke-width="1.5"/>

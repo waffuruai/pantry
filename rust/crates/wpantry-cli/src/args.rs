@@ -105,6 +105,9 @@ pub struct Check {
     pub no_malware: bool,
     /// `--deep`: the malware scan reads all of `~` with every system's rules.
     pub deep: bool,
+    /// `--no-personal-files`: leave Downloads, Desktop and Documents out of
+    /// the document and malware passes (not with `--deep`).
+    pub no_personal_files: bool,
     /// `--no-online-hash`: never look up a flagged file's hash online.
     pub no_online_hash: bool,
     /// `--sources FILE`: the user's sources file for this run.
@@ -261,6 +264,11 @@ fn scan_opts() -> Vec<Opt> {
             "skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)",
         ),
         Opt::new("--deep", "the malware scan reads everything under ~ with every system's rules (slower)"),
+        Opt::new(
+            "--no-personal-files",
+            "leave Downloads, Desktop and Documents out of the document and malware passes, reported as not checked (for unattended runs)",
+        )
+        .conflicts(&["deep"]),
         Opt::new(
             "--no-online-hash",
             "never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)",
@@ -456,6 +464,7 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
         no_posture: m.flag("no-posture"),
         no_malware: m.flag("no-malware"),
         deep: m.flag("deep"),
+        no_personal_files: m.flag("no-personal-files"),
         no_online_hash: m.flag("no-online-hash"),
         sources: m.value("sources").map(expand),
         show: show(m)?,

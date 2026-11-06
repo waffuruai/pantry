@@ -2,7 +2,7 @@
 
 Scanners skip the files people are sent: a spreadsheet with macros, a PDF that runs JavaScript on open, a Word file with a template on someone else's server, a picture that is really a program.
 
-- **Read:** PDFs, Office documents (old and new), RTF and images in the scanned repos; on a machine scan, also the top of `~/Downloads`, `~/Desktop` and `~/Documents`.
+- **Read:** PDFs, Office documents (old and new), RTF and images in the scanned repos; on a machine scan, also the top of `~/Downloads`, `~/Desktop` and `~/Documents`, unless `--no-personal-files`.
 - **Never** opened, rendered, executed or fetched. Every parser is bounded (32 MiB a file, 16 MiB an inflated part) and says "can't be read" rather than guess.
 - [ClamAV](https://www.clamav.net/), when installed, runs over the same files.
 

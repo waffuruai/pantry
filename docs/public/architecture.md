@@ -11,7 +11,7 @@ Pantry is three things in one simple pipeline:
 2. **`wpantry`**: a fast file scanner, run on a schedule or when triggered. Its cache keeps the sources and files it checked, the exposures it found, and how and when each was mitigated.
 3. **Reports**: terminal tables, JSON, JSON Lines, CSV, HTML, Markdown.
 
-It watches nothing live and needs no permission beyond reading files. Live telemetry, the clipboard included, belongs to a resident watchdog or sidecar, which can trigger a scan. JSON reports can go to an external reporting service that aggregates many machines.
+It watches nothing live and needs no permission beyond reading files. You or an agent can trigger a scan or set a schedule. You can produce reports in various formats for however you need to consume them. JSON reports can go to an external reporting service that aggregates many machines.
 
 ![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; wpantry report writes terminal tables, JSON, JSON Lines, CSV, HTML and Markdown from it. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](../images/architecture.png)
 

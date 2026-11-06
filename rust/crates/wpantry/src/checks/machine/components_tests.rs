@@ -101,6 +101,9 @@ fn components_against_osv_eol_postgres_and_mise() {
         if url == "https://api.github.com/repos/jdx/mise/releases/latest" {
             return Ok(Response::ok(r#"{"tag_name": "v2026.10.21"}"#));
         }
+        if url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+            return Ok(Response::not_found());
+        }
         panic!("unexpected request {url}")
     });
     let mut s = testing::scan(&net, &d);

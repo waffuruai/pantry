@@ -49,6 +49,9 @@ pub(crate) fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 /// each (`GHSA-<name>`, fixed in 9.9.9) and a malicious record for
 /// `MAL-*` ids; None for any other request.
 pub(crate) fn osv(r: &Request, vulnerable: &[(&str, &str)]) -> Option<Result<Response>> {
+    if r.url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+        return Some(Ok(Response::not_found()));
+    }
     if r.url.ends_with("/v1/querybatch") {
         let body: Value = serde_json::from_slice(r.body.as_ref().unwrap()).unwrap();
         let results: Vec<Value> = body["queries"]

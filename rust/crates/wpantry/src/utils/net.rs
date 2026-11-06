@@ -45,6 +45,7 @@ pub const HOSTS: &[&str] = &[
     // EPSS's daily scores, for every CVE.
     "epss.empiricalsecurity.com",
     "cveawg.mitre.org",
+    "osv-vulnerabilities.storage.googleapis.com",
     // The malware scan's indicator lists and, with consent, hash lookups.
     "feodotracker.abuse.ch",
     "yaraify-api.abuse.ch",
@@ -115,6 +116,10 @@ pub struct Response {
 impl Response {
     pub fn ok(body: impl Into<Vec<u8>>) -> Response {
         Response { status: 200, body: body.into(), etag: None }
+    }
+
+    pub fn not_found() -> Response {
+        Response { status: 404, body: Vec::new(), etag: None }
     }
 }
 

@@ -155,6 +155,9 @@ pub(crate) fn app_net(r: &crate::utils::net::Request) -> Result<crate::utils::ne
     if url.ends_with("firefox_history_stability_releases.json") {
         return Ok(Response::ok(serde_json::json!({"128.4.0": "2024-10-29"}).to_string()));
     }
+    if url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+        return Ok(Response::not_found());
+    }
     panic!("unexpected request {url}")
 }
 

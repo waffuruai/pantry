@@ -153,5 +153,5 @@ fn a_typosquat_in_the_suspect_policy_warns_instead() {
     // No lockfiles at all: nothing is asked.
     let (name, root) = testing::repo(&d, "empty");
     projects::projects(&mut s, &[(name, root)]).unwrap();
-    assert!(net.requests().iter().all(|r| r.url.ends_with("/v1/querybatch")));
+    assert!(net.requests().iter().all(|r| r.url.ends_with("/v1/querybatch") || r.url.ends_with("/modified_id.csv")));
 }

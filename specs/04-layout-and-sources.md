@@ -35,7 +35,7 @@ flowchart LR
   FD --> X["remediation/: fix plans, mitigate, harden (moved)"]
 ```
 
-Today: [docs/architecture.md](../docs/architecture.md). Every file's move is in [design/source-layout.md](design/source-layout.md); the sources file is in [design/sources-file.md](design/sources-file.md).
+Today: [docs/public/architecture.md](../docs/public/architecture.md). Every file's move is in [design/source-layout.md](design/source-layout.md); the sources file is in [design/sources-file.md](design/sources-file.md).
 
 ## Terms
 
@@ -151,6 +151,8 @@ Phases 2–7 depend on 1; 4 depends on 3; 6 depends on 3. Phase 7 can follow 2 d
 | 2026-11-05 | No command aliases: `check`, `export` and `mitigate` are gone, as are `--dryrun`, `--license`, `--remove`, `scan --fix` and abbreviated options; the command line is declared with our own `wcli` crate (after commander.js), tried in `wpantry-cli` first | One name for each thing; help, suggestions and errors generated from one declaration, shared by every Waffuru CLI | Eric |
 | 2026-11-05 | A report format on a terminal is written to `pantry_report_<when>.<ext>` in the current directory; a pipe or a file gets stdout; `-o -` forces stdout | No `-o` needed for a file you'll open; agents and pipes unchanged | Eric |
 | 2026-11-05 | OSV stays the primary source; a CVE whose advisories carry no CVSS score is asked about at OSV (its own record for the CVE), then CVE.org (`cveawg.mitre.org`: the publisher's score, else CISA's), each answer kept a week | OSV maps advisories to package versions, which CVE.org doesn't; CVE.org (with CISA's scores) fills the scores OSV's Go and RustSec records lack: 66 of 66 unscored CVEs in one scan | Eric |
+| 2026-11-06 | Every default policy and data file is TOML (`assets/defaults/*.toml`), the big data lists too; a policy file that isn't TOML is a usage error | One format, with comments, structure and validation | Eric |
+| 2026-11-06 | No YARA rules in the binary: Waffuru's two rules moved to waffuruai/pantry-rules (not fetched yet); the standalone `ca-trust/` scripts and `examples/osdb.rs` are removed; the top-level `tests/` moves under `rust/` (the contract suite in Rust) | Pantry is the Rust code; rules are data, fetched like other sources | Eric |
 | 2026-11-06 | OSV's answers are kept current from its per-ecosystem change lists (`modified_id.csv`): read from the top down to the last change applied, matched here; nothing expires after a day, and a version is asked about once (again only when a record can't be matched here, or `--refresh`) | Fetch only what changed since the last sync, however long ago; the package list stops going to OSV every day | Eric |
 | 2026-11-05 | `schedule install --every` takes `hour`, `day`, `week`, `month`, `quarter` or `year`, each from the period's start | Simple periods; more control can come later | Eric |
 | 2026-11-05 | Severity uses CVSS's words (LOW, MEDIUM, HIGH, CRITICAL); MODERATE (GitHub's) becomes MEDIUM; CVSS 3.x and 4.0 are scored, EPSS shown beside them, not folded into severity | The industry's scale; impact and likelihood are different questions | Eric |

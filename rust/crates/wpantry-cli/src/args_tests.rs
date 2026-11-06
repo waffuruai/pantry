@@ -370,3 +370,42 @@ fn fix_one_thing() {
         assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
     }
 }
+
+#[test]
+fn policy_files_come_from_the_config_folder_unless_an_option_names_one() {
+    if std::env::var_os("XDG_CONFIG_HOME").is_some_and(|v| !v.is_empty()) {
+        return; // the config folder is elsewhere on this machine
+    }
+    let _home = wpantry::utils::files::test_home();
+    let dir = wpantry::utils::files::home().join(".config/wpantry");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (file, body) in [
+        ("suspect.toml", "ids = [\"PRIV-ESCALATION\"]\n"),
+        ("hooks.toml", "repos = [\"~/code\"]\n"),
+        ("posture.toml", "skip = [\"FIREWALL\"]\n"),
+        ("licenses.toml", "allow = [\"MIT\"]\n"),
+    ] {
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+    let c = scan(&["scan"]);
+    assert_eq!(
+        (c.suspect_policy, c.hooks_policy, c.posture_policy),
+        (Some(dir.join("suspect.toml")), Some(dir.join("hooks.toml")), Some(dir.join("posture.toml")))
+    );
+    assert_eq!(c.install_scripts, None, "no file of yours: the bundled default");
+    assert!(
+        !c.check_licenses && c.licenses == Some(dir.join("licenses.toml")),
+        "used when --licenses is given, never turns it on"
+    );
+    // An option names another file: that one.
+    let mine = dir.join("other.toml");
+    std::fs::write(&mine, "ids = []\n").unwrap();
+    assert_eq!(scan(&["fix", "--suspect-policy", &mine.to_string_lossy()]).suspect_policy, Some(mine));
+    // A file of yours that isn't TOML is as much an error as a named one.
+    std::fs::write(dir.join("posture.toml"), "FIREWALL\n").unwrap();
+    let text = usage(&["scan"]);
+    assert!(
+        text.contains("option '--posture-policy'") && text.contains("posture.toml: not a TOML policy file"),
+        "{text}"
+    );
+}

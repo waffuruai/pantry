@@ -233,12 +233,18 @@ fn accepted_hooks_match_on_the_exact_command() {
     let hooks = scan_repo(d.path(), &Indicators::default());
     assert_eq!(ids(&hooks), ["OPEN-HOOK", "INSTALL-HOOK"], "{hooks:?}");
     let (task, npm) = (&hooks[0], &hooks[1]);
-    assert_eq!(npm.policy_line(), r#"hook assets/package.json "npm postinstall script" node bin/postinstall"#);
-    assert_eq!(task.policy_line(), r#"hook .vscode/tasks.json "VS Code task \"setup\" on folder open" npm ci"#);
+    assert_eq!(
+        npm.policy_line(),
+        r#"{ file = "assets/package.json", when = "npm postinstall script", command = "node bin/postinstall" }"#
+    );
+    assert_eq!(
+        task.policy_line(),
+        r#"{ file = ".vscode/tasks.json", when = "VS Code task \"setup\" on folder open", command = "npm ci" }"#
+    );
 
     // The printed lines, pasted back, accept exactly those hooks; the
     // quoted `when` survives its own quotes.
-    let text = format!("# mine\n{}\n\n{}\n", npm.policy_line(), task.policy_line());
+    let text = format!("# mine\nhooks = [\n  {},\n  {}, # the task\n]\n", npm.policy_line(), task.policy_line());
     let p = Accepted::parse(&text);
     assert_eq!(p.hooks.len(), 2, "{p:?}");
     assert_eq!(p.hooks[1].when, task.when);
@@ -250,13 +256,14 @@ fn accepted_hooks_match_on_the_exact_command() {
     assert!(!p.lists(d.path(), &changed));
     let moved = Hook { file: "package.json".into(), ..npm.clone() };
     assert!(!p.lists(d.path(), &moved));
-    // A `hook` line is repo-relative: the same hook in another clone is the same reviewed hook.
+    // A `hooks` entry is repo-relative: the same hook in another clone is the same reviewed hook.
     assert!(p.accepts(Path::new("/elsewhere"), npm));
 }
 
 #[test]
-fn a_repo_line_accepts_the_hooks_that_warn_under_it() {
-    let p = Accepted::parse("repo ~/Development/mine/\nrepo /srv/app\nbogus line\nhook only-a-file\n");
+fn a_repo_entry_accepts_the_hooks_that_warn_under_it() {
+    let p =
+        Accepted::parse("repos = [\"~/Development/mine/\", \"/srv/app\", \"\"]\nhooks = [{ when = \"no file\" }]\n");
     assert_eq!(p.repos, ["~/Development/mine", "/srv/app"]);
     assert!(p.hooks.is_empty(), "{p:?}");
     let hook = Hook {
@@ -280,7 +287,7 @@ fn a_repo_line_accepts_the_hooks_that_warn_under_it() {
     {
         let link = real.join("link");
         std::os::unix::fs::symlink(real.join("inner"), &link).unwrap();
-        let p = Accepted::parse(&format!("repo {}", link.display()));
+        let p = Accepted::parse(&format!("repos = [{:?}]", link.display().to_string()));
         assert!(p.accepts(&real.join("inner"), &hook), "{p:?}");
         assert!(p.accepts(&real.join("inner/deeper"), &hook));
         assert!(!p.accepts(&real, &hook));
@@ -298,8 +305,8 @@ fn hooks_that_fail_are_listed_but_never_accepted() {
     write(&d, ".github/init.js", "console.log(1)");
     let hooks = scan_repo(d.path(), &Indicators::default());
     assert_eq!(ids(&hooks), ["RUNS-REPO-FILE"], "{hooks:?}");
-    let by_line = Accepted::parse(&hooks[0].policy_line());
-    let by_repo = Accepted::parse(&format!("repo {}", d.path().display()));
+    let by_line = Accepted::parse(&format!("hooks = [{}]", hooks[0].policy_line()));
+    let by_repo = Accepted::parse(&format!("repos = [{:?}]", d.path().display().to_string()));
     for p in [by_line, by_repo] {
         assert!(p.lists(d.path(), &hooks[0]), "{p:?}");
         assert!(!p.accepts(d.path(), &hooks[0]), "{p:?}");
@@ -312,21 +319,30 @@ fn hooks_that_fail_are_listed_but_never_accepted() {
         note: String::new(),
     };
     assert!(!marker.acceptable());
-    assert!(!Accepted::parse(&marker.policy_line()).accepts(d.path(), &marker));
+    assert!(!Accepted::parse(&format!("hooks = [{}]", marker.policy_line())).accepts(d.path(), &marker));
 }
 
 #[test]
-fn policy_tokens_round_trip() {
-    assert_eq!(token(r#""a \"b\" c" rest"#), Some(("a \"b\" c".to_string(), " rest")));
-    assert_eq!(token("  plain  more"), Some(("plain".to_string(), "  more")));
-    assert_eq!(token("\"unterminated"), None);
-    assert_eq!(token(""), None);
-    for s in ["", "a b", "say \"hi\"", "back\\slash", "VS Code task \"x\" on folder open"] {
-        assert_eq!(token(&quote(s)), Some((s.to_string(), "")), "{s:?}");
-        assert_eq!(token(&word(s)), Some((s.to_string(), "")), "{s:?}");
+fn a_policy_entry_round_trips_through_the_file() {
+    for (file, when, command) in [
+        ("assets/package.json", "npm postinstall script", "node bin/postinstall"),
+        ("my dir/x.json", "VS Code task \"x\" on folder open", "say \"hi\" && back\\slash"),
+    ] {
+        let line = format!(
+            "{{ file = {}, when = {}, command = {} }}",
+            serde_json::to_string(file).unwrap(),
+            serde_json::to_string(when).unwrap(),
+            serde_json::to_string(command).unwrap()
+        );
+        let a = Accepted::parse(&format!("hooks = [\n  {line},\n]\nrepos = [\"~/Development/mine/\"]\n"));
+        assert_eq!(a.hooks.len(), 1, "{line}");
+        assert_eq!(
+            (a.hooks[0].file.as_str(), a.hooks[0].when.as_str(), a.hooks[0].command.as_str()),
+            (file, when, command)
+        );
+        assert_eq!(a.repos, ["~/Development/mine"]);
     }
-    assert_eq!(word("assets/package.json"), "assets/package.json");
-    assert_eq!(word("my dir/package.json"), "\"my dir/package.json\"");
+    assert!(Accepted::parse("hook a \"b\" c\n").hooks.is_empty(), "a line from before TOML accepts nothing");
 }
 
 #[test]
@@ -364,11 +380,11 @@ fn repo_hooks_fail_on_repo_files_and_warn_on_commands() {
         ("repo-hook", "app/.envrc", "warn")
     );
     assert!(open[0].note.ends_with(": `source_up`"), "{}", open[0].note);
-    let line = "hook .envrc \"direnv, on every cd (once allowed)\" source_up";
+    let line = r#"{ file = ".envrc", when = "direnv, on every cd (once allowed)", command = "source_up" }"#;
     assert_eq!(
         open[0].fix_cmd,
         format!(
-            "Read .envrc before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to your hooks policy (--hooks-policy FILE): {line}"
+            "Read .envrc before opening or installing this repo; remove the hook if you don't need it. If you've read it and it's fine, add to `hooks` in your hooks policy (--hooks-policy FILE): {line}"
         )
     );
     let runs = testing::by_id(&s, "RUNS-REPO-FILE");
@@ -380,11 +396,11 @@ fn repo_hooks_fail_on_repo_files_and_warn_on_commands() {
     );
     assert_eq!(runs[0].fix_cmd, refuse);
 
-    // The printed line, in a hooks policy, accepts the warning: counted, not
-    // reported. A `repo` line covering the clone accepts it too, and names
-    // the failing hook without accepting it.
-    for policy in [line.to_string(), format!("repo {}", root.display())] {
-        let file = d.path().join("hooks.txt");
+    // The printed entry, in a hooks policy, accepts the warning: counted,
+    // not reported. A `repos` entry covering the clone accepts it too, and
+    // names the failing hook without accepting it.
+    for policy in [format!("hooks = [{line}]"), format!("repos = [{:?}]", root.display().to_string())] {
+        let file = d.path().join("hooks.toml");
         std::fs::write(&file, format!("# mine\n{policy}\n")).unwrap();
         let opts =
             Options { policy: crate::checks::Policy { hooks: Some(file), ..Default::default() }, ..Default::default() };
@@ -395,7 +411,7 @@ fn repo_hooks_fail_on_repo_files_and_warn_on_commands() {
         let runs = testing::by_id(&s, "RUNS-REPO-FILE");
         assert_eq!(runs.len(), 1, "{policy}: {:?}", s.findings);
         assert_eq!(runs[0].status, "fail");
-        if policy.starts_with("repo ") {
+        if policy.starts_with("repos ") {
             assert_eq!(
                 runs[0].fix_cmd,
                 format!(

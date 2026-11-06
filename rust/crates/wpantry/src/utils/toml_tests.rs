@@ -62,3 +62,27 @@ fn string_escapes_and_quoted_keys() {
     assert!(parse("x = \"a\n").is_err());
     assert!(parse("= 1\n").is_err());
 }
+
+#[test]
+fn lists_and_inline_tables() {
+    let text = "# a policy\nallow = [\n  \"MIT\", # the usual\n  'Apache-2.0',\n]\none = \"x\"\n[t]\nnames = [\"a\"]\nhooks = [\n  { file = \"a.json\", when = \"npm postinstall\", command = \"node x.js {}\" },\n  { file = 'b', when = \"open\", command = \"run\" }, # trailing\n]\n";
+    assert_eq!(crate::utils::toml::list(text, "", "allow").unwrap(), ["MIT", "Apache-2.0"]);
+    assert_eq!(crate::utils::toml::list(text, "", "one").unwrap(), ["x"]);
+    assert_eq!(crate::utils::toml::list(text, "t", "names").unwrap(), ["a"]);
+    assert!(crate::utils::toml::list(text, "", "missing").unwrap().is_empty());
+    assert!(crate::utils::toml::list("esbuild@^0.28\n", "", "allow").is_err(), "a list from before TOML is no TOML");
+    let raw = parse(text).unwrap().into_iter().find(|t| t.name == "t").unwrap();
+    let Some(Val::Raw(hooks)) = raw.get("hooks") else { panic!() };
+    let got = crate::utils::toml::inline_tables(hooks);
+    assert_eq!(got.len(), 2);
+    assert_eq!(
+        got[0],
+        vec![
+            ("file".to_string(), Val::Str("a.json".into())),
+            ("when".to_string(), Val::Str("npm postinstall".into())),
+            ("command".to_string(), Val::Str("node x.js {}".into())),
+        ]
+    );
+    assert_eq!(got[1][0].1, Val::Str("b".into()));
+    assert!(crate::utils::toml::inline_tables("[]").is_empty());
+}

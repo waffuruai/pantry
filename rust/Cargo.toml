@@ -1,4 +1,4 @@
-# wpantry in Rust: docs/architecture.md. Every dependency is pinned `=x.y.z`, only from the
+# Pantry in Rust: docs/public/architecture.md. Every dependency is pinned `=x.y.z`, only from the
 # allowlist in docs/internal/dependencies.md.
 [workspace]
 resolver = "3"

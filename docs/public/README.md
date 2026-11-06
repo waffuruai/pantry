@@ -1,8 +1,13 @@
-# wpantry: public docs
+# Pantry: public docs
 
-- [Install and verify](install.md): download a release, check its checksum, attestation and signature, install it; or install from crates.io or source.
-- [Use](usage.md): quick start, scope, reading the report, exit codes, fixing, JSON, options, the cache, troubleshooting.
-- [What it checks and its sources](checks-and-sources.md): every check, every source it asks and what is sent, what runs locally.
+- [How it works](architecture.md): the picture, what happens during a scan in five steps, and how it is put together: readers, comparators, the cache, the binary, the tests.
+- [Install and verify](install.md): download a release and check its checksum, attestation and signature; or install from crates.io or source.
+- [Use](usage.md): quick start, scope, the report, exit codes, fixing, JSON, options, the cache, troubleshooting.
+- [What it checks and its sources](checks-and-sources.md): every check, every source and what is sent, what runs locally.
 - [The machine's settings](posture.md): every posture check with its CIS id, severity and fix.
+- [Reports](reports.md): the exposure, remediation and audit logs, and the summary.
+- [Suspicious code](suspect-code.md): the source-level checks and their policy file.
+- [Documents and images](documents.md): PDF, Office, RTF and image checks.
+- [Malware](malware.md): what the malware scan checks, its sources and limits, and how to add rules.
 
-The interface every implementation keeps is the [CLI contract](../../specs/cli-contract.md).
+The interface every implementation keeps: the [CLI contract](../../specs/cli-contract.md).

@@ -1,10 +1,15 @@
 # The machine's own security settings
 
-With the machine inventory, wpantry reads the settings that decide whether an exploit matters at all: is the disk encrypted, is the firewall on, is anything listening for remote logins, does the Mac log someone in without a password, do updates install on their own. Each is a read (`defaults read`, `launchctl print-disabled`, `fdesetup status`, a config file); nothing is changed. A failing Critical or High check fails the scan (exit 1), Medium and Low warn, and a check that can't tell says "couldn't tell" rather than pass.
+With a scan of your machine, Pantry reads the system and OS level settings to see if there is any hardening that could or should be done to make your system more secure: disk encryption, the firewall, remote logins, password-less login, automatic updates.
 
-Fixes marked *user* are settings of your own account; `wpantry fix` may apply them. Fixes marked *admin* need `sudo` or a System Settings pane and are printed for you.
+- **Read-only:** `defaults read`, `launchctl print-disabled`, `fdesetup status`, config files. Nothing is changed.
+- **Verdict:** a failing Critical or High check fails the scan (exit 1); Medium and Low warn. A check that can't tell says "couldn't tell", never pass.
+- **Fixes:** *user* fixes are your own account's settings, and `wpantry fix` may apply them. *admin* fixes need `sudo` or a System Settings pane and are printed for you.
+- **Skipping:** `--no-posture` skips all checks. `~/.config/wpantry/posture.toml` (or `--posture-policy FILE`) lists ids to skip, in place of the bundled default (the ids below; the `POSTURE-` prefix is optional):
 
-`--no-posture` skips all of them; `--posture-policy FILE` lists ids to skip, one per line (`REMOTE-LOGIN` on a server that means to run ssh). The ids are the finding's `vuln_id` without `POSTURE-`.
+  ```toml
+  skip = ["REMOTE-LOGIN"]   # a server that means to run ssh
+  ```
 
 The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Independent Linux Benchmark. The projects they were written against are in the README's [acknowledgements](../../README.md#acknowledgements).
 
@@ -48,10 +53,10 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 
 | Id | Check | Severity | Fix |
 |---|---|---|---|
-| EXTENSION-COOLDOWN | Every VS Code-family editor (Code, Insiders, Cursor, Windsurf, VSCodium, Positron) has `extensions.installCooldownHours` of 24 or more, so a freshly published (possibly compromised) extension version is never installed here before the marketplace has had time to pull it | High | user: `wpantry fix extension-cooldown` (edits each editor's settings.json in place; `--fix` runs it) |
+| EXTENSION-COOLDOWN | Every VS Code-family editor (Code, Insiders, Cursor, Windsurf, VSCodium, Positron) has `extensions.installCooldownHours` of 24 or more, so a freshly published (possibly compromised) version isn't installed before the marketplace can pull it | High | user: `wpantry fix extension-cooldown` (edits each editor's settings.json in place; `--fix` runs it) |
 | GIT-HOOKS | A global `core.hooksPath` with a `pre-commit` hook, so a secret is stopped at the commit | Low | ops: `mise run hooks`; elsewhere point `git config --global core.hooksPath` at a directory with a gitleaks pre-commit |
 
-An editor with `extensions.autoUpdate: false` is reported as "updates by hand" (a warning): manual updates keep a bad version from arriving on its own, and the cooldown still stops it being installed by hand on the day it appears.
+An editor with `extensions.autoUpdate: false` warns "updates by hand": a bad version can't arrive on its own, and the cooldown still blocks installing it by hand on the day it appears.
 
 ## Linux
 
@@ -71,20 +76,35 @@ An editor with `extensions.autoUpdate: false` is reported as "updates by hand" (
 | MPTCP | | `net.mptcp.enabled = 0` (or MPTCP not built) and no program still holds an MPTCP listening socket: the sysctl only stops new sockets, a service listening since before it flipped keeps MPTCP until restarted. Listeners come from `ss -tlnpi` as root or through `sudo -n` (the `tcp-ulp-mptcp` mark, no kernel module needed), else from `ss -Mlnp` where the kernel has `mptcp_diag`; without either the check can't see them and says so (manual). Only the host network namespace: a container's own listeners are judged by the repo check | Medium | admin: `sysctl -w net.mptcp.enabled=0`, then `systemctl restart` of the services the evidence names (`wpantry fix CVE-2026-98432` does the first and prints the second) |
 | DNS-ENCRYPTED | | DNS leaves the machine encrypted: systemd-resolved with `DNSOverTLS=yes` (`resolvectl status`, else `resolved.conf`), NetworkManager `ipv4.dns-over-tls yes` on an active connection, or a local stub that forwards encrypted (stubby, dnscrypt-proxy, cloudflared, nextdns, AdGuard Home, unbound with `forward-tls-upstream: yes`) as the nameserver in `/etc/resolv.conf`. `opportunistic` warns (it can be downgraded); resolved's stub without DoT, or plain addresses on UDP 53, warn; a stub it can't judge is "couldn't tell" | Medium | admin: `DNSOverTLS=yes` and `DNS=1.1.1.1#cloudflare-dns.com` in `resolved.conf`, `nmcli connection modify <name> ipv4.dns-over-tls yes`, or a local stub |
 
-The DNS check is Medium on purpose: an internal resolver (Kubernetes, Docker, a corporate split-DNS server on the LAN or over the VPN) legitimately answers in plain DNS, so a plaintext resolver is a warning that says where the queries go, never a failure. It passes on evidence of encryption (a profile, a proxy extension, resolved's DoT, a known stub), says "couldn't tell" for a VPN tunnel, Tailscale's resolver or a stub it doesn't know, and warns for plain addresses on UDP 53, which an ISP or a hotspot can read and rewrite.
+**DNS is Medium on purpose.** An internal resolver (Kubernetes, Docker, corporate split DNS on the LAN or VPN) legitimately answers in plain DNS, so plaintext warns and says where queries go; it never fails.
 
-The kernel check is the pattern for a vulnerability with no fix to install yet: the check knows the affected versions and the stopgap, passes on either, and tells you which one you are relying on. [usage.md](usage.md#exposed-with-no-fix-yet) covers `wpantry watch`, which asks OSV again about such advisories.
+- Passes: evidence of encryption (a profile, a proxy extension, resolved's DoT, a known stub).
+- "Couldn't tell": a VPN tunnel, Tailscale's resolver, an unknown stub.
+- Warns: plain addresses on UDP 53, which an ISP or hotspot can read and rewrite.
+
+**The kernel check** is the pattern for a vulnerability with no fix to install yet: it knows the affected versions and the stopgap, passes on either, and says which you rely on. [usage.md](usage.md#exposed-with-no-fix-yet) covers `wpantry watch`, which asks OSV again about such advisories.
 
 Not covered yet: Windows (#11), Time Machine encryption, sudo timeouts (need root to read), audit logging.
 
 ## Persistence
 
-With the machine inventory, and whatever `--no-posture` says, wpantry lists every place a program can arrange to run again and compares the list with the last scan's (kind `persistence`). An infostealer or a backdoor has to survive a reboot, and the places it can do that from are few:
+With the machine inventory, even under `--no-posture`, Pantry lists every place a program can arrange to run again (kind `persistence`) and compares it with the last scan's list. An infostealer or backdoor must survive a reboot, and the places it can do that from are few.
 
-- **macOS:** launch agents and daemons (`~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`, every program, with the `EnvironmentVariables` they set), the login items and launch agents and daemons apps carry in their bundles for ServiceManagement to register (`Contents/Library/LoginItems`, `LaunchAgents` and `LaunchDaemons` of every app in `/Applications` and `~/Applications`; whether each is enabled lives in Background Task Management, whose only reader, `sfltool dumpbtm`, asks for an administrator's password, so wpantry doesn't run it), the user's crontab and `/etc/crontab`, pending `at` jobs, periodic scripts and local files, emond rules and clients, authorization plugins (`/Library/Security/SecurityAgentPlugins`), third-party kernel extensions (`/Library/Extensions`), system extensions (`systemextensionsctl list`), Quick Look generators and Spotlight importers (yours and the system's), the shells' startup files (`~/.zshrc`, `~/.bash_profile`, `/etc/zshrc` and the rest), and `launchctl getenv DYLD_INSERT_LIBRARIES`.
-- **Linux:** systemd units (yours in `~/.config/systemd/user`, the system's in `/etc/systemd` and `/usr/local/lib/systemd`; the distribution's own in `/lib/systemd` are packaged and left out), crontabs, `/etc/cron.d` and the `cron.hourly` to `cron.monthly` scripts, `at` jobs, XDG autostart entries, the startup files with `/etc/profile.d` and `/etc/environment`, and `/etc/ld.so.preload`.
+**macOS:**
 
-Each persisted program is put to `codesign -dv` and `codesign --verify --strict` on macOS (Apple, a developer identity, the App Store, ad hoc, unsigned, or a signature that no longer verifies) and asked for its `com.apple.quarantine` attribute (still there: downloaded and not yet cleared by Gatekeeper; missing from a downloaded program: someone stripped it). Both go in the finding's note.
+- Launch agents and daemons (`~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`): every program, with the `EnvironmentVariables` they set.
+- Login items, launch agents and daemons that apps carry for ServiceManagement (`Contents/Library/LoginItems`, `LaunchAgents`, `LaunchDaemons` of every app in `/Applications` and `~/Applications`). Whether each is enabled lives in Background Task Management; its only reader, `sfltool dumpbtm`, asks for an administrator's password, so Pantry doesn't run it.
+- The user's crontab and `/etc/crontab`, pending `at` jobs, periodic scripts and local files, emond rules and clients.
+- Authorization plugins (`/Library/Security/SecurityAgentPlugins`), third-party kernel extensions (`/Library/Extensions`), system extensions (`systemextensionsctl list`), Quick Look generators and Spotlight importers (yours and the system's).
+- Shell startup files (`~/.zshrc`, `~/.bash_profile`, `/etc/zshrc` and the rest) and `launchctl getenv DYLD_INSERT_LIBRARIES`.
+
+**Linux:**
+
+- systemd units: yours in `~/.config/systemd/user`, the system's in `/etc/systemd` and `/usr/local/lib/systemd` (the distribution's own in `/lib/systemd` are packaged and left out).
+- Crontabs, `/etc/cron.d`, the `cron.hourly` to `cron.monthly` scripts, `at` jobs, XDG autostart entries.
+- Startup files with `/etc/profile.d` and `/etc/environment`, and `/etc/ld.so.preload`.
+
+On macOS each persisted program gets `codesign -dv` and `codesign --verify --strict` (Apple, a developer identity, the App Store, ad hoc, unsigned, or a signature that no longer verifies) and is checked for `com.apple.quarantine` (present: downloaded and not yet cleared by Gatekeeper; missing from a downloaded program: someone stripped it). Both go in the finding's note.
 
 | Id | When | Status |
 |---|---|---|
@@ -93,4 +113,7 @@ Each persisted program is put to `codesign -dv` and `codesign --verify --strict`
 | PERSISTENCE-SIGNATURE | A persisted program whose code signature doesn't verify: it changed after it was signed | warn, every scan |
 | PERSISTENCE-HIDDEN | A persisted program in a temporary or hidden place (`/tmp`, `/var/folders`, `/Users/Shared`, a dot-directory in your home that isn't a known tool's) | warn, every scan |
 
-The first scan records the list (the cache's `persistence` table, as hashes and locations; the counts say how many were recorded) and reports nothing new. Each source keeps its own record, so one that couldn't be read once (reported as not checked) doesn't make everything in it new the next time; an item that goes and comes back is new again. Anything you add yourself warns once and is in the record from then on. The list of persisted programs is also what the malware scan reads.
+- The first scan records the list (the cache's `persistence` table, as hashes and locations; the counts say how many) and reports nothing new.
+- Each source keeps its own record: one unreadable once (reported not checked) doesn't make everything in it new next time. An item that goes and comes back is new again.
+- Anything you add yourself warns once, then is in the record.
+- The malware scan reads the list of persisted programs too.

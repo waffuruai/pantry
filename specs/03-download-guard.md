@@ -46,7 +46,7 @@ flowchart LR
   Q -.-> GK
 ```
 
-How wpantry works today: [docs/architecture.md](../docs/architecture.md).
+How wpantry works today: [docs/public/architecture.md](../docs/public/architecture.md).
 
 ## Terms
 

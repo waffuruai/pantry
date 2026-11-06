@@ -1,0 +1,7 @@
+# Posture checks to skip, for machines where a setting is meant to be that
+# way: a server keeps Remote Login on, a kiosk logs in automatically. Ids
+# with or without the POSTURE- prefix, any case. Replaced by
+# `--posture-policy FILE`; `--no-posture` skips every check. Nothing is
+# skipped by default.
+
+skip = []

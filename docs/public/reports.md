@@ -1,32 +1,70 @@
 # Reports
 
-`wpantry report` shows the latest scan; `wpantry report history` (or `exposure`, `remediation`, `audit` alone, or `all` with the findings) shows the three logs the cache keeps across scans, and `wpantry report summary` one page over all of them, in any format (`--md`, `--json`, `--csv`, `--html`, …). Nothing is sent anywhere; the report is a file you keep or hand to an auditor, a CSO or an insurer.
+| Command | Shows |
+|---|---|
+| `wpantry report` | The latest scan |
+| `wpantry report history` | The three logs the cache keeps across scans |
+| `wpantry report exposure`, `remediation`, `audit` | One log |
+| `wpantry report all` | The logs with the findings |
+| `wpantry report summary` | One page over all of them |
+
+Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; the report is a file you keep or hand to an auditor, a CSO or an insurer.
 
 ![Every report comes from one cache: the SQLite file's tables (vulns and queries, findings, scans, exposures, fixes, events) feed wpantry scan and fix, wpantry report (the findings in the terminal or as JSON, JSON Lines, CSV, Markdown or HTML), report history and its exposure, remediation and audit logs, report summary, the HTML report, and search](../images/reports.png)
 
 [Full size](../images/reports.png) · [SVG source](../images/reports.svg)
 
-| Log | What it answers | Rows |
+| Log | Answers | Rows |
 |---|---|---|
-| Exposure (`report exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`), in the same columns in every format: first seen, resolved (its date, or open), severity, component, version, advisory, CVSS, EPSS, KEV, status, the fix version, days exposed, last seen, kind, location. A finding is resolved by a scan of the same scope (machine or repos, the same `--path`s, `--licenses` and policy files) that no longer lists it and that had no source `unchecked`: a scan with a gap resolves nothing, so an outage leaves exposures open rather than closing them; a scan of one repo says nothing about the others |
-| Remediation (`report remediation`) | What was done about it | One per fix `wpantry fix` ran (everything, or one with `fix ID`): when, who ran it (user and host), the command, whether it exited 0, the exposures it addressed, and the scan that verified it: a complete re-check (no source `unchecked`) in which none of those exposures were still listed. A failed fix, an incomplete re-check, or a finding still present leaves it blank |
-| Audit (`report audit`) | That the checks happened | One per scan (when, host, user, wpantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
+| Exposure (`report exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`), same columns in every format: first seen, resolved (date, or open), severity, component, version, advisory, CVSS, EPSS, KEV, status, fix version, days exposed, last seen, kind, location |
+| Remediation (`report remediation`) | What was done about it | One per fix `wpantry fix` ran (all, or one with `fix ID`): when, who (user and host), the command, whether it exited 0, the exposures it addressed, and the scan that verified it |
+| Audit (`report audit`) | That the checks happened | One per scan (when, host, user, Pantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
 
-`--since DAYS` bounds all three (default 14). The HTML report (`wpantry report --html`, [usage.md](usage.md)) carries the exposure and remediation logs of the last 14 days too, under its History section, when the cache has any. `--md` is Markdown with a summary line (open exposures, resolved, median days to resolve) and the logs as tables; `--json` is one document; `--csv` is one table per log. `-o FILE` names the file. Without `-o`, a format is written to `pantry_report_<when>.<ext>` (such as `pantry_report_20261105T143000Z.html`, the time in UTC) in the current directory when stdout is a terminal, and to stdout when stdout is a pipe or a file (an agent, `| jq`, `> out.json`); `-o -` sends it to stdout on a terminal too.
+**When an exposure is resolved:** a later scan of the same scope (machine or repos, same `--path`s, `--licenses` and policy files) no longer lists it, and no source in that scan was `unchecked`.
 
-**The summary** (`wpantry report summary`) is the page to hand over: the open findings by severity against the remediation targets of our [security policy](../../SECURITY.md) (Critical 14 days, High 30, Medium 90, Low 180; your own targets: #171), how many are overdue or were fixed late, how many open ones are known exploited (CISA KEV) or likely to be (EPSS 10% or more), the median and 90th-percentile time to resolve, the scans that ran (hosts, users, days without one, sources that couldn't be checked), each fix with who ran it and the scan that verified it, and the controls below it is evidence for.
+- A scan with a gap resolves nothing: an outage leaves exposures open.
+- A scan of one repo says nothing about the others.
+
+**When a fix is verified:** a complete re-check (no source `unchecked`) lists none of the exposures it addressed. A failed fix, an incomplete re-check or a finding still present leaves it blank.
+
+## Options and output
+
+- `--since DAYS` bounds all three logs (default 14).
+- `--md`: a summary line (open exposures, resolved, median days to resolve) and the logs as tables. `--json`: one document. `--csv`: one table per log.
+- The HTML report (`wpantry report --html`, [usage.md](usage.md)) carries the last 14 days of exposure and remediation logs under History, when the cache has any.
+- `-o FILE` names the file. Without it:
+  - stdout is a terminal: written to `pantry_report_<when>.<ext>` in the current directory (such as `pantry_report_20261105T143000Z.html`, UTC);
+  - stdout is a pipe or file (an agent, `| jq`, `> out.json`): written to stdout;
+  - `-o -` sends it to stdout on a terminal too.
+
+## The summary
+
+`wpantry report summary` is the page to hand over:
+
+- open findings by severity against the remediation targets of our [security policy](../../SECURITY.md): Critical 14 days, High 30, Medium 90, Low 180 (your own targets: #171);
+- how many are overdue or were fixed late;
+- open findings known exploited (CISA KEV) or likely to be (EPSS 10% or more);
+- median and 90th-percentile time to resolve;
+- the scans that ran: hosts, users, days without one, sources that couldn't be checked;
+- each fix, who ran it and the scan that verified it;
+- the controls below it is evidence for.
 
 ## For SOC 2 and incident response
 
-| Control area | Evidence this gives |
+| Control area | Evidence |
 |---|---|
-| Vulnerability identification (CC7.1) | The audit log: a scan ran on this host on these dates, covering these repos and this machine, with wpantry version N and these policy files |
+| Vulnerability identification (CC7.1) | The audit log: a scan ran on this host on these dates, covering these repos and this machine, with Pantry version N and these policy files |
 | Monitoring (CC7.2) | Regular scans (`wpantry schedule`), each with its outcome; the exposure log's first-seen dates |
-| Remediation (CC7.4, CC7.5) | The remediation log: the command, when, the result, and the scan that verified the finding gone; the exposure log's days-exposed and median time to resolve |
-| Change management (CC8.1) | The remediation log doubles as the record of dependency and tool updates wpantry made unattended; manual steps it printed are in the scan's findings (`report --csv`) |
+| Remediation (CC7.4, CC7.5) | The remediation log: the command, when, the result, and the scan that verified the finding gone; the exposure log's days exposed and median time to resolve |
+| Change management (CC8.1) | The remediation log records the dependency and tool updates Pantry made unattended; manual steps it printed are in the scan's findings (`report --csv`) |
 
-What it is not: proof that nothing was missed. A source that couldn't be reached is in the findings as `unchecked` and in that scan's `unchecked` count, and such a scan resolves no exposure and verifies no fix, so an outage shows as open exposures and unverified fixes, never as remediation; an exposure resolved because a repo was deleted looks the same as one that was fixed. Keep the report with the context that explains it.
+It is not proof that nothing was missed:
+
+- An unreachable source is in the findings as `unchecked` and in that scan's `unchecked` count. Such a scan resolves no exposure and verifies no fix, so an outage shows as open exposures and unverified fixes, never as remediation.
+- An exposure resolved because a repo was deleted looks the same as one that was fixed.
+
+Keep the report with the context that explains it.
 
 ## Retention
 
-The history grows with every scan. `wpantry cache prune` (when available) and deleting the cache file both remove it; copy a report out first when you need it kept.
+The history grows with every scan. `wpantry cache prune` keeps it (it drops unused advisories, version queries and cached runs); deleting the cache file removes it. Copy a report out first when you need it kept.

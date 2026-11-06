@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 keywords = ["security", "vulnerability", "osv", "lockfile", "scanner"]
 categories = ["command-line-utilities", "development-tools"]
+# The viewer's Node test stays in the repository.
+exclude = ["assets/report/test-viewer.cjs"]
 
 [dependencies]
 serde.workspace = true

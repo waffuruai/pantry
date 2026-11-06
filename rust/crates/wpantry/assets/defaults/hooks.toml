@@ -1,0 +1,16 @@
+# Repo hooks you have read and accept, so they stop being reported. Nothing
+# is silenced: the report counts them ("repo hooks accepted by policy"), and
+# a hook whose command changes is reported again. Replaced by
+# `--hooks-policy FILE`.
+#   hooks  one entry a hook: its file in the repo, when it runs and its exact
+#          command, as each warning's fix text gives it:
+#          { file = "assets/package.json", when = "npm postinstall script", command = "node bin/postinstall" }
+#   repos  every hook that warns in the repos at or under a path, as Pantry
+#          prints it ("~/Development/mine")
+# Only hooks that warn because they run a command (OPEN-HOOK, INSTALL-HOOK)
+# can be accepted. A hook that runs a file kept in the repo, a known
+# indicator, a loader or a campaign marker (RUNS-REPO-FILE, IOC, LOADER,
+# MARKER) fails whatever this file says.
+
+hooks = []
+repos = []

@@ -61,11 +61,11 @@ pub struct Policy {
 
 impl Policy {
     pub fn install_scripts(&self) -> Vec<String> {
-        listed(self.install_scripts.as_deref(), crate::defaults::INSTALL_SCRIPTS)
+        listed(self.install_scripts.as_deref(), crate::defaults::INSTALL_SCRIPTS, "allow")
     }
 
     pub fn licenses(&self) -> Vec<String> {
-        listed(self.licenses.as_deref(), crate::defaults::LICENSES)
+        listed(self.licenses.as_deref(), crate::defaults::LICENSES, "allow")
     }
 
     pub fn suspect_policy(&self) -> crate::checks::suspects::Policy {
@@ -92,7 +92,7 @@ impl Policy {
     }
 
     pub fn posture_skip(&self) -> Vec<String> {
-        listed(self.posture.as_deref(), crate::defaults::POSTURE)
+        listed(self.posture.as_deref(), crate::defaults::POSTURE, "skip")
     }
 
     /// The gitleaks config file: the given one, or the bundled one written
@@ -112,14 +112,29 @@ impl Policy {
     }
 }
 
-/// Entries of a one-per-line list file (comments start with #); `bundled`
-/// when no file is given, nothing when it can't be read.
-pub fn listed(path: Option<&Path>, bundled: &str) -> Vec<String> {
+/// The list `key` of a policy file (TOML), or of `bundled` when no file is
+/// given; nothing when it can't be read (the CLI checks a file before the
+/// scan: [`policy_error`]).
+pub fn listed(path: Option<&Path>, bundled: &str, key: &str) -> Vec<String> {
     let text = match path {
         Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
         None => bundled.to_string(),
     };
-    text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).map(|l| l.trim().to_string()).collect()
+    crate::utils::toml::list(&text, "", key).unwrap_or_default().into_iter().map(|e| e.trim().to_string()).collect()
+}
+
+/// The user's own policy file `name` (`suspect.toml`, …) in the config
+/// folder ([`crate::sources::file::config_dir`]), when there is one: used
+/// when its option isn't given.
+pub fn user_policy(name: &str) -> Option<PathBuf> {
+    Some(crate::sources::file::config_dir().join(name)).filter(|p| p.is_file())
+}
+
+/// Why a policy file can't be used, or None: it must be TOML (a list from
+/// before, one entry a line, isn't).
+pub fn policy_error(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string()).ok()?;
+    crate::utils::toml::parse(&text).err().map(|e| format!("not a TOML policy file ({e})"))
 }
 
 /// The id a report shows: a CVE alias when there is one.
@@ -131,17 +146,20 @@ pub fn display_id(rec: &Value) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-/// The step for an advisory with no fix released, from the mitigations
-/// list (bundled, or `--mitigations FILE`).
+/// The step for an advisory with no fix released, from the bundled
+/// mitigations (`[mitigations]`, by id).
 pub fn mitigation(id: &str) -> Option<String> {
     mitigation_in(crate::defaults::MITIGATIONS, id)
 }
 
 pub fn mitigation_in(text: &str, id: &str) -> Option<String> {
-    text.lines().filter(|l| !l.starts_with('#')).find_map(|l| {
-        let (k, v) = l.split_once('\t').or_else(|| l.split_once("  "))?;
-        (k.trim().eq_ignore_ascii_case(id)).then(|| v.trim().to_string())
-    })
+    let tables = crate::utils::toml::parse(text).ok()?;
+    let t = tables.iter().find(|t| t.name == "mitigations")?;
+    t.entries
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(id))
+        .and_then(|(_, v)| v.as_str())
+        .map(|v| v.trim().to_string())
 }
 
 /// Severities worth a warning even with no fix to apply.

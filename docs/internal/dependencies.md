@@ -1,6 +1,6 @@
 # Dependencies and supply chain
 
-wpantry runs with access to the whole home directory, so what goes into it is reviewed like the code. The rules were set in the Rust port's decision log ([specs/archived/01-rust-port.md](../../specs/archived/01-rust-port.md)); this page is the rules and how to follow them.
+Pantry runs with access to the whole home directory, so what goes into it is reviewed like the code. The rules were set in the Rust port's decision log ([specs/archived/01-rust-port.md](../../specs/archived/01-rust-port.md)); this page is the rules and how to follow them.
 
 ## The rules
 
@@ -16,7 +16,7 @@ wpantry runs with access to the whole home directory, so what goes into it is re
 | Date | Decision | Why |
 |---|---|---|
 | 2026-10-25 | `serde`, `serde_json` (no `derive`), `rusqlite` (`bundled`, FTS5), `ureq`, `rustls` (`ring`); nothing else | A minimal, reviewable surface; the parsers, comparators and helpers are written here |
-| 2026-10-31 | ureq's `platform-verifier` feature: TLS is verified by the platform's trust store (`rustls-platform-verifier`), not the bundled Mozilla roots | A CA the machine distrusts (`wpantry harden ca-trust`, or by hand) must be distrusted by wpantry's own requests too. Adds `rustls-platform-verifier` and, per platform, `security-framework` with `core-foundation` on macOS and `rustls-native-certs` with `openssl-probe` on Linux; the Android and Windows halves (`jni`, `syn`, `schannel`, `windows-sys`, …) are in the lockfile but never compiled for a target we ship. Each is exempted in `supply-chain/config.toml` until audited |
+| 2026-10-31 | ureq's `platform-verifier` feature: TLS is verified by the platform's trust store (`rustls-platform-verifier`), not the bundled Mozilla roots | A CA the machine distrusts (`wpantry fix ca-trust`, or by hand) must be distrusted by Pantry's own requests too. Adds `rustls-platform-verifier` and, per platform, `security-framework` with `core-foundation` on macOS and `rustls-native-certs` with `openssl-probe` on Linux; the Android and Windows halves (`jni`, `syn`, `schannel`, `windows-sys`, …) are in the lockfile but never compiled for a target we ship. Each is exempted in `supply-chain/config.toml` until audited |
 | 2026-11-04 | A workspace crate of our own, `wpantry-yara` (the YARA engine), and nothing else: no `yara`, `yara-x`, `wasmtime`, `regex` or `aho-corasick` | yara-x compiles conditions to WebAssembly and runs them through wasmtime's JIT: 55+ crates and a code generator inside a scanner that reads hostile files. The engine is written here in safe Rust (parser, atoms, a backtracking matcher, closure-compiled conditions, the `pe`, `elf`, `math` and `hash` modules), matches yara 4.5.7 on the differential suite and adds no third-party code; `tests/pins.rs` allows it by name |
 | 2026-11-05 | A workspace crate of our own, `wcli` (command-line parsing after commander.js), and no `clap`, `argh` or `pico-args` | Every Waffuru tool needs the same command tree, help, suggestions and errors; clap alone brings a dozen crates and proc-macros (`syn`, `quote`) into every build. `wcli` is a few hundred lines of safe Rust with no dependencies, tried in `wpantry-cli` first and kept here until another repo uses it; `tests/pins.rs` allows it by name |
 | 2026-10-31 | Import the published `cargo vet` audits of Mozilla, Google and the Bytecode Alliance (`[imports]` in `supply-chain/config.toml`) | They audit the same crates we depend on, to the same `safe-to-deploy` criteria, and publish the audits with their auditors' names and addresses; `imports.lock` copies only the entries that cover our versions, and those identities are already public. At the import, 15 exemptions went, and 14 crates became fully audited. An audit of theirs is for an exact version or a version delta, so a crate we pin newer than they audited stays exempted until someone audits the delta here |
@@ -66,7 +66,7 @@ The audits of Mozilla, Google and the Bytecode Alliance are imported (`[imports]
 
 ## cargo deny
 
-`rust/deny.toml` checks the targets we ship. An advisory against a dependency fails CI: bump it (security fixes skip the 72-hour rule). Only if there is no fix and the vulnerable code is unreachable from wpantry, add the advisory id to `[advisories] ignore` with a comment saying why and when to revisit, in its own PR.
+`rust/deny.toml` checks the targets we ship. An advisory against a dependency fails CI: bump it (security fixes skip the 72-hour rule). Only if there is no fix and the vulnerable code is unreachable from Pantry, add the advisory id to `[advisories] ignore` with a comment saying why and when to revisit, in its own PR.
 
 ## The rustls tree
 

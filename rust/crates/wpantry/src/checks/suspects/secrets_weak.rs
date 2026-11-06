@@ -19,8 +19,18 @@ use super::{Context, Suspect, line_at, push, test_path};
 
 pub(super) const ID: &str = "SUSPECT-WEAK-PASSWORD";
 
-/// The bundled known-weak list, in two tiers (see the file).
-const LIST: &str = include_str!("../../../assets/defaults/weak-passwords.txt");
+/// The bundled known-weak lists, `fail` and `warn` (see the file), lowercase.
+static LISTS: std::sync::LazyLock<(Vec<String>, Vec<String>)> = std::sync::LazyLock::new(|| {
+    let list = |k: &str| {
+        crate::utils::toml::list(crate::defaults::WEAK_PASSWORDS, "", k)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.trim().to_ascii_lowercase())
+            .filter(|p| !p.is_empty())
+            .collect()
+    };
+    (list("fail"), list("warn"))
+});
 /// Identifier tails that name a password.
 const KEYS: &[&str] = &["password", "passwd", "passphrase", "pwd", "secret"];
 
@@ -87,32 +97,22 @@ enum Tier {
 }
 
 /// Classify a value against the bundled list, matching it as written and in
-/// a normalized form so simple mutations are caught. `# tier: warn` in the
-/// list marks where the warn tier begins; entries before it fail.
+/// a normalized form so simple mutations are caught: a `fail` entry
+/// fails, a `warn` entry warns.
 fn classify(value: &str) -> Option<Tier> {
     let raw = value.trim().to_ascii_lowercase();
     if raw.is_empty() {
         return None;
     }
     let norm = normalize(&raw);
-    let mut warn = false;
-    for line in LIST.lines() {
-        let l = line.trim();
-        if l.is_empty() {
-            continue;
-        }
-        if let Some(rest) = l.strip_prefix('#') {
-            if rest.trim().eq_ignore_ascii_case("tier: warn") {
-                warn = true;
-            }
-            continue;
-        }
-        let entry = l.to_ascii_lowercase();
-        if entry == raw || (!norm.is_empty() && entry == norm) {
-            return Some(if warn { Tier::Warn } else { Tier::Fail });
-        }
+    let hit = |list: &[String]| list.iter().any(|e| *e == raw || (!norm.is_empty() && *e == norm));
+    if hit(&LISTS.0) {
+        Some(Tier::Fail)
+    } else if hit(&LISTS.1) {
+        Some(Tier::Warn)
+    } else {
+        None
     }
-    None
 }
 
 /// Fold a value toward its dictionary form: drop trailing digits and symbols

@@ -156,15 +156,13 @@ pub struct Policy {
 }
 
 impl Policy {
+    /// The policy file's `ids` and `paths` (TOML); empty when unreadable.
     pub fn parse(text: &str) -> Policy {
-        let mut p = Policy::default();
-        for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-            match l.strip_prefix("path:") {
-                Some(path) => p.paths.push(path.trim().to_string()),
-                None => p.ids.push(l.trim_start_matches("SUSPECT-").to_ascii_uppercase()),
-            }
+        let list = |k: &str| crate::utils::toml::list(text, "", k).unwrap_or_default();
+        Policy {
+            ids: list("ids").iter().map(|i| i.trim().trim_start_matches("SUSPECT-").to_ascii_uppercase()).collect(),
+            paths: list("paths").iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect(),
         }
-        p
     }
 
     pub fn exempt(&self, s: &Suspect) -> bool {

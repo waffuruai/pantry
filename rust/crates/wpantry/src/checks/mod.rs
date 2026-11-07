@@ -17,6 +17,7 @@ pub mod hidden;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
+pub mod secrets;
 pub mod severity;
 pub mod supply_chain;
 pub mod suspects;

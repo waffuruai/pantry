@@ -161,6 +161,17 @@ impl Rules {
         self.scan_spans(data, opts).0
     }
 
+    /// A regex string's tree with its capture groups and how many, when the
+    /// compiler kept them ([`crate::Compiler::keep_captures`]).
+    pub fn capture_tree(&self, string: usize) -> Option<(&crate::pattern::Node, u32)> {
+        self.strings[string].captures.as_ref().map(|(n, g)| (n, *g))
+    }
+
+    /// The name of a string, without `$`.
+    pub fn string_name(&self, string: usize) -> &str {
+        &self.strings[string].id
+    }
+
     /// The rule a global string id belongs to (an index into [`Rules::rules`]).
     pub fn string_rule(&self, string: usize) -> usize {
         self.string_rule[string] as usize

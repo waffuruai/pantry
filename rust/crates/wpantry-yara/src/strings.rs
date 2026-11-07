@@ -30,6 +30,9 @@ pub struct CompiledString {
     pub id: String,
     pub private: bool,
     pub variants: Vec<Variant>,
+    /// A regex string's tree with its capture groups, and how many, when the
+    /// compiler keeps them ([`crate::Compiler::keep_captures`]).
+    pub captures: Option<(Node, u32)>,
 }
 
 #[derive(Debug)]
@@ -84,7 +87,7 @@ pub fn compile(def: &StringDef, regex_reach: usize) -> CompiledString {
             out
         }
     };
-    CompiledString { id: def.id.clone(), private: def.mods.private, variants }
+    CompiledString { id: def.id.clone(), private: def.mods.private, variants, captures: None }
 }
 
 fn fullword(mods: &Modifiers, wide: bool, key: u8) -> Fullword {

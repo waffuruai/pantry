@@ -8,7 +8,7 @@ use crate::parser::BASE64_STANDARD;
 use crate::pattern::{Syntax, parse_hex, parse_regex};
 
 fn def(kind: StringKind, mods: Modifiers) -> StringDef {
-    StringDef { id: "a".into(), kind, mods, line: 1 }
+    StringDef { id: "a".into(), kind, mods, line: 1, source: None }
 }
 
 fn find(s: &CompiledString, data: &[u8]) -> Vec<(usize, usize)> {

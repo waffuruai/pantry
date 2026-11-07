@@ -98,3 +98,39 @@ fn search_finds_the_leftmost_match_first_in_priority_order() {
     assert_eq!(caps(r"b+|ab", b"cabb"), Some(vec![Some((1, 3))]));
     assert_eq!(caps(r"z", b"abc"), None);
 }
+
+fn re2(src: &str, data: &[u8]) -> bool {
+    let node = crate::pattern::parse_regex(src.as_bytes(), false, false, Syntax::Re2, 0).unwrap();
+    search(&node, data)
+}
+
+#[test]
+fn re2_scoped_case_flags() {
+    assert!(re2("(?i)api", b"xAPIx"));
+    assert!(re2("a(?i:b)c", b"aBc"));
+    assert!(!re2("a(?i:b)c", b"aBC"));
+    assert!(!re2("(?i)a(?-i:B)c", b"AbC"));
+    assert!(re2("(?i)a(?-i:B)c", b"ABC"));
+    // `(?i)` inside a group ends with it.
+    assert!(!re2("(?:(?i)a)b", b"AB"));
+    assert!(re2("(?:(?i)a)b", b"Ab"));
+}
+
+#[test]
+fn re2_multiline_anchors_and_text_anchors() {
+    assert!(re2("(?m)^b$", b"a\nb\nc"));
+    assert!(!re2("^b$", b"a\nb\nc"));
+    assert!(re2(r"\Aab\z", b"ab"));
+    assert!(!re2(r"\Ab", b"ab"));
+    assert!(re2("(?im)^KEY=", b"x\nkey=1"));
+}
+
+#[test]
+fn re2_posix_classes_named_groups_and_dotall() {
+    assert!(re2("[[:digit:]]{3}", b"a123"));
+    assert!(!re2("^[[:alpha:]]+$", b"ab1"));
+    assert!(re2("(?P<k>x)y", b"xy"));
+    assert!(re2("(?s)a.b", b"a\nb"));
+    assert!(!re2("a.b", b"a\nb"));
+    assert!(crate::pattern::parse_regex(b"(?x)a", false, false, Syntax::Re2, 0).is_err());
+}

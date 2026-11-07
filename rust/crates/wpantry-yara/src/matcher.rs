@@ -219,6 +219,8 @@ impl<'d> Matcher<'d> {
             Assert::End => pos == self.data.len(),
             Assert::WordBoundary => before != after,
             Assert::NotWordBoundary => before == after,
+            Assert::LineStart => pos == 0 || self.data.get(pos - 1) == Some(&b'\n'),
+            Assert::LineEnd => pos == self.data.len() || self.data.get(pos) == Some(&b'\n'),
         }
     }
 }

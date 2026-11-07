@@ -98,6 +98,9 @@ pub enum Assert {
     WordBoundary,
     /// `\B`
     NotWordBoundary,
+    /// `^` and `$` in RE2's multiline mode: a line's start or end.
+    LineStart,
+    LineEnd,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -302,6 +305,10 @@ pub enum Syntax {
     Strict,
     /// Both are literal characters, as in classic YARA.
     Relaxed,
+    /// Go's RE2, for patterns Pantry runs itself (never rules' strings):
+    /// as relaxed, plus scoped inline flags (`(?i)`, `(?-i:…)`, `(?m)`,
+    /// `(?s)`), multiline `^` and `$`, `\A` and `\z`, and POSIX classes.
+    Re2,
 }
 
 struct Re<'a> {
@@ -312,26 +319,32 @@ struct Re<'a> {
     line: usize,
     /// The capture groups seen so far, when they are kept ([`parse_regex_groups`]).
     groups: Option<u32>,
+    /// RE2's flags in the current scope ([`Syntax::Re2`] only).
+    nocase: bool,
+    multiline: bool,
 }
 
 /// Parse a regex body (between the slashes). `nocase` folds every letter.
 pub fn parse_regex(src: &[u8], nocase: bool, dotall: bool, syntax: Syntax, line: usize) -> Result<Node, Error> {
-    Ok(parse(Re { src, pos: 0, dotall, syntax, line, groups: None }, nocase)?.0)
+    Ok(parse(Re { src, pos: 0, dotall, syntax, line, groups: None, nocase: false, multiline: false }, nocase)?.0)
 }
 
 /// As [`parse_regex`], keeping each capturing `( )` as a [`Node::Group`]
 /// numbered from 1 in the order its `(` appears; also returns how many there
 /// are. For [`crate::matcher::Matcher::captures`], not for rules' strings.
 pub fn parse_regex_groups(src: &[u8], nocase: bool, dotall: bool, syntax: Syntax) -> Result<(Node, u32), Error> {
-    parse(Re { src, pos: 0, dotall, syntax, line: 0, groups: Some(0) }, nocase)
+    parse(Re { src, pos: 0, dotall, syntax, line: 0, groups: Some(0), nocase: false, multiline: false }, nocase)
 }
 
 fn parse(mut re: Re, nocase: bool) -> Result<(Node, u32), Error> {
+    // RE2 folds case atom by atom, as its flags' scopes say; YARA all at once.
+    let re2 = re.syntax == Syntax::Re2;
+    re.nocase = nocase && re2;
     let node = re.alt()?;
     if re.pos != re.src.len() {
         return Err(re.err("unbalanced `)`"));
     }
-    let node = if nocase { node.case_folded() } else { node };
+    let node = if nocase && !re2 { node.case_folded() } else { node };
     Ok((node.flatten(), re.groups.unwrap_or(0)))
 }
 
@@ -427,10 +440,81 @@ impl Re<'_> {
     }
 
     fn atom(&mut self) -> Result<Node, Error> {
+        let node = self.atom_unfolded()?;
+        Ok(if self.nocase && !matches!(node, Node::Group(..) | Node::Seq(_) | Node::Alt(_)) {
+            node.case_folded()
+        } else {
+            node
+        })
+    }
+
+    /// RE2's `(?flags)` or `(?flags:` after a `(`: the flags set (or `-`
+    /// cleared), and whether a group follows (`:`), the cursor past it.
+    fn flags(&mut self) -> Result<Option<bool>, Error> {
+        let rest = &self.src[self.pos..];
+        let Some(body) = rest.strip_prefix(b"?") else { return Ok(None) };
+        let len = body.iter().take_while(|c| matches!(c, b'i' | b'm' | b's' | b'U' | b'-')).count();
+        let (flags, after) = body.split_at(len);
+        let group = match after.first() {
+            Some(b':') => true,
+            Some(b')') => false,
+            _ => return Ok(None),
+        };
+        if flags.is_empty() && !group {
+            return Err(self.err("empty flags"));
+        }
+        let mut on = true;
+        for &f in flags {
+            match f {
+                b'-' => on = false,
+                b'i' => self.nocase = on,
+                b'm' => self.multiline = on,
+                b's' => self.dotall = on,
+                _ => return Err(self.err("unsupported flag")),
+            }
+        }
+        self.pos += 1 + len + 1;
+        Ok(Some(group))
+    }
+
+    fn atom_unfolded(&mut self) -> Result<Node, Error> {
         let c = self.peek().expect("caller checked");
         self.pos += 1;
         Ok(match c {
+            b'(' if self.syntax == Syntax::Re2
+                && self.src[self.pos..].starts_with(b"?")
+                && !self.src[self.pos..].starts_with(b"?:")
+                && !self.src[self.pos..].starts_with(b"?P<")
+                && !self.src[self.pos..].starts_with(b"?<") =>
+            {
+                let saved = (self.nocase, self.multiline, self.dotall);
+                match self.flags()? {
+                    // `(?i)`: the flags hold to the end of the enclosing group,
+                    // whose `(` restores them.
+                    Some(false) => Node::Seq(Vec::new()),
+                    Some(true) => {
+                        let inner = self.alt()?;
+                        if self.peek() != Some(b')') {
+                            return Err(self.err("unclosed `(`"));
+                        }
+                        self.pos += 1;
+                        (self.nocase, self.multiline, self.dotall) = saved;
+                        inner
+                    }
+                    None => return Err(self.err("unsupported group")),
+                }
+            }
             b'(' => {
+                if self.syntax == Syntax::Re2 {
+                    // A named group is a capturing group.
+                    let rest = &self.src[self.pos..];
+                    if let Some(name) = rest.strip_prefix(b"?P<").or_else(|| rest.strip_prefix(b"?<"))
+                        && let Some(end) = name.iter().position(|c| *c == b'>')
+                    {
+                        self.pos += rest.len() - name.len() + end + 1;
+                    }
+                }
+                let saved = (self.nocase, self.multiline, self.dotall);
                 let capturing = !self.src[self.pos..].starts_with(b"?:");
                 if !capturing {
                     self.pos += 2;
@@ -447,12 +531,15 @@ impl Re<'_> {
                     return Err(self.err("unclosed `(`"));
                 }
                 self.pos += 1;
+                (self.nocase, self.multiline, self.dotall) = saved;
                 match group {
                     Some(n) => Node::Group(n, Box::new(inner)),
                     None => inner,
                 }
             }
             b'.' => Node::Set(if self.dotall { ByteSet::FULL } else { ByteSet::one(b'\n').complement() }),
+            b'^' if self.multiline => Node::Assert(Assert::LineStart),
+            b'$' if self.multiline => Node::Assert(Assert::LineEnd),
             b'^' => Node::Assert(Assert::Start),
             b'$' => Node::Assert(Assert::End),
             b'[' => Node::Set(self.class()?),
@@ -486,6 +573,8 @@ impl Re<'_> {
             b'S' => space.complement(),
             b'b' if in_class => ByteSet::one(0x08),
             b'b' => return Ok(Node::Assert(Assert::WordBoundary)),
+            b'A' if !in_class && self.syntax == Syntax::Re2 => return Ok(Node::Assert(Assert::Start)),
+            b'z' if !in_class && self.syntax == Syntax::Re2 => return Ok(Node::Assert(Assert::End)),
             b'B' if !in_class => return Ok(Node::Assert(Assert::NotWordBoundary)),
             b'n' => ByteSet::one(b'\n'),
             b't' => ByteSet::one(b'\t'),
@@ -504,9 +593,41 @@ impl Re<'_> {
                 ByteSet::one(b)
             }
             c if !c.is_ascii_alphanumeric() => ByteSet::one(c),
-            c if self.syntax == Syntax::Relaxed => ByteSet::one(c),
+            c if self.syntax != Syntax::Strict => ByteSet::one(c),
             c => return Err(self.err(&format!("unknown escape \\{}", c as char))),
         }))
+    }
+
+    /// RE2's `[:alpha:]` and the like at the cursor, inside a class.
+    fn posix_class(&mut self) -> Option<ByteSet> {
+        let rest = self.src[self.pos..].strip_prefix(b"[:")?;
+        let end = rest.windows(2).position(|w| w == b":]")?;
+        let (negate, name) = match rest[..end].strip_prefix(b"^") {
+            Some(n) => (true, n),
+            None => (false, &rest[..end]),
+        };
+        let r = ByteSet::range;
+        let set = match name {
+            b"alnum" => r(b'0', b'9').union(r(b'A', b'Z')).union(r(b'a', b'z')),
+            b"alpha" => r(b'A', b'Z').union(r(b'a', b'z')),
+            b"ascii" => r(0, 0x7f),
+            b"blank" => ByteSet::one(b' ').union(ByteSet::one(b'\t')),
+            b"cntrl" => r(0, 0x1f).union(ByteSet::one(0x7f)),
+            b"digit" => r(b'0', b'9'),
+            b"graph" => r(b'!', b'~'),
+            b"lower" => r(b'a', b'z'),
+            b"print" => r(b' ', b'~'),
+            b"punct" => r(b'!', b'/').union(r(b':', b'@')).union(r(b'[', b'`')).union(r(b'{', b'~')),
+            b"space" => [b' ', b'\t', b'\n', b'\r', 0x0b, 0x0c]
+                .into_iter()
+                .fold(ByteSet::default(), |s, b| s.union(ByteSet::one(b))),
+            b"upper" => r(b'A', b'Z'),
+            b"word" => r(b'0', b'9').union(r(b'A', b'Z')).union(r(b'a', b'z')).union(ByteSet::one(b'_')),
+            b"xdigit" => r(b'0', b'9').union(r(b'A', b'F')).union(r(b'a', b'f')),
+            _ => return None,
+        };
+        self.pos += 2 + end + 2;
+        Some(if negate { set.complement() } else { set })
     }
 
     /// The body of `[...]` after the `[`.
@@ -524,6 +645,12 @@ impl Re<'_> {
                 break;
             }
             first = false;
+            if self.syntax == Syntax::Re2
+                && let Some(posix) = self.posix_class()
+            {
+                set = set.union(posix);
+                continue;
+            }
             let lo = self.class_item()?;
             let is_range = self.peek() == Some(b'-') && self.src.get(self.pos + 1).is_some_and(|c| *c != b']');
             match (lo, is_range) {

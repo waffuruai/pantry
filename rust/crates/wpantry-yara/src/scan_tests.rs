@@ -39,3 +39,19 @@ fn a_longer_regex_reach_finds_matches_past_yaras_limit() {
     assert_eq!(res.matches.len(), 1);
     assert_eq!(spans.by_string[0], vec![(0, data.len())]);
 }
+
+#[test]
+fn kept_captures_give_each_regex_string_its_groups() {
+    let src = r#"rule r { strings: $s = /key=([a-z]+)/ nocase $t = "x" condition: $s }"#;
+    let mut c = crate::Compiler::new();
+    c.keep_captures(true);
+    c.add_source("t", src, crate::Syntax::Strict);
+    let rules = c.build();
+    assert_eq!(rules.string_name(0), "s");
+    let (tree, groups) = rules.capture_tree(0).expect("kept");
+    assert_eq!(groups, 1);
+    let caps = crate::matcher::search_captures(tree, b"KEY=Abc;", groups).expect("match");
+    assert_eq!(caps[1], Some((4, 7)));
+    assert!(rules.capture_tree(1).is_none());
+    assert!(build(src, None).capture_tree(0).is_none());
+}

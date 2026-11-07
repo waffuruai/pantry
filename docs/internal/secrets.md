@@ -48,3 +48,19 @@ Compare by rule, line and columns. Measured on 2026-11-07:
 | juke checkout | 88 of 115 | 21 run-id slugs read as text; 6 inside `.json.gz` archives |
 
 Speed: 17 s on the 468 MB file on one core. betterleaks takes 18 s and gitleaks 386 s.
+
+On op-analytics, a history holding 91 GB of CSVs:
+
+- **Time:** the first scan hit its 30-minute budget, sharing the machine with test runs. The second read the remaining 47,094 files in 8.4 minutes on 10 cores.
+- **What each tool found:**
+
+  | Tool | Findings | Distinct places |
+  |---|---|---|
+  | gitleaks | 366 | |
+  | betterleaks `git` | 56 | 2, the same line of one JSON counted once per commit |
+  | Pantry | 13 | 13 |
+
+- **Why the counts differ:**
+  - Pantry reports that JSON once.
+  - Its 12 CSV hits are also what `betterleaks dir` reports on those files. `betterleaks git` reads diffs and misses them; Pantry reads every file version whole.
+  - The one place Pantry doesn't report is a UUID (a Firebase download token), which Pantry's filter skips for the generic rule.

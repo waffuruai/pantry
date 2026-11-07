@@ -364,6 +364,10 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
             todo.push(b);
         }
     }
+    // Smallest first: the code and config secrets are written in come before
+    // data dumps, so a scan cut short by the budget has read what matters
+    // most. Ties stay newest first.
+    todo.sort_by_key(|b| b.size);
     let deadline = Instant::now() + BUDGET;
     let results: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
     let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(job.threads * 2);
@@ -501,15 +505,23 @@ pub(crate) fn scans_at_once(scan: &Scan) -> usize {
 
 /// Each repo's secret job, and whether its cached result is stale.
 pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], rules: &Rules) -> Result<Vec<(Result<Job>, bool)>> {
-    let threads = (parallel::cores() / scans_at_once(scan)).max(1);
-    repos
+    let mut jobs: Vec<(Result<Job>, bool)> = repos
         .iter()
         .map(|(_, root)| {
-            let job = job(&scan.cache, root, rules, threads);
+            let job = job(&scan.cache, root, rules, 1);
             let stale = job.as_ref().is_ok_and(|j| stale(j, scan.opts.refresh, scan.opts.offline));
             Ok((job, stale))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    // The cores go to the scans that run: fewer stale repos, more each.
+    let running = jobs.iter().filter(|(_, s)| *s).count().clamp(1, scans_at_once(scan));
+    let threads = (parallel::cores() / running).max(1);
+    for (job, _) in &mut jobs {
+        if let Ok(j) = job {
+            j.threads = threads;
+        }
+    }
+    Ok(jobs)
 }
 
 /// Secrets committed anywhere in the repos' history, from the jobs

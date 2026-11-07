@@ -179,6 +179,19 @@ fn a_repo_that_cant_be_listed_is_an_error() {
 }
 
 #[test]
+fn the_cores_go_to_the_repos_that_need_scanning() {
+    let d = TempDir::new("secrets-threads").unwrap();
+    let net = Fake::offline();
+    let s = testing::scan(&net, &d, Options { jobs: Some(4), ..Default::default() });
+    let rules = Rules::new(None);
+    let repos: Vec<Repo> = ["a", "b"].iter().map(|n| testing::repo(&d, n)).collect();
+    let jobs = secret_jobs(&s, &repos, &rules).unwrap();
+    // Two stale repos split the cores.
+    let want = (parallel::cores() / 2).max(1);
+    assert!(jobs.iter().all(|(j, stale)| *stale && j.as_ref().unwrap().threads == want));
+}
+
+#[test]
 fn scans_run_at_once_from_the_jobs_flag_or_the_cores() {
     let d = TempDir::new("jobs").unwrap();
     let net = Fake::offline();

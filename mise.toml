@@ -2,12 +2,12 @@
 # (checksummed through mise's aqua registry) and runs the `bootstrap` task; `mise run test` runs the
 # suites; `mise tasks ls` lists the rest. CI installs the same pins with jdx/mise-action and runs the
 # same tasks. Rust comes from rustup, at the toolchain rust/rust-toolchain.toml pins. wpantry itself
-# needs only gitleaks, git and openssl, so this file is for contributors and CI, not users. Keep the
+# needs only git and openssl, so this file is for contributors and CI, not users. Keep the
 # pins equal to ops' mise.toml. See ops planning/specs/02-mise-bootstrap.md.
 [tools]
 node = "26.12.1"  # offline HTML viewer behavior tests (no npm dependencies)
 python = "3.15.1"   # scripts/ and their tests
-gitleaks = "8.30.1" # wpantry's secret scan
+gitleaks = "8.30.1" # the org pre-commit hook's scanner (ops finds it here); wpantry no longer runs it
 shellcheck = "0.11.0"
 actionlint = "1.7.12"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1" # the coverage gate (mise run coverage)

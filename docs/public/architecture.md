@@ -23,7 +23,7 @@ It watches nothing live and needs no permission beyond reading files. You or an 
 %%{init: {"flowchart": {"wrappingWidth": 560, "nodeSpacing": 40, "rankSpacing": 36}}}%%
 flowchart TB
   scope["<b>1 SCOPE</b><br/>Find the git repos under ~ (depth 6; Library, caches, toolchains, node_modules and app bundles skipped),<br/>or in the --path directories. Inventory the machine unless --no-machine."]
-  read["<b>2 READ, in parallel</b><br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages;<br/>apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings;<br/>container images; documents and code. gitleaks runs on repos whose HEAD moved."]
+  read["<b>2 READ, in parallel</b><br/>Lockfiles and OS package databases; tools on PATH and in version managers; global packages;<br/>apps, browsers, Electron; editor extensions; agent harnesses; trust stores; security settings;<br/>container images; documents and code. the secret scan reads repos whose refs moved."]
   ask["<b>3 ASK</b><br/>(ecosystem, name, version) to OSV in batches of 1000, only new or changed records fetched;<br/>KEV, EPSS, end-of-life, the malicious index, licenses and release feeds.<br/>Answers kept current from OSV's change lists: only what changed since the last run is read."]
   judge["<b>4 JUDGE</b><br/>Group an advisory's aliases into one finding; pick the safe version with the ecosystem's own<br/>comparator; fail, warn, or not checked."]
   report["<b>5 REPORT</b><br/>Severity on CVSS&#39;s scale with CVSS and EPSS beside it; wpantry report renders the cache: areas of tables, JSON, CSV, Markdown, HTML;<br/>exit 0 clean, 1 fails, 2 usage, 3 internal. wpantry fix runs the unattended fixes, then re-checks."]
@@ -32,11 +32,11 @@ flowchart TB
 
 **Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens.
 
-**Read.** A run is almost all waiting: on subprocesses (tool versions, npm, Python, openssl, gitleaks, Homebrew) and on HTTP. So:
+**Read.** A run is almost all waiting: on subprocesses (tool versions, npm, Python, openssl, git, Homebrew) and on HTTP. So:
 
 - independent probes run at once (`utils::parallel::par_map`, results kept in order);
 - the trust stores and Software Update run beside the inventory;
-- gitleaks scans stale repos while the dependency checks wait on the network;
+- the secret scan reads stale repos' history while the dependency checks wait on the network;
 - the HTTP pool keeps a connection per parallel fetch;
 - folders are read where a command would only list them (the Homebrew Cellar and Caskroom, `npm root -g`).
 
@@ -75,7 +75,7 @@ flowchart LR
     out["wpantry report: tables,<br/>JSON, CSV, Markdown, HTML,<br/>exit code, fix plan"]
   end
   subgraph tools["Local tools"]
-    gl["gitleaks"]
+    gl["secret scan"]
     brew["brew vulns"]
     ctr["docker / podman"]
     ossl["openssl"]
@@ -96,7 +96,7 @@ flowchart LR
 ## What it is, and is not
 
 - Pantry is a library crate, `wpantry`, and a thin binary, `wpantry-cli`. The library has no global state and never prints; the CLI owns stdout, stderr and exit codes.
-- Not SAST, reachability analysis, guided remediation, an SBOM reader or an offline OSV mirror. gitleaks and `brew vulns` run as external tools, not ports. Windows is [#11](https://github.com/waffuruai/pantry/issues/11).
+- Not SAST, reachability analysis, guided remediation, an SBOM reader or an offline OSV mirror. `brew vulns` runs as an external tool, not a port; the secret scan runs betterleaks' rules in Pantry's own scanner. Windows is [#11](https://github.com/waffuruai/pantry/issues/11).
 
 ## Missing evidence is never clean
 
@@ -110,7 +110,7 @@ The rule every module follows: when Pantry cannot tell, it says so; a gap never 
 - A lockfile that isn't the format it is named as (no `lockfileVersion`, no `module` line, a `packages` that isn't the section npm or pnpm writes), or that links outside its repo, is unchecked, not empty. `npm-shrinkwrap.json` wins over a `package-lock.json` beside it, as in npm.
 - A trust store openssl can't load is unchecked, not "doesn't trust the distrusted CAs". `PIP_CERT`, when set, is pip's store and judged like any other.
 - A posture check that can't tell says so, never passes.
-- A gitleaks run that leaves no report, or one that isn't a list of findings, is a failed run (unchecked), never a repo with no secrets; only `[]` is none.
+- A repo whose history git can't read is unchecked for secrets, never a repo with none; files a scan left for later are counted as unchecked.
 - A Python distribution whose metadata is missing, unreadable or names no version is an unchecked gap, never a package that isn't installed.
 - An advisory whose only fixes are older than the installed version (it came back later) counts as unfixed, not as a downgrade fix.
 - A container export cut short is an error, not an image with fewer files; an image whose packages can't be read (rpm-based) is unchecked.
@@ -199,7 +199,7 @@ A release ([internal/release.md](../internal/release.md)):
 - ships each target with `SHA256SUMS`, a GitHub build-provenance attestation and a sigstore bundle, plus a signed packslip for the release; `install.sh` and mise verify them before installing ([public/install.md](install.md));
 - v0.2.0 sizes: 3.5 MiB aarch64 Linux (musl, static), 4.0 MiB x86-64 Linux, 6.5 MiB macOS universal.
 
-Programs run as scanners or data sources: `gitleaks`, `git`, `openssl`, `brew`, `docker` or `podman`, and `rpm`; the inventory also runs inventoried tools' version and listing commands and the OS update tools. Every program is an argument vector through `utils::process::exec`, stdin closed, with a timeout; never a shell string.
+Programs run as scanners or data sources: `git`, `openssl`, `brew`, `docker` or `podman`, and `rpm`; the inventory also runs inventoried tools' version and listing commands and the OS update tools. Every program is an argument vector through `utils::process::exec`, stdin closed, with a timeout; never a shell string.
 
 The network client (`net::Http`) connects only to the hosts in `net::HOSTS`, the list [public/checks-and-sources.md](checks-and-sources.md#sources) shows. Any other URL is refused before connecting; a test checks every source's URL against the list. Server certificates are verified by the platform's trust store (the keychain on macOS, the system bundle on Linux) through `rustls-platform-verifier`, so a CA the machine distrusts (with `wpantry fix ca-trust` or by hand) is distrusted by Pantry's own requests too.
 

@@ -36,7 +36,7 @@ sh install.sh
 
 Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10). Windows: [#11](https://github.com/waffuruai/pantry/issues/11).
 
-Pantry needs nothing else. Some checks use `git`, `gitleaks` and `openssl`; `wpantry tools` lists which are missing, and a missing one is reported, never skipped silently.
+Pantry needs nothing else. Some checks use `git` and `openssl`; `wpantry tools` lists which are missing, and a missing one is reported, never skipped silently.
 
 ## Install by hand
 

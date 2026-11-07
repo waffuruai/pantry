@@ -257,6 +257,7 @@ impl Parser<'_> {
             id
         };
         self.expect("=")?;
+        let mut source = None;
         let (kind, allowed): (_, &[&str]) = match self.lx.next()? {
             Tok::Text(t) => {
                 if t.is_empty() {
@@ -269,6 +270,7 @@ impl Parser<'_> {
             }
             Tok::Regex { src, nocase, dotall } => {
                 let node = pattern::parse_regex(&src, nocase, dotall, self.syntax, line)?;
+                source = Some(crate::ast::RegexSource { src, nocase, dotall });
                 (StringKind::Regex(node), &["nocase", "ascii", "wide", "fullword", "private"])
             }
             Tok::Punct("{") => {
@@ -278,7 +280,7 @@ impl Parser<'_> {
             other => return Err(self.lx.err(format!("bad string value {}", describe(&other)))),
         };
         let mods = self.modifiers(allowed)?;
-        Ok(StringDef { id, kind, mods, line })
+        Ok(StringDef { id, kind, mods, line, source })
     }
 
     fn modifiers(&mut self, allowed: &[&str]) -> Result<Modifiers, Error> {

@@ -79,7 +79,7 @@
 <text x="1082" y="470" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#e8a33d" text-anchor="middle">never clean</text>
 <text x="56" y="456" font-family="'Geist Mono', Menlo, monospace" font-size="12" letter-spacing="1.5" fill="#e8a33d">LOCAL TOOLS, RUN HERE, SEND NOTHING</text>
 <rect x="56" y="470" width="928" height="72" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>
-<text x="74" y="498" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">gitleaks over each repo&#x27;s git history · git · openssl for the trust stores · brew vulns · docker or podman to export images · rpm · ClamAV over documents and images</text>
+<text x="74" y="498" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">the secret scan over each repo&#x27;s git history · git · openssl for the trust stores · brew vulns · docker or podman to export images · rpm · ClamAV over documents and images</text>
 <text x="74" y="516" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#d2ccc1">Every program is an argument vector with stdin closed and a timeout; the only hosts the binary will connect to are compiled in, and any other URL is refused.</text>
 <text x="56" y="582" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#aba599" text-anchor="start">The one exception is opt-in: wpantry breach --enable sends your email address to Have I Been Pwned or XposedOrNot, and asks first.</text>
 <text x="1144" y="626" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#aba599" text-anchor="end">Answers verified against your machine&#x27;s own trust store.</text>

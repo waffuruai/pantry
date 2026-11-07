@@ -91,7 +91,7 @@ pub struct Check {
     pub no_input: bool,
     /// `--jobs N`: CPU-bound scans at once.
     pub jobs: Option<usize>,
-    pub gitleaks_config: Option<PathBuf>,
+    pub secret_rules: Option<PathBuf>,
     /// `--licenses [FILE]`: check dependency licenses (off by default).
     pub check_licenses: bool,
     pub licenses: Option<PathBuf>,
@@ -250,8 +250,8 @@ fn scan_opts() -> Vec<Opt> {
     opts.extend(report_opts());
     opts.extend([
         Opt::new("--no-input", "never prompt"),
-        Opt::new("--jobs <n>", "gitleaks scans at once (default: half the cores, at most 4)"),
-        Opt::new("--gitleaks-config <file>", "gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the bundled one)"),
+        Opt::new("--jobs <n>", "repos scanned for secrets at once (default: half the cores, at most 4)"),
+        Opt::new("--secret-rules <file>", "secret rules of your own, YARA, added to the bundled ones (default: secrets.yar in ~/.config/wpantry)"),
         Opt::new("--licenses [file]", "also check dependency licenses, against the file (default: licenses.toml in ~/.config/wpantry, else the bundled one)"),
         Opt::new("--install-scripts <file>", "install-script policy, TOML (default: install-scripts.toml in ~/.config/wpantry, else the bundled one)"),
         Opt::new("--repo-hooks <file>", "indicators of hijacked repos, TOML (default: repo-hooks.toml in ~/.config/wpantry, else the bundled one)"),
@@ -473,7 +473,7 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
     // Each policy: the file its option names, else the user's own in the
     // config folder (`~/.config/wpantry/<file>`), else the bundled default.
     for (name, file, slot) in [
-        ("gitleaks-config", "gitleaks.toml", &mut c.gitleaks_config),
+        ("secret-rules", "secrets.yar", &mut c.secret_rules),
         ("licenses", "licenses.toml", &mut c.licenses),
         ("install-scripts", "install-scripts.toml", &mut c.install_scripts),
         ("repo-hooks", "repo-hooks.toml", &mut c.repo_hooks),
@@ -494,10 +494,13 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
                 None => continue,
             },
         };
-        // gitleaks reads its own config; the rest are Pantry's TOML.
-        if name != "gitleaks-config"
-            && let Some(why) = wpantry::checks::policy_error(&p)
-        {
+        // Secret rules are YARA; the rest are Pantry's TOML.
+        let why = if name == "secret-rules" {
+            wpantry::checks::secrets::rules::policy_error(&p)
+        } else {
+            wpantry::checks::policy_error(&p)
+        };
+        if let Some(why) = why {
             return Err(m.error(&format!("option '--{name}': {}: {why}", p.display())));
         }
         *slot = Some(p);

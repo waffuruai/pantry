@@ -49,7 +49,7 @@ pub const MAX_OUTPUT: u64 = 64 << 20;
 /// thread forked between our close and its exec (the descriptor leaks until
 /// that exec), and the kernel refuses to run it until then. Transient, so
 /// try again for up to a second before giving up.
-fn spawn(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+pub(crate) fn spawn(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     let mut tries = 0;
     loop {
         match cmd.spawn() {
@@ -169,7 +169,16 @@ mod tests;
 /// `NO_COLOR=1`: `each` gets every line `second` prints as it comes, so an
 /// output of any size costs only what `each` keeps. Both are killed at
 /// `timeout`. An error only when either can't start, or at the deadline.
-pub fn pipe_lines(first: &[&OsStr], second: &[&OsStr], timeout: Duration, mut each: impl FnMut(&[u8])) -> Result<()> {
+pub fn pipe_lines(first: &[&OsStr], second: &[&OsStr], timeout: Duration, each: impl FnMut(&[u8])) -> Result<()> {
+    stream(first, Some(second), timeout, each)
+}
+
+/// One command's output, line by line as it comes, as [`pipe_lines`].
+pub fn lines(argv: &[&OsStr], timeout: Duration, each: impl FnMut(&[u8])) -> Result<()> {
+    stream(argv, None, timeout, each)
+}
+
+fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut each: impl FnMut(&[u8])) -> Result<()> {
     use std::io::BufRead;
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     let start = |argv: &[&OsStr], stdin: Stdio| -> Result<std::process::Child> {
@@ -179,16 +188,25 @@ pub fn pipe_lines(first: &[&OsStr], second: &[&OsStr], timeout: Duration, mut ea
         spawn(&mut cmd).map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))
     };
     let mut a = start(first, Stdio::null())?;
-    let into = Stdio::from(a.stdout.take().expect("piped stdout"));
-    let mut b = match start(second, into) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = a.kill();
-            let _ = a.wait();
-            return Err(e);
+    let mut b = match second {
+        None => None,
+        Some(second) => {
+            let into = Stdio::from(a.stdout.take().expect("piped stdout"));
+            match start(second, into) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    let _ = a.kill();
+                    let _ = a.wait();
+                    return Err(e);
+                }
+            }
         }
     };
-    let out = b.stdout.take().expect("piped stdout");
+    let out = match &mut b {
+        Some(b) => b.stdout.take(),
+        None => a.stdout.take(),
+    }
+    .expect("piped stdout");
     let (tx, rx) = sync_channel::<Vec<u8>>(1024);
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(out).split(b'\n') {
@@ -204,13 +222,19 @@ pub fn pipe_lines(first: &[&OsStr], second: &[&OsStr], timeout: Duration, mut ea
             Ok(line) => each(&line),
             Err(RecvTimeoutError::Disconnected) => break Ok(()),
             Err(RecvTimeoutError::Timeout) => {
-                let _ = (a.kill(), b.kill());
+                let _ = a.kill();
+                if let Some(b) = &mut b {
+                    let _ = b.kill();
+                }
                 let prog = first.first().map(|p| p.to_string_lossy()).unwrap_or_default();
                 break Err(Error::Failed(format!("{prog} timed out after {}s", timeout.as_secs())));
             }
         }
     };
-    let _ = (a.wait(), b.wait());
+    let _ = a.wait();
+    if let Some(b) = &mut b {
+        let _ = b.wait();
+    }
     result
 }
 

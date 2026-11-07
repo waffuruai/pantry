@@ -80,7 +80,7 @@ wpantry scan
 
 - A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
 - A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
-- `gitleaks.toml` in the same folder replaces the bundled gitleaks config (`--gitleaks-config`); it's in gitleaks' own format.
+- `secrets.yar` in the same folder adds secret rules of your own (`--secret-rules`): YARA, in pantry-rules' form (a `$secret` regex, an `id` and `category = "secret"` meta). They must compile beside the bundled ones.
 
 ## Reading the report
 
@@ -332,9 +332,9 @@ Options:
                             when it is a pipe or a file
   --since <days>            how far back the logs go (default: 14)
   --no-input                never prompt
-  --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
-  --gitleaks-config <file>  gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the
-                            bundled one)
+  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+  --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
+                            secrets.yar in ~/.config/wpantry)
   --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
                             in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
@@ -401,9 +401,9 @@ Options:
                             when it is a pipe or a file
   --since <days>            how far back the logs go (default: 14)
   --no-input                never prompt
-  --jobs <n>                gitleaks scans at once (default: half the cores, at most 4)
-  --gitleaks-config <file>  gitleaks policy (default: gitleaks.toml in ~/.config/wpantry, else the
-                            bundled one)
+  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+  --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
+                            secrets.yar in ~/.config/wpantry)
   --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
                             in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
@@ -682,6 +682,5 @@ Options:
 ## Troubleshooting
 
 - **Everything is "not checked"**: you're offline, or a proxy blocks `api.osv.dev`. Re-run online, or `--offline` to use what's cached.
-- **`gitleaks` MISSING**: install it (`brew install gitleaks`, or see its README); the secret scan can't run without it.
 - **It's slow on the first run**: the first run downloads advisories, clones the malicious-package index and reads every repo's git history for secrets; later runs read only what changed. On macOS a scan keeps the Mac from idle sleep (`caffeinate`) until it ends (`--allow-sleep` or `WPANTRY_ALLOW_SLEEP=1` turns that off); closing the lid still sleeps it. `--path` and `--no-machine` narrow a run.
 - **A finding is wrong**: open an issue with a minimal reproducer (never paste a real report; see [CONTRIBUTING.md](../../CONTRIBUTING.md)). Security reports go through [SECURITY.md](../../SECURITY.md).

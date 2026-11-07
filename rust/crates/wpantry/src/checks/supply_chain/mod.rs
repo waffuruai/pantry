@@ -14,14 +14,13 @@
 use crate::checks::Scan;
 use crate::checks::email::breach;
 use crate::component::Component;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::utils::parallel;
-use crate::utils::process::which;
 use documents::documents_pass;
 use extensions::bundles;
 use hooks::repo_hooks;
 use images::images_with;
-use leaks::{gitleaks_at_once, secret_jobs, secrets};
+use leaks::{scans_at_once, secret_jobs, secrets};
 use malicious::sweep;
 use mptcp::mptcp_listeners;
 use repos::Repo;
@@ -46,7 +45,6 @@ pub mod suspect_code;
 pub(crate) mod testing;
 pub mod typosquat;
 
-pub const GITLEAKS_INSTALL: &str = "https://github.com/gitleaks/gitleaks#installing";
 /// How the report names the policy files (their paths vary; the flag doesn't).
 pub const LICENSES: &str = "the licenses allowlist (--licenses)";
 pub const INSTALL_SCRIPTS: &str = "the install-scripts allowlist (--install-scripts)";
@@ -54,34 +52,37 @@ pub const INSTALL_SCRIPTS: &str = "the install-scripts allowlist (--install-scri
 /// The repo checks always; the editor, harness and breach checks only on a
 /// machine scan. `found` is what the machine inventory found.
 pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
-    run_with(scan, found, which("gitleaks"), crate::checks::machine::images::engine())
+    run_with(scan, found, crate::checks::machine::images::engine())
 }
 
-/// As [`run`], with the gitleaks binary and the container engine given
-/// (None: not installed).
-pub fn run_with(
-    scan: &mut Scan,
-    found: &[Component],
-    gitleaks: Option<PathBuf>,
-    engine: Option<PathBuf>,
-) -> Result<()> {
+/// As [`run`], with the container engine given (None: not installed).
+pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -> Result<()> {
     let repos = scan.repos.clone();
     let git: Vec<Repo> = repos.iter().filter(|(_, r)| repos::is_git(r)).cloned().collect();
-    // gitleaks is local and CPU-bound: the repos whose cached scan is stale
-    // are scanned, a few at once, while `projects` waits on the network.
-    let jobs = secret_jobs(scan, &git, gitleaks)?;
+    // The secret scan is local and CPU-bound: the repos whose cached scan is
+    // stale are scanned, a few at once, while `projects` waits on the network.
+    let rules = leaks::Rules::new(scan.opts.policy.secret_rules()?);
+    let jobs = secret_jobs(scan, &git, &rules)?;
     let todo: Vec<(usize, &leaks::Job)> = jobs
         .iter()
         .enumerate()
         .filter_map(|(i, (j, stale))| j.as_ref().ok().filter(|_| *stale).map(|j| (i, j)))
         .collect();
+    // The rules compile only when a repo needs scanning.
+    let scanner = if todo.is_empty() { None } else { Some(rules.scanner()?) };
     let ran = std::thread::scope(|s| -> Result<Vec<Option<Result<Value>>>> {
-        let at_once = gitleaks_at_once(scan);
+        let at_once = scans_at_once(scan);
         let todo = &todo;
-        let running = s.spawn(move || parallel::par_map(todo, at_once, |(_, job)| leaks::run_job(job)));
+        let scanner = scanner.as_ref();
+        let running = s.spawn(move || {
+            parallel::par_map(todo, at_once, |(_, job)| match scanner {
+                Some(sc) => leaks::run_job(job, sc),
+                None => Err(Error::Failed("no secret rules".into())),
+            })
+        });
         projects::projects(scan, &repos)?;
         if !todo.is_empty() {
-            scan.status(&format!("Scanning {} repos' git history for secrets (gitleaks)", todo.len()));
+            scan.status(&format!("Scanning {} repos' git history for secrets", todo.len()));
         }
         let mut ran: Vec<Option<Result<Value>>> = jobs.iter().map(|_| None).collect();
         let results = running.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));

@@ -9,7 +9,7 @@
 //! a recursion, so long runs never deepen the stack.
 
 use crate::pattern::{Assert, ByteSet, Node};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 /// Steps one anchored attempt may take before it gives up (no match).
 pub const STEPS_PER_ATTEMPT: u64 = 1 << 20;
@@ -21,7 +21,12 @@ pub struct Matcher<'d> {
     hi: usize,
     forward: bool,
     budget: Cell<u64>,
+    /// Where each capture group matched, while [`Matcher::captures`] runs.
+    caps: RefCell<Vec<Option<(usize, usize)>>>,
 }
+
+/// Each group's `(start, end)`, index 0 the whole match; None where a group took no part.
+pub type Captures = Vec<Option<(usize, usize)>>;
 
 impl<'d> Matcher<'d> {
     /// A matcher anchored at `start`, reading forwards (or backwards) at most
@@ -32,7 +37,7 @@ impl<'d> Matcher<'d> {
         } else {
             (start.saturating_sub(limit), start)
         };
-        Matcher { data, lo, hi, forward, budget: Cell::new(STEPS_PER_ATTEMPT) }
+        Matcher { data, lo, hi, forward, budget: Cell::new(STEPS_PER_ATTEMPT), caps: RefCell::new(Vec::new()) }
     }
 
     /// The end of the first match (in pattern priority order) of `node` from `start`.
@@ -40,6 +45,21 @@ impl<'d> Matcher<'d> {
         let mut found = None;
         self.m(node, start, &mut |end| {
             found = Some(end);
+            true
+        });
+        found
+    }
+
+    /// The first match of `node` (from [`crate::pattern::parse_regex_groups`],
+    /// with `groups` groups) from `start`, reading forwards, with where each
+    /// group matched: the last iteration's, for a group in a repeat.
+    pub fn captures(&self, node: &Node, start: usize, groups: u32) -> Option<Captures> {
+        *self.caps.borrow_mut() = vec![None; groups as usize + 1];
+        let mut found = None;
+        self.m(node, start, &mut |end| {
+            let mut caps = self.caps.borrow().clone();
+            caps[0] = Some((start, end));
+            found = Some(caps);
             true
         });
         found
@@ -92,6 +112,20 @@ impl<'d> Matcher<'d> {
                 Node::Set(set) => self.run(set, pos, *min, *max, *greedy, k),
                 inner => self.rep(inner, 0, *min, *max, *greedy, pos, k),
             },
+            Node::Group(n, inner) => {
+                let i = *n as usize;
+                self.m(inner, pos, &mut |end| {
+                    let span = if self.forward { (pos, end) } else { (end, pos) };
+                    let saved = self.caps.borrow_mut().get_mut(i).map(|c| c.replace(span));
+                    if k(end) {
+                        return true;
+                    }
+                    if let (Some(saved), Some(c)) = (saved, self.caps.borrow_mut().get_mut(i)) {
+                        *c = saved;
+                    }
+                    false
+                })
+            }
         }
     }
 
@@ -187,6 +221,12 @@ impl<'d> Matcher<'d> {
             Assert::NotWordBoundary => before == after,
         }
     }
+}
+
+/// The leftmost match of `node` (with `groups` groups) in `data`, the first
+/// in priority order from there (as RE2's leftmost-first): its captures.
+pub fn search_captures(node: &Node, data: &[u8], groups: u32) -> Option<Captures> {
+    (0..=data.len()).find_map(|start| Matcher::new(data, start, true, data.len()).captures(node, start, groups))
 }
 
 /// Whether `node` matches anywhere in `data` (the `matches` operator).

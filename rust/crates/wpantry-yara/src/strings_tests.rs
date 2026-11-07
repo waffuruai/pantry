@@ -1,4 +1,9 @@
 use super::*;
+
+/// The compiled string at YARA's regex reach.
+fn compile(def: &StringDef) -> CompiledString {
+    super::compile(def, REGEX_REACH)
+}
 use crate::parser::BASE64_STANDARD;
 use crate::pattern::{Syntax, parse_hex, parse_regex};
 

@@ -105,8 +105,16 @@ pub enum Node {
     Set(ByteSet),
     Seq(Vec<Node>),
     Alt(Vec<Node>),
-    Repeat { node: Box<Node>, min: u32, max: Option<u32>, greedy: bool },
+    Repeat {
+        node: Box<Node>,
+        min: u32,
+        max: Option<u32>,
+        greedy: bool,
+    },
     Assert(Assert),
+    /// Capture group `n` (from 1): only [`parse_regex_groups`] makes them,
+    /// so rules' strings never hold one.
+    Group(u32, Box<Node>),
 }
 
 impl Node {
@@ -128,6 +136,7 @@ impl Node {
             Node::Repeat { node, min, max, greedy } => {
                 Node::Repeat { node: Box::new(node.flatten()), min, max, greedy }
             }
+            Node::Group(n, inner) => Node::Group(n, Box::new(inner.flatten())),
             other => other,
         }
     }
@@ -140,6 +149,7 @@ impl Node {
             Node::Repeat { node, min, max, greedy } => {
                 Node::Repeat { node: Box::new(node.reversed()), min: *min, max: *max, greedy: *greedy }
             }
+            Node::Group(n, inner) => Node::Group(*n, Box::new(inner.reversed())),
             Node::Set(_) | Node::Assert(_) => self.clone(),
         }
     }
@@ -153,6 +163,7 @@ impl Node {
             Node::Repeat { node, min, max, greedy } => {
                 Node::Repeat { node: Box::new(node.widened()), min: *min, max: *max, greedy: *greedy }
             }
+            Node::Group(n, inner) => Node::Group(*n, Box::new(inner.widened())),
             Node::Assert(_) => self.clone(),
         }
     }
@@ -166,6 +177,7 @@ impl Node {
             Node::Repeat { node, min, max, greedy } => {
                 Node::Repeat { node: Box::new(node.case_folded()), min: *min, max: *max, greedy: *greedy }
             }
+            Node::Group(n, inner) => Node::Group(*n, Box::new(inner.case_folded())),
             Node::Assert(_) => self.clone(),
         }
     }
@@ -298,17 +310,29 @@ struct Re<'a> {
     dotall: bool,
     syntax: Syntax,
     line: usize,
+    /// The capture groups seen so far, when they are kept ([`parse_regex_groups`]).
+    groups: Option<u32>,
 }
 
 /// Parse a regex body (between the slashes). `nocase` folds every letter.
 pub fn parse_regex(src: &[u8], nocase: bool, dotall: bool, syntax: Syntax, line: usize) -> Result<Node, Error> {
-    let mut re = Re { src, pos: 0, dotall, syntax, line };
+    Ok(parse(Re { src, pos: 0, dotall, syntax, line, groups: None }, nocase)?.0)
+}
+
+/// As [`parse_regex`], keeping each capturing `( )` as a [`Node::Group`]
+/// numbered from 1 in the order its `(` appears; also returns how many there
+/// are. For [`crate::matcher::Matcher::captures`], not for rules' strings.
+pub fn parse_regex_groups(src: &[u8], nocase: bool, dotall: bool, syntax: Syntax) -> Result<(Node, u32), Error> {
+    parse(Re { src, pos: 0, dotall, syntax, line: 0, groups: Some(0) }, nocase)
+}
+
+fn parse(mut re: Re, nocase: bool) -> Result<(Node, u32), Error> {
     let node = re.alt()?;
-    if re.pos != src.len() {
+    if re.pos != re.src.len() {
         return Err(re.err("unbalanced `)`"));
     }
     let node = if nocase { node.case_folded() } else { node };
-    Ok(node.flatten())
+    Ok((node.flatten(), re.groups.unwrap_or(0)))
 }
 
 impl Re<'_> {
@@ -407,15 +431,26 @@ impl Re<'_> {
         self.pos += 1;
         Ok(match c {
             b'(' => {
-                if self.src[self.pos..].starts_with(b"?:") {
+                let capturing = !self.src[self.pos..].starts_with(b"?:");
+                if !capturing {
                     self.pos += 2;
                 }
+                let group = match &mut self.groups {
+                    Some(n) if capturing => {
+                        *n += 1;
+                        Some(*n)
+                    }
+                    _ => None,
+                };
                 let inner = self.alt()?;
                 if self.peek() != Some(b')') {
                     return Err(self.err("unclosed `(`"));
                 }
                 self.pos += 1;
-                inner
+                match group {
+                    Some(n) => Node::Group(n, Box::new(inner)),
+                    None => inner,
+                }
             }
             b'.' => Node::Set(if self.dotall { ByteSet::FULL } else { ByteSet::one(b'\n').complement() }),
             b'^' => Node::Assert(Assert::Start),

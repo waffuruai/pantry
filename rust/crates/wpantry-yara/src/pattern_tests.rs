@@ -109,3 +109,34 @@ fn reversed_widened_and_folded() {
     assert_eq!(n.widened().flatten(), Node::Seq(vec![set(b"a"), set(&[0]), set(b"b"), set(&[0])]));
     assert_eq!(n.case_folded(), Node::Seq(vec![set(b"aA"), set(b"bB")]));
 }
+
+#[test]
+fn capturing_parse_numbers_groups_and_plain_parse_drops_them() {
+    let (node, groups) = parse_regex_groups(b"(a)(?:b)(c(d))", false, false, Syntax::Strict).unwrap();
+    assert_eq!(groups, 3);
+    let mut seen = Vec::new();
+    fn walk(n: &Node, out: &mut Vec<u32>) {
+        match n {
+            Node::Group(i, inner) => {
+                out.push(*i);
+                walk(inner, out);
+            }
+            Node::Seq(items) | Node::Alt(items) => items.iter().for_each(|i| walk(i, out)),
+            Node::Repeat { node, .. } => walk(node, out),
+            Node::Set(_) | Node::Assert(_) => {}
+        }
+    }
+    walk(&node, &mut seen);
+    assert_eq!(seen, vec![1, 2, 3]);
+    let plain = parse_regex(b"(a)(?:b)(c(d))", false, false, Syntax::Strict, 1).unwrap();
+    let mut none = Vec::new();
+    walk(&plain, &mut none);
+    assert!(none.is_empty());
+    assert_eq!(plain, parse_regex(b"abcd", false, false, Syntax::Strict, 1).unwrap());
+}
+
+#[test]
+fn capturing_parse_folds_case_inside_groups() {
+    let (node, _) = parse_regex_groups(b"(a)", true, false, Syntax::Strict).unwrap();
+    assert_eq!(node, Node::Group(1, Box::new(Node::Set(ByteSet::one(b'a').case_fold()))));
+}

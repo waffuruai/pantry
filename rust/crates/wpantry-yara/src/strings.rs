@@ -68,7 +68,7 @@ pub enum Fullword {
     Wide(u8),
 }
 
-pub fn compile(def: &StringDef) -> CompiledString {
+pub fn compile(def: &StringDef, regex_reach: usize) -> CompiledString {
     let variants = match &def.kind {
         StringKind::Text(text) => text_variants(text, &def.mods),
         StringKind::Hex(node) => vec![pattern_variant(node.clone(), HEX_REACH, Fullword::No)],
@@ -76,10 +76,10 @@ pub fn compile(def: &StringDef) -> CompiledString {
             let node = if def.mods.nocase { node.case_folded() } else { node.clone() };
             let mut out = Vec::new();
             if def.mods.ascii || !def.mods.wide {
-                out.push(pattern_variant(node.clone(), REGEX_REACH, fullword(&def.mods, false, 0)));
+                out.push(pattern_variant(node.clone(), regex_reach, fullword(&def.mods, false, 0)));
             }
             if def.mods.wide {
-                out.push(pattern_variant(node.widened().flatten(), REGEX_REACH, fullword(&def.mods, true, 0)));
+                out.push(pattern_variant(node.widened().flatten(), regex_reach, fullword(&def.mods, true, 0)));
             }
             out
         }

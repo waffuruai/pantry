@@ -130,6 +130,8 @@ pub struct Compiler {
     /// Which rules to keep, by system and category; the rest are skipped.
     filter: Option<Filter>,
     skipped: usize,
+    /// How far a regex match may run, in bytes ([`strings::REGEX_REACH`] unless set).
+    regex_reach: usize,
 }
 
 type Filter = Box<dyn Fn(Os, &str) -> bool>;
@@ -152,7 +154,15 @@ impl Compiler {
             nslots: 0,
             filter: None,
             skipped: 0,
+            regex_reach: strings::REGEX_REACH,
         }
+    }
+
+    /// How far a regex match may run from where it starts, for the rules added
+    /// after this. YARA's 4,096 bytes ([`strings::REGEX_REACH`]) by default; a
+    /// secret such as a private key block runs longer.
+    pub fn set_regex_reach(&mut self, bytes: usize) {
+        self.regex_reach = bytes;
     }
 
     /// Keep only the rules `keep(os, category)` accepts (this machine's
@@ -227,7 +237,7 @@ impl Compiler {
         let slots = cx.slots;
         let index = self.rules.len() as u32;
         for def in &rule.strings {
-            self.strings.push(strings::compile(def));
+            self.strings.push(strings::compile(def, self.regex_reach));
             self.string_rule.push(index);
         }
         self.nslots = self.nslots.max(slots);

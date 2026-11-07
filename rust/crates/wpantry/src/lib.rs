@@ -39,7 +39,6 @@ pub const SKILL: &str = include_str!("../assets/SKILL.md");
 /// The bundled policy and data files (TOML), the defaults the policy
 /// options (`--licenses`, `--install-scripts`, …) replace.
 pub mod defaults {
-    pub const GITLEAKS: &str = include_str!("../assets/defaults/gitleaks.toml");
     pub const LICENSES: &str = include_str!("../assets/defaults/licenses.toml");
     pub const INSTALL_SCRIPTS: &str = include_str!("../assets/defaults/install-scripts.toml");
     pub const REPO_HOOKS: &str = include_str!("../assets/defaults/repo-hooks.toml");

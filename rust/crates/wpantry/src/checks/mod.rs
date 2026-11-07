@@ -41,11 +41,12 @@ use supply_chain::repos::{self, Repo};
 pub const REMOVE: &str = "Remove {} now, then rotate any credentials this machine holds";
 
 /// The policy files a scan reads; the bundled defaults unless the caller
-/// passes its own (`--gitleaks-config`, `--licenses`, `--install-scripts`,
+/// passes its own (`--secret-rules`, `--licenses`, `--install-scripts`,
 /// `--repo-hooks`, `--posture-policy`, `--suspect-policy`, `--hooks-policy`).
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
-    pub gitleaks_config: Option<PathBuf>,
+    /// The user's own secret rules, YARA (`--secret-rules`), added to the bundled ones.
+    pub secret_rules: Option<PathBuf>,
     pub licenses: Option<PathBuf>,
     pub install_scripts: Option<PathBuf>,
     /// Indicators of hijacked repos (`--repo-hooks`); the bundled list by default.
@@ -96,20 +97,9 @@ impl Policy {
         listed(self.posture.as_deref(), crate::defaults::POSTURE, "skip")
     }
 
-    /// The gitleaks config file: the given one, or the bundled one written
-    /// beside the cache (rewritten only when it differs, so its fingerprint
-    /// holds).
-    pub fn gitleaks_config(&self, cache: &Cache) -> Result<PathBuf> {
-        if let Some(p) = &self.gitleaks_config {
-            return Ok(p.clone());
-        }
-        let dir = cache.file().parent().map(Path::to_path_buf).unwrap_or_default().join("defaults");
-        let file = dir.join("gitleaks.toml");
-        if std::fs::read_to_string(&file).ok().as_deref() != Some(crate::defaults::GITLEAKS) {
-            std::fs::create_dir_all(&dir)?;
-            std::fs::write(&file, crate::defaults::GITLEAKS)?;
-        }
-        Ok(file)
+    /// The user's own secret rules (`--secret-rules`), when there are any.
+    pub fn secret_rules(&self) -> Result<Option<String>> {
+        self.secret_rules.as_deref().map(|p| Ok(std::fs::read_to_string(p)?)).transpose()
     }
 }
 

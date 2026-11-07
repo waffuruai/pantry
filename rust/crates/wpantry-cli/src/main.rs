@@ -125,7 +125,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         no_online_hash: a.no_online_hash,
         sources: a.sources.clone(),
         policy: Policy {
-            gitleaks_config: a.gitleaks_config.clone(),
+            secret_rules: a.secret_rules.clone(),
             licenses: a.licenses.clone(),
             install_scripts: a.install_scripts.clone(),
             repo_hooks: a.repo_hooks.clone(),

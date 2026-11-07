@@ -94,7 +94,7 @@ pub fn scope_json(opts: &Options) -> J {
         (
             "policy_files",
             obj([
-                ("gitleaks", policy_path(&opts.policy.gitleaks_config).into()),
+                ("secret_rules", policy_path(&opts.policy.secret_rules).into()),
                 ("licenses", policy_path(&opts.policy.licenses).into()),
                 ("install_scripts", policy_path(&opts.policy.install_scripts).into()),
                 ("repo_hooks", policy_path(&opts.policy.repo_hooks).into()),

@@ -1,21 +1,22 @@
-//! Secrets committed to the scanned repos' history, found with gitleaks.
+//! Secrets committed to the scanned repos' history, found with Pantry's own
+//! scanner ([`crate::checks::secrets`]: betterleaks' rules on `wpantry-yara`).
 //!
-//! Each repo's history is scanned once in full, then only the commits its
-//! refs gained since (`--log-opts "… ^old-tip"`), and the hits are kept in
-//! the cache: the first scan of a big repo costs minutes, every later one
-//! costs the new commits. A full scan happens again when gitleaks, the
-//! policy or the repo's .gitleaksignore changes, or when a remembered tip
-//! is gone (history rewritten). Findings are redacted: the cache and the
-//! report hold the rule, file, line, commit and fingerprint, never the
-//! secret.
+//! History is read as files, not diffs: every blob any ref reaches (`git
+//! rev-list --objects --all`, newest first) is scanned once, at the first
+//! path it's found at, and its result is kept under its hash, its path and
+//! the rules' fingerprint (`secret_blobs`). A later scan reads only the
+//! blobs it hasn't seen, so a repo costs its new files, and a scan that runs
+//! out of time ([`BUDGET`]) goes on from there next time; what it didn't
+//! reach is reported as not checked. A hit's commit is the first that added
+//! its blob. Findings are redacted: the cache and the report hold the rule,
+//! file, line, commit and fingerprint, never the secret.
 //!
-//! Files over [`MAX_MB`] are skipped in history as they are in a folder:
-//! gitleaks' `--max-target-megabytes` only applies to folders, and one
-//! data set committed a few times (a 400 MB JSON file, a CSV dump) is
-//! hours of regexes. [`big_files`] marks them binary for `git log -p`.
+//! Paths betterleaks' prefilter skips (images, fonts, lockfiles, vendored
+//! code) aren't read, and the scanner skips binary content. Blobs over
+//! [`MAX_BLOB`] aren't read either, and are counted as not checked.
 
 use crate::checks::Scan;
-use crate::checks::supply_chain::GITLEAKS_INSTALL;
+use crate::checks::secrets::{Scanner, rules};
 use crate::checks::supply_chain::repos::Repo;
 use crate::db::Cache;
 use crate::error::{Error, Result};
@@ -24,75 +25,29 @@ use crate::utils::files::fingerprint;
 use crate::utils::files::short;
 use crate::utils::json::{self, str_at};
 use crate::utils::parallel;
-use crate::utils::process::exec;
-use crate::utils::process::pipe_lines;
-use crate::utils::process::run;
-use crate::utils::process::which;
-use crate::utils::temp::TempDir;
+use crate::utils::process::{lines, pipe_lines, run};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// The largest file read, in history or in a folder, in megabytes.
-pub const MAX_MB: u64 = 10;
+pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS secret_blobs (
+    blob TEXT NOT NULL, rules TEXT NOT NULL, hits TEXT NOT NULL, PRIMARY KEY (blob, rules));";
 
-/// The blobs over [`MAX_MB`] that `revs` reach (`--all`, less the
-/// remembered tips), as a gitattributes file marking each path binary
-/// (`-diff`): `git log -p` prints "Binary files differ" for them instead
-/// of their text, and gitleaks reads nothing of them. "" when there are
-/// none, or git can't list them in time (gitleaks then reads them all).
-pub fn big_files(repo: &Path, revs: &[String]) -> String {
-    let mut list: Vec<&OsStr> =
-        vec!["git".as_ref(), "-C".as_ref(), repo.as_os_str(), "rev-list".as_ref(), "--objects".as_ref()];
-    list.extend(revs.iter().map(OsStr::new));
-    let check: [&OsStr; 5] = [
-        "git".as_ref(),
-        "-C".as_ref(),
-        repo.as_os_str(),
-        "cat-file".as_ref(),
-        "--batch-check=%(objecttype) %(objectsize) %(rest)".as_ref(),
-    ];
-    let mut paths = BTreeSet::new();
-    let listed = pipe_lines(&list, &check, Duration::from_secs(300), |line| {
-        let mut parts = line.splitn(3, |&b| b == b' ');
-        let (Some(b"blob"), Some(size), Some(path)) = (parts.next(), parts.next(), parts.next()) else { return };
-        let big = std::str::from_utf8(size).ok().and_then(|s| s.parse::<u64>().ok()).is_some_and(|s| s > MAX_MB << 20);
-        if big && !path.is_empty() {
-            paths.insert(attr_pattern(path));
-        }
-    });
-    if listed.is_err() {
-        return String::new();
-    }
-    paths.into_iter().map(|p| p + " -diff\n").collect()
-}
+/// How long one repo's scan may read history; what's left waits for the next scan.
+pub const BUDGET: Duration = Duration::from_secs(30 * 60);
+/// The largest file read, in history: a bigger one is counted as not checked.
+pub const MAX_BLOB: u64 = 256 << 20;
+/// How long listing a repo's objects, or its commits' files, may take.
+const LIST_TIMEOUT: Duration = Duration::from_secs(600);
+/// Bumped when the scanner's results change for the same rules.
+const SCANNER: &str = "secrets-v1";
 
-/// `path` as a gitattributes pattern anchored at the repo's root: each run
-/// of bytes a pattern would read specially (spaces, globs, quotes, any
-/// non-ASCII) is `*`, which never crosses a `/` and can only mark more.
-fn attr_pattern(path: &[u8]) -> String {
-    let mut out = String::from("/");
-    let mut wild = false;
-    for &b in path {
-        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/') {
-            out.push(b as char);
-            wild = false;
-        } else if !wild {
-            out.push('*');
-            wild = true;
-        }
-    }
-    out
-}
-
-/// Rules too broad to fail on their own: their hits are reviewed, not trusted.
-pub const GENERIC: &[&str] =
-    &["generic-api-key", "generic-secret", "hashicorp-tf-password", "curl-auth-header", "curl-auth-user"];
-
-/// One redacted gitleaks hit.
+/// One redacted secret in a repo's history.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Leak {
     pub rule: String,
@@ -101,83 +56,68 @@ pub struct Leak {
     pub commit: String,
     pub fingerprint: String,
     pub description: String,
+    pub confidence: String,
+    pub tags: Vec<String>,
 }
 
-/// `gitleaks version`, asked once per binary: a scan of many repos would
-/// otherwise start gitleaks once per repo just to read its version.
-fn version(exe: &Path) -> String {
-    static SEEN: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
-    let mut seen = SEEN.lock().expect("lock");
-    if let Some((_, v)) = seen.iter().find(|(e, _)| e == exe) {
-        return v.clone();
+/// The rules a scan uses: the bundled ones and the user's own (`--secret-rules`).
+pub struct Rules {
+    pub extra: Option<String>,
+    /// What a cached result is kept under: the rules, and the scanner.
+    pub fingerprint: String,
+}
+
+impl Rules {
+    pub fn new(extra: Option<String>) -> Rules {
+        let text = format!("{SCANNER}\n{}\n{}", rules::BUNDLED, extra.as_deref().unwrap_or(""));
+        Rules { fingerprint: crate::utils::sha256::hex(text.as_bytes())[..16].to_string(), extra }
     }
-    let v = run(&[exe.as_os_str(), OsStr::new("version")], Duration::from_secs(15)).trim().to_string();
-    seen.push((exe.to_path_buf(), v.clone()));
-    v
+
+    pub fn scanner(&self) -> Result<Scanner> {
+        let extra: Vec<(&str, &str)> = self.extra.as_deref().map(|e| ("user", e)).into_iter().collect();
+        Ok(Scanner::new(rules::RuleSet::load(&extra)?))
+    }
 }
 
-/// One repo's scan: the binary, the policy it uses (always the caller's: a
-/// repo's own .gitleaks.toml could allow everything, so it is reported,
-/// not obeyed), the fingerprint its cached result is kept under, and the
-/// tips of the repo's refs now.
+/// One repo's scan: what its cached result is kept under, the tips of its
+/// refs now, and what the cache remembers.
 pub struct Job {
-    exe: PathBuf,
     repo: PathBuf,
-    config: PathBuf,
     key: String,
+    /// The rules' fingerprint and the repo's .gitleaksignore's.
     fingerprint: String,
+    rules: String,
     tips: BTreeSet<String>,
-    /// What the cache remembers, when the fingerprint still matches:
-    /// the tips it was scanned at, and the hits.
-    cached: Option<(BTreeSet<String>, Vec<Value>)>,
-    /// The repo carries its own `.gitleaks.toml`, which this scan ignores.
+    /// The tips last scanned at, the hits, and how many files weren't reached.
+    cached: Option<(BTreeSet<String>, Vec<Value>, u64)>,
+    /// The cache file, read from the scan's own thread.
+    db: PathBuf,
+    /// The repo carries a `.gitleaks.toml`, which this scan doesn't use.
     pub own_policy: bool,
-    /// Processes per gitleaks run (GOMAXPROCS), so parallel scans share
-    /// the machine instead of each taking every core.
+    /// Threads the scan may use.
     threads: usize,
 }
 
-impl Job {
-    /// The commits a scan this run must cover: everything (None), or only
-    /// what the refs gained since the remembered tips.
-    fn since(&self) -> Option<&BTreeSet<String>> {
-        let (tips, _) = self.cached.as_ref()?;
-        (!tips.is_empty() && tips.len() <= MAX_TIPS).then_some(tips)
-    }
-}
-
-/// More remembered tips than this and the exclusion list isn't worth
-/// passing: scan in full.
-const MAX_TIPS: usize = 200;
-
-/// What scanning `repo` takes, without running gitleaks: [`stale`] says
-/// whether to [`run_job`] it, [`finish`] reads or stores the result.
-/// `Missing` without gitleaks. `threads` is what each run may use.
-pub fn job(cache: &Cache, repo: &Path, default_config: &Path, threads: usize) -> Result<Job> {
-    job_with(cache, repo, default_config, threads, which("gitleaks"))
-}
-
-/// As [`job`], with the gitleaks binary given (None: not installed).
-pub fn job_with(
-    cache: &Cache,
-    repo: &Path,
-    default_config: &Path,
-    threads: usize,
-    exe: Option<PathBuf>,
-) -> Result<Job> {
-    let exe = exe.ok_or_else(|| Error::Missing("gitleaks".into()))?;
+pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<Job> {
     let own_policy = repo.join(".gitleaks.toml").is_file();
-    let config = default_config.to_path_buf();
-    let fingerprint =
-        format!("v2:{}:{}", version(&exe), fingerprint(&[config.as_path(), repo.join(".gitleaksignore").as_path()]));
-    let key = format!("gitleaks:{}", repo.display());
-    let tips = tips(repo);
+    let fingerprint = format!("{}:{}", rules.fingerprint, fingerprint(&[repo.join(".gitleaksignore").as_path()]));
+    let key = format!("secrets:{}", repo.display());
     let cached = cache.run(&key)?.filter(|(fp, _, _)| *fp == fingerprint).and_then(|(_, _, res)| {
         let tips: BTreeSet<String> = json::strs_at(&res, "tips").into_iter().collect();
         let hits = res.get("hits")?.as_array()?.clone();
-        Some((tips, hits))
+        Some((tips, hits, res.get("unchecked").and_then(Value::as_u64).unwrap_or(0)))
     });
-    Ok(Job { key, exe, repo: repo.to_path_buf(), config, fingerprint, tips, cached, own_policy, threads })
+    Ok(Job {
+        repo: repo.to_path_buf(),
+        key,
+        fingerprint,
+        rules: rules.fingerprint.clone(),
+        tips: tips(repo),
+        cached,
+        db: cache.file().to_path_buf(),
+        own_policy,
+        threads,
+    })
 }
 
 /// The commits the repo's refs point at: HEAD and every ref, read from
@@ -236,21 +176,19 @@ pub fn tips(repo: &Path) -> BTreeSet<String> {
     }
     walk(&common.join("refs"), &mut out, 0);
     if out.is_empty() {
-        let listed = run(
-            &[
-                OsStr::new("git"),
-                OsStr::new("-C"),
-                repo.as_os_str(),
-                OsStr::new("for-each-ref"),
-                OsStr::new("--format=%(objectname)"),
-            ],
-            Duration::from_secs(15),
+        let git = |args: &[&str]| {
+            let mut argv: Vec<&OsStr> = vec![OsStr::new("git"), OsStr::new("-C"), repo.as_os_str()];
+            argv.extend(args.iter().map(OsStr::new));
+            run(&argv, Duration::from_secs(15))
+        };
+        out.extend(
+            git(&["for-each-ref", "--format=%(objectname)"])
+                .lines()
+                .map(str::trim)
+                .filter(|l| is_sha(l))
+                .map(str::to_string),
         );
-        out.extend(listed.lines().map(str::trim).filter(|l| is_sha(l)).map(str::to_string));
-        let head = run(
-            &[OsStr::new("git"), OsStr::new("-C"), repo.as_os_str(), OsStr::new("rev-parse"), OsStr::new("HEAD")],
-            Duration::from_secs(15),
-        );
+        let head = git(&["rev-parse", "HEAD"]);
         if is_sha(head.trim()) {
             out.insert(head.trim().to_string());
         }
@@ -258,144 +196,238 @@ pub fn tips(repo: &Path) -> BTreeSet<String> {
     out
 }
 
-/// Whether [`finish`] would run gitleaks rather than reuse the cached
-/// result: nothing cached under this policy and gitleaks, or the refs
-/// moved, or `refresh`; never when offline.
+/// Whether [`finish`] would scan rather than reuse the cached result: nothing
+/// cached under these rules, the refs moved, files were left for later, or
+/// `refresh`; never when offline.
 pub fn stale(job: &Job, refresh: bool, offline: bool) -> bool {
     if offline {
         return false;
     }
-    refresh || job.cached.as_ref().is_none_or(|(tips, _)| *tips != job.tips)
+    refresh || job.cached.as_ref().is_none_or(|(tips, _, unchecked)| *tips != job.tips || *unchecked > 0)
 }
 
-/// gitleaks over the repo's history (all of it, or what the refs gained
-/// since the remembered tips): the redacted hits, as cached.
-pub fn run_job(job: &Job) -> Result<Value> {
-    let dir = TempDir::new("gitleaks")?;
-    let report = dir.path().join("report.json");
-    let max_mb = MAX_MB.to_string();
-    let nice = which("nice");
-    let mut argv: Vec<&OsStr> = Vec::new();
-    if let Some(n) = &nice {
-        argv.extend([n.as_os_str(), OsStr::new("-n"), OsStr::new("10")]);
+/// A blob of history to read: its hash, the first path it's at, its size.
+struct Blob {
+    sha: String,
+    path: String,
+    size: u64,
+}
+
+fn git_argv<'a>(repo: &'a Path, args: &'a [&'a str]) -> Vec<&'a OsStr> {
+    let mut argv: Vec<&OsStr> = vec![OsStr::new("git"), OsStr::new("-C"), repo.as_os_str()];
+    argv.extend(args.iter().map(OsStr::new));
+    argv
+}
+
+/// Every blob the refs reach, newest first, once each, at its first path.
+/// An error when git can't read the repo (the listing alone would read as
+/// a repo with nothing in it).
+fn blobs(repo: &Path) -> Result<Vec<Blob>> {
+    let ok = crate::utils::process::exec(&git_argv(repo, &["rev-parse", "--git-dir"]), &[], Duration::from_secs(30))
+        .is_ok_and(|o| o.code == Some(0));
+    if !ok {
+        return Err(Error::Failed(format!("git can't read {}", repo.display())));
     }
-    argv.extend([
-        job.exe.as_os_str(),
-        "git".as_ref(),
-        job.repo.as_os_str(),
-        "--redact".as_ref(),
-        "--no-banner".as_ref(),
-        "--log-level".as_ref(),
-        "error".as_ref(),
-        "--exit-code".as_ref(),
-        "0".as_ref(),
-        "--max-target-megabytes".as_ref(),
-        max_mb.as_ref(),
-        "--report-format".as_ref(),
-        "json".as_ref(),
-        "--report-path".as_ref(),
-        report.as_os_str(),
-    ]);
-    if job.config.is_file() {
-        argv.extend([OsStr::new("--config"), job.config.as_os_str()]);
-    }
-    // gitleaks' own history options are dropped when --log-opts is given,
-    // so they are repeated here, with the remembered tips excluded; a tip
-    // that no longer exists means rewritten history: scan everything.
-    let since = job.since().filter(|tips| tips_exist(&job.repo, tips));
-    let log_opts = since.map(|tips| {
-        let mut s = String::from("--full-history --all --diff-filter=tuxdb");
-        for t in tips {
-            s.push_str(" ^");
-            s.push_str(t);
+    let list = git_argv(repo, &["rev-list", "--objects", "--all"]);
+    let check = git_argv(repo, &["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)"]);
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    pipe_lines(&list, &check, LIST_TIMEOUT, |line| {
+        let mut parts = line.splitn(4, |&b| b == b' ');
+        let (Some(sha), Some(b"blob"), Some(size)) = (parts.next(), parts.next(), parts.next()) else { return };
+        let path = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
+        let sha = String::from_utf8_lossy(sha).into_owned();
+        let size = std::str::from_utf8(size).ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if seen.insert(sha.clone()) {
+            out.push(Blob { sha, path, size });
         }
-        s
-    });
-    if let Some(opts) = &log_opts {
-        argv.extend([OsStr::new("--log-opts"), OsStr::new(opts)]);
-    }
-    let threads = job.threads.max(1).to_string();
-    let mut env = vec![("GOMAXPROCS", threads.clone())];
-    // The big files, by a gitattributes file of their own (git reads it as
-    // core.attributesFile, in place of any the user set, for this run).
-    let revs: Vec<String> = std::iter::once("--all".to_string())
-        .chain(since.iter().flat_map(|t| t.iter().map(|t| format!("^{t}"))))
-        .collect();
-    let big = big_files(&job.repo, &revs);
-    if !big.is_empty() {
-        let attrs = dir.path().join("attributes");
-        std::fs::write(&attrs, big)?;
-        env.extend([
-            ("GIT_CONFIG_COUNT", "1".to_string()),
-            ("GIT_CONFIG_KEY_0", "core.attributesFile".to_string()),
-            ("GIT_CONFIG_VALUE_0", attrs.to_string_lossy().into_owned()),
-        ]);
-    }
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let out = exec(&argv, &env, Duration::from_secs(1800))?;
-    if out.code != Some(0) {
-        let tail: String = out.stderr.trim().chars().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
-        return Err(Error::Failed(format!(
-            "gitleaks exited {}: {tail}",
-            out.code.map_or("by a signal".into(), |c| c.to_string())
-        )));
-    }
-    let mut rows = report_rows(&report)?;
-    if since.is_some()
-        && let Some((_, old)) = &job.cached
-    {
-        // The earlier hits still stand, minus any since listed in .gitleaksignore.
-        let ignored = ignored(&job.repo);
-        let seen: BTreeSet<String> = rows.iter().map(|r| str_at(r, "fingerprint").to_string()).collect();
-        for hit in old {
-            let fp = str_at(hit, "fingerprint");
-            if !seen.contains(fp) && !ignored.contains(fp) {
-                rows.push(hit.clone());
+    })?;
+    Ok(out)
+}
+
+/// Read `blobs`' contents with one `git cat-file --batch`, handing each to
+/// `each` until it returns false or `deadline` passes; how many it read.
+fn read_blobs<'b>(
+    repo: &Path,
+    blobs: &[&'b Blob],
+    deadline: Instant,
+    mut each: impl FnMut(&'b Blob, Vec<u8>) -> bool,
+) -> Result<usize> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo).args(["cat-file", "--batch"]);
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
+    let mut child = crate::utils::process::spawn(&mut cmd).map_err(|e| Error::Failed(format!("git cat-file: {e}")))?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let shas: Vec<String> = blobs.iter().map(|b| b.sha.clone()).collect();
+    let writer = std::thread::spawn(move || {
+        for sha in shas {
+            if writeln!(stdin, "{sha}").is_err() {
+                break;
             }
         }
+    });
+    let mut out = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut read = 0;
+    let mut header = Vec::new();
+    for blob in blobs {
+        if Instant::now() >= deadline {
+            break;
+        }
+        header.clear();
+        if out.read_until(b'\n', &mut header)? == 0 {
+            break;
+        }
+        // `<sha> blob <size>`, or `<sha> missing`.
+        let size = std::str::from_utf8(&header).ok().and_then(|h| h.split_whitespace().nth(2)?.parse::<u64>().ok());
+        let Some(size) = size else { continue };
+        let mut data = Vec::with_capacity(size as usize);
+        (&mut out).take(size).read_to_end(&mut data)?;
+        let mut newline = [0u8; 1];
+        out.read_exact(&mut newline)?;
+        read += 1;
+        if !each(blob, data) {
+            break;
+        }
     }
-    Ok(json!({"tips": job.tips.iter().collect::<Vec<_>>(), "hits": rows}))
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = writer.join();
+    Ok(read)
 }
 
-/// The redacted hits in the report gitleaks wrote: a list of findings, `[]`
-/// when it found none (gitleaks 8 always writes the file). No file, an
-/// empty one, or any other shape is a run that didn't finish, never a clean
-/// one, so nothing of it is cached.
-fn report_rows(report: &Path) -> Result<Vec<Value>> {
-    let text = std::fs::read(report).map_err(|e| Error::Failed(format!("gitleaks wrote no report: {e}")))?;
-    let found = json::parse(&text, json::MAX_DOCUMENT).map_err(|e| Error::Failed(format!("gitleaks report: {e}")))?;
-    let Value::Array(found) = found else {
-        return Err(Error::Failed("gitleaks report isn't a list of findings".into()));
+/// The first commit (full hash) that added each of `wanted`, from the
+/// history's raw diffs, oldest first.
+fn added_in(repo: &Path, wanted: &HashSet<String>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if wanted.is_empty() {
+        return out;
+    }
+    let argv =
+        git_argv(repo, &["log", "--all", "--reverse", "--raw", "--no-abbrev", "--no-renames", "--format=%x00%H"]);
+    let mut commit = String::new();
+    let _ = lines(&argv, LIST_TIMEOUT, |line| {
+        if let Some(sha) = line.strip_prefix(b"\0") {
+            commit = String::from_utf8_lossy(sha).into_owned();
+        } else if line.first() == Some(&b':') {
+            // `:100644 100644 <old> <new> M\tpath`
+            let new = line.split(|&b| b == b' ').nth(3).map(|s| String::from_utf8_lossy(s).into_owned());
+            if let Some(new) = new
+                && wanted.contains(&new)
+                && !out.contains_key(&new)
+            {
+                out.insert(new, commit.clone());
+            }
+        }
+    });
+    out
+}
+
+/// The cached result of each blob at its path, from the cache file, read
+/// while the scan's own connection holds its transaction.
+fn cached_blobs(db: &Path, rules: &str, blobs: &[Blob]) -> HashMap<String, Value> {
+    let mut out = HashMap::new();
+    let Ok(conn) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return out;
     };
-    found
-        .iter()
-        .map(|f| {
-            let rule = f.get("RuleID").and_then(Value::as_str).filter(|s| !s.is_empty());
-            let fp = f.get("Fingerprint").and_then(Value::as_str).filter(|s| !s.is_empty());
-            let (Some(rule), Some(fp)) = (rule, fp) else {
-                return Err(Error::Failed("gitleaks report has a finding without RuleID and Fingerprint".into()));
-            };
-            Ok(json!({"rule": rule, "file": str_at(f, "File"),
-                      "line": f.get("StartLine").and_then(Value::as_i64).unwrap_or(0),
-                      "commit": str_at(f, "Commit").chars().take(12).collect::<String>(),
-                      "fingerprint": fp, "description": str_at(f, "Description")}))
-        })
-        .collect()
+    let Ok(mut stmt) = conn.prepare("SELECT hits FROM secret_blobs WHERE blob=? AND rules=?") else { return out };
+    for b in blobs {
+        let key = blob_key(b);
+        let hits: Option<String> = stmt.query_row(rusqlite::params![key, rules], |r| r.get(0)).ok();
+        if let Some(v) = hits.and_then(|h| serde_json::from_str(&h).ok()) {
+            out.insert(key, v);
+        }
+    }
+    out
 }
 
-/// Whether every commit is still in the repo (one git call for all of them).
-fn tips_exist(repo: &Path, tips: &BTreeSet<String>) -> bool {
-    let mut argv: Vec<&OsStr> = vec![
-        OsStr::new("git"),
-        OsStr::new("-C"),
-        repo.as_os_str(),
-        OsStr::new("rev-list"),
-        OsStr::new("--no-walk=unsorted"),
-        OsStr::new("--max-count=1"),
-    ];
-    argv.extend(tips.iter().map(|t| OsStr::new(t.as_str())));
-    argv.push(OsStr::new("--"));
-    exec(&argv, &[], Duration::from_secs(60)).is_ok_and(|o| o.code == Some(0))
+fn blob_key(b: &Blob) -> String {
+    format!("{}:{}", b.sha, b.path)
+}
+
+/// Scan the repo's history: the blobs not cached, as many as [`BUDGET`]
+/// allows, on the job's threads. The result, as cached: the tips, the
+/// redacted hits, how many files weren't checked, and the new blobs'
+/// results (`new`, for [`finish`] to keep).
+pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
+    let all = blobs(&job.repo)?;
+    let mut too_big = 0;
+    let mut todo: Vec<&Blob> = Vec::new();
+    let wanted: Vec<Blob> = all.into_iter().filter(|b| !scanner.skips_path(&b.path)).collect();
+    let cached = cached_blobs(&job.db, &job.rules, &wanted);
+    for b in &wanted {
+        if cached.contains_key(&blob_key(b)) {
+            continue;
+        }
+        if b.size > MAX_BLOB {
+            too_big += 1;
+        } else {
+            todo.push(b);
+        }
+    }
+    let deadline = Instant::now() + BUDGET;
+    let results: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(job.threads * 2);
+    let rx = Mutex::new(rx);
+    let read = std::thread::scope(|s| -> Result<usize> {
+        for _ in 0..job.threads.max(1) {
+            s.spawn(|| {
+                loop {
+                    let next = rx.lock().expect("lock").recv();
+                    let Ok((blob, data)) = next else { break };
+                    let hits: Vec<Value> = scanner
+                        .scan(&data, &blob.path, None)
+                        .into_iter()
+                        .map(|f| {
+                            json!({"rule": f.rule, "line": f.start_line, "description": f.description,
+                                   "confidence": confidence(f.confidence), "tags": f.tags})
+                        })
+                        .collect();
+                    results.lock().expect("lock").push((blob_key(blob), Value::Array(hits)));
+                }
+            });
+        }
+        let read = read_blobs(&job.repo, &todo, deadline, |blob, data| tx.send((blob, data)).is_ok());
+        drop(tx);
+        read
+    })?;
+    let new = results.into_inner().expect("lock");
+    let unchecked = (todo.len() - read) as u64 + too_big;
+    // Every blob's hits, cached or new, with the commit that added it.
+    let by_key: HashMap<&str, &Value> =
+        cached.iter().map(|(k, v)| (k.as_str(), v)).chain(new.iter().map(|(k, v)| (k.as_str(), v))).collect();
+    let hit_blobs: Vec<&Blob> = wanted
+        .iter()
+        .filter(|b| by_key.get(blob_key(b).as_str()).is_some_and(|h| h.as_array().is_some_and(|a| !a.is_empty())))
+        .collect();
+    let shas: HashSet<String> = hit_blobs.iter().map(|b| b.sha.clone()).collect();
+    let commits = added_in(&job.repo, &shas);
+    let ignored = ignored(&job.repo);
+    let mut rows = Vec::new();
+    for b in hit_blobs {
+        let commit = commits.get(&b.sha).cloned().unwrap_or_default();
+        for h in by_key[blob_key(b).as_str()].as_array().into_iter().flatten() {
+            let rule = str_at(h, "rule");
+            let line = h.get("line").and_then(Value::as_i64).unwrap_or(0);
+            let fp = format!("{commit}:{}:{rule}:{line}", b.path);
+            if ignored.contains(&fp) {
+                continue;
+            }
+            rows.push(json!({"rule": rule, "file": b.path, "line": line,
+                             "commit": commit.chars().take(12).collect::<String>(), "fingerprint": fp,
+                             "description": str_at(h, "description"), "confidence": str_at(h, "confidence"),
+                             "tags": h.get("tags").cloned().unwrap_or(Value::Array(vec![]))}));
+        }
+    }
+    Ok(json!({"tips": job.tips.iter().collect::<Vec<_>>(), "hits": rows, "unchecked": unchecked,
+              "new": new.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()}))
+}
+
+fn confidence(c: Option<rules::Confidence>) -> &'static str {
+    match c {
+        Some(rules::Confidence::High) | None => "high",
+        Some(rules::Confidence::Medium) => "medium",
+        Some(rules::Confidence::Low) => "low",
+    }
 }
 
 /// The fingerprints the repo's .gitleaksignore lists.
@@ -409,33 +441,43 @@ fn ignored(repo: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// The leaks in the job's repo: the cached result while the refs haven't
-/// moved, else `ran` (a [`run_job`] made ahead, beside other repos'), else
-/// a scan now. The result is stored under the job's fingerprint.
-pub fn finish(cache: &Cache, job: &Job, ran: Option<Result<Value>>, refresh: bool, offline: bool) -> Result<Vec<Leak>> {
-    let res = if !stale(job, refresh, offline) {
+/// The leaks in the job's repo, and how many of its files weren't checked:
+/// the cached result while the refs haven't moved, else `ran` (a
+/// [`run_job`] made ahead, beside other work). A run's new blob results and
+/// its summary are stored.
+pub fn finish(
+    cache: &Cache,
+    job: &Job,
+    ran: Option<Result<Value>>,
+    refresh: bool,
+    offline: bool,
+) -> Result<(Vec<Leak>, u64)> {
+    let (hits, unchecked) = if !stale(job, refresh, offline) {
         match &job.cached {
-            Some((_, hits)) => Value::Array(hits.clone()),
+            Some((_, hits, unchecked)) => (hits.clone(), *unchecked),
             None => return Err(Error::Offline(format!("{}: offline and not cached", job.key))),
         }
     } else {
-        match ran.unwrap_or_else(|| run_job(job)) {
-            Ok(res) => {
-                cache.put_run(&job.key, &job.fingerprint, &res)?;
-                cache.commit()?;
-                res.get("hits").cloned().unwrap_or(Value::Array(vec![]))
-            }
-            Err(e @ (Error::Offline(_) | Error::Invalid(_))) => match &job.cached {
-                Some((_, hits)) => Value::Array(hits.clone()),
-                None => return Err(Error::Offline(format!("{}: {e}", job.key))),
-            },
-            Err(e) => return Err(e),
+        let Some(ran) = ran else { return Err(Error::Failed(format!("{}: not scanned", job.key))) };
+        let res = ran?;
+        for pair in res.get("new").and_then(Value::as_array).into_iter().flatten() {
+            let (Some(key), Some(hits)) = (pair.get(0).and_then(Value::as_str), pair.get(1)) else { continue };
+            cache.conn.execute(
+                "INSERT OR REPLACE INTO secret_blobs (blob, rules, hits) VALUES (?, ?, ?)",
+                rusqlite::params![key, job.rules, hits.to_string()],
+            )?;
         }
+        let unchecked = res.get("unchecked").and_then(Value::as_u64).unwrap_or(0);
+        let hits = res.get("hits").and_then(Value::as_array).cloned().unwrap_or_default();
+        cache.put_run(
+            &job.key,
+            &job.fingerprint,
+            &json!({"tips": res.get("tips"), "hits": hits, "unchecked": unchecked}),
+        )?;
+        cache.commit()?;
+        (hits, unchecked)
     };
-    Ok(res
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+    let leaks = hits
         .iter()
         .map(|f| Leak {
             rule: str_at(f, "rule").into(),
@@ -444,33 +486,27 @@ pub fn finish(cache: &Cache, job: &Job, ran: Option<Result<Value>>, refresh: boo
             commit: str_at(f, "commit").into(),
             fingerprint: str_at(f, "fingerprint").into(),
             description: str_at(f, "description").into(),
+            confidence: str_at(f, "confidence").into(),
+            tags: json::strs_at(f, "tags"),
         })
-        .collect())
+        .collect();
+    Ok((leaks, unchecked))
 }
 
-/// gitleaks scans run at once on a first run (`--jobs`): each is CPU-bound,
-/// so together they get the machine's cores, not each of them all of them.
-pub(crate) fn gitleaks_at_once(scan: &Scan) -> usize {
+/// Secret scans at once on a first run (`--jobs`): each is CPU-bound, so
+/// together they share the machine's cores.
+pub(crate) fn scans_at_once(scan: &Scan) -> usize {
     scan.opts.jobs.unwrap_or_else(|| (parallel::cores() / 2).clamp(1, 4))
 }
 
-/// Each repo's gitleaks job (with the `gitleaks` binary; None: not
-/// installed), its fingerprint and ref tips read at once, and whether its
-/// cached result is stale.
-pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], gitleaks: Option<PathBuf>) -> Result<Vec<(Result<Job>, bool)>> {
-    if repos.is_empty() {
-        return Ok(Vec::new());
-    }
-    let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
-    let threads = (parallel::cores() / gitleaks_at_once(scan)).max(1);
+/// Each repo's secret job, and whether its cached result is stale.
+pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], rules: &Rules) -> Result<Vec<(Result<Job>, bool)>> {
+    let threads = (parallel::cores() / scans_at_once(scan)).max(1);
     repos
         .iter()
         .map(|(_, root)| {
-            let job = job_with(&scan.cache, root, &config, threads, gitleaks.clone());
-            let stale = match &job {
-                Ok(j) => stale(j, scan.opts.refresh, scan.opts.offline),
-                Err(_) => false,
-            };
+            let job = job(&scan.cache, root, rules, threads);
+            let stale = job.as_ref().is_ok_and(|j| stale(j, scan.opts.refresh, scan.opts.offline));
             Ok((job, stale))
         })
         .collect()
@@ -478,8 +514,7 @@ pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], gitleaks: Option<PathBuf>
 
 /// Secrets committed anywhere in the repos' history, from the jobs
 /// [`secret_jobs`] made and the scans run ahead (`ran`), in the repos'
-/// order. A provider-specific rule (AWS, GitHub, OpenAI, …) fails; a generic
-/// one asks for review.
+/// order. A high-confidence rule fails; the others ask for review.
 pub(crate) fn secrets(
     scan: &mut Scan,
     repos: &[Repo],
@@ -488,54 +523,49 @@ pub(crate) fn secrets(
 ) -> Result<()> {
     let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
     for (((name, root), (job, _)), ran) in repos.iter().zip(jobs).zip(ran) {
-        scan.status(&format!("Scanning {name}'s git history for secrets (gitleaks)"));
+        scan.status(&format!("Scanning {name}'s git history for secrets"));
         if job.as_ref().is_ok_and(|j| j.own_policy) {
             scan.add(Finding {
                 kind: "secret".into(),
                 component: format!("{name}/.gitleaks.toml"),
                 vuln_id: "REPO-POLICY".into(),
                 status: "warn".into(),
-                note: "the repo's own gitleaks config was ignored; the scan used your policy".into(),
-                fix_cmd: "Review the repo's .gitleaks.toml; pass it with --gitleaks-config to scan with it".into(),
+                note: "the repo's own gitleaks config isn't used; the scan used Pantry's rules".into(),
+                fix_cmd: "Review the repo's .gitleaks.toml; to add rules, write them as YARA and pass --secret-rules"
+                    .into(),
                 ..Default::default()
             });
         }
-        let found = match job.and_then(|job| finish(&scan.cache, &job, ran, refresh, offline)) {
+        let (found, unchecked) = match job.and_then(|job| finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
-            Err(Error::Missing(_)) => {
-                let has_brew = which("brew").is_some();
-                scan.add(Finding {
-                    kind: "tool".into(),
-                    component: "gitleaks".into(),
-                    vuln_id: "MISSING".into(),
-                    status: "fail".into(),
-                    note: "secrets in the repos' history can't be checked".into(),
-                    fix_auto: has_brew,
-                    fix_cmd: if has_brew {
-                        "brew install gitleaks".into()
-                    } else {
-                        format!("Install gitleaks: {GITLEAKS_INSTALL}")
-                    },
-                    ..Default::default()
-                });
-                return Ok(());
-            }
             Err(e) if e.is_source() => {
-                scan.unchecked(&format!("secrets in {name}'s history (gitleaks)"), &e.to_string());
+                scan.unchecked(&format!("secrets in {name}'s history"), &e.to_string());
                 continue;
             }
             Err(e) => return Err(e),
         };
         scan.count("repos scanned for secrets", 1);
+        if unchecked > 0 {
+            scan.unchecked(
+                &format!("secrets in {unchecked} files of {name}'s history"),
+                "not reached in this scan's time, or over 256 MB; the next scan goes on from here",
+            );
+        }
         for f in found {
-            let generic = GENERIC.contains(&f.rule.as_str());
+            let sure = f.confidence == "high";
+            let decoded = f.tags.iter().find_map(|t| t.strip_prefix("decoded:")).map(|k| format!(" ({k}-encoded)"));
             scan.add(Finding {
                 kind: "secret".into(),
                 component: format!("{name}/{}", f.file),
                 location: format!("line {}, commit {}", f.line, f.commit),
                 vuln_id: f.rule.clone(),
-                status: if generic { "warn" } else { "fail" }.into(),
-                note: format!("{}{}", f.description, if generic { " (review: generic rule)" } else { "" }),
+                status: if sure { "fail" } else { "warn" }.into(),
+                note: format!(
+                    "{}{}{}",
+                    f.description,
+                    decoded.unwrap_or_default(),
+                    if sure { String::new() } else { format!(" (review: {} confidence rule)", f.confidence) }
+                ),
                 fix_cmd: format!(
                     "If it's real: rotate it, then purge it from history. If not: add {} to {}/.gitleaksignore",
                     f.fingerprint,

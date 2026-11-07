@@ -139,6 +139,7 @@ impl Cache {
         conn.execute_batch(crate::history::SCHEMA)?;
         conn.execute_batch(crate::reporters::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::SCHEMA)?;
+        conn.execute_batch(crate::checks::supply_chain::leaks::SCHEMA)?;
         conn.execute_batch(crate::checks::files::cache::SCHEMA)?;
         conn.execute_batch(crate::sources::fetch::SCHEMA)?;
         conn.execute_batch(crate::sources::epss::SCHEMA)?;

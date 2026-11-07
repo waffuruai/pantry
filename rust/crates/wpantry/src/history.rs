@@ -54,7 +54,7 @@ pub fn scope_of(opts: &Options) -> String {
         scope.push_str("+licenses");
     }
     let policy: Vec<String> = [
-        ("gitleaks", &opts.policy.gitleaks_config),
+        ("secret-rules", &opts.policy.secret_rules),
         ("licenses", &opts.policy.licenses),
         ("install-scripts", &opts.policy.install_scripts),
         ("hooks", &opts.policy.hooks),

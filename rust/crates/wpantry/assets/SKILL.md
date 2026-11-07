@@ -63,7 +63,7 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 ## Rules
 
 - Only report what applies. The scanner already filters to installed components; don't pad an answer with advisories for things that aren't here.
-- Never print or copy a secret gitleaks found; work from the rule, file, line, commit and fingerprint it reports.
+- Never print or copy a secret the scan found; work from the rule, file, line, commit and fingerprint it reports.
 - The email breach check sends the user's address to a third party. Never enable it (`wpantry breach --enable`) unless the user asks.
 - An answer of "not affected" depends on how fresh the cache is. Say when it was last refreshed (`--refresh` forces it) and whether the machine was offline.
 - A default run walks the whole home directory. When the question is about one project, pass `--path` (and `--no-machine` if the machine isn't in question).

@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           install: false
           cache: true
@@ -127,7 +127,7 @@ jobs:
       # The same pins laptops use: shellcheck and actionlint from mise.toml,
       # fetched through mise's checksummed registry, and Python for the
       # actions audit check and the scripts/ tests.
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           install_args: shellcheck actionlint python
           cache: true
@@ -218,7 +218,7 @@ jobs:
 
       # cargo-llvm-cov at the version mise.toml pins, through mise's checksummed
       # registry.
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           install_args: aqua:taiki-e/cargo-llvm-cov
           cache: true

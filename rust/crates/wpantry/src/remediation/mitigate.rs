@@ -291,13 +291,15 @@ fn cve_2026_98432(host: &dyn Host, mode: Mode, confirm: Confirm, say: Say) -> Re
                 say("  dry run; nothing changed");
                 return Ok(Done::Applied);
             }
+            // Asked first: a stopgap nobody said yes to (`--no-input` without
+            // `--yes`) is skipped, so a host without nft is not a failure.
+            if !confirm("apply the stopgap (as root)") {
+                return Ok(Done::Declined);
+            }
             if host.read(&["nft", "--version"]).trim().is_empty() {
                 return Err(Error::Missing(
                     "nft (install nftables: sudo apt install nftables, or sudo dnf install nftables)".into(),
                 ));
-            }
-            if !confirm("apply the stopgap (as root)") {
-                return Ok(Done::Declined);
             }
             host.write_root(RULE_FILE, &rules())?;
             host.root(&["nft", "-f", RULE_FILE])?;
@@ -445,6 +447,19 @@ mod tests {
         let err = (stopgap(CVE).unwrap().run)(&failing, Mode::Apply, &|_| true, &mut |_| {}).unwrap_err();
         assert!(err.to_string().contains("nft -f"), "{err}");
         assert_eq!(failing.did().len(), 2);
+    }
+
+    #[test]
+    fn a_host_without_nft_is_skipped_unless_asked_and_then_named() {
+        let no_nft: Vec<_> = EXPOSED.iter().copied().filter(|(k, _)| *k != "nft --version").collect();
+        let host = Fake::new(&no_nft);
+        // `wpantry fix --no-input` without --yes: skipped, not failed
+        let (done, _) = run(&host, Mode::Apply, false);
+        assert_eq!(done, Done::Declined);
+        // with a yes the missing tool is the error, and nothing is written
+        let err = (stopgap(CVE).unwrap().run)(&host, Mode::Apply, &|_| true, &mut |_| {}).unwrap_err();
+        assert!(err.to_string().contains("install nftables"), "{err}");
+        assert!(host.did().is_empty(), "{:?}", host.did());
     }
 
     #[test]

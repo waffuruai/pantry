@@ -219,6 +219,28 @@ pub(crate) fn endpoints() -> Vec<(String, String)> {
         .collect()
 }
 
+// querybatch uses microseconds; full OSV records can carry nanoseconds.
+// Compare at the precision querybatch can report, preserving the original record.
+fn same_revision(cached: Option<&str>, reported: &str) -> bool {
+    let Some(cached) = cached else { return false };
+    if cached == reported {
+        return true;
+    }
+    fn micros(value: &str) -> Option<String> {
+        let utc = value.strip_suffix('Z')?;
+        let (seconds, fraction) = utc.split_once('.').unwrap_or((utc, ""));
+        if seconds.len() != 19 || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let digits = &fraction[..fraction.len().min(6)];
+        Some(format!("{seconds}.{digits:0<6}Z"))
+    }
+    match (micros(cached), micros(reported)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn refresh_items(cache: &Cache, net: &dyn Net, stale: &[Item], status: Status) -> Result<()> {
     let endpoints = endpoints();
     if endpoints.is_empty() {
@@ -294,7 +316,7 @@ fn finish_refresh(
     let mut wanted: BTreeMap<String, String> = BTreeMap::new();
     for (_, vulns) in &answers {
         for (id, modified) in vulns {
-            if cache.modified(id)?.as_deref() != Some(modified.as_str()) {
+            if !same_revision(cache.modified(id)?.as_deref(), modified) {
                 wanted.insert(id.clone(), modified.clone());
             }
         }

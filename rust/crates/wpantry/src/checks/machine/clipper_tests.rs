@@ -108,6 +108,36 @@ fn autostart_entries_and_units_read_their_exec_lines() {
 }
 
 #[test]
+fn an_interpreter_binary_is_never_read_as_the_item() {
+    // A fake python3 whose own bytes look like a clipper, in a known place, run with a
+    // script that does not exist: the item is the command line only, so it is not flagged.
+    // Before the fix this read the interpreter and reported a hard Bitcoin clipper.
+    let d = temp::TempDir::new("clipper-interp").unwrap();
+    let home = d.path();
+    let bin = home.join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let python = bin.join("python3");
+    std::fs::write(&python, "\0xclip -i\0bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq\0").unwrap();
+    let units = home.join(".config/systemd/user");
+    std::fs::create_dir_all(&units).unwrap();
+    std::fs::write(
+        units.join("sync.service"),
+        format!("[Service]\nExecStart={} /opt/sync/missing.py\n", python.display()),
+    )
+    .unwrap();
+    let (found, read) = persistence_in(home, std::slice::from_ref(&units));
+    assert_eq!(read, 1);
+    assert!(found.is_empty(), "{found:?}");
+    // Twin: the same bytes as the program itself (not an interpreter) are still read.
+    let tool = bin.join("synctool");
+    std::fs::copy(&python, &tool).unwrap();
+    std::fs::write(units.join("sync.service"), format!("[Service]\nExecStart={} --watch\n", tool.display())).unwrap();
+    let (found, _) = persistence_in(home, &[units]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].chains.as_slice(), found[0].hard), ([Chain::Bitcoin].as_slice(), true));
+}
+
+#[test]
 fn extension_manifests_say_what_the_clipboard_is_to_them() {
     let d = temp::TempDir::new("clipper-ext").unwrap();
     let ext = d.path().join("abcdefgh");

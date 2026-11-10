@@ -244,6 +244,34 @@ pub fn render(cache: &Cache, report: &Report, format: Format) -> Result<String> 
     })
 }
 
+/// The reports Pantry wrote, by SHA-256: one saved in a scanned folder is
+/// never a malware finding, though it names the hosts and rules it found.
+pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS reports_written (sha256 TEXT PRIMARY KEY, at REAL);";
+
+/// How many written reports are remembered.
+const REMEMBERED: i64 = 1000;
+
+/// Remember `text` as a report Pantry wrote.
+pub fn remember(cache: &Cache, text: &str) -> Result<()> {
+    let sha = crate::utils::sha256::hex(text.as_bytes());
+    cache.conn.execute(
+        "INSERT OR REPLACE INTO reports_written (sha256, at) VALUES (?, ?)",
+        rusqlite::params![sha, crate::utils::os::now()],
+    )?;
+    cache.conn.execute(
+        "DELETE FROM reports_written WHERE sha256 NOT IN (SELECT sha256 FROM reports_written ORDER BY at DESC LIMIT ?)",
+        [REMEMBERED],
+    )?;
+    Ok(())
+}
+
+/// The SHA-256 of every report Pantry remembers writing.
+pub fn written(cache: &Cache) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = cache.conn.prepare("SELECT sha256 FROM reports_written")?;
+    let out = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(out)
+}
+
 /// A file a report is written to: staged beside it and renamed into place,
 /// so an error leaves any earlier copy whole; never through a symlink at
 /// the destination.

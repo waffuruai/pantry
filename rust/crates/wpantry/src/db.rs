@@ -137,6 +137,7 @@ impl Cache {
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::history::SCHEMA)?;
+        conn.execute_batch(crate::reporters::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::SCHEMA)?;
         conn.execute_batch(crate::checks::files::cache::SCHEMA)?;
         conn.execute_batch(crate::sources::fetch::SCHEMA)?;

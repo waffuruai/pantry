@@ -387,6 +387,8 @@ function shortPath(p){return String(p||'').replace(/^\/(?:Users|home)\/[^\/]+(?=
 function isMarker(id){return !id||Object.prototype.hasOwnProperty.call(MARKERS,id)}
 function isAdvisory(f){return RULE_KINDS.indexOf(f.kind)===-1 && f.kind!=='unchecked' && !isMarker(f.vuln_id)}
 function isBundle(kind){return kind==='image'||kind==='bundled'}
+// One package at one version is one row across the lockfiles that lock it (view.rs spans_places).
+function spansPlaces(kind){return kind==='project'}
 function when(ms){var d=new Date(ms);return isNaN(d.getTime())?'':d.toISOString().slice(0,16).replace('T',' ')+' UTC'}
 
 function advLinks(id){
@@ -522,8 +524,9 @@ function rowsOf(fs){
   var rows=[], index=Object.create(null);
   fs.forEach(function(f){
     var name=isBundle(f.kind)?f.component.split(' › ')[0]:f.component, ver=isBundle(f.kind)?'':f.version, loc=isBundle(f.kind)?'':f.location;
-    var k=name+'\u0000'+ver+'\u0000'+loc, row=index[k];
-    if(!row){row=index[k]={name:name,version:ver,location:loc,fs:[]};rows.push(row)}
+    var k=name+'\u0000'+ver+'\u0000'+(spansPlaces(f.kind)?'':loc), row=index[k];
+    if(!row){row=index[k]={name:name,version:ver,location:loc,places:[],fs:[]};rows.push(row)}
+    if(loc&&row.places.indexOf(loc)<0)row.places.push(loc);
     row.fs.push(f);
   });
   rows.forEach(function(row){
@@ -671,7 +674,7 @@ function rowHTML(row,print){
   var open=print||!!state.open[row.key];
   var head='<span class="badge-c">'+stateBadge(row.state)+'</span>'+
     '<span class="rc"><span class="comp">'+esc(row.name)+'</span>'+(row.version?'<span class="ver">'+esc(row.version)+(row.fixed?' → <span class="to">'+esc(row.fixed)+'</span>':'')+'</span>':'')+
-    (row.location?'<span class="loc" title="'+esc(row.location)+'">'+esc(shortPath(row.location))+'</span>':'')+'</span>'+
+    (row.location?'<span class="loc" title="'+esc(row.places.join('\n'))+'">'+esc(shortPath(row.location)+(row.places.length>1?' and '+(row.places.length-1)+' more':''))+'</span>':'')+'</span>'+
     '<span class="radv'+(isAdvisory(row.top)?'':' marker')+'" title="'+esc(row.ids.join(', '))+'">'+esc(row.ids[0]||'—')+(row.ids.length>1?' <span class="more">+'+(row.ids.length-1)+'</span>':'')+'</span>'+
     '<span class="rtags">'+(row.kev?badge('kev','KEV'):'')+sevBadge(row.severity)+'</span>'+
     '<span class="chev" aria-hidden="true">▾</span>';
@@ -703,7 +706,7 @@ function detailHTML(row,print){
     out+='<div class="fix"><span class="who">no fix yet</span><code>No released fix. wpantry watch re-asks hourly and exits 10 the hour one lands.</code></div>';
   }
   var kv='<dl class="kv">';
-  if(row.location)kv+='<dt>Location</dt><dd>'+esc(row.location)+'</dd>';
+  if(row.places.length)kv+='<dt>'+(row.places.length>1?row.places.length+' locations':'Location')+'</dt><dd>'+row.places.map(esc).join('<br>')+'</dd>';
   if(top.dep_scope!=='unknown'||top.dep_direct!==null||top.affected_range||top.kind==='project'){
     kv+='<dt>Dependency scope</dt><dd>'+esc(top.dep_scope)+'</dd><dt>Relationship</dt><dd>'+(top.dep_direct===true?'Direct':top.dep_direct===false?'Transitive':'Unknown')+'</dd>';
   }

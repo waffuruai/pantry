@@ -109,6 +109,9 @@ pub struct Check {
     pub no_online_hash: bool,
     /// `--sources FILE`: the user's sources file for this run.
     pub sources: Option<PathBuf>,
+    /// `--allow-sleep` (or `WPANTRY_ALLOW_SLEEP=1`): let the machine sleep
+    /// during the scan.
+    pub allow_sleep: bool,
 }
 
 /// What `fix list` and `fix ID` act on.
@@ -269,6 +272,7 @@ fn scan_opts() -> Vec<Opt> {
             "--sources <file>",
             "your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)",
         ),
+        Opt::new("--allow-sleep", "let the Mac idle-sleep during the scan (kept awake otherwise; or WPANTRY_ALLOW_SLEEP=1)"),
     ]);
     opts
 }
@@ -458,6 +462,8 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
         deep: m.flag("deep"),
         no_online_hash: m.flag("no-online-hash"),
         sources: m.value("sources").map(expand),
+        allow_sleep: m.flag("allow-sleep")
+            || std::env::var("WPANTRY_ALLOW_SLEEP").is_ok_and(|v| !v.is_empty() && v != "0"),
         show: show(m)?,
         jobs: at_least_one::<usize>(m, "jobs", "a number of 1 or more")?,
         ..Default::default()

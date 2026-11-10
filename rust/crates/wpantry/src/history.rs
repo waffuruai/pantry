@@ -129,10 +129,10 @@ pub fn record_scan_totals(
         ],
     )?;
     let id = cache.conn.last_insert_rowid();
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for f in findings.iter().filter(|f| f.kind != "unchecked") {
         let key = key_of(f);
-        seen.push(key.clone());
+        seen.insert(key.clone());
         cache.conn.execute(
             "INSERT INTO exposures (key, scope, kind, component, version, location, vuln_id, status, severity, kev, fixed, note, \
              first_scan, first_at, last_scan, last_at, resolved_scan, resolved_at, dep_scope, dep_direct, affected_range, fix_cmd) \
@@ -175,7 +175,7 @@ pub fn record_scan_totals(
         let mut stmt = cache.conn.prepare("SELECT key FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
         let open: Vec<String> = stmt.query_map([&scope], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
         drop(stmt);
-        for key in open.iter().filter(|k| !seen.contains(k)) {
+        for key in open.iter().filter(|k| !seen.contains(*k)) {
             cache.conn.execute(
                 "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?",
                 params![id, at, key],

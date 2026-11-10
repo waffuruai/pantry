@@ -10,7 +10,7 @@ fn write(d: &TempDir, rel: &str, body: &[u8]) -> PathBuf {
 
 #[test]
 fn each_file_is_opened_once_whichever_checks_read_it() {
-    let d = TempDir::new("pass").unwrap();
+    let d = TempDir::out_of_scan_reach("pass").unwrap();
     let root = d.path();
     // Read as text by hidden text, suspect code and MPTCP, as a
     // document and an image by documents, and its head by programs.
@@ -41,7 +41,7 @@ fn each_file_is_opened_once_whichever_checks_read_it() {
 
 #[test]
 fn an_unchanged_file_is_not_read_again() {
-    let d = TempDir::new("pass-cache").unwrap();
+    let d = TempDir::out_of_scan_reach("pass-cache").unwrap();
     let root = d.path().join("repo");
     let cache = Cache::open(Some(&d.path().join("w.db"))).unwrap();
     let note = write(

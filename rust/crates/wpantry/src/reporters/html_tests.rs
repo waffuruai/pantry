@@ -186,3 +186,17 @@ fn bundle_carries_the_scan_its_plan_and_its_history() {
     let html = render(&b);
     assert_eq!(well_formed(&strip(&strip(&html, "script"), "style")), None);
 }
+
+/// The Scope section, stored with each scan, says whether the personal
+/// folders were read: only on a machine scan without `--no-personal-files`.
+#[test]
+fn html_scope_records_personal_folder_coverage() {
+    for machine in [false, true] {
+        for no_personal_files in [false, true] {
+            let opts = Options { machine, no_personal_files, ..Default::default() };
+            let text = scope_json(&opts).dumps();
+            let value = crate::utils::json::parse(text.as_bytes(), usize::MAX).unwrap();
+            assert_eq!(value["personal_files"].as_bool(), Some(machine && !no_personal_files));
+        }
+    }
+}

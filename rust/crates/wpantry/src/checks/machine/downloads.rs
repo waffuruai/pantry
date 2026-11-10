@@ -14,6 +14,13 @@ pub(crate) fn dirs() -> Vec<std::path::PathBuf> {
 /// people are sent, read for the shapes malware takes, and ClamAV over
 /// them when it is installed.
 pub(crate) fn downloads(scan: &mut Scan) {
+    if scan.opts.no_personal_files {
+        scan.unchecked(
+            "Personal documents and images",
+            "Downloads, Desktop and Documents are excluded from this background scan's document and malware passes (--no-personal-files); an interactive scan can check them with the user's permission.",
+        );
+        return;
+    }
     let dirs = dirs();
     if dirs.is_empty() {
         return;

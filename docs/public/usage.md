@@ -27,6 +27,7 @@ By default Pantry checks the machine and every git repo under your home director
 
 - `--path DIR` checks only the repos at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks.
 - `--no-machine` skips the machine: repo checks only.
+- `--no-personal-files` leaves `~/Downloads`, `~/Desktop` and `~/Documents` unopened: the document pass and the malware scan skip them, and the report says they weren't checked. For unattended runs, where macOS would otherwise wait on a folder-permission prompt. Not with `--deep`.
 
 What a run couldn't check is reported "not checked", never clean.
 
@@ -351,6 +352,8 @@ Options:
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules
                             (slower)
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
@@ -418,6 +421,8 @@ Options:
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules
                             (slower)
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml

@@ -200,6 +200,10 @@ pub struct Options {
     /// Skip the machine's security settings (`--no-posture`); they run
     /// with the machine inventory otherwise.
     pub no_posture: bool,
+    /// Leave Downloads, Desktop and Documents out of a machine scan's
+    /// document and malware passes (`--no-personal-files`): on macOS,
+    /// opening them can wait on a permission prompt no one will answer.
+    pub no_personal_files: bool,
     pub policy: Policy,
     /// Check dependency licenses against the allowlist (`--licenses`); off
     /// by default, it's noisy.
@@ -364,13 +368,21 @@ impl<'a> Scan<'a> {
             for (_, dir) in supply_chain::suspect_code::installed_code() {
                 jobs.push(Job::new(Check::Suspects(suspects::Kind::Installed), &dir, suspects::DEPTH));
             }
-            for dir in machine::downloads::dirs() {
-                jobs.push(Job::new(Check::Documents, &dir, 1));
+            if !self.opts.no_personal_files {
+                for dir in machine::downloads::dirs() {
+                    jobs.push(Job::new(Check::Documents, &dir, 1));
+                }
             }
         }
         if !self.opts.no_malware {
             let repos: Vec<PathBuf> = self.repos.iter().map(|(_, r)| r.clone()).collect();
-            jobs.extend(malware::targets::jobs(&self.home, &repos, self.opts.machine, self.opts.deep));
+            jobs.extend(malware::targets::jobs(
+                &self.home,
+                &repos,
+                self.opts.machine,
+                self.opts.deep,
+                !self.opts.no_personal_files,
+            ));
         }
         jobs
     }

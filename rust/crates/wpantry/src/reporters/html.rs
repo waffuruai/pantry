@@ -89,6 +89,7 @@ pub fn scope_json(opts: &Options) -> J {
         ("offline", opts.offline.into()),
         ("licenses", opts.licenses.into()),
         ("posture", (opts.machine && !opts.no_posture).into()),
+        ("personal_files", (opts.machine && !opts.no_personal_files).into()),
         ("posture_exclusions", strings(opts.policy.posture_skip())),
         ("suspect_exemptions", obj([("ids", strings(suspect.ids)), ("paths", strings(suspect.paths))])),
         (

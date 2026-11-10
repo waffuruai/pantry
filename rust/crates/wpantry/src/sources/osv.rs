@@ -107,13 +107,17 @@ pub fn lookup(
     if !(absent.is_empty() && stale.is_empty()) && failure.is_none() {
         let first = endpoints().into_iter().next().unwrap_or_else(|| ("osv".into(), url("osv").to_string()));
         let ids: Vec<Want> = absent.iter().chain(&stale).map(|id| (id.clone(), None, first.clone())).collect();
-        match fetch_records(net, &ids, status) {
-            Ok(got) => {
-                for (id, f) in got {
+        let retry = || -> Result<()> {
+            for group in ids.chunks(PARALLEL) {
+                for (id, f) in fetch_records(net, group, status)? {
                     keep(cache, &id, f, None)?;
                 }
                 cache.commit()?;
             }
+            Ok(())
+        };
+        match retry() {
+            Ok(()) => {}
             Err(e) if e.is_source() => failure = Some(format!("OSV unreachable: {e}")),
             Err(e) => return Err(e),
         }
@@ -128,9 +132,14 @@ pub fn lookup(
         }
         let mut recs = Vec::new();
         for id in ids.split_whitespace() {
-            if let Some(r) = cache.vuln(id)?
+            if let Some(mut r) = cache.vuln(id)?
                 && r.get("withdrawn").is_none_or(Value::is_null)
             {
+                // The cache retains the original record. Each query only needs
+                // its own package/release, not every distro in a kernel record.
+                if let Some(affected) = r.get_mut("affected").and_then(Value::as_array_mut) {
+                    affected.retain(|a| matches(a, &it.0, &it.1));
+                }
                 recs.push(r);
             }
         }
@@ -262,16 +271,23 @@ fn refresh_from(net: &dyn Net, sid: &str, base: &str, stale: &[Item]) -> Result<
             }
             let mut vulns = hits(r, &what)?;
             let mut token = str_at(r, "next_page_token").to_string();
+            let mut seen = BTreeSet::new();
             while !token.is_empty() {
-                // Rare: more than one page of advisories for one version.
+                // Keep pagination on querybatch: /query returns full records,
+                // which can consume gigabytes for distro kernel/browser packages.
+                if !seen.insert(token.clone()) || seen.len() > 128 {
+                    return Err(Error::Invalid(format!("OSV pagination did not finish for {what}")));
+                }
                 let mut q = query(it);
                 q["page_token"] = Value::String(token);
-                let page = fetch::post_json(net, sid, &format!("{base}/query"), &q)?;
-                if !page.is_object() {
-                    return Err(Error::Invalid(format!("OSV answered {page} for a page of {what}")));
+                let response = fetch::post_json(net, sid, &format!("{base}/querybatch"), &json!({"queries": [q]}))?;
+                let pages = arr_at(&response, "results");
+                if pages.len() != 1 || !pages[0].is_object() {
+                    return Err(Error::Invalid(format!("OSV answered {response} for a page of {what}")));
                 }
-                vulns.extend(hits(&page, &what)?);
-                token = str_at(&page, "next_page_token").to_string();
+                let page = &pages[0];
+                vulns.extend(hits(page, &what)?);
+                token = str_at(page, "next_page_token").to_string();
             }
             answers.push(vulns);
         }
@@ -306,8 +322,13 @@ fn finish_refresh(
             Ok((id.clone(), cache.get(&format!("vuln_etag:{id}"))?, ep))
         })
         .collect::<Result<_>>()?;
-    for (id, fetched) in fetch_records(net, &etags, status)? {
-        keep(cache, &id, fetched, wanted.get(&id).map(String::as_str))?;
+    // Persist bounded groups rather than retaining every full advisory.
+    // Successfully fetched records survive a later download failure.
+    for group in etags.chunks(PARALLEL) {
+        for (id, fetched) in fetch_records(net, group, status)? {
+            keep(cache, &id, fetched, wanted.get(&id).map(String::as_str))?;
+        }
+        cache.commit()?;
     }
     for (it, vulns) in &answers {
         let ids: Vec<String> = vulns.iter().map(|(id, _)| id.clone()).collect();

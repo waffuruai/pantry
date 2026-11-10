@@ -301,14 +301,20 @@ pub(crate) fn item_dirs(home: &Path) -> Vec<PathBuf> {
     item_dirs_for(home, cfg!(target_os = "macos"))
 }
 
+/// Whether `program` is one of the interpreters, by file name (`python3.12` is `python`).
+fn is_interpreter(program: &Path) -> bool {
+    let name = program.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    INTERPRETERS.iter().any(|i| base == i.trim_end_matches(|c: char| c.is_ascii_digit()))
+}
+
 /// The file whose contents say what the item does: the script an
 /// interpreter is given, else the program itself.
 pub(crate) fn program_file(argv: &[String]) -> Option<PathBuf> {
     let first = argv.first()?;
-    let base = Path::new(first).file_name().and_then(OsStr::to_str).unwrap_or(first);
-    let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    let interpreter = INTERPRETERS.iter().any(|i| base == i.trim_end_matches(|c: char| c.is_ascii_digit()));
-    if interpreter && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_file()) {
+    if is_interpreter(Path::new(first))
+        && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_file())
+    {
         return Some(PathBuf::from(script));
     }
     let p = if first.contains('/') { PathBuf::from(first) } else { process::which(first)? };
@@ -380,7 +386,12 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
             read += 1;
             let program = program_file(&argv);
             let mut text = argv.join(" ");
+            // An interpreter's own binary says nothing about the item, and a large one
+            // (python3 with libpython linked in, as on arm64 Debian and Ubuntu) carries
+            // clipboard and address-shaped strings of its own. With no script file to
+            // read, the command line is all there is.
             if let Some(p) = &program
+                && !is_interpreter(p)
                 && let Ok(bytes) = files::read_capped_bytes(p, MAX_PROGRAM)
             {
                 text.push('\n');
@@ -716,6 +727,37 @@ mod tests {
             ([Chain::Bitcoin].as_slice(), true, false),
             "~/.cache is a known place; the addresses decide"
         );
+    }
+
+    #[test]
+    fn an_interpreter_binary_is_never_read_as_the_item() {
+        // A fake python3 whose own bytes look like a clipper, in a known place, run with a
+        // script that does not exist: the item is the command line only, so it is not flagged.
+        // Before the fix this read the interpreter and reported a hard Bitcoin clipper.
+        let d = temp::TempDir::new("clipper-interp").unwrap();
+        let home = d.path();
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python3");
+        std::fs::write(&python, "\0xclip -i\0bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq\0").unwrap();
+        let units = home.join(".config/systemd/user");
+        std::fs::create_dir_all(&units).unwrap();
+        std::fs::write(
+            units.join("sync.service"),
+            format!("[Service]\nExecStart={} /opt/sync/missing.py\n", python.display()),
+        )
+        .unwrap();
+        let (found, read) = persistence_in(home, std::slice::from_ref(&units));
+        assert_eq!(read, 1);
+        assert!(found.is_empty(), "{found:?}");
+        // Twin: the same bytes as the program itself (not an interpreter) are still read.
+        let tool = bin.join("synctool");
+        std::fs::copy(&python, &tool).unwrap();
+        std::fs::write(units.join("sync.service"), format!("[Service]\nExecStart={} --watch\n", tool.display()))
+            .unwrap();
+        let (found, _) = persistence_in(home, &[units]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].chains.as_slice(), found[0].hard), ([Chain::Bitcoin].as_slice(), true));
     }
 
     #[test]

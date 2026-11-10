@@ -3,7 +3,7 @@ use crate::utils::temp::TempDir;
 
 #[test]
 fn a_view_stats_once_and_reads_its_head_once() {
-    let d = TempDir::new("view").unwrap();
+    let d = TempDir::out_of_scan_reach("view").unwrap();
     let p = d.path().join("a.sh");
     std::fs::write(&p, "#!/bin/sh\necho hi\n").unwrap();
     let v = FileView::new(p.clone());
@@ -17,7 +17,7 @@ fn a_view_stats_once_and_reads_its_head_once() {
 
 #[test]
 fn a_load_reads_the_head_then_the_whole_once() {
-    let d = TempDir::new("view").unwrap();
+    let d = TempDir::out_of_scan_reach("view").unwrap();
     let sh = d.path().join("run.sh");
     std::fs::write(&sh, "#!/bin/sh\necho hi\n").unwrap();
     let txt = d.path().join("notes.txt");

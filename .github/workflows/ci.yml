@@ -197,7 +197,7 @@ jobs:
       # inside them, and they build from the packaged sources alone.
       - name: cargo package
         if: runner.os == 'Linux'
-        run: cargo package --workspace --locked
+        run: cargo package --locked --workspace
 
       # `test` ran the contract suites against the debug binary; again
       # against the release one.

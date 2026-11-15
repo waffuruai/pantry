@@ -2,9 +2,11 @@
 
 How the crates get onto crates.io: by hand once, for the first release, and through the release workflow after that. The rest of a release (tags, binaries, signatures) is the [release playbook](release.md).
 
-The crates are `wpantry-yara` (the YARA engine), `wcli` (command-line parsing), `wpantry` (the library) and `wpantry-cli` (the `wpantry` binary). The product is Pantry, but `pantry` is taken on crates.io by an unrelated crate from 2020. Our crates take the `w` prefix, and the name is the same everywhere: crates.io, mise, Homebrew and the binary. A crate name can't be changed or released once published.
+The crates are `wpantry-yara` (the YARA engine), `wpantry` (the library) and `wpantry-cli` (the `wpantry` binary). `wcli` (command-line parsing) is [its own repository](https://github.com/waffuruai/wcli) and [crate](https://crates.io/crates/wcli): `wpantry-cli` depends on it by exact version, released from that repository before the Pantry release that needs it. The product is Pantry, but `pantry` is taken on crates.io by an unrelated crate from 2020. Our crates take the `w` prefix, and the name is the same everywhere: crates.io, mise, Homebrew and the binary. A crate name can't be changed or released once published.
 
 ## The first publish (by hand, once)
+
+Done so far: `wpantry-yara` and `wpantry` 0.4.0 were published on 2026-11-15 from the `v0.4.0` tag, the release they were built in. `wpantry-cli` 0.4.0 could not be: at that tag it pinned `wcli` at the workspace version, which crates.io never had. It is published with 0.4.1, the first release whose `wcli` pin is the crates.io crate; steps 11 and 12 follow it.
 
 1. **Account.** Sign in to [crates.io](https://crates.io) with GitHub, and verify your email under Account Settings: crates.io refuses to publish without a verified email.
 2. **Names.** Check each name is free: `https://crates.io/crates/<name>` returns "not found". The first publish claims a name for good.
@@ -17,7 +19,6 @@ The crates are `wpantry-yara` (the YARA engine), `wcli` (command-line parsing), 
 
    ```bash
    cargo publish --locked -p wpantry-yara
-   cargo publish --locked -p wcli
    cargo publish --locked -p wpantry
    cargo publish --locked -p wpantry-cli
    ```
@@ -30,7 +31,7 @@ The crates are `wpantry-yara` (the YARA engine), `wcli` (command-line parsing), 
 
 ## Every release after that
 
-Nothing by hand: the release workflow's last step publishes all four crates with a short-lived token from GitHub's OIDC identity (trusted publishing), after the `release` environment is approved. No token is stored anywhere.
+Nothing by hand: the release workflow's last step publishes all three crates with a short-lived token from GitHub's OIDC identity (trusted publishing), after the `release` environment is approved. No token is stored anywhere.
 
 ## Good to know
 

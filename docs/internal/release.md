@@ -25,6 +25,7 @@ Nothing that signs or publishes holds a long-lived secret: attestations, cosign 
 - `0.x`: a minor bump (`0.2.0`) for any change to the library's public API or a new feature; a patch (`0.1.1`) for fixes. Embedders pin `=x.y.z`.
 - The CLI contract versions separately (`schema` in its JSON). A change that bumps `schema` gets a minor release and a line at the top of the release notes.
 - Never reuse a version. A bad release is yanked and followed by the next patch.
+- A version that was bumped but never tagged is skipped, not back-filled: 0.3.0 was prepared on 2026-11-02 and never tagged, and its changes shipped in v0.4.0 on 2026-11-06. Tagging it afterwards would publish an older binary as a newer release (GitHub marks the latest-created release "latest", the website receiver follows it, and crates.io would gain a 0.3.0 after 0.4.0), so the number stays unused.
 
 ## One-time setup
 

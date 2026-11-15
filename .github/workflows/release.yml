@@ -55,10 +55,9 @@ jobs:
         working-directory: rust
         run: rustup show active-toolchain || rustup toolchain install
 
-      # wpantry-cli waits until wcli is on crates.io (docs/internal/crates-io.md).
       - name: cargo package
         working-directory: rust
-        run: cargo package --locked -p wpantry-yara -p wpantry
+        run: cargo package --locked --workspace
 
   build:
     name: Build (${{ matrix.target }})

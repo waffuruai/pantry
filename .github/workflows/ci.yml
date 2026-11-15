@@ -195,13 +195,9 @@ jobs:
 
       # The crates must stay publishable: everything they compile in is
       # inside them, and they build from the packaged sources alone.
-      # wpantry-cli waits: it depends on wcli by git tag until wcli is on
-      # crates.io, and packaging resolves that dependency from the registry.
-      # Once wcli is published and the dependency is its version, package
-      # the workspace again (docs/internal/crates-io.md).
       - name: cargo package
         if: runner.os == 'Linux'
-        run: cargo package --locked -p wpantry-yara -p wpantry
+        run: cargo package --locked --workspace
 
       # `test` ran the contract suites against the debug binary; again
       # against the release one.

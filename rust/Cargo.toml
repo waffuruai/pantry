@@ -17,8 +17,8 @@ serde_json = { version = "=1.0.154", default-features = false, features = ["std"
 rusqlite = { version = "=0.41.0", features = ["bundled"] }
 ureq = { version = "=3.5.0", default-features = false, features = ["rustls", "platform-verifier"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-# wcli has its own repository; the tag until it is on crates.io, then the version alone.
-wcli = { git = "https://github.com/waffuruai/wcli.git", tag = "v0.1.0", version = "=0.1.0" }
+# Our own, from https://github.com/waffuruai/wcli; pinned exactly like the workspace crates.
+wcli = { version = "=0.1.0" }
 wpantry = { path = "crates/wpantry", version = "=0.4.0" }
 wpantry-yara = { path = "crates/wpantry-yara", version = "=0.4.0" }
 

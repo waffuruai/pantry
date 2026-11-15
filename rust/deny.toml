@@ -46,5 +46,3 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Our own crates, by release tag, until they are on crates.io.
-allow-git = ["https://github.com/waffuruai/wcli"]

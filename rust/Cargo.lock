@@ -703,7 +703,8 @@ dependencies = [
 
 [[package]]
 name = "wcli"
-version = "0.4.0"
+version = "0.1.0"
+source = "git+https://github.com/waffuruai/wcli.git?tag=v0.1.0#6e1e8212d208ca15bf47a844ff8f85381b2e0d1a"
 
 [[package]]
 name = "webpki-root-certs"

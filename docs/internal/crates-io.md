@@ -6,6 +6,8 @@ The crates are `wpantry-yara` (the YARA engine), `wpantry` (the library) and `wp
 
 ## The first publish (by hand, once)
 
+Done so far: `wpantry-yara` and `wpantry` 0.4.0 were published on 2026-11-15 from the `v0.4.0` tag, the release they were built in. `wpantry-cli` 0.4.0 could not be: at that tag it pinned `wcli` at the workspace version, which crates.io never had. It is published with 0.4.1, the first release whose `wcli` pin is the crates.io crate; steps 11 and 12 follow it.
+
 1. **Account.** Sign in to [crates.io](https://crates.io) with GitHub, and verify your email under Account Settings: crates.io refuses to publish without a verified email.
 2. **Names.** Check each name is free: `https://crates.io/crates/<name>` returns "not found". The first publish claims a name for good.
 3. **Metadata.** In `rust/Cargo.toml` and each crate's `Cargo.toml`, check `description`, `license`, `repository`, `readme`, `keywords` (at most 5), `categories` and `rust-version`. crates.io rejects a crate without `description` and `license`.

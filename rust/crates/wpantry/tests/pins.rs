@@ -35,7 +35,6 @@ fn crates_take_dependencies_only_from_the_workspace() {
         include_str!("../Cargo.toml"),
         include_str!("../../wpantry-cli/Cargo.toml"),
         include_str!("../../wpantry-yara/Cargo.toml"),
-        include_str!("../../wcli/Cargo.toml"),
     ] {
         for header in ["[dependencies]", "[dev-dependencies]", "[build-dependencies]"] {
             for line in section(manifest, header) {

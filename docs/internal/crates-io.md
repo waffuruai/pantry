@@ -2,7 +2,7 @@
 
 How the crates get onto crates.io: by hand once, for the first release, and through the release workflow after that. The rest of a release (tags, binaries, signatures) is the [release playbook](release.md).
 
-The crates are `wpantry-yara` (the YARA engine), `wcli` (command-line parsing), `wpantry` (the library) and `wpantry-cli` (the `wpantry` binary). The product is Pantry, but `pantry` is taken on crates.io by an unrelated crate from 2020. Our crates take the `w` prefix, and the name is the same everywhere: crates.io, mise, Homebrew and the binary. A crate name can't be changed or released once published.
+The crates are `wpantry-yara` (the YARA engine), `wpantry` (the library) and `wpantry-cli` (the `wpantry` binary). `wcli` (command-line parsing) is [its own repository](https://github.com/waffuruai/wcli) and crate: `wpantry-cli` depends on it by release tag until it is on crates.io, and by version after. Until then `cargo package` and `cargo publish` of `wpantry-cli` fail ("no matching package named `wcli`": packaging resolves the dependency from the registry), so CI and the release check package only `wpantry-yara` and `wpantry`. Publishing `wcli` from its repository, then changing the dependency in `rust/Cargo.toml` to `wcli = "=0.1.0"` and the package steps back to `--workspace`, is the first step of the next Pantry release. The product is Pantry, but `pantry` is taken on crates.io by an unrelated crate from 2020. Our crates take the `w` prefix, and the name is the same everywhere: crates.io, mise, Homebrew and the binary. A crate name can't be changed or released once published.
 
 ## The first publish (by hand, once)
 
@@ -17,7 +17,6 @@ The crates are `wpantry-yara` (the YARA engine), `wcli` (command-line parsing), 
 
    ```bash
    cargo publish --locked -p wpantry-yara
-   cargo publish --locked -p wcli
    cargo publish --locked -p wpantry
    cargo publish --locked -p wpantry-cli
    ```
@@ -30,7 +29,7 @@ The crates are `wpantry-yara` (the YARA engine), `wcli` (command-line parsing), 
 
 ## Every release after that
 
-Nothing by hand: the release workflow's last step publishes all four crates with a short-lived token from GitHub's OIDC identity (trusted publishing), after the `release` environment is approved. No token is stored anywhere.
+Nothing by hand: the release workflow's last step publishes all three crates with a short-lived token from GitHub's OIDC identity (trusted publishing), after the `release` environment is approved. No token is stored anywhere.
 
 ## Good to know
 

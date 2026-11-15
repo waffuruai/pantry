@@ -26,7 +26,7 @@ Each crate follows Cargo's layout: a library's root is `src/lib.rs`, a binary's 
 | `wpantry` | library | `crates/wpantry/src/lib.rs` | `checks::Scan::run` (a scan), `reporters::render` (a report), `remediation::apply` (fixes) |
 | `wpantry-cli` | binary `wpantry` | `crates/wpantry-cli/src/main.rs` | `main` → `args::parse` → `dispatch` |
 | `wpantry-yara` | library | `crates/wpantry-yara/src/lib.rs` | `Compiler` → `Rules::scan` |
-| `wcli` | library | `crates/wcli/src/lib.rs` | `Command::parse` ([its README](crates/wcli/README.md)) |
+| `wcli` | library | [waffuruai/wcli](https://github.com/waffuruai/wcli), by release tag | `Command::parse`: the command tree, help and usage errors |
 
 The binary is its own crate so the library carries no CLI code; the package is `wpantry-cli` because crates.io names must be unique, and its binary is `wpantry`.
 

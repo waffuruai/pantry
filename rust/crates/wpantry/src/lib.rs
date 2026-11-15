@@ -3,7 +3,9 @@
 //! cache the answers in a local SQLite database whose schema the CLI contract
 //! fixes.
 //!
-//! The library has no global state and never prints: progress goes through
+//! The library never prints and has no global state an app must set (an
+//! app may set a pace for its background scans, see
+//! [`utils::parallel::Pace`]): progress goes through
 //! the `log` callback a [`checks::Scan`] is given, and the CLI owns stdout,
 //! stderr and exit codes. The stable surface is the CLI
 //! contract (`specs/cli-contract.md`), not this crate's API.

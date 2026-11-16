@@ -66,24 +66,28 @@ pub fn lookup(
     let results = Mutex::new(Vec::new());
     let failed = Mutex::new(None);
     let queue = Mutex::new(todo.iter());
-    std::thread::scope(|s| {
-        for _ in 0..PARALLEL.min(todo.len()) {
-            s.spawn(|| {
-                while let Some(&i) = { queue.lock().expect("lock").next() } {
-                    let (e, n, v) = &items[i];
-                    match fetch(net, deps_dev(e).unwrap_or(""), n, v) {
-                        Ok(l) => {
-                            let mut r = results.lock().expect("lock");
-                            r.push((i, l));
-                            status(&format!("Fetching licenses from deps.dev ({}/{})", r.len(), todo.len()));
-                        }
-                        Err(e) => {
-                            failed.lock().expect("lock").get_or_insert(e);
-                            return;
-                        }
-                    }
+    // At most the pace's width of workers when an app set one; each runs
+    // the pace's hook before each package (utils::parallel).
+    crate::utils::parallel::spread(PARALLEL.min(todo.len()), || {
+        while let Some(&i) = { queue.lock().expect("lock").next() } {
+            crate::utils::parallel::before_item();
+            let (e, n, v) = &items[i];
+            match fetch(net, deps_dev(e).unwrap_or(""), n, v) {
+                Ok(l) => {
+                    // Let go of the lock before `status` (it may unwind to
+                    // stop the scan; see `osv::fetch_records`).
+                    let done = {
+                        let mut r = results.lock().expect("lock");
+                        r.push((i, l));
+                        r.len()
+                    };
+                    status(&format!("Fetching licenses from deps.dev ({done}/{})", todo.len()));
                 }
-            });
+                Err(e) => {
+                    failed.lock().expect("lock").get_or_insert(e);
+                    return;
+                }
+            }
         }
     });
     for (i, l) in results.into_inner().expect("lock") {

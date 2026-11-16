@@ -2,8 +2,10 @@
 //! `cores` behave as before and a scan finds what it always found; set, no
 //! `par_map` runs more than its width at once, the hook runs before each
 //! item and may hold the work or stop it, and a scan still finds exactly
-//! the same. One test function: the pace is process-wide, so its steps must
-//! not run side by side with each other.
+//! the same; cleared in the middle of a `par_map`, the rest of it runs at
+//! full width; a stop (the hook unwinding) reaches the caller with its own
+//! payload and prints nothing. One test function: the pace and the panic
+//! hook are process-wide, so its steps must not run side by side.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +13,7 @@ use std::time::Duration;
 use wpantry::checks::{Options, Scan};
 use wpantry::db::Cache;
 use wpantry::utils::net::{Fake, Response};
-use wpantry::utils::parallel::{Pace, cores, pace, par_map, set_pace};
+use wpantry::utils::parallel::{Pace, before_item, cores, cpu_budget, pace, par_map, set_pace, spread};
 
 /// Most items of `n` running at once in `par_map(.., width, ..)`, and the
 /// results (each item doubled, in order).
@@ -80,7 +82,8 @@ fn a_pace_bounds_and_holds_the_workers_and_changes_no_result() {
         })))
         .is_none()
     );
-    assert_eq!(cores(), machine.min(2));
+    assert_eq!(cores(), machine, "cores() stays the machine's: a par_map keeps its threads ready");
+    assert_eq!(cpu_budget(), machine.min(2));
     let (top, out) = peak(24, 8);
     assert!(top <= 2, "paced: {top} at once");
     assert_eq!(out, (0..24).map(|i| i * 2).collect::<Vec<_>>());
@@ -105,7 +108,42 @@ fn a_pace_bounds_and_holds_the_workers_and_changes_no_result() {
     t.join().unwrap();
     assert_eq!(done.lock().unwrap().clone(), Some(vec![2, 3, 4]));
 
-    // A hook that unwinds stops the work: par_map panics, no item runs.
+    // Cleared in the middle of a par_map: the rest of it runs at its full
+    // width (the threads past the pace's width were waiting, and join in).
+    set_pace(Some(Pace::new(2, || {})));
+    let (live, top, cleared) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicBool::new(false));
+    let items: Vec<usize> = (0..64).collect();
+    let (out, before_clear) = std::thread::scope(|s| {
+        let run = s.spawn(|| {
+            par_map(&items, 8, |&i| {
+                let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                if cleared.load(Ordering::SeqCst) {
+                    top.fetch_max(now, Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(40));
+                live.fetch_sub(1, Ordering::SeqCst);
+                i + 1
+            })
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        let before = live.load(Ordering::SeqCst);
+        set_pace(None);
+        cleared.store(true, Ordering::SeqCst);
+        (run.join().unwrap(), before)
+    });
+    assert!(before_clear <= 2, "paced: {before_clear} at once");
+    assert_eq!(out, (1..65).collect::<Vec<_>>());
+    assert!(top.load(Ordering::SeqCst) > 2, "cleared, still {} at most", top.load(Ordering::SeqCst));
+
+    // A hook that unwinds stops the work: the caller gets the hook's own
+    // payload, no item runs, and nothing goes through the panic hook (the
+    // scope's "a scoped thread panicked" would). The same for `spread`.
+    let printed = Arc::new(AtomicUsize::new(0));
+    let pr = printed.clone();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |_| {
+        pr.fetch_add(1, Ordering::SeqCst);
+    }));
     let ran = Arc::new(AtomicUsize::new(0));
     set_pace(Some(Pace::new(2, || std::panic::resume_unwind(Box::new("stop")))));
     let r = ran.clone();
@@ -114,8 +152,31 @@ fn a_pace_bounds_and_holds_the_workers_and_changes_no_result() {
             r.fetch_add(1, Ordering::SeqCst);
         })
     });
-    assert!(stopped.is_err());
+    let payload = stopped.expect_err("the hook stops par_map");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"stop"), "the hook's own payload");
     assert_eq!(ran.load(Ordering::SeqCst), 0);
+    let queue = Mutex::new(vec![1, 2, 3]);
+    let stopped = std::panic::catch_unwind(|| {
+        spread(4, || {
+            while let Some(_i) = { queue.lock().unwrap().pop() } {
+                before_item();
+                ran.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    });
+    assert_eq!(stopped.expect_err("the hook stops spread").downcast_ref::<&str>(), Some(&"stop"));
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert_eq!(printed.load(Ordering::SeqCst), 0, "a stop went through the panic hook");
+    // A real panic in an item prints once (its own), not twice, and its
+    // payload reaches the caller.
+    set_pace(None);
+    let failed = std::panic::catch_unwind(|| par_map(&[1, 2, 3], 8, |&i| if i == 2 { panic!("item {i}") } else { i }));
+    assert_eq!(failed.expect_err("an item's panic").downcast_ref::<String>().map(String::as_str), Some("item 2"));
+    assert_eq!(printed.load(Ordering::SeqCst), 1);
+    std::panic::set_hook(default_hook);
+
+    // A width of 0 counts as 1.
+    assert_eq!(Pace::new(0, || {}).width(), 1);
 
     // Cleared: back to the default.
     set_pace(None);

@@ -159,6 +159,43 @@ impl Cache {
         Ok(Cache { conn, fts, file })
     }
 
+    /// Open an existing cache for reading only, beside a writer that holds
+    /// it (an app answering a lookup while its scan runs). Nothing is
+    /// created, migrated or written, and this process's source-fetch state
+    /// is not touched: no schema, no `BEGIN` of a write, and dropping it
+    /// (never [`Cache::close`]) leaves the file as it was. The cache runs
+    /// in WAL mode, so a reader sees the last commit and never waits on the
+    /// writer's open transaction. Writes through it fail.
+    ///
+    /// ```
+    /// let dir = wpantry::utils::temp::TempDir::new("ro").unwrap();
+    /// let file = dir.path().join("c.db");
+    /// assert!(wpantry::db::Cache::open_read_only(&file).is_err(), "missing: not created");
+    /// let w = wpantry::db::Cache::open(Some(&file)).unwrap();
+    /// w.set("k", "v").unwrap();
+    /// w.commit().unwrap();
+    /// let r = wpantry::db::Cache::open_read_only(&file).unwrap();
+    /// assert_eq!(r.get("k").unwrap().as_deref(), Some("v"));
+    /// assert!(r.set("k", "w").is_err(), "read only");
+    /// // The writer's open transaction holds a write: the reader does not
+    /// // wait for it, and sees the last commit.
+    /// w.set("k", "uncommitted").unwrap();
+    /// let t = std::time::Instant::now();
+    /// let r = wpantry::db::Cache::open_read_only(&file).unwrap();
+    /// assert_eq!(r.get("k").unwrap().as_deref(), Some("v"));
+    /// assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    /// ```
+    pub fn open_read_only(file: &Path) -> Result<Cache> {
+        let conn = Connection::open_with_flags(
+            file,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        // WAL readers do not wait on the writer; this only covers a
+        // checkpoint or recovery in flight.
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        Ok(Cache { conn, fts: false, file: file.to_path_buf() })
+    }
+
     pub fn file(&self) -> &Path {
         &self.file
     }

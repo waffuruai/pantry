@@ -335,36 +335,41 @@ pub(crate) fn fetch_records(net: &dyn Net, ids: &[Want], status: Status) -> Resu
     let queue = Mutex::new(ids.iter());
     let results = Mutex::new(Vec::new());
     let first_error = Mutex::new(None);
-    std::thread::scope(|s| {
-        for _ in 0..PARALLEL.min(ids.len()) {
-            s.spawn(|| {
-                loop {
-                    if first_error.lock().expect("lock").is_some() {
-                        return;
-                    }
-                    let Some((id, etag, (sid, base))) = queue.lock().expect("lock").next() else { return };
-                    let url = format!("{base}/vulns/{id}");
-                    let got = fetch::request(net, sid, &url, None, &[], etag.as_deref()).map(|r| match r.status {
-                        200 => match json::parse(&r.body, json::MAX_DOCUMENT) {
-                            Ok(rec) if str_at(&rec, "id") == id => Fetched::Record(rec, r.etag),
-                            _ => Fetched::Missing,
-                        },
-                        304 => Fetched::NotModified,
-                        _ => Fetched::Missing,
-                    });
-                    match got {
-                        Ok(rec) => {
-                            let mut done = results.lock().expect("lock");
-                            done.push((id.clone(), rec));
-                            status(&format!("Downloading advisories from OSV ({}/{}): {id}", done.len(), ids.len()));
-                        }
-                        Err(e) => {
-                            first_error.lock().expect("lock").get_or_insert(e);
-                            return;
-                        }
-                    }
-                }
+    // At most the pace's width of workers when an app set one; each runs
+    // the pace's hook before each record (utils::parallel).
+    crate::utils::parallel::spread(PARALLEL.min(ids.len()), || {
+        loop {
+            if first_error.lock().expect("lock").is_some() {
+                return;
+            }
+            let Some((id, etag, (sid, base))) = queue.lock().expect("lock").next() else { return };
+            crate::utils::parallel::before_item();
+            let url = format!("{base}/vulns/{id}");
+            let got = fetch::request(net, sid, &url, None, &[], etag.as_deref()).map(|r| match r.status {
+                200 => match json::parse(&r.body, json::MAX_DOCUMENT) {
+                    Ok(rec) if str_at(&rec, "id") == id => Fetched::Record(rec, r.etag),
+                    _ => Fetched::Missing,
+                },
+                304 => Fetched::NotModified,
+                _ => Fetched::Missing,
             });
+            match got {
+                Ok(rec) => {
+                    // The lock is let go before `status`: an app's status
+                    // callback may unwind to stop the scan, and a lock held
+                    // through that would poison it for the other workers.
+                    let n = {
+                        let mut done = results.lock().expect("lock");
+                        done.push((id.clone(), rec));
+                        done.len()
+                    };
+                    status(&format!("Downloading advisories from OSV ({n}/{}): {id}", ids.len()));
+                }
+                Err(e) => {
+                    first_error.lock().expect("lock").get_or_insert(e);
+                    return;
+                }
+            }
         }
     });
     if let Some(e) = first_error.into_inner().expect("lock") {

@@ -373,9 +373,10 @@ pub fn finish(cache: &Cache, job: &Job, ran: Option<Result<Value>>, refresh: boo
 }
 
 /// gitleaks scans run at once on a first run (`--jobs`): each is CPU-bound,
-/// so together they get the machine's cores, not each of them all of them.
+/// so together they get the machine's cores, not each of them all of them
+/// (under an app's pace, at most its width: `parallel::cpu_budget`).
 pub(crate) fn gitleaks_at_once(scan: &Scan) -> usize {
-    scan.opts.jobs.unwrap_or_else(|| (parallel::cores() / 2).clamp(1, 4))
+    scan.opts.jobs.unwrap_or_else(|| (parallel::cpu_budget() / 2).clamp(1, 4))
 }
 
 /// Each repo's gitleaks job (with the `gitleaks` binary; None: not
@@ -386,7 +387,7 @@ pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], gitleaks: Option<PathBuf>
         return Ok(Vec::new());
     }
     let config = scan.opts.policy.gitleaks_config(&scan.cache)?;
-    let threads = (parallel::cores() / gitleaks_at_once(scan)).max(1);
+    let threads = (parallel::cpu_budget() / gitleaks_at_once(scan)).max(1);
     repos
         .iter()
         .map(|(_, root)| {

@@ -7,11 +7,23 @@ criteria = "safe-to-deploy"
 delta = "0.38.2 -> 0.39.1"
 notes = "build.rs: bundled-sqlcipher moves to the optional sqlcipher-src crate (not pulled in by the bundled feature), SQLITE_ENABLE_MEMORY_MANAGEMENT dropped, rerun-if-env-changed for the prefixed env vars, bindgen 0.73 and syn 3 only under buildtime_bindgen or loadable_extension. The bundled sqlite3.c is the official 3.54.1 amalgamation: its SHA3-256 e2b869d3003b33c942b7dd7063604fbc53553e1b66609570df39b9b7b558ee81 matches sqlite.org's release log for 3.54.1 (2026-10-16)."
 
+[[audits.libsqlite3-sys]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.39.1 -> 0.40.0"
+notes = "Read the source diff: the version, sqlcipher-src =419.0.6 to =420.0.0 (an optional build dependency only under bundled-sqlcipher, not enabled), the README, and the pregenerated SQLCipher bindings (not used by bundled). build.rs and the sqlite3/ directory are byte-identical to 0.39.1. The bundled sqlite3.c, sqlite3.h and sqlite3ext.h are byte-identical to those in sqlite-amalgamation-3540100.zip downloaded from sqlite.org, whose SHA3-256 92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30 matches the sqlite.org download page; sqlite3.c's SHA3-256 e2b869d3003b33c942b7dd7063604fbc53553e1b66609570df39b9b7b558ee81 matches the 3.54.1 release log (2026-10-16)."
+
 [[audits.rusqlite]]
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "0.40.2 -> 0.41.0"
 notes = "Read the source diff (edition 2024, so most hunks wrap existing unsafe in blocks). Hooks, busy handler and authorizer now live in sqlite3_set_clientdata, fixing the use-after-free in #1899; wpantry enables none of those features. ZeroBlob and set_result use the 64-bit SQLite calls; column accessors return iterators; modern_sqlite gates dropped with the 3.45.3 minimum. No build script, no new dependency for wpantry (bundled only)."
+
+[[audits.rusqlite]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.41.0 -> 0.42.0"
+notes = "Read the source diff. Slices from SQLite pointers now go through util::from_raw_parts, which returns an empty slice for a zero or negative length instead of calling slice::from_raw_parts on a possibly null pointer (statement and ValueRef column text and blob, the session, vtab and unlock_notify callbacks). set_clientdata resets the hook when sqlite3_set_clientdata fails, and each hook and the busy handler is installed without its callback when the client data is null, so an out-of-memory can't leave SQLite calling into freed data. Without extra_check, pragma names are checked as identifiers instead of against pragma_pragma_list; pragma_query_one added. New codec feature (sqlite3_key_v2/rekey_v2 for SQLCipher), functions and vtab argument access moved into a shared Values/RawValue type, and the session conflict callback takes a reference: all behind features wpantry does not enable (it uses bundled and the default cache). The wasm dependencies move to libsqlite3-sys 0.40.0 and sqlite-wasm-rs 0.6.3. No build script (build = false), no new native dependencies; no process, env, network or filesystem access added outside tests."
 
 [[audits.serde_json]]
 who = "Waffuru AI, Inc. <security@waffuru.ai>"

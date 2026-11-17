@@ -38,7 +38,7 @@ wpantry sources [--json] [--sources FILE]
 wpantry help [COMMAND...]
 ```
 
-`wpantry` with no arguments, `wpantry -h`, `wpantry --help` and `wpantry help` print the top-level help (`Usage: wpantry [options] [command]`, every command, the exit codes) and exit 0; nothing is scanned. `wpantry help COMMAND...` is `wpantry COMMAND... --help`; `wpantry -V` and `--version` print `wpantry <version>`. The command line is declared with `wcli` (`rust/crates/wcli`), which generates the help and the errors: each command and option has one name, options are spelled out in full (no prefixes), an option's value is the next word or follows `=`, and `--` ends the options. A usage error prints `Usage: …` and `error: …` to stderr, with `(Did you mean …?)` when a command or option name is close, and exits 2.
+`wpantry` with no arguments, `wpantry -h`, `wpantry --help` and `wpantry help` print the top-level help (`Usage: wpantry [options] [command]`, every command, the exit codes) and exit 0; nothing is scanned. `wpantry help COMMAND...` is `wpantry COMMAND... --help`; `wpantry -V` and `--version` print `wpantry <version>`. The command line is declared with [`wcli`](https://github.com/waffuruai/wcli), which generates the help and the errors: each command and option has one name, options are spelled out in full (no prefixes), an option's value is the next word or follows `=`, and `--` ends the options. A usage error prints `Usage: …` and `error: …` to stderr, with `(Did you mean …?)` when a command or option name is close, and exits 2.
 
 Removed 2026-11-05, with no compatibility kept (nothing depends on wpantry yet): the second names `check` (for `scan`), `export` (for `report`) and `mitigate` (for `fix`); `scan --fix`, `--update` and `--dryrun` (`fix` and `fix --dry-run`); options with no command (`wpantry --json`); `--license` (`--licenses`), `--remove` (`--undo`), `--dryrun` (`--dry-run`); and abbreviated options (`--no-m`).
 
@@ -86,6 +86,10 @@ Removed 2026-11-05: wpantry scans files and never touches the clipboard. The `cl
 ### Scope walk
 
 The default scope walks `$HOME` to depth 6 without following symlinks and only looks at directory entries. A directory with a `.git` directory is a repo and is not descended into. A `.git` file (linked worktree, submodule) ends the descent and counts only when it is the `--path` itself. Pruned by name: `.git`, `node_modules`, `target`, `.build`, `vendor`, `.cache`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, `.next`, `Library`, `.Trash`, `.rustup`, `.npm`, `.pnpm-store`, any `*.app`; by path: `go/pkg`, `.cargo/registry`, `.cargo/git`, `.local/share`. The count lands in `checked["git repos"]`.
+
+## Platforms
+
+macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 0.4.1): the repo checks (`scan --no-machine`: lockfiles, secrets, install scripts, images, MCP servers), `search`, `report`, `version`, `tools`, `skill` and `breach`, with the same output as on Linux for the same repo. A machine scan on Windows reports one `unchecked` finding (`machine inventory on Windows`) and nothing else about the machine: winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet. Locations and `fix_cmd` paths are printed without the `\\?\` prefix that Windows `canonicalize` adds. `~` is `HOME`, else `USERPROFILE`; the cache default is `%LOCALAPPDATA%\wpantry\wpantry.db` when neither `XDG_CACHE_HOME` nor `HOME` is set. PATH is split as the platform does, and a tool name also matches its `.exe`, `.cmd` or `.bat`.
 
 ## Environment
 

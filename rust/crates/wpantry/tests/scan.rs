@@ -133,8 +133,11 @@ fn repo_scan_end_to_end() {
         (Some(9.8), "3.1", Some(0.02)),
         "CVE.org's score: OSV's records had none"
     );
-    assert_eq!(f.location, dir.join("Cargo.lock").to_string_lossy());
-    assert_eq!(f.fix_cmd, format!("cd {} && cargo update -p smallvec --precise 1.6.1", dir.display()));
+    assert_eq!(f.location, wpantry::utils::files::command_path(&dir.join("Cargo.lock")));
+    assert!(!f.location.contains(r"\\?\"), "{}", f.location);
+    // The directory is shell-quoted when it needs it, without the `\\?\` prefix.
+    let quoted = wpantry::checks::supply_chain::quote(&wpantry::utils::files::command_path(&dir));
+    assert_eq!(f.fix_cmd, format!("cd {quoted} && cargo update -p smallvec --precise 1.6.1"));
     assert!(
         !out.findings.iter().any(|f| f.component.contains("licenses")),
         "licenses are checked only with --licenses"

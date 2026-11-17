@@ -29,14 +29,31 @@ export SOURCE_DATE_EPOCH
 export CARGO_TARGET_DIR="$rust/target"
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+
+# Under Git Bash on Windows this script sees /c/Users/… while rustc sees
+# C:\Users\…, so the prefixes to remap are given in rustc's spelling.
+exe=""
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    exe=".exe"
+    root="$(cygpath -w "$root")"
+    cargo_home="$(cygpath -w "$cargo_home")"
+    rustup_home="$(cygpath -w "$rustup_home")"
+    ;;
+esac
 export RUSTFLAGS="--remap-path-prefix=$root=/build --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
 
 # Apple's linker hashes its debug map (each object file's absolute path) into
 # LC_UUID, and rustc strips that map only after linking, so the UUID, and the
 # arm64 code signature over it, would still depend on the checkout's path.
 # -S keeps the debug map out of the link; the binary is stripped anyway.
+#
+# MSVC's linker stamps the PE header with the time and writes a PDB path;
+# /Brepro replaces the stamp with a hash of the content, and no PDB is kept
+# (the profile strips), so two builds of one commit match.
 case "$target" in
   *-apple-darwin) RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-S" ;;
+  *-pc-windows-msvc) RUSTFLAGS="$RUSTFLAGS -C link-arg=/Brepro -C link-arg=/PDBALTPATH:%_PDB%" ;;
 esac
 
 # Linux musl targets compile C (ring, SQLite) with musl-gcc where the
@@ -51,7 +68,7 @@ done
 # Builds one triple; prints the binary's path.
 one() {
   (cd "$rust" && cargo build --quiet --release --locked --target "$1") || return 1
-  echo "$CARGO_TARGET_DIR/$1/release/wpantry"
+  echo "$CARGO_TARGET_DIR/$1/release/wpantry$exe"
 }
 
 case "$target" in

@@ -2,6 +2,7 @@ use super::*;
 use crate::checks::machine::testing;
 use crate::utils::net::Fake;
 
+#[cfg(unix)]
 #[test]
 fn downloads_and_desktop_are_read_when_present() {
     let home = crate::utils::files::test_home();

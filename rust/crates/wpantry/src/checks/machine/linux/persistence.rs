@@ -33,6 +33,7 @@ fn preload(r: &Roots, inv: &mut Inventory) {
     inv.read.push(Source::Preload);
 }
 
-#[cfg(test)]
+// Linux and macOS checks: the machine inventory doesn't run on Windows (#11).
+#[cfg(all(test, unix))]
 #[path = "persistence_tests.rs"]
 mod tests;

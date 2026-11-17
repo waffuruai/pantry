@@ -224,8 +224,10 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # Every suite, even after one fails: Windows is where a failure is
+      # least likely to reproduce on a developer's machine.
       - name: test
-        run: cargo test --locked
+        run: cargo test --locked --no-fail-fast
 
       - name: build (release)
         run: cargo build --locked --release

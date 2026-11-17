@@ -524,7 +524,8 @@ fn hooks_policy_accepts_a_reviewed_hook_until_its_command_changes() {
     assert!(fix_cmd.ends_with(r#"command = "node bin/postinstall --quiet" }"#), "{fix_cmd}");
     assert!(!env["checked"].as_object().unwrap().contains_key("repo hooks accepted by policy"));
     // A `repos` entry accepts every warning under that path.
-    write(&policy, format!("repos = [\"{}\"]\n", t.home.display()));
+    // A TOML literal string, so a Windows path's `\` stays a separator.
+    write(&policy, format!("repos = ['{}']\n", t.home.display()));
     let env = scan_repo(&t, &repo, &["--hooks-policy", s(&policy)]).json();
     assert!(of_kind(&env, "repo-hook").is_empty(), "{}", env["findings"]);
     assert_eq!(env["checked"]["repo hooks accepted by policy"], 1, "{}", env["checked"]);

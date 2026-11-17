@@ -6,8 +6,9 @@
 //!
 //! The export is read as a tar stream by a reader written here: only the
 //! files the extractors read are kept, each under a size cap, and an entry
-//! naming a path outside the image root (`..`, absolute links) is ignored,
-//! since an image's contents are untrusted.
+//! naming a path outside the image root (`..`, a Windows drive or `\\`
+//! prefix, absolute links) is ignored, since an image's contents are
+//! untrusted. Link text is a tar path: `/`-separated, never a host path.
 
 use crate::checks::lockfiles::{self, Package};
 use crate::checks::machine::os_packages;
@@ -92,6 +93,11 @@ fn wanted(path: &str) -> bool {
     // The same pruning as a repo walk: dependency and build directories.
     let pruned = path.split('/').any(|p| crate::utils::walk::PRUNE.contains(&p));
     !pruned && (lockfiles::supported(name) || (name.starts_with("requirements") && name.ends_with(".txt")))
+}
+
+/// A path as the tar spells it, `/`-separated, whatever the host uses.
+fn slash(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
 }
 
 /// A relative path inside the image root, or None when it would escape it.
@@ -194,7 +200,7 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
                 continue;
             }
             b'0' | 0 | b'7' => {
-                if let Some(rel) = inside(&name).filter(|p| wanted(&p.to_string_lossy())).filter(|_| size <= MAX_FILE) {
+                if let Some(rel) = inside(&name).filter(|p| wanted(&slash(p))).filter(|_| size <= MAX_FILE) {
                     let mut data = vec![0u8; size as usize];
                     r.read_exact(&mut data).map_err(|_| truncated())?;
                     r.seek_relative((padded - size) as i64)?;
@@ -207,10 +213,15 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
                 }
             }
             b'1' | b'2' => {
-                if let Some(rel) = inside(&name).filter(|p| wanted(&p.to_string_lossy())) {
-                    // A symlink is relative to its directory, unless absolute (then the image root).
-                    let target = if kind == b'2' && !link.starts_with('/') {
-                        rel.parent().map(|d| d.join(&link).to_string_lossy().into_owned()).unwrap_or(link.clone())
+                if let Some(rel) = inside(&name).filter(|p| wanted(&slash(p))) {
+                    // A symlink is relative to its directory, unless absolute
+                    // (then the image root). Hard links are already
+                    // archive-absolute. Join the text, not a host path:
+                    // `Path::join` on Windows treats `C:\` as absolute and
+                    // `..\` as a parent component.
+                    let target = if kind == b'2' && !link.starts_with('/') && !windows_drive(&link) {
+                        let parent = slash(rel.parent().unwrap_or(Path::new("")));
+                        if parent.is_empty() { link.clone() } else { format!("{parent}/{link}") }
                     } else {
                         link.clone()
                     };
@@ -224,6 +235,11 @@ pub fn untar(tar: &Path, root: &Path) -> Result<()> {
         r.seek_relative(padded as i64)?;
     }
     for (rel, target) in links {
+        // `normalize` only returns normal relative components. Check again
+        // at the copy: `root.join` would replace the root for a drive path.
+        if !normal_relative(&rel) || !normal_relative(&target) {
+            continue;
+        }
         let (src, dest) = (root.join(&target), root.join(&rel));
         if src.is_file() && !dest.exists() {
             if let Some(dir) = dest.parent() {
@@ -247,8 +263,35 @@ fn fill(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
     Ok(n)
 }
 
+/// `C:` or `C:foo` at the start of a tar component. A host path, not an
+/// image path. Independent of which OS is reading the archive.
+fn windows_drive(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+/// Every component is a normal relative name. A prefix, root, or `..`
+/// would let `root.join` leave the extraction directory on Windows.
+fn normal_relative(path: &Path) -> bool {
+    let mut n = 0;
+    for c in path.components() {
+        if !matches!(c, Component::Normal(_)) {
+            return false;
+        }
+        n += 1;
+    }
+    n > 0
+}
+
 /// A link target resolved lexically inside the image root.
+///
+/// The string is a tar path. `\` is rejected rather than converted: on
+/// Windows `normalize(r"..\canary.txt")` used to be one component, and
+/// `root.join` then read the host file beside the image.
 fn normalize(target: &str) -> Option<PathBuf> {
+    if target.contains('\\') || target.contains('\0') || windows_drive(target.trim_start_matches('/')) {
+        return None;
+    }
     let mut out: Vec<String> = Vec::new();
     for part in target.trim_start_matches('/').split('/') {
         match part {
@@ -256,10 +299,15 @@ fn normalize(target: &str) -> Option<PathBuf> {
             ".." => {
                 out.pop()?;
             }
+            p if windows_drive(p) => return None,
             p => out.push(p.to_string()),
         }
     }
-    (!out.is_empty()).then(|| out.iter().collect())
+    let mut path = PathBuf::new();
+    for p in &out {
+        path.push(p);
+    }
+    normal_relative(&path).then_some(path)
 }
 
 /// What an exported image root holds: packages, and what couldn't be read.
@@ -293,7 +341,7 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
     }
     let files = crate::checks::supply_chain::repos::lockfiles(root);
     for f in files {
-        let shown = format!("/{}", f.strip_prefix(root).unwrap_or(&f).display());
+        let shown = format!("/{}", slash(f.strip_prefix(root).unwrap_or(&f)));
         match lockfiles::extract(&f) {
             Ok(Some(found)) => pkgs.extend(found.into_iter().map(|p: Package| ImagePackage {
                 ecosystem: p.ecosystem,
@@ -396,6 +444,7 @@ pub fn packages(
 /// the scan driver's.
 #[cfg(test)]
 pub(crate) mod testing {
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
     /// One ustar header: `size` is what the header claims (the data may be

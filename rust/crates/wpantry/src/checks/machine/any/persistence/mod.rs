@@ -186,11 +186,11 @@ impl Roots<'_> {
     /// A path as the report shows it: `~/…`, or absolute on the machine.
     pub(crate) fn show(&self, p: &Path) -> String {
         if let Ok(rel) = p.strip_prefix(&self.home) {
-            return format!("~/{}", rel.display());
+            return format!("~/{}", rel.to_string_lossy().replace('\\', "/"));
         }
         match p.strip_prefix(&self.root) {
-            Ok(rel) => format!("/{}", rel.display()),
-            Err(_) => p.display().to_string(),
+            Ok(rel) => format!("/{}", rel.to_string_lossy().replace('\\', "/")),
+            Err(_) => p.to_string_lossy().replace('\\', "/"),
         }
     }
 }
@@ -277,3 +277,6 @@ pub fn programs(inv: &Inventory) -> Vec<PathBuf> {
 pub fn persisted_programs() -> Vec<PathBuf> {
     programs(&inventory())
 }
+
+#[cfg(test)]
+mod tests;

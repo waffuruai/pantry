@@ -169,7 +169,7 @@ pub fn plan(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
     for (dir, files) in walk {
         for name in files {
             let path = dir.join(name);
-            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+            let rel = crate::utils::files::command_path(path.strip_prefix(root).unwrap_or(&path));
             if skipped(&rel) {
                 continue;
             }

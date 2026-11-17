@@ -2,6 +2,7 @@ use super::super::files::test_home;
 use super::super::temp::TempDir;
 use super::*;
 
+#[cfg(unix)]
 #[test]
 fn exec_captures_and_times_out() {
     let o = exec(
@@ -17,6 +18,7 @@ fn exec_captures_and_times_out() {
 
 /// A background process holding the pipes doesn't hold the call: not
 /// when the program is killed at the deadline, nor when it exits first.
+#[cfg(unix)]
 #[test]
 fn exec_deadline_covers_processes_left_holding_the_pipes() {
     for script in ["sleep 5 & wait", "sleep 5 &"] {
@@ -27,6 +29,7 @@ fn exec_deadline_covers_processes_left_holding_the_pipes() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn which_takes_a_path_as_given() {
     assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
@@ -59,6 +62,7 @@ fn on_path_lists_distinct_binaries_from_extra_dirs() {
     assert_eq!(realpath("/nonexistent/x"), "/nonexistent/x");
 }
 
+#[cfg(unix)]
 #[test]
 fn app_clis_live_in_applications() {
     let _home = test_home();

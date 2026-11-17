@@ -53,6 +53,9 @@ pub fn scope_of(opts: &Options) -> String {
     if opts.licenses {
         scope.push_str("+licenses");
     }
+    if opts.machine && opts.no_personal_files {
+        scope.push_str(";no-personal-files");
+    }
     let policy: Vec<String> = [
         ("secret-rules", &opts.policy.secret_rules),
         ("licenses", &opts.policy.licenses),

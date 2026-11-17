@@ -1,0 +1,28 @@
+# wmerge rules for this repository. wmerge reads this file from `dev`, never
+# from a pull request. wmerge acts only with the writes listed in `apply`.
+
+# Every job in ci.yml that runs on every pull request. "Test (ops bootstrap
+# container)" is left out because it only runs when the ops deploy key is
+# present.
+required_checks = [
+  "Lint",
+  "Test (ubuntu-latest)",
+  "Test (macos-latest)",
+  "Rust (ubuntu-latest)",
+  "Rust (macos-latest)",
+  "Coverage",
+  "Rust supply chain",
+]
+merge_method = "squash"
+base_branch = "dev"
+max_infra_retries = 2
+missing_check_deadline_minutes = 120
+allowed_authors = ["TheTom", "ekryski", "*"]
+require_approval = false
+# No batching: CI does not run on wmerge/candidate/* pushes in this repo, so
+# each PR is rebased and merged on its own checks.
+# TODO: add "batch" once ci.yml runs on wmerge/candidate/* pushes.
+apply = ["rebase", "rerun", "merge", "handoff", "label", "comment"]
+# A PR that falls behind dev keeps its running CI instead of being rebased
+# mid-run. wmerge still rebases a green PR whose runs tested an older dev.
+behind_policy = "merge_if_clean"

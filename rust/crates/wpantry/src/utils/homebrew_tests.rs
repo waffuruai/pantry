@@ -1,6 +1,7 @@
 use super::super::temp::TempDir;
 use super::*;
 
+#[cfg(unix)] // `latest` and the renamed cask are symlinks
 #[test]
 fn caskroom_lists_one_version_per_cask() {
     let d = TempDir::new("caskroom").unwrap();

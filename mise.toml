@@ -6,7 +6,7 @@
 # pins equal to ops' mise.toml. See ops planning/specs/02-mise-bootstrap.md.
 [tools]
 node = "26.12.1"  # offline HTML viewer behavior tests (no npm dependencies)
-python = "3.15.1"   # scripts/ and their tests
+python = "3.15.2"   # scripts/ and their tests
 gitleaks = "8.30.1" # the org pre-commit hook's scanner (ops finds it here); wpantry no longer runs it
 shellcheck = "0.11.0"
 actionlint = "1.7.12"

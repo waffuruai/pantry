@@ -1,7 +1,9 @@
 use super::*;
 use crate::checks::Options;
 use crate::checks::supply_chain::testing;
+#[cfg(unix)]
 use crate::checks::supply_chain::testing::CARGO_LOCK;
+#[cfg(unix)]
 use crate::utils::files;
 use crate::utils::net::{Fake, Response};
 use crate::utils::temp::TempDir;
@@ -102,6 +104,7 @@ fn unreachable_extension_lists_are_unchecked_not_clean() {
 /// The npm packages bundled in extensions and plugins, and the lockfiles
 /// shipped in those and in skills: a vulnerable one warns (its vendor
 /// fixes it).
+#[cfg(unix)]
 #[test]
 fn bundles_read_node_modules_and_shipped_lockfiles() {
     let _home = crate::utils::files::test_home();

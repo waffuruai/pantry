@@ -32,22 +32,44 @@ impl Drop for TestHome {
     }
 }
 
-/// $HOME (Python: `os.path.expanduser("~")`).
+/// $HOME (Python: `os.path.expanduser("~")`); on Windows, `%USERPROFILE%`
+/// when HOME is unset.
 pub fn home() -> PathBuf {
     if let Some(h) = HOME_OVERRIDE.with(|h| h.borrow().clone()) {
         return h;
     }
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    let set = |k: &str| std::env::var_os(k).filter(|h| !h.is_empty()).map(PathBuf::from);
+    set("HOME").or_else(|| if cfg!(windows) { set("USERPROFILE") } else { None }).unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// Drop the `\\?\` prefix `canonicalize` adds on Windows. `\\?\UNC\server\share`
+/// becomes `\\server\share`. Other strings are unchanged.
+pub fn strip_verbatim(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        p.to_string()
+    }
+}
+
+/// A path for a printed command. Forward slashes, no `\\?\` prefix: cmd,
+/// PowerShell, and Git Bash reject `cd '\\?\C:\...'`.
+pub fn command_path(path: &Path) -> String {
+    strip_verbatim(&path.to_string_lossy()).replace('\\', "/")
 }
 
 /// `~/x` for paths under $HOME, as the report shows them. Matches Python's
-/// plain string-prefix test.
+/// plain string-prefix test. The `\\?\` prefix is removed first so a
+/// canonical Windows path still matches `USERPROFILE`.
 pub fn short(p: &str) -> String {
+    let p = strip_verbatim(p);
     let home = home();
     let home = home.to_string_lossy();
     match p.strip_prefix(home.as_ref()) {
         Some(rest) if !home.is_empty() => format!("~{rest}"),
-        _ => p.to_string(),
+        _ => p,
     }
 }
 

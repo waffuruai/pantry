@@ -78,6 +78,7 @@ pub fn images_with(scan: &mut Scan, repos: &[Repo], engine: Option<PathBuf>) -> 
     Ok(())
 }
 
-#[cfg(test)]
+// Its one test fakes the container engine with a shell script.
+#[cfg(all(test, unix))]
 #[path = "images_tests.rs"]
 mod tests;

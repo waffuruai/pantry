@@ -40,6 +40,7 @@ fn advisories_from_json_default_every_field() {
 }
 
 /// A fake tool: a shell script printing what the real one would.
+#[cfg(unix)]
 fn tool(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -51,8 +52,10 @@ fn tool(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
     p
 }
 
+#[cfg(unix)]
 const RPM: &str = "printf 'openssl-libs 1:3.5.9-1.fc44\\nbinutils 0:2.35.2-67.el9_7.1\\nbash 0:5.2-1\\n'";
 
+#[cfg(unix)]
 #[test]
 fn dnf5_answers_in_json_dnf4_and_yum_in_text() {
     let d = crate::utils::temp::TempDir::new("dnf").unwrap();
@@ -101,6 +104,7 @@ fn dnf5_answers_in_json_dnf4_and_yum_in_text() {
     assert_eq!((got.vulnerable[0].advisory.as_str(), got.vulnerable[0].installed.as_str()), ("ALSA-1", "5.2-1"));
 }
 
+#[cfg(unix)]
 #[test]
 fn dnf_failures_are_never_cached_as_clean() {
     let d = crate::utils::temp::TempDir::new("dnf").unwrap();
@@ -116,6 +120,7 @@ fn dnf_failures_are_never_cached_as_clean() {
     assert!(dnf_advisories_with(&c, false, false, Some(missing.clone()), None, Some(missing)).is_err());
 }
 
+#[cfg(unix)]
 #[test]
 fn arch_groups_apply_to_installed_packages() {
     let d = crate::utils::temp::TempDir::new("arch").unwrap();

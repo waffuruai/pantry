@@ -1,6 +1,7 @@
 [package]
 name = "wpantry"
-description = "Finds the vulnerabilities that apply to this computer and its git repos (library)"
+description = "Finds vulnerabilities that apply on your computer (library)"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

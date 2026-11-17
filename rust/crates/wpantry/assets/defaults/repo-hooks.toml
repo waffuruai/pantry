@@ -1,0 +1,47 @@
+# Indicators of repos armed to run code when opened or installed: Pantry's
+# default, replaced by `--repo-hooks FILE`. From JFrog Security Research,
+# "Beyond testmetest: 42 hijacked GitHub repositories", 2026-10-26.
+#   files     a file name anywhere in a repo
+#   packages  an npm package in a package.json
+#   hosts     a host a hook's target names
+#   sha256    a hook target's SHA-256
+
+files = [
+  ".napi_cache",
+  "addon.node",
+  "addon_win.node",
+]
+
+packages = [
+  "data-pipeline-testmetest",
+  "event-bus-lite-testmetest",
+  "event-emitter-testmetest",
+  "log-rotate-testmetest",
+  "log-sink-testmetest",
+  "net-codec-testmetest",
+  "npm-publish-testmetest",
+  "pixel-map-testmetest",
+  "retry-utils-testmetest",
+  "test-brotli-testmetest",
+  "test-brotli2-testmetest",
+  "@iobandamwer/cache-helper",
+  "@iobandamwer/native-helper",
+  "path-stream-utils-testmetest",
+  "@testsecuiitytestme/cache-helper",
+]
+
+hosts = [
+  "43.228.157.68",
+  "aiarmor.website",
+  "raw.githubusercontent.com/CementBeetleSteeple",
+]
+
+sha256 = [
+  "9d83919bfdb0e14018f1a6f2b8b6586de59b60dfdcfbdb5ae1a1556c23cc4793",
+  "3dc40fc55302664c07c9d9182ffd95910aeb366fcd417fbdad0a90cdeb8ea69e",
+  "8506042b383ab46545c27a402eb2dc973696a93af71181b175b1d87972843a43",
+  "783a4ac906cc9b2eaf5cd13408ea95db6ce52a46d9af11aad1a5b167af69589f",
+  "a516dd7867af83f8be0cc3e926fdfd964097f0e7665596b05fe5234be7e2b5e9",
+  "ccfd769acc024edc409ef879198d2a2398beee60930f2b3f2771ded1e14e0c57",
+  "7ad216b3afd2f40a147c80733c7309fb3d3a7f52ee78149c8e51672cfb617d07",
+]

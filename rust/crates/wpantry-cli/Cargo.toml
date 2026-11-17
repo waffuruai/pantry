@@ -1,6 +1,7 @@
 [package]
 name = "wpantry-cli"
 description = "The wpantry binary"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,8 +15,12 @@ name = "wpantry"
 path = "src/main.rs"
 
 [dependencies]
+wcli.workspace = true
 wpantry.workspace = true
 rusqlite.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -3,8 +3,9 @@
 //! the Rust one reads lockfiles, package databases and image contents
 //! itself, so osv-scanner is not on it.
 
-use crate::json::{J, obj};
-use crate::system::{run, which};
+use crate::utils::json::{J, obj};
+use crate::utils::process::run;
+use crate::utils::process::which;
 use std::time::Duration;
 
 /// (name, required, version arguments, what wpantry uses it for)
@@ -104,15 +105,5 @@ pub fn tools() -> Vec<Tool> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn versions_in_tool_output() {
-        assert_eq!(version_in("git version 2.43.0"), "2.43.0");
-        assert_eq!(version_in("v8.30.1"), "8.30.1");
-        assert_eq!(version_in("RPM version 4.19.1.1"), "4.19.1.1");
-        assert_eq!(version_in("Docker version 27.3.1, build ce12230"), "27.3.1");
-        assert_eq!(version_in("build 7 of 12"), "");
-    }
-}
+#[path = "external_tests.rs"]
+mod tests;

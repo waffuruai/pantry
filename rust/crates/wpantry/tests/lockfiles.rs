@@ -20,7 +20,7 @@ fn golden_file(case: &str, file: Option<&str>) {
             others.remove(0)
         }
     };
-    let got: Vec<String> = wpantry::lockfiles::extract(&lock)
+    let got: Vec<String> = wpantry::checks::lockfiles::extract(&lock)
         .unwrap()
         .expect("a supported lockfile")
         .iter()
@@ -222,7 +222,7 @@ fn truncated_and_mangled_lockfiles_never_panic() {
                 let cut = (cut..=text.len()).find(|i| text.is_char_boundary(*i)).unwrap();
                 for variant in [text[..cut].to_string(), text[..cut].replace(['"', ':', '\n'], " ")] {
                     std::fs::write(&target, variant).unwrap();
-                    let _ = wpantry::lockfiles::extract(&target);
+                    let _ = wpantry::checks::lockfiles::extract(&target);
                 }
             }
         }
@@ -235,10 +235,10 @@ fn unknown_kinds_are_none_not_empty() {
     let d = std::env::temp_dir().join(format!("wpantry-golden-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("bun.lockb"), "\0binary").unwrap();
-    assert_eq!(wpantry::lockfiles::extract(&d.join("bun.lockb")).unwrap(), None);
+    assert_eq!(wpantry::checks::lockfiles::extract(&d.join("bun.lockb")).unwrap(), None);
     std::fs::write(d.join("Cargo.lock"), "x".repeat(2 << 20)).unwrap();
-    assert!(wpantry::lockfiles::extract(&d.join("Cargo.lock")).is_err(), "a line over the cap is refused");
+    assert!(wpantry::checks::lockfiles::extract(&d.join("Cargo.lock")).is_err(), "a line over the cap is refused");
     std::fs::write(d.join("yarn.lock"), format!("a@1:\n  version \"{}\"\n", "1".repeat(2 << 20))).unwrap();
-    assert!(wpantry::lockfiles::extract(&d.join("yarn.lock")).is_err(), "a line over the cap is refused");
+    assert!(wpantry::checks::lockfiles::extract(&d.join("yarn.lock")).is_err(), "a line over the cap is refused");
     std::fs::remove_dir_all(&d).unwrap();
 }

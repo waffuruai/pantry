@@ -1,0 +1,260 @@
+//! Fetching a source (`specs/design/sources-file.md`). Every request a
+//! source makes goes through here: it reads at most the source's
+//! `max_bytes`, a whole-file source is refetched once its copy is older
+//! than its `refresh` (with the copy's ETag, so an unchanged file costs a
+//! 304) and checked against its `sha256` pin, and every attempt's outcome
+//! is kept for `wpantry sources`. A copy that fails its pin, or that its
+//! reader refuses ([`rejected`]), is never stored: the last good one stays,
+//! and the source is reported unchecked.
+
+use crate::db::Cache;
+use crate::error::{Error, Result};
+use crate::sources::file::{self, Source, source};
+use crate::utils::json;
+use crate::utils::net::{self, Net, Response};
+use rusqlite::params;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+pub const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS source_state (
+  id TEXT PRIMARY KEY, attempt REAL, success REAL, error TEXT, bytes INTEGER);
+";
+
+/// What became of a source's requests: when it was last asked, last
+/// answered, what last went wrong ("" when the last attempt worked), and
+/// how many bytes its last answer was.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct State {
+    pub attempt: f64,
+    pub success: f64,
+    pub error: String,
+    pub bytes: u64,
+}
+
+/// This process's outcomes, written by [`save`].
+static SEEN: LazyLock<Mutex<HashMap<String, State>>> = LazyLock::new(Default::default);
+
+/// Keep one outcome: the bytes an answer had, or why there was none.
+pub fn record(id: &str, outcome: std::result::Result<u64, String>) {
+    let now = crate::utils::os::now();
+    let mut seen = SEEN.lock().expect("lock");
+    let s = seen.entry(id.to_string()).or_default();
+    s.attempt = now;
+    match outcome {
+        Ok(bytes) => {
+            s.success = now;
+            s.error.clear();
+            s.bytes = bytes;
+        }
+        Err(why) => s.error = why,
+    }
+}
+
+/// A source's reader refused what came (a parse error): the last good copy
+/// stays, and `wpantry sources` says why.
+pub fn rejected(id: &str, why: &str) {
+    record(id, Err(format!("rejected: {why}")));
+}
+
+/// The error for a copy `id`'s reader refused, the refusal kept: a
+/// memoised source then falls back to its last good copy.
+pub fn invalid(id: &str, why: &str) -> Error {
+    rejected(id, why);
+    Error::Invalid(format!("{id}: {why}"))
+}
+
+/// Keep `result`'s outcome for `id`, for sources fetched by other means (git).
+pub fn note<T>(id: &str, result: &Result<T>) {
+    match result {
+        Ok(_) => record(id, Ok(0)),
+        Err(e) if e.is_source() => record(id, Err(e.to_string())),
+        Err(_) => {}
+    }
+}
+
+fn kept<T>(id: &str, result: Result<T>, bytes: impl Fn(&T) -> u64) -> Result<T> {
+    match &result {
+        Ok(r) => record(id, Ok(bytes(r))),
+        Err(e) if e.is_source() => record(id, Err(e.to_string())),
+        Err(_) => {}
+    }
+    result
+}
+
+/// Source `id` as in effect: the user's own, or a bundled one with the
+/// user's tier.
+fn in_effect(id: &str) -> Source {
+    file::find(id).unwrap_or_else(|| source(id).clone())
+}
+
+/// `Offline` when `id` isn't used this run (its tier is `off`, or `deep`
+/// without `--deep`): nothing is asked, and what needs it is unchecked.
+pub fn on(id: &str) -> Result<()> {
+    if file::active(id) { Ok(()) } else { Err(Error::Offline(format!("{id} is turned off (sources.toml tier)"))) }
+}
+
+/// [`net::request`] for source `id`: its cap, its outcome kept.
+pub fn request(
+    net: &dyn Net,
+    id: &str,
+    url: &str,
+    data: Option<&Value>,
+    headers: &[(&str, &str)],
+    etag: Option<&str>,
+) -> Result<Response> {
+    on(id)?;
+    let s = in_effect(id);
+    kept(id, net::request_capped(net, url, data, headers, etag, s.max_bytes), |r| r.body.len() as u64)
+}
+
+/// [`net::get_json`] for source `id`.
+pub fn get_json(net: &dyn Net, id: &str, url: &str, headers: &[(&str, &str)]) -> Result<Option<Value>> {
+    let resp = request(net, id, url, None, headers, None)?;
+    if resp.status == 404 {
+        return Ok(None);
+    }
+    let parsed = json::parse(&resp.body, json::MAX_DOCUMENT);
+    if let Err(e) = &parsed {
+        rejected(id, &e.to_string());
+    }
+    parsed.map(Some)
+}
+
+/// [`net::post_json`] for source `id`.
+pub fn post_json(net: &dyn Net, id: &str, url: &str, data: &Value) -> Result<Value> {
+    let resp = request(net, id, url, Some(data), &[], None)?;
+    let parsed = json::parse(&resp.body, json::MAX_DOCUMENT);
+    if let Err(e) = &parsed {
+        rejected(id, &e.to_string());
+    }
+    parsed
+}
+
+/// A whole-file source's new copy, when it is due (older than its
+/// `refresh`) and changed (not a 304) and passes its pin; None otherwise,
+/// and when the source can't be reached (the last copy stays). `key` names
+/// the copy's freshness in the cache.
+pub fn file(cache: &Cache, net: &dyn Net, id: &str, key: &str, offline: bool) -> Result<Option<Vec<u8>>> {
+    on(id)?;
+    file_of(cache, net, &in_effect(id), key, offline)
+}
+
+pub(crate) fn file_of(cache: &Cache, net: &dyn Net, s: &Source, key: &str, offline: bool) -> Result<Option<Vec<u8>>> {
+    if offline || cache.fresh(&format!("{key}_at"), s.refresh)? {
+        return Ok(None);
+    }
+    let etag = cache.get(&format!("{key}_etag"))?;
+    let resp = match net::request_capped(net, &s.url, None, &[], etag.as_deref(), s.max_bytes) {
+        Ok(r) => r,
+        Err(e) if e.is_source() => {
+            record(&s.id, Err(e.to_string()));
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
+    cache.touch(&format!("{key}_at"))?;
+    if resp.status != 200 {
+        record(&s.id, Ok(0));
+        return Ok(None);
+    }
+    if !s.sha256.is_empty() && crate::utils::sha256::hex(&resp.body) != s.sha256 {
+        record(&s.id, Err(format!("rejected: {} doesn't match its sha256 pin", s.url)));
+        return Ok(None);
+    }
+    record(&s.id, Ok(resp.body.len() as u64));
+    if let Some(e) = &resp.etag {
+        cache.set(&format!("{key}_etag"), e)?;
+    }
+    Ok(Some(resp.body))
+}
+
+/// [`Cache::memo`] for source `id`, fresh for its `refresh`.
+pub fn memo(
+    cache: &Cache,
+    id: &str,
+    key: &str,
+    compute: impl FnOnce() -> Result<Value>,
+    fingerprint: &str,
+    refresh: bool,
+    offline: bool,
+) -> Result<Value> {
+    on(id)?;
+    cache.memo(key, compute, in_effect(id).refresh, fingerprint, refresh, offline)
+}
+
+/// Write this process's outcomes for the sources the file declares into the
+/// cache: an attempt that failed keeps the last success it had.
+pub fn save(cache: &Cache) -> Result<()> {
+    let e = file::effective();
+    save_matching(cache, |id| e.sources.iter().any(|s| s.id == id))
+}
+
+/// [`save`], for the ids `keep` picks.
+pub(crate) fn save_matching(cache: &Cache, keep: impl Fn(&str) -> bool) -> Result<()> {
+    let seen: Vec<(String, State)> = {
+        let mut all = SEEN.lock().expect("lock");
+        let ids: Vec<String> = all.keys().filter(|id| keep(id)).cloned().collect();
+        ids.into_iter().filter_map(|id| all.remove_entry(&id)).collect()
+    };
+    for (id, s) in seen {
+        cache.conn.execute(
+            "INSERT INTO source_state VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
+             attempt = excluded.attempt, error = excluded.error, \
+             success = CASE WHEN excluded.success > 0 THEN excluded.success ELSE source_state.success END, \
+             bytes = CASE WHEN excluded.success > 0 THEN excluded.bytes ELSE source_state.bytes END",
+            params![id, s.attempt, s.success, s.error, s.bytes as i64],
+        )?;
+    }
+    cache.commit()
+}
+
+/// One source as `wpantry sources` lists it: what the file says, and what
+/// its fetches came to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub source: Source,
+    pub state: State,
+    /// Fetched within its `refresh`.
+    pub fresh: bool,
+}
+
+/// Every source, in the file's order, with its kept state.
+pub fn listing(cache: &Cache) -> Result<Vec<Listed>> {
+    listing_of(cache, &file::effective().sources)
+}
+
+pub(crate) fn listing_of(cache: &Cache, sources: &[Source]) -> Result<Vec<Listed>> {
+    let states = states(cache)?;
+    let now = crate::utils::os::now();
+    Ok(sources
+        .iter()
+        .map(|s| {
+            let state = states.get(&s.id).cloned().unwrap_or_default();
+            let fresh = state.success > 0.0 && now - state.success < s.refresh;
+            Listed { source: s.clone(), state, fresh }
+        })
+        .collect())
+}
+
+/// Every source's kept state, by id.
+pub fn states(cache: &Cache) -> Result<HashMap<String, State>> {
+    let mut stmt = cache.conn.prepare("SELECT id, attempt, success, error, bytes FROM source_state")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            State {
+                attempt: r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                success: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                error: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                bytes: r.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+#[cfg(test)]
+#[path = "fetch_tests.rs"]
+mod tests;

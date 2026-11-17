@@ -221,9 +221,26 @@ fn check_options_and_their_errors() {
     let _home = wpantry::utils::files::test_home();
     let file = wpantry::utils::files::home().join("g.toml");
     std::fs::write(&file, "").unwrap();
-    let c = scan(&["scan", "--gitleaks-config", "~/g.toml", "--jobs=3", "--no-posture"]);
-    assert_eq!((c.gitleaks_config, c.jobs, c.no_posture), (Some(file.clone()), Some(3), true));
+    let c = scan(&["scan", "--secret-rules", "~/g.toml", "--jobs=3", "--no-posture"]);
+    assert_eq!((c.secret_rules, c.jobs, c.no_posture), (Some(file.clone()), Some(3), true));
     assert!(usage(&["scan", "--install-scripts", "~"]).contains("option '--install-scripts': no such file: ~"));
+    // Secret rules are YARA, and must compile beside the bundled ones.
+    let bad = wpantry::utils::files::home().join("bad.yar");
+    std::fs::write(&bad, "rule Any_Secret_Bad { strings: $secret = /(/ condition: $secret }").unwrap();
+    assert!(
+        usage(&["scan", "--secret-rules", "~/bad.yar"]).contains("option '--secret-rules'"),
+        "{}",
+        usage(&["scan", "--secret-rules", "~/bad.yar"])
+    );
+    // A rule whose $secret is text, not a regex, is refused, not a crash.
+    std::fs::write(&bad, "rule Any_Secret_Text { meta: category = \"secret\" id = \"text\" strings: $secret = \"abc\" condition: $secret }").unwrap();
+    assert!(
+        usage(&["scan", "--secret-rules", "~/bad.yar"]).contains("must be a regex"),
+        "{}",
+        usage(&["scan", "--secret-rules", "~/bad.yar"])
+    );
+    // 0.4's --gitleaks-config is still accepted, and ignored.
+    assert_eq!(scan(&["scan", "--gitleaks-config", "~/g.toml"]).secret_rules, None);
     assert_eq!(expand("~"), wpantry::utils::files::home());
     assert_eq!(expand("/x"), PathBuf::from("/x"));
     for (bad, msg) in [

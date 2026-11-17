@@ -43,7 +43,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 
 Exit codes: 0 clean (warnings and "not checked" included), 1 a failing finding or a failed unattended fix, 2 usage error, 3 internal error, 10 (`update` and `watch` only) a newer release exists and wasn't installed, or a fix has landed.
 
-For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readonly ~/.cache/wpantry/wpantry.db`. Tables: `findings` (latest scan), `vulns` (OSV records; `record` is the full JSON), `queries` (package/version → advisory ids, with when we asked), `kev`, `eol`, `casks`, `malicious` (the malicious-package name index), `runs` (cached `brew vulns`, gitleaks, feed and image results), `meta`.
+For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readonly ~/.cache/wpantry/wpantry.db`. Tables: `findings` (latest scan), `vulns` (OSV records; `record` is the full JSON), `queries` (package/version → advisory ids, with when we asked), `kev`, `eol`, `casks`, `malicious` (the malicious-package name index), `runs` (cached `brew vulns`, secret-scan, feed and image results), `secret_blobs` (each history file's secret-scan result, redacted), `meta`.
 
 ## Triage
 
@@ -63,7 +63,7 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 ## Rules
 
 - Only report what applies. The scanner already filters to installed components; don't pad an answer with advisories for things that aren't here.
-- Never print or copy a secret gitleaks found; work from the rule, file, line, commit and fingerprint it reports.
+- Never print or copy a secret the scan found; work from the rule, file, line, commit and fingerprint it reports.
 - The email breach check sends the user's address to a third party. Never enable it (`wpantry breach --enable`) unless the user asks.
 - An answer of "not affected" depends on how fresh the cache is. Say when it was last refreshed (`--refresh` forces it) and whether the machine was offline.
 - A default run walks the whole home directory. When the question is about one project, pass `--path` (and `--no-machine` if the machine isn't in question).

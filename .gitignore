@@ -5,3 +5,6 @@ target/
 
 # cargo-llvm-cov raw profiles, if a run is interrupted
 *.profraw
+
+# Compiled into wpantry (scripts/secret_words.py); a global *.gz ignore must not drop it.
+!rust/crates/wpantry/assets/secrets/words.txt.gz

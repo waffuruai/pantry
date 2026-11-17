@@ -7,7 +7,7 @@
 //! than a default. Any other non-empty password literal also warns, since a
 //! committed default is still a credential to rotate. This is the
 //! source-level, non-git part of password hygiene; full secret scanning
-//! (provider tokens, entropy) lives in the gitleaks pass, so this rule
+//! (provider tokens, entropy) lives in the secret scan, so this rule
 //! stays on human-chosen passwords and leaves API keys to it.
 //!
 //! Before matching, the value is normalized — trailing digits and symbols

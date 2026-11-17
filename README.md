@@ -74,7 +74,8 @@ Code we read and built on:
 
 - [osv-scanner](https://github.com/google/osv-scanner) and [osv-scalibr](https://github.com/google/osv-scalibr) (Google, Apache-2.0): how lockfiles and Linux package databases map to OSV ecosystems. Pantry's readers were written against their test fixtures.
 - [Mergen](https://github.com/sametsazak/mergen) (MIT): which macOS settings an unprivileged process can read and fix.
-- [gitleaks](https://github.com/gitleaks/gitleaks) (MIT): the secret scan, run as an external tool.
+- [betterleaks](https://github.com/betterleaks/betterleaks) (MIT): the secret rules Pantry's scanner runs, translated to YARA in [pantry-rules](https://github.com/waffuruai/pantry-rules).
+- web2, Webster's Second International (public domain): the words the secret scan's readable-text check knows.
 - [FIRST's CVSS v4.0 calculator](https://github.com/FIRSTdotorg/cvss-v4-calculator) (BSD-2-Clause, Copyright (c) 2023 FIRST.ORG, Inc., Red Hat, and contributors): CVSS 4.0 scoring in [`cvss.rs`](rust/crates/wpantry/src/utils/cvss.rs) ports its lookup table and scoring; the licence is kept in that file.
 - [YARA](https://github.com/VirusTotal/yara) and [YARA-X](https://github.com/VirusTotal/yara-x) (VirusTotal, BSD-3-Clause): the rule language. Our engine, [wpantry-yara](rust/crates/wpantry-yara), is written here and tested match-for-match against YARA 4.5.7. Ideas came from Florian Roth's [Loki-RS](https://github.com/Neo23x0/Loki-RS), [yarGen](https://github.com/Neo23x0/yarGen-Go) and [signature-base](https://github.com/Neo23x0/signature-base); no code was copied.
 

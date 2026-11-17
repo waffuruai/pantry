@@ -38,6 +38,73 @@ fn item(e: &str, n: &str, v: &str) -> Item {
     (e.into(), n.into(), v.into())
 }
 
+#[test]
+fn lookup_keeps_only_queried_package_ranges_without_changing_cached_evidence() {
+    let (_d, c) = cache();
+    let record = json!({"id": "CVE-large", "aliases": ["alias"], "affected": [
+        {"package": {"name": "linux", "ecosystem": "Ubuntu:24.04"}, "ranges": []},
+        {"package": {"name": "linux", "ecosystem": "Ubuntu:22.04"}, "ranges": []},
+        {"package": {"name": "linux", "ecosystem": "Ubuntu:24.04:LTS"}, "ranges": []},
+        {"package": {"name": "other", "ecosystem": "Ubuntu:24.04"}, "ranges": []}
+    ]});
+    c.put_vuln(&record).unwrap();
+    c.put_query("Ubuntu:24.04", "linux", "6.8", &["CVE-large".into()]).unwrap();
+    let net = Fake::new(|r| {
+        assert!(r.url.contains("modified_id.csv"), "fresh cache needs no network: {}", r.url);
+        Ok(Response::not_found())
+    });
+    let it = item("Ubuntu:24.04", "linux", "6.8");
+    let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+    assert_eq!(got.found[&it][0]["affected"].as_array().unwrap().len(), 2);
+    assert_eq!(got.found[&it][0]["aliases"], record["aliases"]);
+    assert_eq!(c.vuln("CVE-large").unwrap().unwrap(), record);
+}
+#[test]
+fn record_groups_are_committed_before_the_next_group_is_downloaded() {
+    let (d, c) = cache();
+    let db = d.path().join("w.db");
+    let net = Fake::new(move |r| {
+        if r.url.ends_with("/querybatch") {
+            let hits: Vec<_> = (0..=PARALLEL).map(|i| json!({"id": format!("CVE-{i:03}"), "modified": "m"})).collect();
+            return Ok(Response::ok(json!({"results": [{"vulns": hits}]}).to_string()));
+        }
+        if r.url.ends_with("modified_id.csv") {
+            return Ok(Response::not_found());
+        }
+        let id = r.url.rsplit('/').next().unwrap();
+        if id == format!("CVE-{PARALLEL:03}") {
+            let stored = rusqlite::Connection::open(&db).unwrap();
+            let count: i64 = stored.query_row("SELECT COUNT(*) FROM vulns", [], |r| r.get(0)).unwrap();
+            assert_eq!(count, PARALLEL as i64, "the previous group must already be persisted");
+            // A later missing record must remain a coverage gap.
+            return Ok(Response { status: 404, body: vec![], etag: None });
+        }
+        Ok(Response::ok(json!({"id": id, "modified": "m"}).to_string()))
+    });
+    let it = item("npm", "demo", "1");
+    let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+    assert_eq!(got.found[&it].len(), PARALLEL);
+    assert!(got.gaps.iter().any(|gap| gap.contains(&format!("CVE-{PARALLEL:03}"))));
+    assert!(c.vuln("CVE-000").unwrap().is_some());
+}
+
+#[test]
+fn repeating_page_tokens_leave_the_query_unanswered() {
+    let (_d, c) = cache();
+    let net = Fake::new(|r| {
+        if r.url.ends_with("modified_id.csv") {
+            return Ok(Response::not_found());
+        }
+        assert!(r.url.ends_with("/querybatch"));
+        Ok(Response::ok(json!({"results": [{"next_page_token": "loop"}]}).to_string()))
+    });
+    let it = item("Ubuntu:24.04", "linux", "6.8");
+    let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();
+    assert!(!got.found.contains_key(&it));
+    assert!(c.query(&it.0, &it.1, &it.2).unwrap().is_none());
+    assert_eq!(net.requests().iter().filter(|r| r.url.ends_with("/querybatch")).count(), 2);
+}
+
 // The test vectors the Python implementation had (`Fixes`).
 #[test]
 fn semver_fix() {
@@ -143,6 +210,14 @@ fn lookup_batches_pages_fetches_changed_records_and_caches() {
     let (f, b) = (fetched.clone(), batches.clone());
     let net = Fake::new(move |r| {
         let body: Value = r.body.as_ref().map(|b| serde_json::from_slice(b).unwrap()).unwrap_or(Value::Null);
+        assert!(!r.url.ends_with("/v1/query"), "pagination must fetch IDs, not full records");
+        if r.url.ends_with("/querybatch") && body["queries"][0]["page_token"] == "p2" {
+            assert_eq!(body["queries"].as_array().unwrap().len(), 1);
+            assert_eq!(body["queries"][0]["package"]["name"], "vite");
+            return Ok(Response::ok(
+                json!({"results": [{"vulns": [{"id": "MAL-1", "modified": "2026-10-02T00:00:00Z"}]}]}).to_string(),
+            ));
+        }
         if r.url.ends_with("/querybatch") {
             b.fetch_add(1, Ordering::SeqCst);
             let qs = body["queries"].as_array().unwrap();
@@ -156,12 +231,6 @@ fn lookup_batches_pages_fetches_changed_records_and_caches() {
                 })
                 .collect();
             return Ok(Response::ok(json!({"results": results}).to_string()));
-        }
-        if r.url.ends_with("/v1/query") {
-            assert_eq!(body["page_token"], "p2");
-            return Ok(Response::ok(
-                json!({"vulns": [{"id": "MAL-1", "modified": "2026-10-02T00:00:00Z"}]}).to_string(),
-            ));
         }
         let id = r.url.rsplit('/').next().unwrap().to_string();
         f.lock().unwrap().push(id.clone());
@@ -305,12 +374,16 @@ fn invalid_evidence_does_not_replace_a_previous_answer() {
         c.put_query("npm", "a", "1.0.0", &["CVE-2026-9".into()]).unwrap();
         c.conn.execute("UPDATE queries SET checked_at = ?", [now() - 2.0 * QUERY_TTL]).unwrap();
         let net = Fake::new(move |r| {
-            if r.url.ends_with("/querybatch") && page {
+            if r.url.ends_with("/querybatch")
+                && page
+                && serde_json::from_slice::<Value>(r.body.as_ref().unwrap()).unwrap()["queries"][0]["page_token"]
+                    .is_null()
+            {
                 let first =
                     json!({"results": [{"vulns": [{"id": "CVE-2026-9", "modified": "m"}], "next_page_token": "p2"}]});
                 return Ok(Response::ok(first.to_string()));
             }
-            Ok(Response::ok(if page { body.to_string() } else { json!({"results": [body]}).to_string() }))
+            Ok(Response::ok(json!({"results": [body]}).to_string()))
         });
         let it = item("npm", "a", "1.0.0");
         let got = lookup(&c, &net, std::slice::from_ref(&it), false, false, &|_| {}, &|_| {}).unwrap();

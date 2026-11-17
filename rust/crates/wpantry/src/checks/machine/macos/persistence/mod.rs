@@ -38,6 +38,5 @@ fn launchd_env(r: &Roots, inv: &mut Inventory) {
     inv.read.push(Source::LaunchdEnv);
 }
 
-// Linux and macOS checks: the machine inventory doesn't run on Windows (#11).
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;

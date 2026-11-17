@@ -70,7 +70,7 @@
 <path d="M560,256 V270" fill="none" stroke="#d2ccc1" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M600,386 V402" fill="none" stroke="#d2ccc1" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M600,498 V514" fill="none" stroke="#d2ccc1" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="448" y="646" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#aba599">Local tools it runs: gitleaks, git, openssl, brew</text>
+<text x="448" y="646" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#aba599">Local tools it runs: git, openssl, brew</text>
 <text x="448" y="662" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#aba599">vulns, docker or podman, rpm; never through a shell</text>
 <text x="844" y="166" font-family="'Geist Mono', Menlo, monospace" font-size="12" fill="#e8a33d" letter-spacing="1.5">3  REPORTS</text>
 <rect x="844" y="180" width="300" height="76" rx="8" fill="#12100e" stroke="#2a2622" stroke-width="1"/>

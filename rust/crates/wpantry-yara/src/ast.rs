@@ -34,6 +34,15 @@ pub struct StringDef {
     pub kind: StringKind,
     pub mods: Modifiers,
     pub line: usize,
+    /// A regex string's text between the slashes and its `i` and `s` flags.
+    pub source: Option<RegexSource>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegexSource {
+    pub src: Vec<u8>,
+    pub nocase: bool,
+    pub dotall: bool,
 }
 
 #[derive(Debug)]

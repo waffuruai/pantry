@@ -14,7 +14,7 @@ use crate::classify::{self, Os};
 use crate::matcher;
 use crate::modules::{self, Module};
 use crate::parser;
-use crate::pattern::{Node, Syntax};
+use crate::pattern::{self, Node, Syntax};
 use crate::scan::{Ctx, FileType};
 use crate::strings::{self, CompiledString};
 use crate::value::{FieldKind, FnCtx, StructType, Type, Value};
@@ -130,6 +130,10 @@ pub struct Compiler {
     /// Which rules to keep, by system and category; the rest are skipped.
     filter: Option<Filter>,
     skipped: usize,
+    /// How far a regex match may run, in bytes ([`strings::REGEX_REACH`] unless set).
+    regex_reach: usize,
+    /// Keep each regex string's capture groups ([`Rules::capture_tree`]).
+    keep_captures: bool,
 }
 
 type Filter = Box<dyn Fn(Os, &str) -> bool>;
@@ -152,7 +156,23 @@ impl Compiler {
             nslots: 0,
             filter: None,
             skipped: 0,
+            regex_reach: strings::REGEX_REACH,
+            keep_captures: false,
         }
+    }
+
+    /// How far a regex match may run from where it starts, for the rules added
+    /// after this. YARA's 4,096 bytes ([`strings::REGEX_REACH`]) by default; a
+    /// secret such as a private key block runs longer.
+    pub fn set_regex_reach(&mut self, bytes: usize) {
+        self.regex_reach = bytes;
+    }
+
+    /// Keep each regex string's capture groups for the rules added after
+    /// this, for [`Rules::capture_tree`]: callers that need what a group
+    /// matched (a secret scanner's secret) rather than whether it matched.
+    pub fn keep_captures(&mut self, keep: bool) {
+        self.keep_captures = keep;
     }
 
     /// Keep only the rules `keep(os, category)` accepts (this machine's
@@ -227,7 +247,14 @@ impl Compiler {
         let slots = cx.slots;
         let index = self.rules.len() as u32;
         for def in &rule.strings {
-            self.strings.push(strings::compile(def));
+            let mut compiled = strings::compile(def, self.regex_reach);
+            if self.keep_captures
+                && let Some(s) = &def.source
+            {
+                compiled.captures =
+                    pattern::parse_regex_groups(&s.src, s.nocase || def.mods.nocase, s.dotall, Syntax::Relaxed).ok();
+            }
+            self.strings.push(compiled);
             self.string_rule.push(index);
         }
         self.nslots = self.nslots.max(slots);

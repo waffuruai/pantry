@@ -285,7 +285,7 @@ fn affected_controls_fail_with_the_fix_osv_names() {
     assert_eq!(both, ["9.0.0", "9.0.5"]);
     // Every cached answer was used: nothing about these dependencies is unchecked.
     assert!(unchecked_repo_dependencies(&env).is_empty());
-    // Exit 1 for the fails above (a missing gitleaks on the runner is a `tool` fail, not ours).
+    // Exit 1 for the fails above (a tool missing on the runner is a `tool` fail, not ours).
     assert!(arr(&env["findings"]).iter().any(|f| f["status"] == "fail"));
     assert_eq!(code, 1);
 }

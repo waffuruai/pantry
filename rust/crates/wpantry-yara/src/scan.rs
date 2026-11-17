@@ -148,8 +148,37 @@ impl Ctx<'_> {
     }
 }
 
+/// Every verified match of every string, for callers that need more than
+/// each string's first ([`Rules::scan_spans`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Spans {
+    /// By global string id: `(start, len)`, sorted, at most one per start.
+    pub by_string: Vec<Vec<(usize, usize)>>,
+}
+
 impl Rules {
     pub fn scan(&self, data: &[u8], opts: &ScanOptions) -> ScanResult {
+        self.scan_spans(data, opts).0
+    }
+
+    /// A regex string's tree with its capture groups and how many, when the
+    /// compiler kept them ([`crate::Compiler::keep_captures`]).
+    pub fn capture_tree(&self, string: usize) -> Option<(&crate::pattern::Node, u32)> {
+        self.strings[string].captures.as_ref().map(|(n, g)| (n, *g))
+    }
+
+    /// The name of a string, without `$`.
+    pub fn string_name(&self, string: usize) -> &str {
+        &self.strings[string].id
+    }
+
+    /// The rule a global string id belongs to (an index into [`Rules::rules`]).
+    pub fn string_rule(&self, string: usize) -> usize {
+        self.string_rule[string] as usize
+    }
+
+    /// As [`Rules::scan`], with every match of every string kept.
+    pub fn scan_spans(&self, data: &[u8], opts: &ScanOptions) -> (ScanResult, Spans) {
         let ft = FileType::detect(data);
         let wanted = |string: u32| {
             let rule = &self.rules[self.string_rule[string as usize] as usize];
@@ -223,7 +252,8 @@ impl Rules {
                 .collect();
             out.matches.push(Hit { namespace: rule.namespace.clone(), rule: rule.name.clone(), index: i, strings });
         }
-        out
+        drop(ctx);
+        (out, Spans { by_string: matches })
     }
 }
 

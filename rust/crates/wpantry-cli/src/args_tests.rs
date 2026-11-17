@@ -232,6 +232,15 @@ fn check_options_and_their_errors() {
         "{}",
         usage(&["scan", "--secret-rules", "~/bad.yar"])
     );
+    // A rule whose $secret is text, not a regex, is refused, not a crash.
+    std::fs::write(&bad, "rule Any_Secret_Text { meta: category = \"secret\" id = \"text\" strings: $secret = \"abc\" condition: $secret }").unwrap();
+    assert!(
+        usage(&["scan", "--secret-rules", "~/bad.yar"]).contains("must be a regex"),
+        "{}",
+        usage(&["scan", "--secret-rules", "~/bad.yar"])
+    );
+    // 0.4's --gitleaks-config is still accepted, and ignored.
+    assert_eq!(scan(&["scan", "--gitleaks-config", "~/g.toml"]).secret_rules, None);
     assert_eq!(expand("~"), wpantry::utils::files::home());
     assert_eq!(expand("/x"), PathBuf::from("/x"));
     for (bad, msg) in [

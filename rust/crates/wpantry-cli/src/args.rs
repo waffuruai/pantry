@@ -258,6 +258,8 @@ fn scan_opts() -> Vec<Opt> {
         Opt::new("--no-input", "never prompt"),
         Opt::new("--jobs <n>", "repos scanned for secrets at once (default: half the cores, at most 4)"),
         Opt::new("--secret-rules <file>", "secret rules of your own, YARA, added to the bundled ones (default: secrets.yar in ~/.config/wpantry)"),
+        // Accepted for one release so scripts written for 0.4 still run.
+        Opt::new("--gitleaks-config <file>", "ignored: wpantry no longer runs gitleaks").hide(),
         Opt::new("--licenses [file]", "also check dependency licenses, against the file (default: licenses.toml in ~/.config/wpantry, else the bundled one)"),
         Opt::new("--install-scripts <file>", "install-script policy, TOML (default: install-scripts.toml in ~/.config/wpantry, else the bundled one)"),
         Opt::new("--repo-hooks <file>", "indicators of hijacked repos, TOML (default: repo-hooks.toml in ~/.config/wpantry, else the bundled one)"),
@@ -482,6 +484,11 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
     };
     let paths: Vec<PathBuf> = m.values("path").into_iter().map(expand).collect();
     c.path = (!paths.is_empty()).then_some(paths);
+    if m.value("gitleaks-config").is_some() {
+        eprintln!(
+            "wpantry: warning: --gitleaks-config is ignored: the secret scan runs Pantry's own rules (add yours with --secret-rules)"
+        );
+    }
     // Each policy: the file its option names, else the user's own in the
     // config folder (`~/.config/wpantry/<file>`), else the bundled default.
     for (name, file, slot) in [

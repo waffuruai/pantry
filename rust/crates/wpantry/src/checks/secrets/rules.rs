@@ -339,7 +339,9 @@ impl RuleSet {
             let mut c = compiler();
             c.add_source(&ns, &src, Syntax::Strict);
             let set = c.build();
-            let r = &set.rules()[0];
+            let Some(r) = set.rules().first() else {
+                return Err(Error::Invalid(format!("a secret rule in {ns} doesn't compile on its own")));
+            };
             let id = first(r, "id").ok_or_else(|| Error::Invalid(format!("secret rule {} has no id", r.name)))?;
             let rule = secret_rule(&set, r, usize::MAX, id)?;
             loose.push((rules.len(), set));
@@ -365,10 +367,15 @@ pub fn policy_error(path: &std::path::Path) -> Option<String> {
 }
 
 fn secret_rule(set: &Rules, r: &CompiledRule, index: usize, id: String) -> Result<SecretRule> {
-    let regex = r.strings.clone().find(|s| set.string_name(*s as usize) == "secret").map(|s| {
-        let (tree, groups) = set.capture_tree(s as usize).expect("kept captures");
-        (s as usize, tree.clone(), groups)
-    });
+    let regex = match r.strings.clone().find(|s| set.string_name(*s as usize) == "secret") {
+        None => None,
+        Some(s) => {
+            let (tree, groups) = set
+                .capture_tree(s as usize)
+                .ok_or_else(|| Error::Invalid(format!("secret rule {}: $secret must be a regex", r.name)))?;
+            Some((s as usize, tree.clone(), groups))
+        }
+    };
     let secret_group = first(r, "secret_group").map(|g| g.parse().unwrap_or(0)).unwrap_or(0);
     let specificity = first(r, "specificity").and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_SPECIFICITY);
     Ok(SecretRule {

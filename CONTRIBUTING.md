@@ -12,7 +12,7 @@ Start with the [README](README.md) for what Pantry is, [docs/public/architecture
 
 ## Open an issue first
 
-Even for small changes. The issue is where we agree on scope, surface related work and pick an approach; five minutes there saves a rewrite on the PR. Search [existing issues](https://github.com/waffuruai/pantry/issues?q=is%3Aissue) and the [roadmap](https://github.com/orgs/waffuruai/projects/1) first; it may already be planned or fixed on `dev`.
+Even for small changes. The issue is where we agree on scope, surface related work and pick an approach; five minutes there saves a rewrite on the PR. Search [existing issues](https://github.com/waffuruai/pantry/issues?q=is%3Aissue) and [specs/](specs/README.md) first; it may already be planned or fixed on `dev`.
 
 Use the [issue template](.github/ISSUE_TEMPLATE/issue.yml): tick the type (bug, feature, coverage, performance, discussion), give a minimal reproducer or the proposal, name the spec section and criteria it serves, and tick the AI-assistance boxes. Blank issues are turned off so every issue carries that metadata. A vulnerability in Pantry itself does not go in an issue: follow [SECURITY.md](SECURITY.md).
 

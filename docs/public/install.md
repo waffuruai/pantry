@@ -148,7 +148,16 @@ cargo install --locked wpantry-cli             # installs the `wpantry` binary
 
 - Builds from source with the exact dependencies in the published `Cargo.lock`; cargo checks each crate against the registry's checksums.
 - Needs a Rust toolchain and a C compiler (SQLite and ring are compiled in).
-- The library alone is the `wpantry` crate. Its API is `0.x`, so pin it with `=x.y.z`; the CLI contract is what stays stable.
+- The library alone is the `wpantry` crate (below).
+
+## As a crate
+
+```toml
+[dependencies]
+wpantry = { version = "=0.4.1" }
+```
+
+The library is what the binary is built on. `checks::Scan` runs a scan from a `checks::Options`, `db::Cache` is the local cache it reads and writes, `finding::Finding` is one row, and `reporters` render an outcome the way `wpantry report` does. It never prints and keeps no global state: progress and notes go to the callbacks you hand it. The crate's front page on [docs.rs](https://docs.rs/wpantry) has a worked example. Its API is `0.x`, so pin it exactly; what stays stable across versions is the [CLI contract](../../specs/cli-contract.md).
 
 ## From source
 

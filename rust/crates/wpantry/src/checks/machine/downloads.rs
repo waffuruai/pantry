@@ -33,6 +33,7 @@ pub(crate) fn downloads(scan: &mut Scan) {
     crate::checks::supply_chain::documents::clamav(scan, &files, "Downloads, Desktop and Documents");
 }
 
-#[cfg(test)]
+// The machine inventory doesn't run on Windows yet (#11).
+#[cfg(all(test, unix))]
 #[path = "downloads_tests.rs"]
 mod tests;

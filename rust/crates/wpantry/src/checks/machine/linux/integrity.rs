@@ -67,6 +67,7 @@ pub(super) const PATH_WRITABLE: Check = Check {
     explain: "Nobody can plant a command you'd run",
 };
 
-#[cfg(test)]
+// Linux and macOS checks: the machine inventory doesn't run on Windows (#11).
+#[cfg(all(test, unix))]
 #[path = "integrity_tests.rs"]
 mod tests;

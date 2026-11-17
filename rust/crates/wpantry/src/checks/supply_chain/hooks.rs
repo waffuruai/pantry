@@ -137,7 +137,8 @@ fn under(root: &Path, prefix: &str) -> bool {
     let root = crate::utils::files::command_path(root);
     let prefix = crate::utils::files::command_path(Path::new(&prefix));
     let starts = |p: &str| root == p || root.strip_prefix(p).is_some_and(|rest| rest.starts_with('/'));
-    starts(&prefix) || std::fs::canonicalize(&prefix).is_ok_and(|real| starts(&crate::utils::files::command_path(&real)))
+    starts(&prefix)
+        || std::fs::canonicalize(&prefix).is_ok_and(|real| starts(&crate::utils::files::command_path(&real)))
 }
 
 /// Indicators from the bundled list (`--repo-hooks FILE` replaces it).

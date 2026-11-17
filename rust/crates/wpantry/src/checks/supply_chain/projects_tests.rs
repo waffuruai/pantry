@@ -1,6 +1,8 @@
 use super::*;
+#[cfg(unix)]
 use crate::checks::Options;
 use crate::checks::supply_chain::testing;
+#[cfg(unix)]
 use crate::checks::supply_chain::testing::CARGO_LOCK;
 use crate::utils::temp::TempDir;
 

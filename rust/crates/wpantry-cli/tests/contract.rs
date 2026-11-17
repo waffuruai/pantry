@@ -12,7 +12,7 @@ use common::*;
 use rusqlite::types::Value as Sql;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use wpantry::utils::re::Regex;
 
 /// Python's truth value of a JSON value.
@@ -2063,7 +2063,7 @@ fn fix_sets_the_cooldown_in_each_editor() {
     assert!(r.out.contains("restart the editor"));
     // home/*/Code/User/settings.json and home/*/*/Code/User/settings.json
     let tail = Path::new("Code").join("User").join("settings.json");
-    let mut settings: Vec<PathBuf> = Vec::new();
+    let mut settings: Vec<std::path::PathBuf> = Vec::new();
     for a in names(&t.home) {
         let a = t.home.join(a);
         if a.join(&tail).exists() {

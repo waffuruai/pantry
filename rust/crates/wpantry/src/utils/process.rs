@@ -174,6 +174,7 @@ pub fn app_cli(app_names: &[&str], cli_rel: &str) -> String {
     String::new()
 }
 
-#[cfg(test)]
+// The tests run sh and fake executables by mode bit.
+#[cfg(all(test, unix))]
 #[path = "process_tests.rs"]
 mod tests;

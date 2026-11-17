@@ -1,13 +1,18 @@
 use super::*;
+#[cfg(unix)]
 use crate::checks::Options;
+#[cfg(unix)]
 use crate::checks::supply_chain::testing;
+#[cfg(unix)]
 use crate::checks::supply_chain::testing::CARGO_LOCK;
+#[cfg(unix)]
 use crate::utils::temp::TempDir;
 
 /// Lockfiles are read, their packages asked of OSV (a hit fails with
 /// the per-ecosystem fix), a package one keystroke from a popular one
 /// in the same lockfile fails as a typosquat, and a lockfile linking
 /// out of the repo is reported unchecked rather than read.
+#[cfg(unix)]
 #[test]
 fn projects_reads_the_lockfiles_and_reports_osv_hits() {
     let d = TempDir::new("projects").unwrap();
@@ -57,6 +62,12 @@ fn project_fixes_stay_manual_and_per_ecosystem() {
     assert_eq!(
         project_fix(Path::new("/w/butter/rust/Cargo.lock"), "crates.io", "webpki-roots", "1.0.10"),
         "cd /w/butter/rust && cargo update -p webpki-roots --precise 1.0.10"
+    );
+    // `Path` only splits `\` on Windows. The string form is tested in utils::files::command_path.
+    #[cfg(windows)]
+    assert_eq!(
+        project_fix(Path::new(r"\\?\C:\code\app\Cargo.lock"), "crates.io", "regex", "1.5.5"),
+        "cd C:/code/app && cargo update -p regex --precise 1.5.5"
     );
     assert_eq!(
         project_fix(Path::new("/w/docs/pnpm-lock.yaml"), "npm", "vite", "8.2.3"),
@@ -115,6 +126,6 @@ fn project_fixes_for_the_later_lockfiles() {
     std::fs::write(tmp.path().join("yarn.lock"), "# comment\n\n__metadata:\n  version: 8\n").unwrap();
     assert_eq!(
         project_fix(&tmp.path().join("yarn.lock"), "npm", "@scope/x", "1.0.1"),
-        format!("cd {} && yarn up @scope/x@1.0.1", quote(&tmp.path().to_string_lossy()))
+        format!("cd {} && yarn up @scope/x@1.0.1", quote(&command_path(tmp.path())))
     );
 }

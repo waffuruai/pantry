@@ -10,14 +10,27 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The first executable called `name` on PATH (Python: `shutil.which`).
+/// PATH's directories, in order, split as the platform does (`:` on unix,
+/// `;` on Windows); an empty entry stays "" (the current directory).
+pub fn path_dirs() -> Vec<String> {
+    match std::env::var_os("PATH") {
+        Some(p) => std::env::split_paths(&p).map(|d| d.to_string_lossy().into_owned()).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The first executable called `name` on PATH (Python: `shutil.which`). On
+/// Windows a bare name also matches `name.exe`, `.cmd` and `.bat`.
 pub fn which(name: &str) -> Option<PathBuf> {
-    if name.contains('/') {
+    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
         let p = PathBuf::from(name);
         return is_executable(&p).then_some(p);
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| is_executable(p))
+    let suffixes: &[&str] = if cfg!(windows) && !name.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    std::env::split_paths(&path)
+        .flat_map(|d| suffixes.iter().map(move |s| d.join(format!("{name}{s}"))))
+        .find(|p| is_executable(p))
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -131,7 +144,7 @@ pub fn run<S: AsRef<OsStr>>(argv: &[S], timeout: Duration) -> String {
 /// Every distinct executable called `name` on PATH, then in the `extra`
 /// directory globs, as (shown path, real path).
 pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
+    let mut dirs: Vec<String> = path_dirs();
     dirs.extend(expand(extra));
     let mut seen = Vec::new();
     let mut out = Vec::new();
@@ -161,6 +174,7 @@ pub fn app_cli(app_names: &[&str], cli_rel: &str) -> String {
     String::new()
 }
 
-#[cfg(test)]
+// The tests run sh and fake executables by mode bit.
+#[cfg(all(test, unix))]
 #[path = "process_tests.rs"]
 mod tests;

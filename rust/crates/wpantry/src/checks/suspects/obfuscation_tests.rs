@@ -123,3 +123,13 @@ fn table_paths() {
     assert!(table_path("assets/emoji.ts"));
     assert!(!table_path("src/app.js"));
 }
+
+#[test]
+fn escape_runs_skip_multibyte_characters_after_a_backslash() {
+    // Seen in the wild: a backslash followed by a combining mark or a
+    // replacement character, where byte slicing landed inside the character.
+    for text in ["a\\\u{334}b", "\\x\u{334}\u{334}", "\\u\u{FFFD}1", "\\\u{FFFD}", "\\x\u{E9}f \\u\u{1F600}"] {
+        assert_eq!(longest_escape_run(text).0, 0, "{text:?}");
+    }
+    assert_eq!(longest_escape_run("\\x41\\x42\\u00e9 \\x\u{E9}f").0, 3);
+}

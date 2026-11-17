@@ -388,7 +388,7 @@ impl Cache {
         self.set(&format!("persistence_at:{source}"), &at.to_string())
     }
 
-    // cached source runs (gitleaks, feeds, tags) ----------------------------
+    // cached source runs (secret scans, feeds, tags) ----------------------------
 
     /// (fingerprint, ran_at, result) for a source.
     pub fn run(&self, source: &str) -> Result<Option<(String, f64, Value)>> {

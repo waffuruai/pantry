@@ -1061,7 +1061,7 @@ fn suspect_code_fails_where_out_of_place_and_policy_downgrades() {
     write(&policy, "ids = [\"PRIV-ESCALATION\", \"WALLET-SIGNING\", \"CLIPBOARD-SWAP\"]\npaths = [\"index.html\"]\n");
     let r = scan_repo(&t, &repo, &["--suspect-policy", s(&policy)]);
     let env = r.json();
-    // A runner without gitleaks still fails on the missing tool: the exit follows what is left.
+    // A runner missing a tool still fails on it: the exit follows what is left.
     let failing = fails(&env);
     assert_eq!(r.code, if failing.is_empty() { 0 } else { 1 }, "{}", r.err);
     assert!(failing.iter().all(|f| f["kind"] == "tool"), "{failing:?}");
@@ -2122,7 +2122,7 @@ fn unfixed_critical_advisories_warn_in_check() {
     }
     let r = t.project_run("scan", &["--json"]);
     let env = envelope(&r.out);
-    // A runner without gitleaks fails on the missing tool; the advisory itself never does.
+    // A runner missing a tool fails on it; the advisory itself never does.
     assert_eq!(r.code, if any_fail(&env) { 1 } else { 0 }, "{}", r.out);
     let failing = fails(&env);
     assert_eq!(col(&failing, "kind"), vec!["tool"; failing.len()]);

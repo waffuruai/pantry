@@ -6,7 +6,7 @@
 //! the editor extensions, harness plugins and the breach check.
 //!
 //! One file per behaviour: `projects` (lockfiles against OSV), `typosquat`,
-//! `licenses`, `leaks` (gitleaks), `hooks`, `suspect_code`, `hidden_text`,
+//! `licenses`, `leaks` (secrets in history), `hooks`, `suspect_code`, `hidden_text`,
 //! `documents` (and ClamAV), `install_scripts`, `mptcp`, `images`,
 //! `extensions` (and what they bundle), `mcp` and `malicious` (the sweep);
 //! `repos` finds the repos. This file is the index: [`run`], in order.

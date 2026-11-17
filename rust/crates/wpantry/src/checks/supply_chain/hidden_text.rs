@@ -43,6 +43,7 @@ pub fn hidden_text(scan: &mut Scan, repos: &[Repo]) {
     }
 }
 
-#[cfg(test)]
+// Its one test is unix-only for now, as in #74.
+#[cfg(all(test, unix))]
 #[path = "hidden_text_tests.rs"]
 mod tests;

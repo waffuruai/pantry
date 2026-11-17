@@ -152,3 +152,22 @@ fn stamps_are_utc_dates() {
     assert_eq!(stamp(1_793_348_743.0), "2026-10-30 08:25 UTC");
     assert_eq!(civil_from_days(0), (1970, 1, 1));
 }
+
+#[test]
+fn a_personal_folder_exclusion_cannot_resolve_full_scan_exposures() {
+    let d = crate::utils::temp::TempDir::new("personal-scope").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let full = Options { machine: true, paths: Some(vec!["/r".into()]), ..Default::default() };
+    let background = Options { no_personal_files: true, ..full.clone() };
+    assert_eq!(scope_of(&full), "machine:/r");
+    assert_eq!(scope_of(&background), "machine:/r;no-personal-files");
+    // No machine pass means this flag changes no coverage.
+    let repos = Options { machine: false, ..background.clone() };
+    assert_eq!(scope_of(&repos), "repos:/r");
+    record_scan(&c, 1.0, &[finding("CVE-1", "fail")], &[], &full).unwrap();
+    record_scan(&c, 2.0, &[], &[], &background).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none());
+    record_scan(&c, 3.0, &[], &[], &full).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
+    c.close().unwrap();
+}

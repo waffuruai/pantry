@@ -2,6 +2,7 @@ use super::super::files::test_home;
 use super::super::temp::TempDir;
 use super::*;
 
+#[cfg(unix)]
 #[test]
 fn exec_captures_and_times_out() {
     let o = exec(
@@ -17,6 +18,7 @@ fn exec_captures_and_times_out() {
 
 /// A background process holding the pipes doesn't hold the call: not
 /// when the program is killed at the deadline, nor when it exits first.
+#[cfg(unix)]
 #[test]
 fn exec_deadline_covers_processes_left_holding_the_pipes() {
     for script in ["sleep 5 & wait", "sleep 5 &"] {
@@ -27,6 +29,7 @@ fn exec_deadline_covers_processes_left_holding_the_pipes() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn which_takes_a_path_as_given() {
     assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
@@ -59,6 +62,7 @@ fn on_path_lists_distinct_binaries_from_extra_dirs() {
     assert_eq!(realpath("/nonexistent/x"), "/nonexistent/x");
 }
 
+#[cfg(unix)]
 #[test]
 fn app_clis_live_in_applications() {
     let _home = test_home();
@@ -67,4 +71,21 @@ fn app_clis_live_in_applications() {
     std::fs::write(&cli, "").unwrap();
     assert_eq!(app_cli(&["Wpantry Missing", "Wpantry Test"], "bin/cli"), cli.display().to_string());
     assert_eq!(app_cli(&["Wpantry Missing"], "bin/cli"), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pipe_hands_over_each_line_and_ends_at_its_deadline() {
+    let mut got = Vec::new();
+    let printf = [OsStr::new("printf"), OsStr::new("a\\nbb\\n")];
+    pipe_lines(&printf, &[OsStr::new("cat")], Duration::from_secs(10), |l| got.push(l.to_vec())).unwrap();
+    assert_eq!(got, [b"a".to_vec(), b"bb".to_vec()]);
+    let sleep = [OsStr::new("sleep"), OsStr::new("10")];
+    let started = Instant::now();
+    let e = pipe_lines(&sleep, &[OsStr::new("cat")], Duration::from_millis(200), |_| {}).unwrap_err();
+    assert!(e.to_string().contains("timed out"), "{e}");
+    assert!(started.elapsed() < Duration::from_secs(5), "both are killed at the deadline");
+    assert!(
+        pipe_lines(&[OsStr::new("/no/such/program")], &[OsStr::new("cat")], Duration::from_secs(1), |_| {}).is_err()
+    );
 }

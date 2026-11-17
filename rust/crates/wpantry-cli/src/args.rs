@@ -105,10 +105,16 @@ pub struct Check {
     pub no_malware: bool,
     /// `--deep`: the malware scan reads all of `~` with every system's rules.
     pub deep: bool,
+    /// `--no-personal-files`: leave Downloads, Desktop and Documents out of
+    /// the document and malware passes (not with `--deep`).
+    pub no_personal_files: bool,
     /// `--no-online-hash`: never look up a flagged file's hash online.
     pub no_online_hash: bool,
     /// `--sources FILE`: the user's sources file for this run.
     pub sources: Option<PathBuf>,
+    /// `--allow-sleep` (or `WPANTRY_ALLOW_SLEEP=1`): let the machine sleep
+    /// during the scan.
+    pub allow_sleep: bool,
 }
 
 /// What `fix list` and `fix ID` act on.
@@ -121,6 +127,9 @@ pub enum Target {
 }
 
 #[derive(Debug, PartialEq)]
+// `Scan` carries every check option; the other commands take a few fields.
+// One value is built per process, so the size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// `scan`, or `fix` (all): `fix` is set.
     Scan(Check),
@@ -262,6 +271,11 @@ fn scan_opts() -> Vec<Opt> {
         ),
         Opt::new("--deep", "the malware scan reads everything under ~ with every system's rules (slower)"),
         Opt::new(
+            "--no-personal-files",
+            "leave Downloads, Desktop and Documents out of the document and malware passes, reported as not checked (for unattended runs)",
+        )
+        .conflicts(&["deep"]),
+        Opt::new(
             "--no-online-hash",
             "never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked once otherwise)",
         ),
@@ -269,6 +283,7 @@ fn scan_opts() -> Vec<Opt> {
             "--sources <file>",
             "your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)",
         ),
+        Opt::new("--allow-sleep", "let the Mac idle-sleep during the scan (kept awake otherwise; or WPANTRY_ALLOW_SLEEP=1)"),
     ]);
     opts
 }
@@ -456,8 +471,11 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
         no_posture: m.flag("no-posture"),
         no_malware: m.flag("no-malware"),
         deep: m.flag("deep"),
+        no_personal_files: m.flag("no-personal-files"),
         no_online_hash: m.flag("no-online-hash"),
         sources: m.value("sources").map(expand),
+        allow_sleep: m.flag("allow-sleep")
+            || std::env::var("WPANTRY_ALLOW_SLEEP").is_ok_and(|v| !v.is_empty() && v != "0"),
         show: show(m)?,
         jobs: at_least_one::<usize>(m, "jobs", "a number of 1 or more")?,
         ..Default::default()

@@ -68,6 +68,7 @@ fn replace_keeps_the_old_binary_and_rolls_back() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn release_assets_per_platform() {
     assert_eq!(asset_for("macos", "aarch64").unwrap(), "wpantry-universal-apple-darwin");

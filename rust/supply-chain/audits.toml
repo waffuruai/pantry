@@ -7,11 +7,23 @@ criteria = "safe-to-deploy"
 delta = "0.38.2 -> 0.39.1"
 notes = "build.rs: bundled-sqlcipher moves to the optional sqlcipher-src crate (not pulled in by the bundled feature), SQLITE_ENABLE_MEMORY_MANAGEMENT dropped, rerun-if-env-changed for the prefixed env vars, bindgen 0.73 and syn 3 only under buildtime_bindgen or loadable_extension. The bundled sqlite3.c is the official 3.54.1 amalgamation: its SHA3-256 e2b869d3003b33c942b7dd7063604fbc53553e1b66609570df39b9b7b558ee81 matches sqlite.org's release log for 3.54.1 (2026-10-16)."
 
+[[audits.libsqlite3-sys]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.39.1 -> 0.40.0"
+notes = "Read the source diff: the version, sqlcipher-src =419.0.6 to =420.0.0 (an optional build dependency only under bundled-sqlcipher, not enabled), the README, and the pregenerated SQLCipher bindings (not used by bundled). build.rs and the sqlite3/ directory are byte-identical to 0.39.1. The bundled sqlite3.c, sqlite3.h and sqlite3ext.h are byte-identical to those in sqlite-amalgamation-3540100.zip downloaded from sqlite.org, whose SHA3-256 92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30 matches the sqlite.org download page; sqlite3.c's SHA3-256 e2b869d3003b33c942b7dd7063604fbc53553e1b66609570df39b9b7b558ee81 matches the 3.54.1 release log (2026-10-16)."
+
 [[audits.rusqlite]]
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "0.40.2 -> 0.41.0"
 notes = "Read the source diff (edition 2024, so most hunks wrap existing unsafe in blocks). Hooks, busy handler and authorizer now live in sqlite3_set_clientdata, fixing the use-after-free in #1899; wpantry enables none of those features. ZeroBlob and set_result use the 64-bit SQLite calls; column accessors return iterators; modern_sqlite gates dropped with the 3.45.3 minimum. No build script, no new dependency for wpantry (bundled only)."
+
+[[audits.rusqlite]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.41.0 -> 0.42.0"
+notes = "Read the source diff. Slices from SQLite pointers now go through util::from_raw_parts, which returns an empty slice for a zero or negative length instead of calling slice::from_raw_parts on a possibly null pointer (statement and ValueRef column text and blob, the session, vtab and unlock_notify callbacks). set_clientdata resets the hook when sqlite3_set_clientdata fails, and each hook and the busy handler is installed without its callback when the client data is null, so an out-of-memory can't leave SQLite calling into freed data. Without extra_check, pragma names are checked as identifiers instead of against pragma_pragma_list; pragma_query_one added. New codec feature (sqlite3_key_v2/rekey_v2 for SQLCipher), functions and vtab argument access moved into a shared Values/RawValue type, and the session conflict callback takes a reference: all behind features wpantry does not enable (it uses bundled and the default cache). The wasm dependencies move to libsqlite3-sys 0.40.0 and sqlite-wasm-rs 0.6.3. No build script (build = false), no new native dependencies; no process, env, network or filesystem access added outside tests."
 
 [[audits.serde_json]]
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
@@ -24,6 +36,18 @@ who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "3.4.2 -> 3.5.0"
 notes = "Read the source diff. Per-read and per-write timeouts, TLS handshake I/O bounded by the remaining connect budget, Agent::shutdown, EINTR retry on socket reads, proxy credentials decoded once, header_raw. The SOCKS rewrite is behind socks-proxy, which wpantry does not enable; the socks dependency is gone. The rustls connector and RootCerts::PlatformVerifier path are unchanged apart from the clock passed to the transport adapter. Minimum rustls is 0.23.46, the version wpantry pins. No unsafe, no process, env or filesystem access added."
+
+[[audits.ureq]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "3.5.0 -> 3.5.1"
+notes = "Read the source diff. The Cookie header now carries only each cookie's name and value, '; '-separated (cookies feature, which wpantry does not enable). On macOS a set_read_timeout rejected with InvalidInput after the peer closes is tolerated and the cached timeout left unchanged, so the response can still be read; other errors and other platforms still fail. The ureq-proto bump to 0.7.1 and a doc comment on BodyWithConfig::limit; the rest is tests. No change to TLS, the rustls connector or the platform verifier path; no new dependencies, build script or unsafe; no process, env or filesystem access added."
+
+[[audits.ureq-proto]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.6.5 -> 0.7.1"
+notes = "Read the source diff (0.6.5 to 0.7.1, through 0.7.0). Response header names now go through HeaderName::from_bytes and an invalid or over-long one is a parse error, where before it reached a Response builder .expect(): a hostile header could panic the client. A redirect without Content-Length or Transfer-Encoding is now read close-delimited instead of as bodiless and the connection is not reused, so leftover bytes can't be read as the next response; the opt-in partial-redirect workaround proceeds at once with no body and closes. Connections close after an HTTP/1.0 response without keep-alive, a client-set Connection: close and a successful CONNECT. Transfer-Encoding chunked is found in lists and repeated headers. Server side (not enabled for wpantry, client feature only): conflicting Content-Length and Transfer-Encoding rejected, HEAD and 304 may carry representation headers. No new dependencies, build script or unsafe; no process, env or filesystem access."
 
 [[audits.wcli]]
 who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"

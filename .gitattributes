@@ -1,0 +1,4 @@
+# One line ending on every platform. The binary embeds many of these files
+# (include_str!: the skill, the default policies, the YARA rules, the report
+# viewer), and a Windows checkout would otherwise build them in with CRLF.
+* text=auto eol=lf

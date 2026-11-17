@@ -111,6 +111,9 @@ fn cmd_scan(a: Check) -> Result<i32> {
     if let Some(path) = &a.show.out {
         drop(Output::new(path)?);
     }
+    if !a.allow_sleep {
+        wpantry::utils::process::stay_awake();
+    }
     let net = wpantry::utils::net::Http::new();
     let quiet = quiet(&a.show);
     let opts = Options {
@@ -121,6 +124,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         deep: a.deep,
         no_online_hash: a.no_online_hash,
         sources: a.sources.clone(),
+        no_personal_files: a.no_personal_files,
         policy: Policy {
             gitleaks_config: a.gitleaks_config.clone(),
             licenses: a.licenses.clone(),
@@ -413,6 +417,8 @@ fn cmd_report(show: &Show) -> Result<i32> {
         Shown::Md => wpantry::reporters::render(&cache, &report, Format::Md)?,
         Shown::Html => wpantry::reporters::render(&cache, &report, Format::Html)?,
     };
+    // A report saved where the malware scan looks is known as Pantry's own.
+    wpantry::reporters::remember(&cache, &text)?;
     cache.close()?;
     match &show.out {
         Some(path) => {

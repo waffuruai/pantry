@@ -10,14 +10,27 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The first executable called `name` on PATH (Python: `shutil.which`).
+/// PATH's directories, in order, split as the platform does (`:` on unix,
+/// `;` on Windows); an empty entry stays "" (the current directory).
+pub fn path_dirs() -> Vec<String> {
+    match std::env::var_os("PATH") {
+        Some(p) => std::env::split_paths(&p).map(|d| d.to_string_lossy().into_owned()).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The first executable called `name` on PATH (Python: `shutil.which`). On
+/// Windows a bare name also matches `name.exe`, `.cmd` and `.bat`.
 pub fn which(name: &str) -> Option<PathBuf> {
-    if name.contains('/') {
+    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
         let p = PathBuf::from(name);
         return is_executable(&p).then_some(p);
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| is_executable(p))
+    let suffixes: &[&str] = if cfg!(windows) && !name.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    std::env::split_paths(&path)
+        .flat_map(|d| suffixes.iter().map(move |s| d.join(format!("{name}{s}"))))
+        .find(|p| is_executable(p))
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -131,7 +144,7 @@ pub fn run<S: AsRef<OsStr>>(argv: &[S], timeout: Duration) -> String {
 /// Every distinct executable called `name` on PATH, then in the `extra`
 /// directory globs, as (shown path, real path).
 pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
+    let mut dirs: Vec<String> = path_dirs();
     dirs.extend(expand(extra));
     let mut seen = Vec::new();
     let mut out = Vec::new();
@@ -161,6 +174,72 @@ pub fn app_cli(app_names: &[&str], cli_rel: &str) -> String {
     String::new()
 }
 
-#[cfg(test)]
+// The tests run sh and fake executables by mode bit.
+#[cfg(all(test, unix))]
 #[path = "process_tests.rs"]
 mod tests;
+
+/// `first | second`, each from an argument vector, with stdin closed and
+/// `NO_COLOR=1`: `each` gets every line `second` prints as it comes, so an
+/// output of any size costs only what `each` keeps. Both are killed at
+/// `timeout`. An error only when either can't start, or at the deadline.
+pub fn pipe_lines(first: &[&OsStr], second: &[&OsStr], timeout: Duration, mut each: impl FnMut(&[u8])) -> Result<()> {
+    use std::io::BufRead;
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+    let start = |argv: &[&OsStr], stdin: Stdio| -> Result<std::process::Child> {
+        let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
+        let mut cmd = Command::new(prog);
+        cmd.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
+        spawn(&mut cmd).map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))
+    };
+    let mut a = start(first, Stdio::null())?;
+    let into = Stdio::from(a.stdout.take().expect("piped stdout"));
+    let mut b = match start(second, into) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = a.kill();
+            let _ = a.wait();
+            return Err(e);
+        }
+    };
+    let out = b.stdout.take().expect("piped stdout");
+    let (tx, rx) = sync_channel::<Vec<u8>>(1024);
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).split(b'\n') {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + timeout;
+    let result = loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => each(&line),
+            Err(RecvTimeoutError::Disconnected) => break Ok(()),
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = (a.kill(), b.kill());
+                let prog = first.first().map(|p| p.to_string_lossy()).unwrap_or_default();
+                break Err(Error::Failed(format!("{prog} timed out after {}s", timeout.as_secs())));
+            }
+        }
+    };
+    let _ = (a.wait(), b.wait());
+    result
+}
+
+/// Keep the machine from sleeping while this process runs: a first scan
+/// can take an hour, and a Mac left alone sleeps through it. macOS's
+/// `caffeinate` holds the assertion and ends with us (`-w`); elsewhere,
+/// and when it can't start, nothing happens.
+pub fn stay_awake() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/caffeinate")
+            .args(["-i", "-w", &std::process::id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}

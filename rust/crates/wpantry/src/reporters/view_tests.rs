@@ -107,3 +107,28 @@ fn osv_malicious_records_rank_with_malware() {
     crit.kev = true;
     assert!(rank(&mal) < rank(&crit));
 }
+
+#[test]
+fn a_package_is_one_row_across_the_lockfiles_that_lock_it() {
+    let at = |version: &str, location: &str| Finding {
+        version: version.into(),
+        location: location.into(),
+        ..f("project", "fsevents", "MAL-2023-462", "fail")
+    };
+    let all = vec![
+        at("1.2.9", "/a/package-lock.json"),
+        at("1.2.9", "/b/yarn.lock"),
+        at("1.2.9", "/a/package-lock.json"),
+        at("1.2.4", "/c/package-lock.json"),
+    ];
+    let v = view(&all);
+    let rows = &v.areas[0].rows;
+    assert_eq!(rows.len(), 2, "one row per version");
+    assert_eq!((rows[0].version, rows[0].places.as_slice()), ("1.2.9", &["/a/package-lock.json", "/b/yarn.lock"][..]));
+    assert_eq!(rows[0].findings.len(), 3);
+    assert_eq!(rows[0].places_text(str::to_string), "/a/package-lock.json and 1 more");
+    assert_eq!(rows[1].places_text(str::to_string), "/c/package-lock.json");
+    let hook = |location: &str| Finding { location: location.into(), ..f("repo-hook", "~/code/app", "HOOK", "warn") };
+    let hooks = vec![hook("/a/.vscode/tasks.json"), hook("/b/.vscode/tasks.json")];
+    assert_eq!(view(&hooks).areas[0].rows.len(), 2, "other kinds keep a row per place");
+}

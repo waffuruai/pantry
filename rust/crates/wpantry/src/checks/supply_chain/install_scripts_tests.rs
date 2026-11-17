@@ -1,8 +1,14 @@
 use super::*;
+// For the one unix-only test, which fakes npm with a shell script.
+#[cfg(unix)]
 use crate::checks::Options;
+#[cfg(unix)]
 use crate::checks::supply_chain::testing;
+#[cfg(unix)]
 use crate::utils::net::Fake;
+#[cfg(unix)]
 use crate::utils::temp::TempDir;
+#[cfg(unix)]
 use serde_json::json;
 
 fn allows(lines: &[&str]) -> Vec<Allow> {

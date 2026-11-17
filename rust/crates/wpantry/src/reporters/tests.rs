@@ -35,6 +35,17 @@ fn staging_preserves_previous_report_and_cleans_up() {
 /// A scan, read back from the cache, renders as it ran: the counts in the
 /// order counted, the totals, the stored scope; the history only when asked.
 #[test]
+fn written_reports_are_remembered_by_hash() {
+    let d = crate::utils::temp::TempDir::new("written").unwrap();
+    let cache = Cache::open(Some(&d.path().join("c.db"))).unwrap();
+    remember(&cache, "<html>a</html>").unwrap();
+    remember(&cache, "<html>a</html>").unwrap();
+    let w = written(&cache).unwrap();
+    assert_eq!(w.len(), 1);
+    assert!(w.contains(&crate::utils::sha256::hex(b"<html>a</html>")));
+}
+
+#[test]
 fn the_latest_scan_reads_back_as_it_was() {
     let d = crate::utils::temp::TempDir::new("report").unwrap();
     let cache = Cache::open(Some(&d.path().join("c.db"))).unwrap();

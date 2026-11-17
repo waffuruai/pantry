@@ -64,11 +64,8 @@ fn findings(t: &mut String, v: &View, r: &Report) {
         t.push_str("| | Component | Version | Advisory | Severity | CVSS | EPSS | Why | Fix |\n|---|---|---|---|---|---|---|---|---|\n");
         for row in &a.rows {
             let mark = if row.fails { "✗" } else { "⚠" };
-            let name = if row.location.is_empty() {
-                row.name.clone()
-            } else {
-                format!("{} ({})", row.name, short(row.location))
-            };
+            let places = row.places_text(|p| short(p).to_string());
+            let name = if places.is_empty() { row.name.clone() } else { format!("{} ({places})", row.name) };
             let mut ids = row.ids.first().map(|i| i.to_string()).unwrap_or_default();
             if row.ids.len() > 1 {
                 ids.push_str(&format!(" +{}", row.ids.len() - 1));

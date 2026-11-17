@@ -96,7 +96,12 @@ fn path_from(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
     if let Some(p) = var("WPANTRY_DB") {
         return p;
     }
-    let base = var("XDG_CACHE_HOME").unwrap_or_else(|| var("HOME").unwrap_or_default().join(".cache"));
+    // Windows: %LOCALAPPDATA%\wpantry\wpantry.db, unless HOME or
+    // XDG_CACHE_HOME says otherwise (the contract suite sets HOME).
+    let base = var("XDG_CACHE_HOME")
+        .or_else(|| var("HOME").map(|h| h.join(".cache")))
+        .or_else(|| if cfg!(windows) { var("LOCALAPPDATA") } else { None })
+        .unwrap_or_else(|| PathBuf::from(".cache"));
     base.join("wpantry").join("wpantry.db")
 }
 
@@ -137,6 +142,7 @@ impl Cache {
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::history::SCHEMA)?;
+        conn.execute_batch(crate::reporters::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::SCHEMA)?;
         conn.execute_batch(crate::checks::files::cache::SCHEMA)?;
         conn.execute_batch(crate::sources::fetch::SCHEMA)?;

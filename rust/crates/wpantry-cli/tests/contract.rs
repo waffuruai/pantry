@@ -1,12 +1,10 @@
 //! The CLI contract (specs/cli-contract.md), tested from the outside: run the
 //! built binary with a temp HOME and cache, offline, and check only its
 //! stdout, stderr, exit codes and cache file. Every implementation must pass
-//! (specs/cli-contract.md). The contract holds where wpantry ships: macOS
-//! and Linux.
+//! (specs/cli-contract.md). The contract holds where wpantry ships: macOS,
+//! Linux and Windows (the repo checks; a machine scan there is unchecked).
 //!
 //!     cargo test -p wpantry-cli --test contract [--release]
-
-#![cfg(unix)]
 
 mod common;
 
@@ -14,7 +12,7 @@ use common::*;
 use rusqlite::types::Value as Sql;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use wpantry::utils::re::Regex;
 
 /// Python's truth value of a JSON value.
@@ -233,6 +231,8 @@ fn exit_2_on_usage_errors() {
         vec!["mitigate"],
         vec!["fix", "--dryrun"],
         vec!["scan", "--license"],
+        vec!["scan", "--deep", "--no-personal-files"],
+        vec!["fix", "--no-personal-files", "--deep"],
     ] {
         let r = t.run(&argv);
         assert_eq!(r.code, 2, "{argv:?}");
@@ -245,6 +245,7 @@ fn exit_2_on_usage_errors() {
         let r = t.run(&[cmd, "--help"]);
         assert_eq!(r.code, 0, "{cmd}");
         assert!(r.out.starts_with(&format!("Usage: {} {cmd} [options]", name())), "{}", r.out);
+        assert_eq!(r.out.contains("--no-personal-files"), cmd != "report", "{cmd}");
     }
 }
 
@@ -267,7 +268,11 @@ fn no_arguments_print_the_help() {
 #[test]
 fn exit_3_when_the_cache_cant_be_opened() {
     let t = Ctx::new();
-    let env = [("WPANTRY_DB", "/dev/null/w.db")];
+    // A path under a regular file can't be created on any platform.
+    let blocker = t.tmp.join("not-a-dir");
+    write(&blocker, "");
+    let db = blocker.join("w.db");
+    let env = [("WPANTRY_DB", s(&db))];
     let r = t.run_env(&["search", "x"], &env);
     assert_eq!(r.code, 3);
     assert!(r.err.contains(&format!("{}:", name())), "{}", r.err);
@@ -421,9 +426,12 @@ fn html_is_opt_in_and_preserves_old_file_on_scan_error() {
     assert_eq!(names(&t.home).iter().filter(|n| n.ends_with(".html")).count(), 0);
     let path = t.home.join("report.html");
     write(&path, "previous report");
+    let blocked = t.tmp.join("cache-is-file");
+    write(&blocked, "not a directory");
+    let db = blocked.join("w.db");
     let r = t.run_env(
         &["scan", "--no-machine", "--path", s(&t.home), "--offline", "--html", "-o", s(&path)],
-        &[("WPANTRY_DB", "/dev/null/w.db")],
+        &[("WPANTRY_DB", s(&db))],
     );
     assert_eq!(r.code, 3);
     assert_eq!(read(&path), "previous report");
@@ -519,7 +527,8 @@ fn hooks_policy_accepts_a_reviewed_hook_until_its_command_changes() {
     assert!(fix_cmd.ends_with(r#"command = "node bin/postinstall --quiet" }"#), "{fix_cmd}");
     assert!(!env["checked"].as_object().unwrap().contains_key("repo hooks accepted by policy"));
     // A `repos` entry accepts every warning under that path.
-    write(&policy, format!("repos = [\"{}\"]\n", t.home.display()));
+    // A TOML literal string, so a Windows path's `\` stays a separator.
+    write(&policy, format!("repos = ['{}']\n", t.home.display()));
     let env = scan_repo(&t, &repo, &["--hooks-policy", s(&policy)]).json();
     assert!(of_kind(&env, "repo-hook").is_empty(), "{}", env["findings"]);
     assert_eq!(env["checked"]["repo hooks accepted by policy"], 1, "{}", env["checked"]);
@@ -547,7 +556,16 @@ fn posture_flags() {
     // Repo-only scans never report the machine's settings.
     let r = t.project_run("scan", &["--json"]);
     assert!(of_kind(&r.json(), "posture").is_empty());
-    let r = t.run(&["scan", "--no-machine", "--no-posture", "--offline", "--no-input", "--path", s(&t.home)]);
+    let r = t.run(&[
+        "scan",
+        "--no-machine",
+        "--no-posture",
+        "--no-personal-files",
+        "--offline",
+        "--no-input",
+        "--path",
+        s(&t.home),
+    ]);
     assert_eq!(r.code, 0, "{}", r.err);
     let policy = t.home.join("posture.toml");
     write(&policy, "skip = [\"remote-login\", \"POSTURE-FILEVAULT\"]\n");
@@ -852,6 +870,7 @@ fn mitigate_errors_for_an_advisory_nothing_is_known_about() {
 #[test]
 fn mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias() {
     let t = Ctx::new();
+    let (ok, bad) = if cfg!(windows) { ("cmd /c exit 0", "cmd /c exit 1") } else { ("true", "false") };
     t.project_run("scan", &[]);
     {
         let conn = t.conn();
@@ -884,7 +903,7 @@ fn mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias() {
                 0,
                 "HIGH",
                 "demo bug (fixed in 1.0.1)",
-                "true",
+                ok,
                 1,
                 "",
                 None,
@@ -904,7 +923,7 @@ fn mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias() {
                 0,
                 "HIGH",
                 "another bug",
-                "false",
+                bad,
                 1,
                 "",
                 None,
@@ -915,21 +934,21 @@ fn mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias() {
     let r = t.run(&["fix", "cve-2020-99999", "--dry-run"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     assert!(r.out.contains("CVE-2020-99999: 1 finding in the last scan (demo 1.0.0)"), "{}", r.out);
-    assert!(r.out.contains("would run: true"));
-    assert!(!r.out.contains("false"), "only the advisory asked about");
+    assert!(r.out.contains(&format!("would run: {ok}")), "{}", r.out);
+    assert!(!r.out.contains(bad), "only the advisory asked about");
     let r = t.run(&["fix", "GHSA-demo", "--yes"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert!(r.out.contains("→ true"));
+    assert!(r.out.contains(&format!("→ {ok}")), "{}", r.out);
     let rows: Vec<(String, String, i64)> = {
         let conn = t.conn();
         let mut st = conn.prepare("SELECT command, mode, ok FROM fixes").unwrap();
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(|r| r.unwrap()).collect()
     };
-    assert_eq!(rows, [("true".to_string(), "mitigate".to_string(), 1)]);
+    assert_eq!(rows, [(ok.to_string(), "mitigate".to_string(), 1)]);
     // a fix that fails: exit 1
     let r = t.run(&["fix", "GHSA-other", "--yes"]);
     assert_eq!(r.code, 1, "{}{}", r.out, r.err);
-    assert!(r.out.contains("failed: false"));
+    assert!(r.out.contains(&format!("failed: {bad}")), "{}", r.out);
 }
 
 /// CVE-2026-98432's stopgap: on Linux --dry-run reports the kernel,
@@ -1417,8 +1436,8 @@ fn default_scope_walks_home_and_prunes() {
     ] {
         git_repo(&h.join(pruned), false);
     }
-    let outside = git_repo(&t.tmp.join("outside"), false);
-    std::os::unix::fs::symlink(outside, h.join("link")).unwrap(); // symlinks are not followed
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(git_repo(&t.tmp.join("outside"), false), h.join("link")).unwrap(); // symlinks are not followed
     let r = t.run(&["scan", "--no-machine", "--offline", "--json"]);
     assert_eq!(envelope(&r.out)["checked"]["git repos"], 3);
 }
@@ -2042,6 +2061,8 @@ fn watch_without_a_known_mitigation_says_to_keep_checking() {
     assert!(r.out.contains("1 advisories watched, 0 with a fix now"), "{}", r.out);
 }
 
+// The editor settings are read from macOS and Linux homes only.
+#[cfg(unix)]
 #[test]
 fn fix_sets_the_cooldown_in_each_editor() {
     let t = Ctx::new(); // XDG_CONFIG_HOME is already unset
@@ -2055,7 +2076,7 @@ fn fix_sets_the_cooldown_in_each_editor() {
     assert!(r.out.contains("restart the editor"));
     // home/*/Code/User/settings.json and home/*/*/Code/User/settings.json
     let tail = Path::new("Code").join("User").join("settings.json");
-    let mut settings: Vec<PathBuf> = Vec::new();
+    let mut settings: Vec<std::path::PathBuf> = Vec::new();
     for a in names(&t.home) {
         let a = t.home.join(a);
         if a.join(&tail).exists() {

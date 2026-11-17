@@ -17,7 +17,7 @@ wpantry [-h] [-V]
 wpantry scan [--path DIR]... [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]
              [--gitleaks-config FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
              [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
-             [--no-online-hash] [--sources FILE]
+             [--no-online-hash] [--sources FILE] [--no-personal-files] [--allow-sleep]
 wpantry fix [list|all|ID] [--dry-run] [--yes] [--undo] [--bundle FILE] [--hours N] [the scan's options]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry report [findings|history|exposure|remediation|audit|summary|all] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS]
@@ -65,8 +65,10 @@ Removed 2026-11-05: wpantry scans files and never touches the clipboard. The `cl
 | `--no-posture`, `--posture-policy FILE` | The machine's own security settings (kind `posture`) run with the machine inventory; `--no-posture` skips them, the policy file lists check ids to skip (`skip = [ids]`, `POSTURE-` prefix optional) |
 | `--no-malware` | Skip the malware scan (kind `malware`): YARA rules over the top two levels of Downloads, Desktop and the temp directories, the programs launch items start, and the executables in the repos. Added 2026-11-04 |
 | `--deep` | The malware scan reads everything under `$HOME` (twelve levels, the repo walk's pruned directories skipped) with every system's rules, not only this system's and any system's. Added 2026-11-04 |
+| `--no-personal-files` | On a machine scan, leave `~/Downloads`, `~/Desktop` and `~/Documents` out of the document and ClamAV pass and out of the malware scan's targets, before those folders are opened (on macOS, opening them can wait on a permission prompt); one `unchecked` finding, `Personal documents and images`, says so. The temp directories, what persists, the repos and the repo walk are unchanged: it is not a filesystem exclusion. A usage error with `--deep`, which reads everything under `$HOME`. With a machine scan the history scope includes `;no-personal-files`, so such a scan resolves no exposure a full one found; the HTML scope records `personal_files`. Added 2026-11-06 |
 | `--no-online-hash` | Never look up a flagged file's SHA-256 online. Otherwise, after one yes (asked once on a terminal, kept in the cache as `online_hash_consent`), the SHA-256 of each file the malware scan flagged (at most 50 a scan), and nothing else about it, goes to YARAify and CIRCL hashlookup, and to MalwareBazaar when `ABUSECH_AUTH_KEY` is set. A malware verdict makes the finding `fail`, Critical, and its note names the source and family; a known-good answer is noted on a heuristic `warn`. A source that can't be reached is `unchecked`. Added 2026-11-04 |
 | `--sources FILE` | The user's sources file for this run, in place of `~/.config/wpantry/sources.toml` (`$XDG_CONFIG_HOME/wpantry/sources.toml`), which is read when it exists (`specs/design/sources-file.md`). It may set a bundled source's `tier` (`default`, `deep`, `off`: an `off` source isn't asked, and what needs it is `unchecked`), and add sources of its own: YARA rules, hash, host and file-name lists, an OSV-compatible API (asked beside OSV.dev), or a hash lookup that sends only a SHA-256. A source of the user's whose host wpantry doesn't already ask, or that sends anything, is used only after a yes, asked once on a terminal and kept by its id and URL; without one it is `unchecked`. Each used is counted as `user source <id>`. A file that can't be used leaves the bundled sources in effect and is `unchecked`. Added 2026-11-05 |
+| `--allow-sleep` | Let the machine idle-sleep during the scan. Otherwise, on macOS, the scan holds an idle-sleep assertion (`/usr/bin/caffeinate -i -w PID`) that ends with it; elsewhere nothing changes. `WPANTRY_ALLOW_SLEEP=1` does the same. Added 2026-11-06 |
 | `rules` | The YARA rule sources the malware scan uses (ours, built in; YARA Forge's `full` package, fetched into `rules/` beside the cache at most daily; any `.yar` you put there), how many compile and how many are for this system; `--update` fetches YARA Forge now (exit 1 when it can't); `--json` as `{directory, sources: [{source, rules}], rules, this_system, rejected, update_failed}`. Added 2026-11-04 |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `report --jsonl` | Latest findings as JSON Lines, one object per finding: every [finding](#finding) key, plus `aliases` (the record's other ids), `url`, `record` (the full OSV JSON, or `null`), `first_seen`, `last_seen`, `resolved_at` (`YYYY-MM-DD HH:MM UTC` strings, `null` when unknown or open), `days_exposed` and `fix` (`null`, or `{attempted_at, mode, ok, verified, succeeded}` for the latest `fix` run of its `fix_cmd`). `report exposure --jsonl` (or `history`, `all`) adds the exposures a later scan of the same scope resolved and the latest scan no longer lists. `--csv` and `--jsonl` may be given together; one is required |
@@ -87,6 +89,10 @@ Removed 2026-11-05: wpantry scans files and never touches the clipboard. The `cl
 
 The default scope walks `$HOME` to depth 6 without following symlinks and only looks at directory entries. A directory with a `.git` directory is a repo and is not descended into. A `.git` file (linked worktree, submodule) ends the descent and counts only when it is the `--path` itself. Pruned by name: `.git`, `node_modules`, `target`, `.build`, `vendor`, `.cache`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, `.next`, `Library`, `.Trash`, `.rustup`, `.npm`, `.pnpm-store`, any `*.app`; by path: `go/pkg`, `.cargo/registry`, `.cargo/git`, `.local/share`. The count lands in `checked["git repos"]`.
 
+## Platforms
+
+macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 0.5.0): the repo checks (`scan --no-machine`: lockfiles, secrets, install scripts, images, MCP servers), `search`, `report`, `version`, `tools`, `skill` and `breach`, with the same output as on Linux for the same repo. A machine scan on Windows reports one `unchecked` finding (`machine inventory on Windows`) and nothing else about the machine: winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet. Locations and `fix_cmd` paths are printed without the `\\?\` prefix that Windows `canonicalize` adds. `~` is `HOME`, else `USERPROFILE`; the cache default is `%LOCALAPPDATA%\wpantry\wpantry.db` when neither `XDG_CACHE_HOME` nor `HOME` is set. PATH is split as the platform does, and a tool name also matches its `.exe`, `.cmd` or `.bat`.
+
 ## Environment
 
 | Variable | Effect |
@@ -95,6 +101,7 @@ The default scope walks `$HOME` to depth 6 without following symlinks and only l
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
 | `WPANTRY_NO_UPDATE_CHECK` | Set to anything: `scan` never mentions a newer wpantry release |
+| `WPANTRY_ALLOW_SLEEP` | `1` (anything but empty or `0`): as `--allow-sleep` |
 | `WPANTRY_TIMINGS` | Set to anything: every scan step is printed to stderr with the seconds since the scan began (for finding slow steps; not under `--json`) |
 | `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
 
@@ -139,7 +146,7 @@ With `-o FILE`, the parent must exist. Output is staged beside the destination (
 | `unknown_licenses` | int | Repo dependencies with no identifiable license; 0 unless `--licenses` |
 | `findings` | array of Finding | Everything that applies, failing or warning |
 
-The optional HTML presentation bundle preserves the scan envelope unchanged. It additionally records `scan_id` (the local history entry), generation phase and scope: machine, offline, licenses, posture, paths, posture exclusions, suspicious-code warning exemptions, and policy file choices. These presentation fields do not alter schema 1 on stdout. The HTML viewer accepts current and older schema-1 scan JSON plus findings CSV; history reports and lifecycle JSONL are separate formats.
+The optional HTML presentation bundle preserves the scan envelope unchanged. It additionally records `scan_id` (the local history entry), generation phase and scope: machine, offline, licenses, posture, personal files, paths, posture exclusions, suspicious-code warning exemptions, and policy file choices. These presentation fields do not alter schema 1 on stdout. The HTML viewer accepts current and older schema-1 scan JSON plus findings CSV; history reports and lifecycle JSONL are separate formats.
 
 ### Finding
 

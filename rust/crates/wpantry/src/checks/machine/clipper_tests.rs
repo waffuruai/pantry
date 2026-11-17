@@ -53,7 +53,7 @@ fn launch_agents_that_clip_are_found_and_managers_are_not() {
     let (found, read) = persistence_in(home, &[agents.clone(), home.join("missing")]);
     assert_eq!(read, 5, "every item but Apple's, missing directories skipped");
     let items: Vec<(&str, bool, bool)> =
-        found.iter().map(|p| (p.item.rsplit('/').next().unwrap(), p.hard, p.odd_place)).collect();
+        found.iter().map(|p| (p.item.rsplit(['/', '\\']).next().unwrap(), p.hard, p.odd_place)).collect();
     assert_eq!(
         items,
         [

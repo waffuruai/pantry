@@ -27,6 +27,7 @@ By default Pantry checks the machine and every git repo under your home director
 
 - `--path DIR` checks only the repos at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks.
 - `--no-machine` skips the machine: repo checks only.
+- `--no-personal-files` leaves `~/Downloads`, `~/Desktop` and `~/Documents` unopened: the document pass and the malware scan skip them, and the report says they weren't checked. For unattended runs, where macOS would otherwise wait on a folder-permission prompt. Not with `--deep`.
 
 What a run couldn't check is reported "not checked", never clean.
 
@@ -222,7 +223,7 @@ See [upgrade](install.md#upgrade).
 
 ```json
 {
- "schema": 1, "impl": "rust", "version": "0.4.0",
+ "schema": 1, "impl": "rust", "version": "0.5.0",
  "checked": {"git repos": 12, "project dependencies": 1820},
  "unfixed": 3, "unknown_licenses": 0,
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
@@ -263,6 +264,7 @@ Source by source: [what is sent](checks-and-sources.md#sources). Every request n
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
 | `WPANTRY_TIMINGS` | Print each scan step's elapsed time on stderr |
+| `WPANTRY_ALLOW_SLEEP` | `1`: let the Mac idle-sleep during a scan, as `--allow-sleep` does |
 | `NO_COLOR` | Turn colour off. Colour is only ever used on a terminal |
 | `HTTPS_PROXY` | Send requests through the proxy |
 
@@ -351,10 +353,14 @@ Options:
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules
                             (slower)
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
+                            WPANTRY_ALLOW_SLEEP=1)
   -h, --help                print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
@@ -418,10 +424,14 @@ Options:
                             items and repo programs)
   --deep                    the malware scan reads everything under ~ with every system's rules
                             (slower)
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
+                            WPANTRY_ALLOW_SLEEP=1)
   -h, --help                print this help
 
 Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage
@@ -678,5 +688,5 @@ Options:
 
 - **Everything is "not checked"**: you're offline, or a proxy blocks `api.osv.dev`. Re-run online, or `--offline` to use what's cached.
 - **`gitleaks` MISSING**: install it (`brew install gitleaks`, or see its README); the secret scan can't run without it.
-- **It's slow on the first run**: the first run downloads advisories and clones the malicious-package index; later runs read only what changed. `--path` and `--no-machine` narrow a run.
+- **It's slow on the first run**: the first run downloads advisories, clones the malicious-package index and reads every repo's git history for secrets; later runs read only what changed. On macOS a scan keeps the Mac from idle sleep (`caffeinate`) until it ends (`--allow-sleep` or `WPANTRY_ALLOW_SLEEP=1` turns that off); closing the lid still sleeps it. `--path` and `--no-machine` narrow a run.
 - **A finding is wrong**: open an issue with a minimal reproducer (never paste a real report; see [CONTRIBUTING.md](../../CONTRIBUTING.md)). Security reports go through [SECURITY.md](../../SECURITY.md).

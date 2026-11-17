@@ -1,9 +1,11 @@
 use super::*;
 #[cfg(unix)]
 use crate::checks::Options;
+#[cfg(unix)]
 use crate::checks::supply_chain::testing;
 #[cfg(unix)]
 use crate::checks::supply_chain::testing::CARGO_LOCK;
+#[cfg(unix)]
 use crate::utils::temp::TempDir;
 
 /// Lockfiles are read, their packages asked of OSV (a hit fails with

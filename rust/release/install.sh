@@ -174,4 +174,4 @@ case ":$PATH:" in
   *":$dir:"*) ;;
   *) warn "$dir is not on PATH: add it to your shell profile (export PATH=\"$dir:\$PATH\")" ;;
 esac
-say "Run: ${bold}$NAME check${reset}"
+say "Run: ${bold}$NAME scan${reset}"

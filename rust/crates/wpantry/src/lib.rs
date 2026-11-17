@@ -6,7 +6,32 @@
 //! The library has no global state and never prints: progress goes through
 //! the `log` callback a [`checks::Scan`] is given, and the CLI owns stdout,
 //! stderr and exit codes. The stable surface is the CLI
-//! contract (`specs/cli-contract.md`), not this crate's API.
+//! contract (`specs/cli-contract.md`), not this crate's API: pin the crate
+//! exactly (`wpantry = { version = "=x.y.z" }`).
+//!
+//! A program of its own scans with the types the binary uses: say what to
+//! cover in a [`checks::Options`], open the [`db::Cache`], hand
+//! [`checks::Scan`] the network and the callbacks its messages go to, and
+//! read the [`finding::Finding`]s back. The [`reporters`] render an
+//! [`checks::Outcome`] the way `wpantry report` does.
+//!
+//! ```no_run
+//! use wpantry::checks::{Options, Scan};
+//! use wpantry::db::Cache;
+//! use wpantry::utils::net::Http;
+//!
+//! fn main() -> Result<(), wpantry::Error> {
+//!     // One repository, no machine inventory; `..Options::default()` is `wpantry scan`'s defaults.
+//!     let opts = Options { paths: Some(vec!["/path/to/a/repo".into()]), ..Options::default() };
+//!     let net = Http::new();
+//!     let quiet = |_: &str| {};
+//!     let out = Scan::new(opts, Cache::open(None)?, &net, &quiet, &quiet).run()?;
+//!     for f in &out.findings {
+//!         println!("{} {} {} {} {}", f.status, f.kind, f.component, f.version, f.vuln_id);
+//!     }
+//!     Ok(())
+//! }
+//! ```
 
 pub mod checks;
 pub mod component;

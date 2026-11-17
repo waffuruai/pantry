@@ -74,7 +74,7 @@ pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
 /// Every Python on PATH or installed by a version manager, as (shown path,
 /// real path), without the ones the OS or a package manager vouches for.
 fn find_pythons() -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').map(str::to_string).collect();
+    let mut dirs: Vec<String> = crate::utils::process::path_dirs();
     dirs.extend(expand(PYTHON_DIRS));
     let minor = Regex::new(r"python3\.\d+");
     let mut names: Vec<String> = dirs

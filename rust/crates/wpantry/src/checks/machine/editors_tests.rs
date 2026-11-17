@@ -40,6 +40,7 @@ fn node_modules_nested_too_deep_are_left_alone() {
 
 /// Extensions on disk count only for an installed editor, and the
 /// `.obsolete` list (what the editor will remove) is skipped.
+#[cfg(unix)]
 #[test]
 fn extensions_of_installed_editors() {
     let home = files::test_home();

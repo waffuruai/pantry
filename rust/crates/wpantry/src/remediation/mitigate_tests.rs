@@ -121,6 +121,20 @@ fn apply_writes_the_rule_the_unit_and_the_sysctl_after_a_yes() {
 }
 
 #[test]
+fn a_host_without_nft_is_skipped_unless_asked_and_then_named() {
+    let no_nft: Vec<_> = EXPOSED.iter().copied().filter(|(k, _)| *k != "nft --version").collect();
+    let host = Fake::new(&no_nft);
+    // `wpantry fix --no-input` without --yes: skipped, not failed
+    let (done, _) = run(&host, Mode::Apply, false);
+    assert_eq!(done, Done::Declined);
+    // with a yes the missing tool is the error, and nothing is written
+    let err =
+        (stopgap(CVE).unwrap().run)(&host, &Settings::default(), Mode::Apply, &|_| true, &mut |_| {}).unwrap_err();
+    assert!(err.to_string().contains("install nftables"), "{err}");
+    assert!(host.did().is_empty(), "{:?}", host.did());
+}
+
+#[test]
 fn a_fixed_kernel_needs_nothing_and_other_hosts_are_not_here() {
     let fixed =
         Fake::new(&[("uname -s", "Linux\n"), ("uname -r", "6.12.113\n"), ("id -u", "0\n"), ("nft list ruleset", "")]);

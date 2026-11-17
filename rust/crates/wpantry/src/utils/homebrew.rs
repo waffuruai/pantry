@@ -79,6 +79,7 @@ fn brew_casks_in(prefix: Option<PathBuf>, brew: Option<&Path>) -> BTreeMap<Strin
     out
 }
 
-#[cfg(test)]
+// Casks are symlinks; Homebrew runs on macOS and Linux.
+#[cfg(all(test, unix))]
 #[path = "homebrew_tests.rs"]
 mod tests;

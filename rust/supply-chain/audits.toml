@@ -25,6 +25,18 @@ criteria = "safe-to-deploy"
 delta = "3.4.2 -> 3.5.0"
 notes = "Read the source diff. Per-read and per-write timeouts, TLS handshake I/O bounded by the remaining connect budget, Agent::shutdown, EINTR retry on socket reads, proxy credentials decoded once, header_raw. The SOCKS rewrite is behind socks-proxy, which wpantry does not enable; the socks dependency is gone. The rustls connector and RootCerts::PlatformVerifier path are unchanged apart from the clock passed to the transport adapter. Minimum rustls is 0.23.46, the version wpantry pins. No unsafe, no process, env or filesystem access added."
 
+[[audits.ureq]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "3.5.0 -> 3.5.1"
+notes = "Read the source diff. The Cookie header now carries only each cookie's name and value, '; '-separated (cookies feature, which wpantry does not enable). On macOS a set_read_timeout rejected with InvalidInput after the peer closes is tolerated and the cached timeout left unchanged, so the response can still be read; other errors and other platforms still fail. The ureq-proto bump to 0.7.1 and a doc comment on BodyWithConfig::limit; the rest is tests. No change to TLS, the rustls connector or the platform verifier path; no new dependencies, build script or unsafe; no process, env or filesystem access added."
+
+[[audits.ureq-proto]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.6.5 -> 0.7.1"
+notes = "Read the source diff (0.6.5 to 0.7.1, through 0.7.0). Response header names now go through HeaderName::from_bytes and an invalid or over-long one is a parse error, where before it reached a Response builder .expect(): a hostile header could panic the client. A redirect without Content-Length or Transfer-Encoding is now read close-delimited instead of as bodiless and the connection is not reused, so leftover bytes can't be read as the next response; the opt-in partial-redirect workaround proceeds at once with no body and closes. Connections close after an HTTP/1.0 response without keep-alive, a client-set Connection: close and a successful CONNECT. Transfer-Encoding chunked is found in lists and repeated headers. Server side (not enabled for wpantry, client feature only): conflicting Content-Length and Transfer-Encoding rejected, HEAD and 304 may carry representation headers. No new dependencies, build script or unsafe; no process, env or filesystem access."
+
 [[audits.wcli]]
 who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
 criteria = "safe-to-deploy"

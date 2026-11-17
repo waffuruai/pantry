@@ -246,8 +246,13 @@ mod tests {
     #[test]
     fn through_runs_the_owning_tool_when_it_is_here() {
         assert_eq!(through(&["wpantry-no-such-tool", "upgrade", "wpantry"]).unwrap(), EXIT_FAIL);
-        assert_eq!(through(&["false"]).unwrap(), EXIT_FAIL);
-        assert_eq!(through(&["true"]).unwrap(), EXIT_OK);
+        if cfg!(windows) {
+            assert_eq!(through(&["cmd", "/c", "exit", "1"]).unwrap(), EXIT_FAIL);
+            assert_eq!(through(&["cmd", "/c", "exit", "0"]).unwrap(), EXIT_OK);
+        } else {
+            assert_eq!(through(&["false"]).unwrap(), EXIT_FAIL);
+            assert_eq!(through(&["true"]).unwrap(), EXIT_OK);
+        }
     }
 
     #[test]

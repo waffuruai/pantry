@@ -330,7 +330,7 @@ pub fn install_guard(dry_run: bool) -> Result<i32> {
     }
     say(&format!(
         "  It reads the clipboard four times a second and never writes it; a copied wallet address that becomes a different one is an alert in {}, a desktop notification and a `clipper` event in `wpantry report --audit`.",
-        p.state.join("clipboard.log").display()
+        wpantry::system::command_path(&p.state.join("clipboard.log"))
     ));
     say("  Two addresses of one chain you copied yourself within two seconds raise the same alert; the alert says so.");
     Ok(EXIT_OK)
@@ -602,7 +602,7 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
 /// exit, which only `--once` gives, is left alone), low priority, its
 /// alerts in `clipboard.log`.
 pub fn guard_plist(program: &Path, p: &Paths) -> String {
-    let out = xml_escape(&p.state.join("clipboard.log").to_string_lossy());
+    let out = xml_escape(&wpantry::system::command_path(&p.state.join("clipboard.log")));
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -630,13 +630,13 @@ pub fn guard_plist(program: &Path, p: &Paths) -> String {
 /// session (the clipboard tools need `DISPLAY` or `WAYLAND_DISPLAY`, which
 /// the desktop imports into the user manager), restarted on failure.
 pub fn guard_unit(program: &Path, p: &Paths) -> String {
-    let log = p.state.join("clipboard.log");
+    let log = wpantry::system::command_path(&p.state.join("clipboard.log"));
     format!(
         "[Unit]\nDescription=wpantry: clipboard guard (alerts when a copied wallet address is swapped)\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n[Service]\nType=simple\nExecStart={} clipboard --watch\nRestart=on-failure\nRestartSec=60\nNice=10\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=graphical-session.target\n",
         program.display(),
         std::env::var("PATH").unwrap_or_default(),
-        log.display(),
-        log.display(),
+        log,
+        log,
     )
 }
 

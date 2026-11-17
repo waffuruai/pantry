@@ -156,7 +156,7 @@ pub fn scan_repo(root: &Path) -> Vec<Exposure> {
     for (dir, files) in repos::walk(root, WALK_DEPTH) {
         for name in files {
             let path = dir.join(&name);
-            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+            let rel = crate::system::command_path(path.strip_prefix(root).unwrap_or(&path));
             if skipped(&rel) {
                 continue;
             }

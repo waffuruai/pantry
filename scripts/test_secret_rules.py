@@ -38,6 +38,16 @@ class BundleTests(unittest.TestCase):
         cases = tomllib.loads(tests)["case"]
         self.assertEqual([c["name"] for c in cases], ["a", "b"])
 
+    def test_the_notice_names_the_commit_and_carries_pantry_rules_own(self):
+        (self.root / "NOTICE").write_text("betterleaks' licence: MIT\n")
+        text = secret_rules.notice(self.root, "abc123")
+        self.assertIn("at abc123", text)
+        self.assertTrue(text.endswith("betterleaks' licence: MIT\n"))
+
+    def test_a_checkout_without_a_notice_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            secret_rules.notice(self.root, "abc123")
+
     def test_a_checkout_without_rules_is_an_error(self):
         with self.assertRaises(SystemExit):
             secret_rules.bundle(pathlib.Path(self.dir.name) / "missing", "x")

@@ -2,8 +2,9 @@
 
 rust/crates/wpantry/assets/secrets/rules.yar is compiled into wpantry, so the secret scan works
 offline: it is every rules/any/secret/*.yar of a pantry-rules checkout, in file-name order, under
-a header naming the commit. Their test cases go to rust/crates/wpantry/tests/secret-cases.toml,
-which wpantry's tests run through the scanner. Standard library only:
+a header naming the commit, with pantry-rules' NOTICE (betterleaks' licence) beside it as NOTICE.
+Their test cases go to rust/crates/wpantry/tests/secret-cases.toml, which wpantry's tests run
+through the scanner. Standard library only:
 
     python3 scripts/secret_rules.py PANTRY_RULES_CHECKOUT
 """
@@ -17,6 +18,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RULES = ROOT / "rust/crates/wpantry/assets/secrets/rules.yar"
+NOTICE = RULES.parent / "NOTICE"
 CASES = ROOT / "rust/crates/wpantry/tests/secret-cases.toml"
 SOURCE = "rules/any/secret"
 
@@ -42,15 +44,26 @@ def bundle(checkout: pathlib.Path, sha: str) -> tuple[str, str]:
     return text, tests
 
 
+def notice(checkout: pathlib.Path, sha: str) -> str:
+    """The NOTICE that ships beside rules.yar: what it is, then pantry-rules' own NOTICE."""
+    own = checkout / "NOTICE"
+    if not own.is_file():
+        raise SystemExit(f"no NOTICE in {checkout}: the rules' licences must ship with them")
+    return (f"rules.yar is {SOURCE} of pantry-rules (https://github.com/waffuruai/pantry-rules) at {sha},\n"
+            "vendored by scripts/secret_rules.py. pantry-rules' NOTICE:\n\n" + own.read_text())
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("checkout", type=pathlib.Path, help="a pantry-rules checkout")
     args = ap.parse_args(argv)
-    text, tests = bundle(args.checkout, commit(args.checkout))
+    sha = commit(args.checkout)
+    text, tests = bundle(args.checkout, sha)
     RULES.parent.mkdir(parents=True, exist_ok=True)
     RULES.write_text(text)
+    NOTICE.write_text(notice(args.checkout, sha))
     CASES.write_text(tests)
-    print(f"wrote {RULES.relative_to(ROOT)} and {CASES.relative_to(ROOT)}")
+    print(f"wrote {RULES.relative_to(ROOT)}, its NOTICE and {CASES.relative_to(ROOT)}")
     return 0
 
 

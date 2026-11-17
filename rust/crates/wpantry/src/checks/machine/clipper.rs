@@ -116,14 +116,20 @@ pub(crate) fn item_dirs(home: &Path) -> Vec<PathBuf> {
     item_dirs_for(home, cfg!(target_os = "macos"))
 }
 
+/// Whether `program` is one of the interpreters, by file name (`python3.12` is `python`).
+fn is_interpreter(program: &Path) -> bool {
+    let name = program.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    INTERPRETERS.iter().any(|i| base == i.trim_end_matches(|c: char| c.is_ascii_digit()))
+}
+
 /// The file whose contents say what the item does: the script an
 /// interpreter is given, else the program itself.
 pub(crate) fn program_file(argv: &[String]) -> Option<PathBuf> {
     let first = argv.first()?;
-    let base = Path::new(first).file_name().and_then(OsStr::to_str).unwrap_or(first);
-    let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    let interpreter = INTERPRETERS.iter().any(|i| base == i.trim_end_matches(|c: char| c.is_ascii_digit()));
-    if interpreter && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_file()) {
+    if is_interpreter(Path::new(first))
+        && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_file())
+    {
         return Some(PathBuf::from(script));
     }
     let p = if first.contains('/') { PathBuf::from(first) } else { process::which(first)? };
@@ -195,7 +201,12 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
             read += 1;
             let program = program_file(&argv);
             let mut text = argv.join(" ");
+            // An interpreter's own binary says nothing about the item, and a large one
+            // (python3 with libpython linked in, as on arm64 Debian and Ubuntu) carries
+            // clipboard and address-shaped strings of its own. With no script file to
+            // read, the command line is all there is.
             if let Some(p) = &program
+                && !is_interpreter(p)
                 && let Ok(bytes) = files::read_capped_bytes(p, MAX_PROGRAM)
             {
                 text.push('\n');

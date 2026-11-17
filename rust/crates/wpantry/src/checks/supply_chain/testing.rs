@@ -12,7 +12,7 @@ use crate::utils::process;
 use crate::utils::temp::TempDir;
 use serde_json::{Value, json};
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 /// A scan over a temporary cache. The malware scan is off: it would
@@ -37,7 +37,7 @@ pub(crate) fn write(root: &Path, rel: &str, text: impl AsRef<[u8]>) {
 
 /// An executable script.
 #[cfg(unix)]
-pub(crate) fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+pub(crate) fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let p = dir.join(name);
     std::fs::write(&p, body).unwrap();

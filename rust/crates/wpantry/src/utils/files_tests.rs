@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(unix)]
 #[test]
 fn capped_reads_refuse_devices_and_oversize() {
     let dir = TempDir::new("read").unwrap();
@@ -42,6 +43,14 @@ fn owners() {
     assert_eq!(owner("/home/u/.npm-global/lib/node_modules/x/bin/x"), "npm");
     assert_eq!(owner("/Applications/Slack.app/Contents/MacOS/Slack"), "app");
     assert_eq!(owner("/home/u/.local/bin/mise"), "");
+}
+
+#[test]
+fn command_paths_drop_the_verbatim_prefix() {
+    assert_eq!(command_path(Path::new(r"\\?\C:\code\app")), "C:/code/app");
+    assert_eq!(strip_verbatim(r"\\?\UNC\server\share\app"), r"\\server\share\app");
+    assert_eq!(command_path(Path::new("/w/butter/rust")), "/w/butter/rust");
+    assert_eq!(short(r"\\?\C:\keep"), r"C:\keep");
 }
 
 #[test]

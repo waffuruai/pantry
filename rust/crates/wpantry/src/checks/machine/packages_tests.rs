@@ -1,6 +1,7 @@
 use super::*;
 use crate::utils::temp;
 
+#[cfg(unix)] // `npm link` symlinks
 #[test]
 fn global_packages_reads_npm_root() {
     let d = crate::utils::temp::TempDir::new("npmroot").unwrap();
@@ -62,14 +63,18 @@ fn installed_distributions_from_metadata() {
         "the first of a name on the path wins; nothing without a version"
     );
     assert_eq!(gaps.len(), 2, "metadata without a version, and a dist-info without metadata: {gaps:?}");
+    let gaps: Vec<String> = gaps.iter().map(|g| g.replace('\\', "/")).collect();
     assert!(gaps[0].contains("broken.dist-info/METADATA: no Version"), "{gaps:?}");
     assert!(gaps[1].contains("half-1.0.dist-info/METADATA"), "{gaps:?}");
 }
 
 /// The probe lists the base interpreter's site-packages for a venv made
 /// with `--system-site-packages`, and not otherwise, on every Python
-/// here (from 3.14 a venv is `sys.prefix` even under `-S`).
+/// here (from 3.14 a venv is `sys.prefix` even under `-S`). A Windows
+/// venv keeps its interpreter under `Scripts\` and its site under
+/// `Lib\`; the machine inventory doesn't run there yet (#11).
 #[test]
+#[cfg(unix)]
 fn the_probe_lists_the_sites_a_venv_inherits() {
     let d = temp::TempDir::new("venvs").unwrap();
     let mut pythons: Vec<String> = which("python3").into_iter().map(|p| p.display().to_string()).collect();
@@ -138,6 +143,7 @@ fn script(dir: &Path, name: &str, body: &str) -> String {
 /// The probe's JSON for each interpreter becomes a runtime and its
 /// packages; interpreters that resolve to the same file are one; a
 /// probe that fails is skipped; what couldn't be read is reported.
+#[cfg(unix)]
 #[test]
 fn pythons_from_probe_answers() {
     let home = files::test_home();

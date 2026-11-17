@@ -255,12 +255,14 @@ fn longest_escape_run(text: &str) -> (usize, usize) {
         let mut rest = line;
         while let Some(i) = rest.find('\\') {
             let after = &rest[i + 1..];
-            let len = if after.starts_with('x')
-                && after.len() >= 3
-                && after[1..3].chars().all(|c| c.is_ascii_hexdigit())
-            {
+            // `get` is None off a character boundary, so a multi-byte character
+            // right after the backslash is just not an escape.
+            let hex = |range: std::ops::Range<usize>| {
+                after.get(range).is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
+            };
+            let len = if after.starts_with('x') && hex(1..3) {
                 3
-            } else if after.starts_with('u') && after.len() >= 5 && after[1..5].chars().all(|c| c.is_ascii_hexdigit()) {
+            } else if after.starts_with('u') && hex(1..5) {
                 5
             } else {
                 run = 0;

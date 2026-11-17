@@ -121,6 +121,9 @@ pub enum Target {
 }
 
 #[derive(Debug, PartialEq)]
+// `Scan` carries every check option; the other commands take a few fields.
+// One value is built per process, so the size gap costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// `scan`, or `fix` (all): `fix` is set.
     Scan(Check),

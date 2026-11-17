@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::Mutex;
 use wpantry::utils::files::test_home;
+#[cfg(unix)]
 use wpantry::utils::temp::TempDir;
 
 fn p() -> Paths {
@@ -61,6 +62,7 @@ fn the_lock_is_exclusive_and_stale_locks_are_taken() {
     drop(taken);
 }
 
+#[cfg(unix)]
 #[test]
 fn words_escapes_and_every_spelling() {
     assert_eq!(Every::parse("hour"), Some(Every::Hour));

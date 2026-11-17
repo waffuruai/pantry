@@ -123,5 +123,6 @@ pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-#[cfg(test)]
+// Its one test fakes tools with shell scripts.
+#[cfg(all(test, unix))]
 mod tests;

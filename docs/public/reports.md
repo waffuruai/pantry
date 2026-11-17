@@ -8,6 +8,8 @@
 | `wpantry report all` | The logs with the findings |
 | `wpantry report summary` | One page over all of them |
 
+In the terminal, Markdown and HTML reports, a dependency at one version is one row across every lockfile that locks it (`and 8 more`); JSON and CSV keep a finding per lockfile.
+
 Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; the report is a file you keep or hand to an auditor, a CSO or an insurer.
 
 ![Every report comes from one cache: the SQLite file's tables (vulns and queries, findings, scans, exposures, fixes, events) feed wpantry scan and fix, wpantry report (the findings in the terminal or as JSON, JSON Lines, CSV, Markdown or HTML), report history and its exposure, remediation and audit logs, report summary, the HTML report, and search](../images/reports.png)

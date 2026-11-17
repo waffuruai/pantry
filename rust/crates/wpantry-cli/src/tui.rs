@@ -209,8 +209,9 @@ fn area_lines(area: &Area, width: usize, out: &mut Vec<Line>) {
         out.push(line);
         // Under it: where it is, and why it's listed.
         let mut why = String::new();
-        if !row.location.is_empty() {
-            why.push_str(&short(row.location));
+        let places = row.places_text(|p| short(p).to_string());
+        if !places.is_empty() {
+            why.push_str(&places);
             why.push_str(" · ");
         }
         if row.kev {

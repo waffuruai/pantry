@@ -8,6 +8,11 @@
 //! is gone (history rewritten). Findings are redacted: the cache and the
 //! report hold the rule, file, line, commit and fingerprint, never the
 //! secret.
+//!
+//! Files over [`MAX_MB`] are skipped in history as they are in a folder:
+//! gitleaks' `--max-target-megabytes` only applies to folders, and one
+//! data set committed a few times (a 400 MB JSON file, a CSV dump) is
+//! hours of regexes. [`big_files`] marks them binary for `git log -p`.
 
 use crate::checks::Scan;
 use crate::checks::supply_chain::GITLEAKS_INSTALL;
@@ -20,6 +25,7 @@ use crate::utils::files::short;
 use crate::utils::json::{self, str_at};
 use crate::utils::parallel;
 use crate::utils::process::exec;
+use crate::utils::process::pipe_lines;
 use crate::utils::process::run;
 use crate::utils::process::which;
 use crate::utils::temp::TempDir;
@@ -29,6 +35,58 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+
+/// The largest file read, in history or in a folder, in megabytes.
+pub const MAX_MB: u64 = 10;
+
+/// The blobs over [`MAX_MB`] that `revs` reach (`--all`, less the
+/// remembered tips), as a gitattributes file marking each path binary
+/// (`-diff`): `git log -p` prints "Binary files differ" for them instead
+/// of their text, and gitleaks reads nothing of them. "" when there are
+/// none, or git can't list them in time (gitleaks then reads them all).
+pub fn big_files(repo: &Path, revs: &[String]) -> String {
+    let mut list: Vec<&OsStr> =
+        vec!["git".as_ref(), "-C".as_ref(), repo.as_os_str(), "rev-list".as_ref(), "--objects".as_ref()];
+    list.extend(revs.iter().map(OsStr::new));
+    let check: [&OsStr; 5] = [
+        "git".as_ref(),
+        "-C".as_ref(),
+        repo.as_os_str(),
+        "cat-file".as_ref(),
+        "--batch-check=%(objecttype) %(objectsize) %(rest)".as_ref(),
+    ];
+    let mut paths = BTreeSet::new();
+    let listed = pipe_lines(&list, &check, Duration::from_secs(300), |line| {
+        let mut parts = line.splitn(3, |&b| b == b' ');
+        let (Some(b"blob"), Some(size), Some(path)) = (parts.next(), parts.next(), parts.next()) else { return };
+        let big = std::str::from_utf8(size).ok().and_then(|s| s.parse::<u64>().ok()).is_some_and(|s| s > MAX_MB << 20);
+        if big && !path.is_empty() {
+            paths.insert(attr_pattern(path));
+        }
+    });
+    if listed.is_err() {
+        return String::new();
+    }
+    paths.into_iter().map(|p| p + " -diff\n").collect()
+}
+
+/// `path` as a gitattributes pattern anchored at the repo's root: each run
+/// of bytes a pattern would read specially (spaces, globs, quotes, any
+/// non-ASCII) is `*`, which never crosses a `/` and can only mark more.
+fn attr_pattern(path: &[u8]) -> String {
+    let mut out = String::from("/");
+    let mut wild = false;
+    for &b in path {
+        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/') {
+            out.push(b as char);
+            wild = false;
+        } else if !wild {
+            out.push('*');
+            wild = true;
+        }
+    }
+    out
+}
 
 /// Rules too broad to fail on their own: their hits are reviewed, not trusted.
 pub const GENERIC: &[&str] =
@@ -215,6 +273,7 @@ pub fn stale(job: &Job, refresh: bool, offline: bool) -> bool {
 pub fn run_job(job: &Job) -> Result<Value> {
     let dir = TempDir::new("gitleaks")?;
     let report = dir.path().join("report.json");
+    let max_mb = MAX_MB.to_string();
     let nice = which("nice");
     let mut argv: Vec<&OsStr> = Vec::new();
     if let Some(n) = &nice {
@@ -231,7 +290,7 @@ pub fn run_job(job: &Job) -> Result<Value> {
         "--exit-code".as_ref(),
         "0".as_ref(),
         "--max-target-megabytes".as_ref(),
-        "10".as_ref(),
+        max_mb.as_ref(),
         "--report-format".as_ref(),
         "json".as_ref(),
         "--report-path".as_ref(),
@@ -256,7 +315,24 @@ pub fn run_job(job: &Job) -> Result<Value> {
         argv.extend([OsStr::new("--log-opts"), OsStr::new(opts)]);
     }
     let threads = job.threads.max(1).to_string();
-    let out = exec(&argv, &[("GOMAXPROCS", threads.as_str())], Duration::from_secs(1800))?;
+    let mut env = vec![("GOMAXPROCS", threads.clone())];
+    // The big files, by a gitattributes file of their own (git reads it as
+    // core.attributesFile, in place of any the user set, for this run).
+    let revs: Vec<String> = std::iter::once("--all".to_string())
+        .chain(since.iter().flat_map(|t| t.iter().map(|t| format!("^{t}"))))
+        .collect();
+    let big = big_files(&job.repo, &revs);
+    if !big.is_empty() {
+        let attrs = dir.path().join("attributes");
+        std::fs::write(&attrs, big)?;
+        env.extend([
+            ("GIT_CONFIG_COUNT", "1".to_string()),
+            ("GIT_CONFIG_KEY_0", "core.attributesFile".to_string()),
+            ("GIT_CONFIG_VALUE_0", attrs.to_string_lossy().into_owned()),
+        ]);
+    }
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let out = exec(&argv, &env, Duration::from_secs(1800))?;
     if out.code != Some(0) {
         let tail: String = out.stderr.trim().chars().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
         return Err(Error::Failed(format!(

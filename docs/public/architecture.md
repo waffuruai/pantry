@@ -42,7 +42,7 @@ flowchart TB
 
 **Ask.**
 
-- **Batch.** The OSV client posts `querybatch` with at most 1000 queries a request and follows `next_page_token` per query. A record is fetched (`GET /v1/vulns/{id}`, at most 8 in flight, `If-None-Match` with the stored ETag) only when its id is new or its `modified` time changed.
+- **Batch.** The OSV client posts `querybatch` with at most 1000 queries a request and follows `next_page_token` per query. A record is fetched (`GET /v1/vulns/{id}`, at most 8 in flight, `If-None-Match` with the stored ETag) only when its id is new or its `modified` time changed. That time is compared at microseconds, the precision `querybatch` reports, since a full record can carry nanoseconds; the cached record keeps its original time.
 - **Change lists.** An answer is cached per (ecosystem, name, version) and kept current from OSV's change lists (`sources::osv_changes`). Per ecosystem there is a cursor (the newest change applied) and a chain start. A scan or `sync`:
   1. reads the list from the top down to the cursor, less a day's overlap for late exports, in 64 KiB ranges, skipping what it applied before;
   2. downloads the changed records that are held or name a package here (others are not kept);

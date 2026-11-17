@@ -365,3 +365,28 @@ fn a_changed_advisory_osv_cannot_serve_is_a_gap_and_the_old_record_stands() {
     assert_eq!(c.modified("GHSA-chg").unwrap().as_deref(), Some("2026-06-01T00:00:00Z"));
     assert_eq!(c.get(&want_key("GHSA-chg")).unwrap(), None);
 }
+
+#[test]
+fn batch_microseconds_match_full_record_nanoseconds() {
+    assert!(same_revision(Some("2026-10-17T13:00:02.715376292Z"), "2026-10-17T13:00:02.715376Z"));
+    assert!(same_revision(Some("2026-10-17T13:00:02Z"), "2026-10-17T13:00:02.000000Z"));
+    assert!(!same_revision(Some("2026-10-17T13:00:02.715376292Z"), "2026-10-17T13:00:02.715377Z"));
+    assert!(!same_revision(None, "2026-10-17T13:00:02Z"));
+    let (_d, c) = cache();
+    c.put_vuln(&json!({"id":"CVE-cached", "modified":"2026-10-17T13:00:02.715376292Z", "affected":[]})).unwrap();
+    let net = Fake::new(|r| {
+        if r.url.ends_with("modified_id.csv") {
+            return Ok(Response::not_found());
+        }
+        assert!(r.url.ends_with("/querybatch"), "unchanged advisory must not be downloaded again");
+        Ok(Response::ok(
+            json!({"results":[{"vulns":[{"id":"CVE-cached", "modified":"2026-10-17T13:00:02.715376Z"}]}]}).to_string(),
+        ))
+    });
+    let it = item("npm", "pkg", "1");
+    lookup(&c, &net, &[it], false, false, &|_| {}, &|_| {}).unwrap();
+    assert_eq!(net.requests().iter().filter(|r| r.url.ends_with("/querybatch")).count(), 1);
+    assert_eq!(c.modified("CVE-cached").unwrap().as_deref(), Some("2026-10-17T13:00:02.715376292Z"));
+    assert!(!same_revision(Some("invalid"), "2026-10-17T13:00:02Z"));
+    assert!(!same_revision(Some("2026-10-17T13:00:02.1234567890Z"), "2026-10-17T13:00:02.123456Z"));
+}

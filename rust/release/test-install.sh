@@ -60,7 +60,8 @@ run || { cat "$tmp/out" >&2; fail "a good release should install"; }
 [ "$("$tmp/bin/wpantry" version)" = "wpantry 9.9.9 (rust, schema 1)" ] || fail "the installed binary should run"
 grep -q "checksum matches" "$tmp/out" || fail "it should say the checksum matched"
 grep -q "only the checksum was checked" "$tmp/out" || fail "without a verifier it should say only the checksum was checked"
-echo "✓ installs a good release, and says when only the checksum was checked"
+grep -q "Run: wpantry scan$" "$tmp/out" || fail "it should suggest wpantry scan, a command that exists"
+echo "✓ installs a good release, says when only the checksum was checked, and suggests wpantry scan"
 
 run WPANTRY_REQUIRE_SIGNATURE=1 && fail "WPANTRY_REQUIRE_SIGNATURE=1 with no verifier should fail"
 [ ! -e "$tmp/bin/wpantry" ] || fail "nothing should be installed when the signature is required and can't be checked"

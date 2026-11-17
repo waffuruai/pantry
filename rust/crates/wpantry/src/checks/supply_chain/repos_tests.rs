@@ -42,9 +42,8 @@ fn default_scope_walks_home_and_prunes_caches() {
     ] {
         git_repo(&h.join(pruned), false);
     }
-    let outside = git_repo(&tmp.path().join("outside"), false);
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside, h.join("link")).unwrap();
+    std::os::unix::fs::symlink(git_repo(&tmp.path().join("outside"), false), h.join("link")).unwrap();
     let lines = RefCell::new(Vec::new());
     let got = scope(None, &h, &|m| lines.borrow_mut().push(m.to_string()), &|_| {}, &|_| {});
     wanted.sort();
@@ -137,7 +136,8 @@ fn lockfiles_skip_dependency_dirs() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, "").unwrap();
     }
-    let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
+    let got: Vec<String> =
+        lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string().replace('\\', "/")).collect();
     assert_eq!(got, ["Cargo.lock", "py/requirements-dev.txt", "web/pnpm-lock.yaml"]);
     // npm-shrinkwrap.json is a lockfile, and wins over package-lock.json beside it.
     for f in ["a/npm-shrinkwrap.json", "b/npm-shrinkwrap.json", "b/package-lock.json", "c/package-lock.json"] {
@@ -148,7 +148,8 @@ fn lockfiles_skip_dependency_dirs() {
     // The listing is memoised for a scan; a new scan forgets it.
     assert_eq!(lockfiles(d).len(), 3, "memoised");
     forget_walks();
-    let got: Vec<String> = lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string()).collect();
+    let got: Vec<String> =
+        lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string().replace('\\', "/")).collect();
     assert_eq!(
         got,
         [

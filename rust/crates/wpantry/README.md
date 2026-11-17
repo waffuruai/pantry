@@ -4,7 +4,7 @@ The library behind [Pantry](https://github.com/waffuruai/pantry): it inventories
 
 ```toml
 [dependencies]
-wpantry = { version = "=0.4.1" }
+wpantry = { version = "=0.5.0" }
 ```
 
 Start from `checks::Options` and `checks::Scan`, `db::Cache`, `finding::Finding` and `reporters`; the crate's front page on docs.rs has a worked example. The API is `0.x`, so pin it exactly. What stays stable across versions is the [CLI contract](https://github.com/waffuruai/pantry/blob/main/specs/cli-contract.md). Docs, install and usage: <https://github.com/waffuruai/pantry>.

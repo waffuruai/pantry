@@ -6,9 +6,6 @@ contact_links:
   - name: 📖 Documentation
     url: https://github.com/waffuruai/pantry/blob/main/README.md
     about: "What wpantry checks, the scope flags, the cache, and the CLI."
-  - name: 🗺️ Roadmap
-    url: https://github.com/orgs/waffuruai/projects/1
-    about: Milestones across the org. Check here before proposing a feature.
   - name: 🤝 Contributing guide
     url: https://github.com/waffuruai/pantry/blob/main/CONTRIBUTING.md
     about: Read this before opening an issue or PR.

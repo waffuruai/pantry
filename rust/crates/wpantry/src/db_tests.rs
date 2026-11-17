@@ -188,6 +188,14 @@ fn cache_location() {
         move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(v))
     };
     assert_eq!(path_from(&env(&[("WPANTRY_DB", "/x/w.db"), ("HOME", "/h")])), PathBuf::from("/x/w.db"));
+    // Windows: LOCALAPPDATA when neither XDG_CACHE_HOME nor HOME is set; HOME still wins.
+    let local = path_from(&env(&[("LOCALAPPDATA", "/l"), ("USERPROFILE", "/u")]));
+    let want = if cfg!(windows) { "/l" } else { ".cache" };
+    assert_eq!(local, PathBuf::from(want).join("wpantry").join("wpantry.db"));
+    assert_eq!(
+        path_from(&env(&[("LOCALAPPDATA", "/l"), ("HOME", "/h")])),
+        PathBuf::from("/h/.cache/wpantry/wpantry.db")
+    );
     assert_eq!(path_from(&env(&[("XDG_CACHE_HOME", "/x"), ("HOME", "/h")])), PathBuf::from("/x/wpantry/wpantry.db"));
     assert_eq!(
         path_from(&env(&[("XDG_CACHE_HOME", ""), ("HOME", "/h")])),

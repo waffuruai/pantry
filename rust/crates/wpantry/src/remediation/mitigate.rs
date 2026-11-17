@@ -406,13 +406,15 @@ fn cve_2026_98432(host: &dyn Host, _: &Settings, mode: Mode, confirm: Confirm, s
                 say("  dry run; nothing changed");
                 return Ok(Done::Applied);
             }
+            // Asked first: a stopgap nobody said yes to (`--no-input` without
+            // `--yes`) is skipped, so a host without nft is not a failure.
+            if !confirm("apply the stopgap (as root)") {
+                return Ok(Done::Declined);
+            }
             if host.read(&["nft", "--version"]).trim().is_empty() {
                 return Err(Error::Missing(
                     "nft (install nftables: sudo apt install nftables, or sudo dnf install nftables)".into(),
                 ));
-            }
-            if !confirm("apply the stopgap (as root)") {
-                return Ok(Done::Declined);
             }
             host.write_root(RULE_FILE, &rules())?;
             host.root(&["nft", "-f", RULE_FILE])?;

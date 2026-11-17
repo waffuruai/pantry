@@ -5,6 +5,7 @@ use crate::utils::net::Fake;
 use crate::utils::temp::TempDir;
 
 /// Each kind of hidden or misleading text gets its own advice.
+#[cfg(unix)]
 #[test]
 fn hidden_text_advice_per_kind() {
     let d = TempDir::new("hidden").unwrap();

@@ -79,6 +79,44 @@ fn python_and_malformed_cache_entries_are_not_read_as_an_empty_image() {
     assert!(packages(&c, no_engine, "x", "sha256:1", false, false).is_err(), "rereads, and can't");
 }
 
+/// Oracle: a wanted hard link may copy another file inside the image.
+/// `..\canary.txt` and a drive-prefixed target must not copy the host
+/// file that sits beside the extraction root. Runs on every OS; Windows
+/// is where `root.join` used to leave the root.
+#[test]
+fn link_targets_cannot_import_a_host_file() {
+    let d = TempDir::new("untar-escape").unwrap();
+    let canary = d.path().join("canary.txt");
+    std::fs::write(&canary, b"SECRET-CANARY-HOST-FILE").unwrap();
+    let root = d.path().join("image");
+    std::fs::create_dir_all(&root).unwrap();
+    let lock = b"version = 4\n[[package]]\nname = \"itoa\"\nversion = \"1.0.9\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+    let drive = canary.to_string_lossy().replace('/', "\\");
+    let back = r"..\canary.txt";
+    let mut entries: Vec<(&str, u8, &str, &[u8])> = vec![
+        ("data/Cargo.lock", b'0', "", lock),
+        ("app/Cargo.lock", b'1', "data/Cargo.lock", b""),
+        ("posix/Cargo.lock", b'1', "../canary.txt", b""),
+        ("bad/Cargo.lock", b'1', back, b""),
+        ("sym/Cargo.lock", b'2', back, b""),
+    ];
+    if drive.len() <= 100 {
+        entries.push(("drive/Cargo.lock", b'1', drive.as_str(), b""));
+    }
+    let t = d.path().join("rootfs.tar");
+    std::fs::write(&t, tar(&entries)).unwrap();
+    untar(&t, &root).unwrap();
+    assert_eq!(std::fs::read(root.join("app/Cargo.lock")).unwrap(), lock, "an internal hard link is kept");
+    assert_eq!(std::fs::read(&canary).unwrap(), b"SECRET-CANARY-HOST-FILE");
+    for rel in ["posix/Cargo.lock", "bad/Cargo.lock", "sym/Cargo.lock", "drive/Cargo.lock"] {
+        let body = std::fs::read(root.join(rel)).unwrap_or_default();
+        assert!(
+            !body.windows(b"SECRET-CANARY-HOST-FILE".len()).any(|w| w == b"SECRET-CANARY-HOST-FILE"),
+            "{rel} imported the host file: {body:?}"
+        );
+    }
+}
+
 /// The rarer header shapes: a ustar prefix, GNU long names and links,
 /// a pax linkpath, a base-256 size, a hard link and an absolute symlink
 /// (both resolved inside the root), directories and other kinds skipped.
@@ -255,6 +293,11 @@ fn paths_and_headers() {
     assert_eq!(octal(&[0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]), 256, "base-256");
     assert_eq!(normalize("etc/../usr/lib/os-release"), Some(PathBuf::from("usr/lib/os-release")));
     assert_eq!(normalize("../../x"), None);
+    assert_eq!(normalize(r"..\canary.txt"), None, "a backslash is not a tar separator");
+    assert_eq!(normalize(r"C:\secret\Cargo.lock"), None);
+    assert_eq!(normalize("C:/secret/Cargo.lock"), None);
+    assert_eq!(normalize("app/../C:/secret"), None);
+    assert_eq!(normalize("data/Cargo.lock"), Some(PathBuf::from("data/Cargo.lock")));
     assert_eq!(octal(b"00000000017\0"), 15);
     assert_eq!(pax(b"29 path=a/very/long/name.txt\n")["path"], "a/very/long/name.txt");
     // Short, oversized and non-UTF-8 records end the parse, never panic.

@@ -29,6 +29,7 @@ pub mod rules;
 
 use rules::{Component, RuleSet, SecretRule, Skips, Target, Window};
 use std::collections::HashSet;
+use std::time::Instant;
 use wpantry_yara::ScanOptions;
 use wpantry_yara::matcher::{self, Matcher};
 
@@ -105,16 +106,31 @@ impl Scanner {
     /// The secrets in a file's bytes, `path` its path (for the path rules and
     /// filters, and the fingerprint); `commit` prefixes the fingerprint.
     pub fn scan(&self, data: &[u8], path: &str, commit: Option<&str>) -> Vec<Found> {
+        self.scan_until(data, path, commit, None).unwrap_or_default()
+    }
+
+    /// [`Scanner::scan`], given up once `deadline` passes: it's checked
+    /// before each fragment and each decoding pass, so one dense file can't
+    /// hold a scan past its budget by more than a fragment's work. `None`
+    /// when it gave up: the file counts as not checked.
+    pub fn scan_until(
+        &self,
+        data: &[u8],
+        path: &str,
+        commit: Option<&str>,
+        deadline: Option<Instant>,
+    ) -> Option<Vec<Found>> {
         if self.skips_path(path) || fragments::binary(data) {
-            return Vec::new();
+            return Some(Vec::new());
         }
+        let late = || deadline.is_some_and(|d| Instant::now() >= d);
         let mut out = Vec::new();
         for (first, frag) in fragments::split(data).into_iter().enumerate().map(|(i, f)| (i == 0, f)) {
-            for hit in self.fragment(&data[frag.range.clone()], path, first) {
+            for hit in self.fragment(&data[frag.range.clone()], path, first, &late)? {
                 out.push(self.found(&hit, &data[frag.range.clone()], frag.start_line, path, commit));
             }
         }
-        out
+        Some(out)
     }
 
     fn found(&self, hit: &Hit, frag: &[u8], start_line: usize, path: &str, commit: Option<&str>) -> Found {
@@ -137,12 +153,16 @@ impl Scanner {
         }
     }
 
-    /// The hits in one fragment, every pass.
-    fn fragment(&self, frag: &[u8], path: &str, first: bool) -> Vec<Hit> {
+    /// The hits in one fragment, every pass; `None` when `late` says the
+    /// time's up before a pass.
+    fn fragment(&self, frag: &[u8], path: &str, first: bool, late: &dyn Fn() -> bool) -> Option<Vec<Hit>> {
         let mut hits: Vec<Hit> = Vec::new();
         let mut decoder = decode::Decoder::new(frag);
         let mut depth = 0;
         loop {
+            if late() {
+                return None;
+            }
             let pass = Pass { text: decoder.text(), decoder: &decoder, depth };
             let found = self.pass(&pass, frag, path, first, &hits);
             hits.extend(found);
@@ -152,7 +172,7 @@ impl Scanner {
             }
         }
         suppress(&self.rules.rules, &mut hits);
-        hits
+        Some(hits)
     }
 
     /// One pass over `pass.text`: each rule that may run, highest specificity first.

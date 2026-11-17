@@ -117,3 +117,14 @@ fn ties_go_to_higher_specificity_and_a_multipart_findings_parts_only_outrank_oth
     suppress(rules, &mut hits);
     assert_eq!(hits.len(), 1);
 }
+
+#[test]
+fn a_scan_past_its_deadline_gives_up_instead_of_reading_on() {
+    let s = scanner();
+    let text = format!("token = \"gh{}_{}\"\n", "p", "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5");
+    let past = Some(Instant::now() - std::time::Duration::from_secs(1));
+    assert_eq!(s.scan_until(text.as_bytes(), "a.env", None, None).map(|f| f.len()), Some(1));
+    assert!(s.scan_until(text.as_bytes(), "a.env", None, past).is_none(), "not read: not checked");
+    // A binary file needs no reading, late or not.
+    assert_eq!(s.scan_until(b"\x00\x01 token", "a.bin", None, past).map(|f| f.len()), Some(0));
+}

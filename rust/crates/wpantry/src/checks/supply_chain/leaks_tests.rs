@@ -256,3 +256,32 @@ fn secrets_from_a_scan_run_ahead() {
     assert!(matches!(secrets(&mut s, &repos, jobs, vec![Some(Ok(ok)), Some(Err(io))]), Err(Error::Io(_))));
     assert!(secret_jobs(&s, &[], &rules).unwrap().is_empty());
 }
+
+#[test]
+fn a_partial_clones_missing_files_are_not_checked_and_not_fetched() {
+    let d = TempDir::new("secrets-partial").unwrap();
+    let Some((repo, home)) = leaky_repo(&d) else {
+        eprintln!("skipped: no git");
+        return;
+    };
+    let part = d.path().join("part");
+    let cloned = git(&repo, &home, &["config", "uploadpack.allowfilter", "true"])
+        && git(
+            d.path(),
+            &home,
+            &["clone", "-q", "--no-local", "--filter=blob:none", "--no-checkout", repo.to_str().unwrap(), "part"],
+        );
+    if !cloned {
+        eprintln!("skipped: this git can't make a partial clone");
+        return;
+    }
+    let net = Fake::offline();
+    let s = testing::scan(&net, &d, Options::default());
+    let rules = Rules::new(None);
+    let j = job(&s.cache, &part, &rules, 1).unwrap();
+    let ran = run_job(&j, &rules.scanner().unwrap()).unwrap();
+    assert!(ran["hits"].as_array().unwrap().is_empty(), "{ran}");
+    assert_eq!(ran["unchecked"], 3, "the three files history holds, none fetched");
+    let listed = run(&git_argv(&part, &["rev-list", "--objects", "--all", "--missing=print"]), Duration::from_secs(10));
+    assert_eq!(listed.lines().filter(|l| l.starts_with('?')).count(), 3, "still missing: {listed}");
+}

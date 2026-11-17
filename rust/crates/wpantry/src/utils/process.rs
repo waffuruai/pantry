@@ -199,6 +199,8 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
         let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
         let mut cmd = Command::new(prog);
         cmd.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
+        // A read of a partial clone never makes git fetch what it's missing.
+        cmd.env("GIT_NO_LAZY_FETCH", "1");
         spawn(&mut cmd).map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))
     };
     let mut a = start(first, Stdio::null())?;

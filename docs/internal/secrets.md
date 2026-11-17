@@ -28,7 +28,8 @@ Pantry's secret scan (`rust/crates/wpantry/src/checks/secrets/`) runs betterleak
   - On ShareGPT, docs and juke this drops what betterleaks' check drops.
   - It also drops a few slugs and placeholder tokens that betterleaks keeps.
   - About 0.15% of random keys hold a word by chance; betterleaks' list matches about 0.3%.
-- **Binary files:** a NUL byte in the first 8,000 bytes skips the file, as git decides.
+- **Binary files:** a NUL byte in the first 8,000 bytes skips the file, as git decides. In history only those bytes are read, so model weights and data dumps aren't held in memory.
+- **Limits, in history:** files over 10 MB aren't read, and the 30-minute budget is checked before every fragment and decoding pass, so one dense file can't hold a scan much past it. Both leave files not checked, as does a partial clone's missing blob: git is never asked to fetch one (`GIT_NO_LAZY_FETCH`).
 - **Pantry's own filters:** `Any.Secret.PantryFilter.yar` skips hashes, ids and test vectors for the generic rule, plus single-case placeholders.
 - **Not yet:** archives (betterleaks opens zip, gz and tar, up to 8 levels), and live checks with providers ([#190](https://github.com/waffuruai/pantry/issues/190), opt-in at most).
 

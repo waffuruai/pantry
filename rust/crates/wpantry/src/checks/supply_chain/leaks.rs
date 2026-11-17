@@ -12,8 +12,10 @@
 //! file, line, commit and fingerprint, never the secret.
 //!
 //! Paths betterleaks' prefilter skips (images, fonts, lockfiles, vendored
-//! code) aren't read, and the scanner skips binary content. Blobs over
-//! [`MAX_BLOB`] aren't read either, and are counted as not checked.
+//! code) aren't read, and the scanner skips binary content, sniffed before
+//! the rest is read. Blobs over [`MAX_BLOB`] aren't read either, and are
+//! counted as not checked, as are a partial clone's missing blobs: git is
+//! never asked to fetch them.
 
 use crate::checks::Scan;
 use crate::checks::secrets::{Scanner, rules};
@@ -40,8 +42,10 @@ pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS secret_blobs (
 
 /// How long one repo's scan may read history; what's left waits for the next scan.
 pub const BUDGET: Duration = Duration::from_secs(30 * 60);
-/// The largest file read, in history: a bigger one is counted as not checked.
-pub const MAX_BLOB: u64 = 256 << 20;
+/// The largest file read, in history: a bigger one is counted as not
+/// checked. It bounds memory too: about three blobs per thread are held at
+/// once.
+pub const MAX_BLOB: u64 = 10 << 20;
 /// How long listing a repo's objects, or its commits' files, may take.
 const LIST_TIMEOUT: Duration = Duration::from_secs(600);
 /// Bumped when the scanner's results change for the same rules.
@@ -219,22 +223,31 @@ fn git_argv<'a>(repo: &'a Path, args: &'a [&'a str]) -> Vec<&'a OsStr> {
     argv
 }
 
-/// Every blob the refs reach, newest first, once each, at its first path.
-/// An error when git can't read the repo (the listing alone would read as
-/// a repo with nothing in it).
-fn blobs(repo: &Path) -> Result<Vec<Blob>> {
+/// Every blob the refs reach, newest first, once each, at its first path,
+/// and how many more it reaches that aren't here (a partial clone's). An
+/// error when git can't read the repo (the listing alone would read as a
+/// repo with nothing in it).
+fn blobs(repo: &Path) -> Result<(Vec<Blob>, u64)> {
     let ok = crate::utils::process::exec(&git_argv(repo, &["rev-parse", "--git-dir"]), &[], Duration::from_secs(30))
         .is_ok_and(|o| o.code == Some(0));
     if !ok {
         return Err(Error::Failed(format!("git can't read {}", repo.display())));
     }
-    let list = git_argv(repo, &["rev-list", "--objects", "--all"]);
+    // A partial clone's missing blobs come through as `?<sha>`, and
+    // cat-file reports them `missing`, instead of git fetching them.
+    let list = git_argv(repo, &["rev-list", "--objects", "--all", "--missing=print"]);
     let check = git_argv(repo, &["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)"]);
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    let mut missing = 0;
     pipe_lines(&list, &check, LIST_TIMEOUT, |line| {
         let mut parts = line.splitn(4, |&b| b == b' ');
-        let (Some(sha), Some(b"blob"), Some(size)) = (parts.next(), parts.next(), parts.next()) else { return };
+        let (Some(sha), kind) = (parts.next(), parts.next()) else { return };
+        if kind == Some(b"missing") {
+            missing += u64::from(seen.insert(String::from_utf8_lossy(sha).into_owned()));
+            return;
+        }
+        let (Some(b"blob"), Some(size)) = (kind, parts.next()) else { return };
         let path = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
         let sha = String::from_utf8_lossy(sha).into_owned();
         let size = std::str::from_utf8(size).ok().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -242,11 +255,13 @@ fn blobs(repo: &Path) -> Result<Vec<Blob>> {
             out.push(Blob { sha, path, size });
         }
     })?;
-    Ok(out)
+    Ok((out, missing))
 }
 
 /// Read `blobs`' contents with one `git cat-file --batch`, handing each to
-/// `each` until it returns false or `deadline` passes; how many it read.
+/// `each` until it returns false or `deadline` passes; how many it read. A
+/// binary blob is handed over as its first bytes alone (all the scanner
+/// needs to skip it), so model weights and data dumps aren't held whole.
 fn read_blobs<'b>(
     repo: &Path,
     blobs: &[&'b Blob],
@@ -256,6 +271,7 @@ fn read_blobs<'b>(
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).args(["cat-file", "--batch"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
+    cmd.env("GIT_NO_LAZY_FETCH", "1");
     let mut child = crate::utils::process::spawn(&mut cmd).map_err(|e| Error::Failed(format!("git cat-file: {e}")))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let shas: Vec<String> = blobs.iter().map(|b| b.sha.clone()).collect();
@@ -280,8 +296,15 @@ fn read_blobs<'b>(
         // `<sha> blob <size>`, or `<sha> missing`.
         let size = std::str::from_utf8(&header).ok().and_then(|h| h.split_whitespace().nth(2)?.parse::<u64>().ok());
         let Some(size) = size else { continue };
-        let mut data = Vec::with_capacity(size as usize);
-        (&mut out).take(size).read_to_end(&mut data)?;
+        let head = size.min(crate::checks::secrets::fragments::SNIFF as u64);
+        let mut data = Vec::with_capacity(head as usize);
+        (&mut out).take(head).read_to_end(&mut data)?;
+        if crate::checks::secrets::fragments::binary(&data) {
+            std::io::copy(&mut (&mut out).take(size - head), &mut std::io::sink())?;
+        } else {
+            data.reserve((size - head) as usize);
+            (&mut out).take(size - head).read_to_end(&mut data)?;
+        }
         let mut newline = [0u8; 1];
         out.read_exact(&mut newline)?;
         read += 1;
@@ -302,8 +325,23 @@ fn added_in(repo: &Path, wanted: &HashSet<String>) -> HashMap<String, String> {
     if wanted.is_empty() {
         return out;
     }
-    let argv =
-        git_argv(repo, &["log", "--all", "--reverse", "--raw", "--no-abbrev", "--no-renames", "--format=%x00%H"]);
+    // The root commit's files and a merge's own changes count too, whatever
+    // the user's log config says.
+    let argv = git_argv(
+        repo,
+        &[
+            "-c",
+            "log.showRoot=true",
+            "log",
+            "--all",
+            "--reverse",
+            "--raw",
+            "--diff-merges=first-parent",
+            "--no-abbrev",
+            "--no-renames",
+            "--format=%x00%H",
+        ],
+    );
     let mut commit = String::new();
     let _ = lines(&argv, LIST_TIMEOUT, |line| {
         if let Some(sha) = line.strip_prefix(b"\0") {
@@ -349,7 +387,7 @@ fn blob_key(b: &Blob) -> String {
 /// redacted hits, how many files weren't checked, and the new blobs'
 /// results (`new`, for [`finish`] to keep).
 pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
-    let all = blobs(&job.repo)?;
+    let (all, missing) = blobs(&job.repo)?;
     let mut too_big = 0;
     let mut todo: Vec<&Blob> = Vec::new();
     let wanted: Vec<Blob> = all.into_iter().filter(|b| !scanner.skips_path(&b.path)).collect();
@@ -372,14 +410,15 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
     let results: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
     let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(job.threads * 2);
     let rx = Mutex::new(rx);
-    let read = std::thread::scope(|s| -> Result<usize> {
+    std::thread::scope(|s| -> Result<usize> {
         for _ in 0..job.threads.max(1) {
             s.spawn(|| {
                 loop {
                     let next = rx.lock().expect("lock").recv();
                     let Ok((blob, data)) = next else { break };
-                    let hits: Vec<Value> = scanner
-                        .scan(&data, &blob.path, None)
+                    // Out of time: the blob is left for the next scan.
+                    let Some(found) = scanner.scan_until(&data, &blob.path, None, Some(deadline)) else { continue };
+                    let hits: Vec<Value> = found
                         .into_iter()
                         .map(|f| {
                             json!({"rule": f.rule, "line": f.start_line, "description": f.description,
@@ -395,7 +434,7 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
         read
     })?;
     let new = results.into_inner().expect("lock");
-    let unchecked = (todo.len() - read) as u64 + too_big;
+    let unchecked = (todo.len() - new.len()) as u64 + too_big + missing;
     // Every blob's hits, cached or new, with the commit that added it.
     let by_key: HashMap<&str, &Value> =
         cached.iter().map(|(k, v)| (k.as_str(), v)).chain(new.iter().map(|(k, v)| (k.as_str(), v))).collect();
@@ -560,7 +599,7 @@ pub(crate) fn secrets(
         if unchecked > 0 {
             scan.unchecked(
                 &format!("secrets in {unchecked} files of {name}'s history"),
-                "not reached in this scan's time, or over 256 MB; the next scan goes on from here",
+                "not reached in this scan's time, over 10 MB, or missing from a partial clone; the next scan goes on from here",
             );
         }
         for f in found {

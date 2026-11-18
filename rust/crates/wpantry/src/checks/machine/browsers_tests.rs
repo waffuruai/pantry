@@ -34,6 +34,9 @@ fn snap_list_names_the_browser_snaps() {
                chromium  131.0.6778.85    2999   latest/stable    canonical** -\n\
                firefox   133.0-2          5273   latest/stable/…  mozilla**   -\n\
                brave     1.73.97          466    latest/stable    brave**     -\n";
+    let esr = "Name     Version      Rev   Tracking    Publisher  Notes\n\
+               firefox  153.8.0esr-1 7001  esr/stable  mozilla**  -\n";
+    assert_eq!(snaps(esr), [("firefox".to_string(), "153.8.0".to_string())], "read as --version reads it");
     assert_eq!(
         snaps(out),
         [
@@ -165,4 +168,26 @@ fn binaries_snaps_and_flatpaks_become_browser_components() {
     assert!(got.iter().all(|c| c.kind == "browser" && !c.auto), "{got:?}");
     assert_eq!(got[0].path, bin.join("google-chrome-stable").display().to_string());
     assert_eq!((got[2].path.as_str(), got[3].path.as_str()), ("/snap/bin/chromium", "flatpak:org.mozilla.firefox"));
+}
+
+/// A binary the OS package manager owns is the distro's build; a vendor's
+/// package under /opt and a copy in /usr/local or a home directory are not.
+/// Fedora's `chromium-browser` comes from the `chromium` package.
+#[test]
+fn distro_builds_are_told_from_vendor_packages() {
+    let vouches = crate::utils::os::os_vouches();
+    for p in [
+        "/usr/lib/chromium/chromium",
+        "/usr/lib64/chromium-browser/chromium-browser",
+        "/usr/lib/firefox-esr/firefox-esr",
+        "/usr/lib64/firefox/firefox",
+    ] {
+        assert_eq!(distro_built(Path::new(p)), vouches, "{p}");
+    }
+    for p in ["/opt/google/chrome/chrome", "/opt/microsoft/msedge/msedge", "/usr/local/bin/firefox", "/home/u/chrome"] {
+        assert!(!distro_built(Path::new(p)), "{p}");
+    }
+    let package = |bin: &str| BINARIES.iter().find(|(b, _, _)| *b == bin).map(|(_, _, p)| *p);
+    assert_eq!((package("chromium-browser"), package("chromium")), (Some("chromium"), Some("chromium")));
+    assert!(fix("package", "Chromium", "chromium", &parse_os_release("ID=fedora\n")).ends_with(" upgrade chromium"));
 }

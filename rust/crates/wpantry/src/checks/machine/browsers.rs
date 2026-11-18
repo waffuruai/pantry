@@ -11,12 +11,20 @@
 //! Ubuntu's `chromium-browser` and `firefox` debs are shims that start the
 //! snap: those binaries are skipped and the snap is read from `snap list`.
 //!
+//! A distro's own build (Debian, Fedora or Arch Chromium, Debian or RHEL
+//! Firefox: a binary the OS package manager owns, `files::owner` "os") is
+//! inventoried with extra `owner` = `os` and not compared with upstream
+//! releases: it ships its fixes on the distro's schedule, and the OS
+//! update check already reports the package. A vendor's package under
+//! /opt (Google's Chrome, Edge, Brave) is still checked.
+//!
 //! Example: `/usr/bin/google-chrome-stable --version` prints
 //! "Google Chrome 131.0.6778.85": a `browser` component "Google Chrome"
 //! 131.0.6778.85 with extra `browser` = `chrome` and `install` = `package`.
 
 use crate::checks::machine::settings::Runner;
 use crate::component::Component;
+use crate::utils::files::owner;
 use crate::utils::os;
 use crate::utils::process;
 use crate::utils::re::Regex;
@@ -31,7 +39,8 @@ const BINARIES: &[(&str, &str, &str)] = &[
     ("google-chrome-stable", "chrome", "google-chrome-stable"),
     ("google-chrome", "chrome", "google-chrome-stable"),
     ("chromium", "chromium", "chromium"),
-    ("chromium-browser", "chromium", "chromium-browser"),
+    // Fedora's binary; its package is `chromium`, as on Debian and Arch.
+    ("chromium-browser", "chromium", "chromium"),
     ("microsoft-edge-stable", "edge", "microsoft-edge-stable"),
     ("microsoft-edge", "edge", "microsoft-edge-stable"),
     ("brave-browser-stable", "brave", "brave-browser"),
@@ -93,7 +102,11 @@ pub fn found(dirs: &[PathBuf], run: Runner, rel: &BTreeMap<String, String>) -> V
         let exe_s = exe.display().to_string();
         let Some(version) = version(&run(&[&exe_s, "--version"]), label) else { continue };
         let install = install_of(&real);
-        out.push(component(id, &version, &exe_s, install, &fix(install, name, package, rel)));
+        let mut c = component(id, &version, &exe_s, install, &fix(install, name, package, rel));
+        if distro_built(&real) {
+            c.extra.insert("owner".into(), "os".into());
+        }
+        out.push(c);
     }
     for (snap, version) in snaps(&run(&["snap", "list"])) {
         let id = SNAPS.iter().find(|(s, _)| *s == snap).map(|(_, i)| *i).unwrap_or("");
@@ -135,6 +148,13 @@ fn starts_snap(real: &Path) -> bool {
     head.starts_with(b"#!") && String::from_utf8_lossy(&head).contains("/snap/")
 }
 
+/// Whether the OS package manager owns `real` (a resolved binary), so the
+/// OS update check covers it: `/usr/lib/chromium/chromium` on Debian,
+/// `/usr/lib64/firefox/firefox` on Fedora. Not `/opt/google/chrome/chrome`.
+pub fn distro_built(real: &Path) -> bool {
+    owner(&real.display().to_string()) == "os"
+}
+
 /// Where a resolved binary came from: `package` under /usr (not
 /// /usr/local) or the vendors' package directories in /opt, else `vendor`
 /// (a tarball, or a copy in a home directory).
@@ -159,9 +179,11 @@ pub fn version(out: &str, label: &str) -> Option<String> {
     })
 }
 
-/// A package version without its packaging suffix ("133.0-2" → 133.0).
+/// A package version without its packaging suffix or Firefox's ESR mark
+/// ("133.0-2" → 133.0, "153.8.0esr" → 153.8.0), as `--version` is read.
 fn upstream(v: &str) -> String {
-    v.split(['-', '+', '~']).next().unwrap_or("").to_string()
+    let v = v.split(['-', '+', '~']).next().unwrap_or("");
+    v.strip_suffix("esr").unwrap_or(v).to_string()
 }
 
 /// The browser snaps in `snap list`: (snap, version).

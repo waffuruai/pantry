@@ -43,6 +43,9 @@ fn owners() {
     assert_eq!(owner("/home/u/.npm-global/lib/node_modules/x/bin/x"), "npm");
     assert_eq!(owner("/Applications/Slack.app/Contents/MacOS/Slack"), "app");
     assert_eq!(owner("/home/u/.local/bin/mise"), "");
+    // Fedora's and RHEL's libraries are the distro's too.
+    assert_eq!(owner("/usr/lib64/firefox/firefox"), owner("/usr/lib/firefox/firefox"));
+    assert_eq!(owner("/usr/lib64/firefox/firefox"), if crate::utils::os::os_vouches() { "os" } else { "" });
 }
 
 #[test]

@@ -30,20 +30,21 @@ pub fn apps(scan: &mut Scan) -> Result<()> {
     apps_found(scan, apps_mod::apps(), homebrew::brew_casks)
 }
 
-/// The browser checks over what `browsers` found on Linux. Edge and Brave
-/// have no release feed read here, so they are reported unchecked.
+/// The browser checks over what `browsers` found on Linux. All are
+/// counted; a distro's own build is left to the OS update check (extra
+/// `owner` = `os`), and Edge and Brave are not judged: no release feed is
+/// read for them here.
+///
+/// TODO: Edge's and Brave's Linux release feeds (Brave's cask numbering
+/// differs from its Linux builds).
 fn linux_browsers(scan: &mut Scan, found: Vec<Component>) -> Result<()> {
     if found.is_empty() {
         return Ok(());
     }
     scan.count("browsers", found.len() as i64);
-    for a in &found {
-        match a.extra.get("browser").map(String::as_str).unwrap_or("") {
-            "chrome" | "chromium" | "firefox" => browser(scan, a, "linux", false, "")?,
-            _ => scan.unchecked(
-                &format!("{} on Linux", a.name),
-                &format!("no release feed for {} on Linux is read yet; {} is installed", a.name, a.version),
-            ),
+    for a in found.iter().filter(|a| a.extra.get("owner").is_none_or(|o| o != "os")) {
+        if let "chrome" | "chromium" | "firefox" = a.extra.get("browser").map(String::as_str).unwrap_or("") {
+            browser(scan, a, "linux", false, "")?;
         }
     }
     Ok(())

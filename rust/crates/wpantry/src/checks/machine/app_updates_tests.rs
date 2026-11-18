@@ -232,13 +232,11 @@ fn linux_browsers_follow_chromes_linux_feed_and_mozillas() {
     let ff = &s.findings[2];
     assert_eq!((ff.vuln_id.as_str(), ff.status.as_str(), ff.fixed.as_str()), ("BROWSER", "warn", "128.5.0"));
     assert_eq!(ff.fix_cmd, "flatpak update org.mozilla.firefox");
-    // No feed is read for Edge or Brave on Linux: said, not passed.
-    assert_eq!(
-        testing::unchecked_note(&s, "Microsoft Edge on Linux"),
-        "no release feed for Microsoft Edge on Linux is read yet; 131.0.2903.70 is installed"
-    );
-    testing::unchecked_note(&s, "Brave Browser on Linux");
-    assert_eq!(s.findings.len(), 5, "{:?}", testing::kinds(&s));
+    // No feed is read for Edge or Brave on Linux: counted, with no
+    // finding and no unchecked row (that would keep every scan of this
+    // machine from verifying a fix).
+    assert!(s.findings.iter().all(|f| f.kind != "unchecked"), "{:?}", testing::kinds(&s));
+    assert_eq!(s.findings.len(), 3, "{:?}", testing::kinds(&s));
 }
 
 #[test]
@@ -289,4 +287,42 @@ fn current_or_absent_linux_browsers_have_no_findings() {
     linux_browsers(&mut s2, Vec::new()).unwrap();
     assert!(s2.findings.is_empty() && s2.counts.is_empty());
     assert_eq!(net.requests().len(), before, "nothing installed, nothing fetched");
+}
+
+/// A distro's own Chromium or Firefox is counted but not held to upstream
+/// releases: the OS update check reports its package. Google's Chrome
+/// package under /opt is still checked.
+#[test]
+fn distro_built_linux_browsers_are_left_to_the_os_check() {
+    let d = crate::utils::temp::TempDir::new("linuxdistro").unwrap();
+    let net = Fake::new(testing::app_net);
+    let mut s = testing::scan(&net, &d);
+    let distro = |id: &str, version: &str| {
+        let mut c = linux(id, version, "package", "sudo apt-get install --only-upgrade chromium");
+        c.extra.insert("owner".into(), "os".into());
+        c
+    };
+    let found = vec![
+        distro("chromium", "129.0.6668.100"),
+        distro("firefox", "128.3.0"),
+        linux("chrome", "129.0.6668.100", "package", "sudo apt-get install --only-upgrade google-chrome-stable"),
+    ];
+    linux_browsers(&mut s, found).unwrap();
+    assert_eq!(s.counts, [("browsers".to_string(), 3)]);
+    let got: Vec<(&str, &str)> = s.findings.iter().map(|f| (f.component.as_str(), f.vuln_id.as_str())).collect();
+    assert_eq!(got, [("Google Chrome", "BROWSER")], "{:?}", testing::kinds(&s));
+}
+
+/// A Firefox ESR snap at the line's current release ("128.5.0esr" in
+/// `snap list`) is current, not behind 128.5.0.
+#[test]
+fn a_current_firefox_esr_snap_is_not_outdated() {
+    let d = crate::utils::temp::TempDir::new("linuxesr").unwrap();
+    let net = Fake::new(testing::app_net);
+    let mut s = testing::scan(&net, &d);
+    let snaps = crate::checks::machine::browsers::snaps("firefox  128.5.0esr  7001  esr/stable  mozilla**  -\n");
+    assert_eq!(snaps, [("firefox".to_string(), "128.5.0".to_string())]);
+    let found = vec![linux("firefox", &snaps[0].1, "snap", "sudo snap refresh firefox")];
+    linux_browsers(&mut s, found).unwrap();
+    assert!(s.findings.is_empty(), "{:?}", testing::kinds(&s));
 }

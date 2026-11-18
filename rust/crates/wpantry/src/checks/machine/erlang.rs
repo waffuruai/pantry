@@ -8,7 +8,19 @@
 //! against endoflife.date's `erlang` by major. A Homebrew or distro `erl`
 //! is left to `brew vulns` and the OS update check, as for every catalog
 //! tool ([`owner`]).
+//!
+//! OSV's tag lists for the OTP repo leave out the patches made on side
+//! branches (`OTP-27.0.1`, `OTP-27.2.4`: patches of a minor release that a
+//! later minor replaced) and a few others (`OTP-26.2.1`): asked about one,
+//! OSV answers with few or no advisories, however vulnerable it is. Such an
+//! install is reported not checked ([`unlisted`]), and such a tag is never
+//! recommended as a fix ([`side_branch`]).
+//!
+//! TODO: CVE records give OTP's real ranges (`>= OTP-27.0-rc1, < OTP-27.3.3`
+//! for CVE-2025-32433); judging side-branch installs by them would replace
+//! "not checked" with a verdict.
 
+use crate::checks::TAG_PREFIX;
 use crate::checks::machine::catalog::ERLANG_DIRS;
 use crate::checks::machine::tools::updater;
 use crate::component::Component;
@@ -16,7 +28,13 @@ use crate::utils::files::{home, owner, read_capped};
 use crate::utils::net::github;
 use crate::utils::process::on_path;
 use crate::utils::re::Regex;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
+
+/// The OTP repo, as OSV's GIT records name it.
+pub fn repo() -> String {
+    github("erlang/otp")
+}
 
 /// Every `erl` on PATH, in a version manager's folder or in kerl's list of
 /// installations; and, for each one whose version couldn't be read, (the
@@ -45,8 +63,9 @@ fn from(found: Vec<(String, String)>) -> (Vec<Component>, Vec<(String, String)>)
     let mut seen = Vec::new();
     for (shown, real) in found {
         // A version manager's shim: the installs it points to are found in
-        // their own folders.
-        if real.contains("/shims/") || !owner(&real).is_empty() {
+        // their own folders. mise's shims are links to the mise binary, so
+        // only the path as shown says it is one.
+        if shown.contains("/shims/") || real.contains("/shims/") || !owner(&real).is_empty() {
             continue;
         }
         let Some(root) = root_of(Path::new(&real)) else {
@@ -66,13 +85,69 @@ fn from(found: Vec<(String, String)>) -> (Vec<Component>, Vec<(String, String)>)
         };
         let (fix, auto) = updater(&real, "erlang");
         let mut c = Component::new("runtime", "erlang", &v, &shown);
-        c.osv = Some(("GIT".into(), github("erlang/otp"), format!("OTP-{v}")));
+        c.osv = Some(("GIT".into(), repo(), format!("OTP-{v}")));
         c.eol = Some(("erlang".into(), v.split('.').next().unwrap_or("").to_string()));
+        // asdf and mise name installs `27.3.3`, not the tag `OTP-27.3.3`.
+        c.extra.insert(TAG_PREFIX.into(), "OTP-".into());
         c.fix = fix;
         c.auto = auto;
         out.push(c);
     }
     (out, unread)
+}
+
+/// A release tag's numbers (`OTP-26.2.5.11` -> 26, 2, 5, 11); None for a
+/// release candidate or anything else.
+fn release(tag: &str) -> Option<Vec<u64>> {
+    tag.strip_prefix("OTP-")?
+        .split('.')
+        .map(|p| p.parse().ok().filter(|_| p.bytes().all(|b| b.is_ascii_digit())))
+        .collect()
+}
+
+/// The first of `tags` showing that `tag` is a patch on a side branch: a
+/// later release that shares the numbers before one of `tag`'s, where `tag`
+/// has more after it. `OTP-27.0.1` is (`OTP-27.1`), `OTP-26.2.5.11` isn't:
+/// no `OTP-26.3` or `OTP-26.2.6` came after it.
+///
+/// Example: `side_branch("OTP-27.2.4", &tags)` is `Some("OTP-27.3")`.
+pub fn side_branch(tag: &str, tags: &[String]) -> Option<String> {
+    let t = release(tag)?;
+    tags.iter()
+        .filter(|u| {
+            release(u)
+                .is_some_and(|u| (1..t.len().saturating_sub(1)).any(|i| u.len() > i && u[..i] == t[..i] && u[i] > t[i]))
+        })
+        .min_by_key(|u| release(u))
+        .cloned()
+}
+
+/// Why OSV's answer for an install can't be taken as complete, or None
+/// when it can: OTP's tags couldn't be listed, the install is a side-branch
+/// patch ([`side_branch`]), or OSV answered no advisory at all for a
+/// release with newer ones of its major after it (a tag OSV's lists leave
+/// out; only the newest releases have none). `answer` is OSV's records for
+/// the install, None when OSV wasn't asked or didn't answer.
+pub fn unlisted(c: &Component, answer: Option<&Vec<Value>>, tags: &[String]) -> Option<String> {
+    let tag = format!("OTP-{}", c.version);
+    if tags.is_empty() {
+        return Some(format!(
+            "OTP's release tags couldn't be listed, so whether OSV's lists include {tag} isn't known"
+        ));
+    }
+    if let Some(later) = side_branch(&tag, tags) {
+        return Some(format!(
+            "{tag} is a patch on a side branch ({later} came after the release it patches), which OSV's lists for OTP leave out"
+        ));
+    }
+    let t = release(&tag)?;
+    let newest = tags.iter().filter_map(|u| release(u).map(|r| (r, u))).filter(|(r, _)| r[0] == t[0] && *r > t).max();
+    match (answer, newest) {
+        (Some(a), Some((_, newest))) if a.is_empty() => Some(format!(
+            "OSV lists no advisory for {tag} though {newest} came after it: OSV's lists for OTP leave some releases out"
+        )),
+        _ => None,
+    }
 }
 
 /// The OTP root an `erl` (symlinks resolved) belongs to: `<root>/bin/erl`

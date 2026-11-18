@@ -553,10 +553,16 @@ pub fn released(version: &str) -> bool {
 /// [`versions::pick_safe_by`]). Empty when no release fixes it: an advisory
 /// whose only fix is a commit counts as unfixed.
 ///
-/// For an upstream git repo, `newer` is {tag: advisory ids OSV reports for
-/// that tag} for the releases after the installed one; a tag fixes `rec`
-/// when OSV no longer reports it for that tag.
-pub fn fixed_versions(rec: &Value, eco: &str, pkg: &str, newer: Option<&BTreeMap<String, Vec<String>>>) -> Vec<String> {
+/// For an upstream git repo, `newer` is (the installed tag, {tag: advisory
+/// ids OSV reports for that tag} for the releases after it); a tag fixes
+/// `rec` when OSV no longer reports it for that tag and the record lists no
+/// later affected tag on that tag's release line ([`listed_later`]).
+pub fn fixed_versions(
+    rec: &Value,
+    eco: &str,
+    pkg: &str,
+    newer: Option<(&str, &BTreeMap<String, Vec<String>>)>,
+) -> Vec<String> {
     let mut out = Vec::new();
     for a in arr_at(rec, "affected") {
         if !matches(a, eco, pkg) {
@@ -576,14 +582,40 @@ pub fn fixed_versions(rec: &Value, eco: &str, pkg: &str, newer: Option<&BTreeMap
     }
     if eco == "GIT"
         && out.is_empty()
-        && let Some(newer) = newer
+        && let Some((installed, newer)) = newer
     {
         let mut ids = vec![str_at(rec, "id").to_string()];
         ids.extend(json::strs_at(rec, "aliases"));
-        out =
-            newer.iter().filter(|(_, found)| !found.iter().any(|f| ids.contains(f))).map(|(t, _)| t.clone()).collect();
+        out = newer
+            .iter()
+            .filter(|(t, found)| {
+                !found.iter().any(|f| ids.contains(f)) && listed_later(rec, pkg, installed, t).is_none()
+            })
+            .map(|(t, _)| t.clone())
+            .collect();
     }
     out
+}
+
+/// A tag `rec` lists as affected that is later than `tag` on `tag`'s release
+/// line (as many leading numbers as [`candidates`] groups `installed`'s
+/// lines by): OSV not reporting `rec` for `tag` then means OSV doesn't list
+/// `tag`, not that `tag` is fixed. OSV's tag lists for a repo leave out tags
+/// off the branches it walked: for CVE-2025-32433 it lists `OTP-27.0` and
+/// `OTP-27.1` but not `OTP-27.0.1`, which is as vulnerable.
+///
+/// Example: with `OTP-27.0`, `OTP-27.1` and `OTP-27.3.2` listed, installed
+/// `OTP-27.0` (line: the major), `OTP-27.0.1` has `OTP-27.1` later on its
+/// line, and `OTP-27.3.3` has none.
+pub fn listed_later(rec: &Value, pkg: &str, installed: &str, tag: &str) -> Option<String> {
+    let n = versions::numbers(installed).len().saturating_sub(1).max(1);
+    let family = |t: &str| t.find(|c: char| c.is_ascii_digit()).map(|i| t[..i].to_string());
+    arr_at(rec, "affected")
+        .iter()
+        .filter(|a| matches(a, "GIT", pkg))
+        .flat_map(|a| json::strs_at(a, "versions"))
+        .filter(|v| family(v) == family(tag) && versions::common_prefix(v, tag) >= n && versions::lt(tag, v))
+        .min_by(|a, b| versions::cmp(a, b))
 }
 
 /// The record's id, aliases and (distro records) upstream CVE ids.
@@ -644,32 +676,58 @@ fn shape(tag: &str) -> String {
     out
 }
 
+/// Whether a tag of shape `tag` (from [`shape`]) is a release like one of
+/// shape `want`: the same but for how many dotted numbers end it, so
+/// `OTP-N.N.N.N` (OTP's patches of a patch release) and `OTP-N.N` are like
+/// `OTP-N.N.N`, and `vN.N.NrcN` isn't like `vN.N.N`.
+fn like(want: &str, tag: &str) -> bool {
+    fn base(s: &str) -> &str {
+        let mut s = s;
+        while let Some(rest) = s.strip_suffix(".N") {
+            s = rest;
+        }
+        s
+    }
+    base(want) == base(tag)
+}
+
 /// Release tags after `installed` worth asking OSV about: the rest of its
-/// release line, plus the newest tag of each later line.
+/// release line, deeper patch tags included (`OTP-26.2.5` -> `OTP-26.2.5.11`);
+/// the tags of the later lines that share its parent (`v3.12.13` -> every
+/// `v3.13.*`), so the lowest fix of the same major can be found when its
+/// own line has none; and the newest tag of each line further on.
+///
+/// Example, with tags `v3.12.14 v3.13.0 v3.13.9 v3.14.5 v4.0.1 v4.0.2`:
+/// `candidates(.., "v3.12.13", ..)` is `v3.12.14 v3.13.0 v3.13.9 v3.14.5 v4.0.2`.
 pub fn candidates(cache: &Cache, repo: &str, installed: &str, offline: bool) -> Result<Vec<String>> {
     const PER_LINE: usize = 25;
     const LINES: usize = 6;
     let want = shape(installed);
-    let newer: Vec<String> =
-        tags(cache, repo, offline)?.into_iter().filter(|t| shape(t) == want && versions::lt(installed, t)).collect();
+    let newer: Vec<String> = tags(cache, repo, offline)?
+        .into_iter()
+        .filter(|t| like(&want, &shape(t)) && versions::lt(installed, t))
+        .collect();
     let n = versions::numbers(installed).len().saturating_sub(1).max(1);
-    let mut same: Vec<&String> = newer.iter().filter(|t| versions::common_prefix(installed, t) >= n).collect();
-    same.sort_by(|a, b| versions::cmp(a, b));
-    let mut later: BTreeMap<Vec<String>, &String> = BTreeMap::new();
+    let line = |t: &str| -> Vec<String> { versions::numbers(t).into_iter().take(n).collect() };
+    // Tags by line, each line's lowest first.
+    let mut lines: BTreeMap<Vec<String>, Vec<&String>> = BTreeMap::new();
     for t in &newer {
-        if versions::common_prefix(installed, t) < n {
-            let line: Vec<String> = versions::numbers(t).into_iter().take(n).collect();
-            match later.get(&line) {
-                Some(cur) if !versions::lt(cur, t) => {}
-                _ => {
-                    later.insert(line, t);
-                }
-            }
+        lines.entry(line(t)).or_default().push(t);
+    }
+    let mut near: Vec<&String> = Vec::new();
+    let mut far: Vec<&String> = Vec::new();
+    for ts in lines.values_mut() {
+        ts.sort_by(|a, b| versions::cmp(a, b));
+        let common = versions::common_prefix(installed, ts[0]);
+        if common >= n || (n > 1 && common >= n - 1) {
+            near.extend(ts.iter().take(PER_LINE));
+        } else if let Some(last) = ts.last() {
+            far.push(last);
         }
     }
-    let mut later: Vec<&String> = later.into_values().collect();
-    later.sort_by(|a, b| versions::cmp(a, b));
-    Ok(same.into_iter().take(PER_LINE).chain(later.into_iter().take(LINES)).cloned().collect())
+    near.sort_by(|a, b| versions::cmp(a, b));
+    far.sort_by(|a, b| versions::cmp(a, b));
+    Ok(near.into_iter().chain(far.into_iter().take(LINES)).cloned().collect())
 }
 
 /// Release tags of an upstream repo, from `git ls-remote`, cached a week;

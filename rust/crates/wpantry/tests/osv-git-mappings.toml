@@ -342,3 +342,12 @@ tag = "2.8.0"
 answers = 1
 status = "answers"
 example = "CVE-2021-38153"
+
+# Recorded 2026-11-18.
+[[mapping]]
+tool = "freeswitch"
+version = "1.10.10"
+tag = "v1.10.10"
+answers = 33
+status = "answers"
+example = "CVE-2023-51443"

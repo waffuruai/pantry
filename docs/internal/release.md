@@ -9,9 +9,9 @@ A tag `vX.Y.Z` on `main`. Pushing it runs the release workflow:
 1. **check**: the tag equals `version` in `rust/Cargo.toml` and is on `main`; `cargo package --workspace --locked` builds both crates from their packaged sources.
 2. **build**, per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `universal-apple-darwin`): two checkouts at different paths, each built with [`rust/release/build.sh`](../../rust/release/build.sh) (`--locked`, the release profile, remapped paths, `SOURCE_DATE_EPOCH` from the commit). The two binaries must be byte-identical or the release stops. A smoke test runs each one.
 3. **publish**, after a maintainer approves the `release` environment:
-   - It writes `SHA256SUMS`.
+   - It copies `THIRD-PARTY-NOTICES.txt` from `rust/crates/wpantry-cli/` (the notices every binary embeds, which CI keeps current: [dependencies.md](dependencies.md#third-party-notices)) and writes `SHA256SUMS` for the binaries and it.
    - It copies `install.sh` with the release's tag stamped in as its default version, and writes `install.sh.sha256` beside it for waffuru.ai's release receiver, which serves a verified, pinned copy at `https://waffuru.ai/pantry/install.sh`.
-   - It makes a GitHub build-provenance attestation for each binary and `install.sh`, and a cosign keyless bundle for each binary.
+   - It makes a GitHub build-provenance attestation for each binary, `install.sh` and `THIRD-PARTY-NOTICES.txt`, and a cosign keyless bundle for each binary.
    - It verifies all of that the way users will, then creates the GitHub release as a draft with generated notes. Releases in this repository are immutable once published, so nothing can be attached after that.
    - It publishes `wpantry-yara`, `wpantry` and `wpantry-cli`, in that order, to crates.io through trusted publishing. [`wcli`](https://github.com/waffuruai/wcli), which `wpantry-cli` depends on, is published from its own repository first.
 4. **packslip**: in a job that can't write the release, [packslip](https://packslip.dev) (`jdx/packslip`, pinned) signs a manifest of the three binaries: digests, platforms, and the command name `wpantry`. It links the publish job's attestations. mise's `packslip:` backend and `packslip verify` check releases against it.

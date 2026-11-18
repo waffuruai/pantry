@@ -48,13 +48,14 @@ Every release ships:
 | `wpantry-aarch64-unknown-linux-musl` | Linux arm64, static |
 | `wpantry-universal-apple-darwin` | macOS, Apple silicon and Intel |
 | `wpantry-x86_64-pc-windows-msvc.exe` | Windows x86-64: repo checks only (see [Windows](#windows)) |
-| `SHA256SUMS` | SHA-256 of each binary |
+| `THIRD-PARTY-NOTICES.txt` | The licences and notices of the third-party crates, data and fonts built into every binary; `wpantry licenses` prints the same text |
+| `SHA256SUMS` | SHA-256 of each binary and of `THIRD-PARTY-NOTICES.txt` |
 | `packslip.sigstore.json` | The signed packslip: every binary's digest, platform and command name |
 | `<binary>.sigstore.json` | A cosign keyless signature bundle for that binary |
 | `install.sh` | The install script above |
 | `install.sh.sha256` | SHA-256 of `install.sh` |
 
-Each binary and `install.sh` also has a GitHub artifact attestation: a signed record that this repository's release workflow built it from the tagged commit. Releases: <https://github.com/waffuruai/pantry/releases>.
+Each binary, `install.sh` and `THIRD-PARTY-NOTICES.txt` also has a GitHub artifact attestation: a signed record that this repository's release workflow built it from the tagged commit. Releases: <https://github.com/waffuruai/pantry/releases>.
 
 ### Download
 

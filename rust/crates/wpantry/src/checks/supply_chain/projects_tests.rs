@@ -158,9 +158,9 @@ fn a_go_mod_is_checked_as_its_toolchain_too() {
         "{:?}",
         s.findings
     );
-    assert!(s.findings.iter().all(|f| f.location == old_root.join("go.mod").to_string_lossy()));
+    assert!(s.findings.iter().all(|f| f.location == command_path(&old_root.join("go.mod"))), "{:?}", s.findings);
     // The fix raises the toolchain line, the one that sets the version.
-    let want = format!("cd {} && go get toolchain@go1.26.11", quote(&old_root.to_string_lossy()));
+    let want = format!("cd {} && go get toolchain@go1.26.11", quote(&command_path(&old_root)));
     assert!(s.findings.iter().all(|f| f.fix_cmd == want), "{:?}", s.findings);
 }
 

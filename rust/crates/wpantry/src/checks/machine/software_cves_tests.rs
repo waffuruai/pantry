@@ -14,6 +14,7 @@ fn program(name: &str, version: &str, publisher: &str) -> Subject {
         location: format!(r"HKLM\x\{name}"),
         vendors: vendors_for(publisher),
         product: None,
+        released: None,
     }
 }
 
@@ -139,6 +140,7 @@ fn record(id: &str, affected: Value, score: Option<f64>) -> Record {
     Record {
         id: id.into(),
         title: "JWT signature validation bypass".into(),
+        published: String::new(),
         score: score.map(|s| (s, "4.0".to_string())),
         affected: vec![affected],
     }
@@ -404,7 +406,8 @@ fn catalog_tools_are_matched_by_the_table_only() {
         path: format!("/opt/{name}/bin/{name}"),
         ..Default::default()
     };
-    let subjects = tool_subjects(&[tool("java", "17.0.12"), tool("mysql", "8.4.3"), tool("node", "22.0.0")]);
+    let subjects =
+        tool_subjects(&[tool("java", "17.0.12"), tool("mysql", "8.4.3"), tool("node", "22.0.0")], &|_| false);
     assert_eq!(subjects.len(), 2);
     assert_eq!(subjects[0].vendors, ["oracle", "oracle corporation"]);
     assert_eq!(subjects[0].product.as_deref(), Some("Oracle Java SE"));
@@ -429,7 +432,8 @@ fn catalog_tools_are_matched_by_the_table_only() {
         .collect();
     assert_eq!(matching_products(&subjects[0], "oracle corporation", &listed), ["java se", "oracle java se"]);
     // A Java 8 with its update is judged by it; one without can't be judged.
-    let eight = tool_subjects(&[tool("java", "1.8.0_412"), tool("java", "1.8.0_512"), tool("java", "1.8.0")]);
+    let eight =
+        tool_subjects(&[tool("java", "1.8.0_412"), tool("java", "1.8.0_512"), tool("java", "1.8.0")], &|_| false);
     let (affected, unknown) = assess(&eight[0], "oracle corporation", &recs(java_entry()), &|_| false);
     assert!(!unknown);
     assert_eq!(
@@ -465,11 +469,488 @@ fn the_tool_check_asks_for_oracle_records() {
         ..Default::default()
     };
     let java = crate::component::Component { name: "java".into(), version: "17.0.22".into(), ..mysql.clone() };
-    tools(&mut s, &[mysql, java]).unwrap();
+    tools(&mut s, &[mysql, java], &HashMap::new()).unwrap();
     assert_eq!(testing::kinds(&s), [("mysql".into(), "CVE-2026-114952".into(), "warn".into())]);
     assert_eq!(s.findings[0].location, "/usr/sbin/mysqld");
     // No tool the table names: nothing asked.
     let before = net.requests().len();
-    tools(&mut s, &[]).unwrap();
+    tools(&mut s, &[], &HashMap::new()).unwrap();
     assert_eq!(net.requests().len(), before);
+}
+
+/// A CVE JSON 5 record trimmed to what is read: its id, title, one
+/// `affected[]` entry as the index serves it, and the CNA's base score.
+fn cve(id: &str, title: &str, affected: Value, score: f64) -> Value {
+    json!({"cveMetadata": {"cveId": id, "state": "PUBLISHED"},
+           "containers": {"cna": {"title": title, "affected": [affected],
+                                  "metrics": [{"cvssV3_1": {"version": "3.1", "baseScore": score}}]}}})
+}
+
+/// `rec` with its `cveMetadata.datePublished` on `day`.
+fn published(mut rec: Value, day: &str) -> Value {
+    rec["cveMetadata"]["datePublished"] = json!(format!("{day}T12:00:00.000Z"));
+    rec
+}
+
+/// CVE-2024-4577 as filed (published 2024-06-09): the 8.1 to 8.3 trains,
+/// a default of affected.
+fn php_4577() -> Value {
+    published(
+        cve(
+            "CVE-2024-4577",
+            "Argument Injection in PHP-CGI",
+            json!({"vendor": "PHP Group", "product": "PHP", "defaultStatus": "affected", "versions": [
+                {"lessThan": "8.1.29", "status": "affected", "version": "8.1.*", "versionType": "semver"},
+                {"lessThan": "8.2.20", "status": "affected", "version": "8.2.*", "versionType": "semver"},
+                {"lessThan": "8.3.8", "status": "affected", "version": "8.3.*", "versionType": "semver"}]}),
+            9.8,
+        ),
+        "2024-06-09",
+    )
+}
+
+/// PHP's records as the index serves them (2026-11-17), `affected[]` as
+/// filed, with their publication days.
+fn php_records() -> (Vec<Value>, Vec<Value>) {
+    let group = vec![
+        published(
+            cve(
+                "CVE-2026-109618",
+                "RCE via OOM corruption",
+                json!({"vendor": "PHP Group", "product": "PHP", "packageName": "php-src", "defaultStatus": "unaffected", "versions": [
+                {"status": "affected", "version": "8.2.*", "lessThan": "8.2.35", "versionType": "semver"},
+                {"status": "affected", "version": "8.3.*", "lessThan": "8.3.36", "versionType": "semver"},
+                {"status": "affected", "version": "8.4.*", "lessThan": "8.4.27", "versionType": "semver"},
+                {"status": "affected", "version": "8.5.*", "lessThan": "8.5.12", "versionType": "semver"}]}),
+                8.1,
+            ),
+            "2026-10-21",
+        ),
+        published(
+            cve(
+                "CVE-2024-8932",
+                "OOB access in ldap_escape",
+                json!({"vendor": "PHP Group", "product": "PHP", "defaultStatus": "affected", "versions": [
+                {"lessThan": "8.1.31", "status": "affected", "version": "8.1.*", "versionType": "semver"},
+                {"lessThan": "8.2.26", "status": "affected", "version": "8.2.*", "versionType": "semver"},
+                {"lessThan": "8.3.14", "status": "affected", "version": "8.3.*", "versionType": "semver"}]}),
+                9.8,
+            ),
+            "2024-11-22",
+        ),
+        php_4577(),
+    ];
+    let bare = vec![
+        cve(
+            "CVE-2026-14355",
+            "ext/openssl: Memory corruption in openssl_encrypt with AES-WRAP-PAD",
+            json!({"vendor": "php", "product": "php", "defaultStatus": "affected", "versions": [
+                {"status": "affected", "version": "8.2.0", "lessThan": "8.2.32", "versionType": "semver"},
+                {"status": "affected", "version": "8.3.0", "lessThan": "8.3.32", "versionType": "semver"},
+                {"status": "affected", "version": "8.4.0", "lessThan": "8.4.23", "versionType": "semver"},
+                {"status": "affected", "version": "8.5.0", "lessThan": "8.5.8", "versionType": "semver"}]}),
+            4.8,
+        ),
+        cve(
+            "CVE-2019-11043",
+            "Underflow in PHP-FPM can lead to RCE",
+            json!({"vendor": "PHP", "product": "PHP", "versions": [
+                {"lessThan": "7.1.33", "status": "affected", "version": "7.1.x", "versionType": "custom"},
+                {"lessThan": "7.2.24", "status": "affected", "version": "7.2.x", "versionType": "custom"},
+                {"lessThan": "7.3.11", "status": "affected", "version": "7.3.x", "versionType": "custom"}]}),
+            8.7,
+        ),
+        cve(
+            "CVE-2014-3622",
+            "",
+            json!({"vendor": "PHP", "product": "PHP", "versions": [{"status": "affected", "version": "5.6.x before 5.6.1"}]}),
+            0.0,
+        ),
+    ];
+    (group, bare)
+}
+
+/// Rust's records as the index serves them (2026-11-17).
+fn rust_records() -> (Vec<Value>, Vec<Value>) {
+    let lang = vec![cve(
+        "CVE-2024-24576",
+        "Rusts's `std::process::Command` did not properly escape arguments of batch files on Windows",
+        json!({"vendor": "rust-lang", "product": "rust", "versions": [{"version": "< 1.77.2", "status": "affected"}]}),
+        10.0,
+    )];
+    let project = vec![cve(
+        "CVE-2025-11233",
+        "Rust standard library didn't detect all path separators on Cygwin",
+        json!({"vendor": "Rust Project", "product": "std", "defaultStatus": "unaffected", "versions": [
+            {"lessThan": "1.89.0", "status": "affected", "version": "1.87.0", "versionType": "semver"}]}),
+        6.3,
+    )];
+    (lang, project)
+}
+
+/// The index, for PHP and Rust: the vendors and products their records
+/// are filed under (`browse/php` lists many more products than these).
+fn runtimes_index() -> Fake {
+    Fake::new(|r| {
+        let (group, bare) = php_records();
+        let (lang, project) = rust_records();
+        let page = crate::sources::cve_records::tests::page;
+        let u = r.url.as_str();
+        Ok(if u.ends_with("/browse/php%20group") {
+            Response::ok(json!(["php imagick extension", "php"]).to_string())
+        } else if u.ends_with("/browse/php") {
+            Response::ok(json!(["php", "php_fi", "pear", "frankenphp"]).to_string())
+        } else if u.ends_with("/browse/rust-lang") {
+            Response::ok(json!(["cargo", "regex", "rust"]).to_string())
+        } else if u.ends_with("/browse/rust%20lang") {
+            Response::ok(json!(["rust"]).to_string())
+        } else if u.ends_with("/browse/rust%20project") {
+            Response::ok(json!(["cargo", "std"]).to_string())
+        } else if u.contains("search/php%20group/php?") {
+            Response::ok(page(&group, 2))
+        } else if u.contains("search/php/php?") {
+            Response::ok(page(&bare, 3))
+        } else if u.contains("search/rust-lang/rust?") {
+            Response::ok(page(&lang, 1))
+        } else if u.contains("search/rust%20project/std?") {
+            Response::ok(page(&project, 1))
+        } else if u.contains("/search/") {
+            Response::ok(page(&[], 0))
+        } else {
+            Response::not_found()
+        })
+    })
+}
+
+fn runtime(name: &str, version: &str) -> crate::component::Component {
+    let (repo, tag) = match name {
+        "php" => ("https://github.com/php/php-src.git", format!("php-{version}")),
+        _ => ("https://github.com/rust-lang/rust.git", version.to_string()),
+    };
+    crate::component::Component {
+        kind: "runtime".into(),
+        name: name.into(),
+        version: version.into(),
+        path: format!("/usr/local/bin/{name}"),
+        osv: Some(("GIT".into(), repo.into(), tag)),
+        ..Default::default()
+    }
+}
+
+/// OSV's answer for each component: nothing.
+fn osv_empty(found: &[crate::component::Component]) -> HashMap<Item, Vec<Value>> {
+    found.iter().filter_map(|c| c.osv.clone()).map(|i| (i, Vec::new())).collect()
+}
+
+fn failures(s: &Scan) -> Vec<(String, String, String, String)> {
+    s.findings
+        .iter()
+        .filter(|f| f.kind != "unchecked")
+        .map(|f| (f.component.clone(), f.vuln_id.clone(), f.status.clone(), f.fixed.clone()))
+        .collect()
+}
+
+fn row(c: &str, id: &str, status: &str, fixed: &str) -> (String, String, String, String) {
+    (c.into(), id.into(), status.into(), fixed.into())
+}
+
+#[test]
+fn php_and_rust_record_shapes_are_read() {
+    let affected = |range: &str, fixed: &str| Verdict::Affected { range: range.into(), fixed: fixed.into() };
+    let php = |versions: Value, default: &str| json!({"vendor": "PHP Group", "product": "PHP", "versions": versions, "defaultStatus": default});
+    // `8.3.*` with `lessThan` (CVE-2026-109618): the 8.3 train up to its fix.
+    let trains = php(
+        json!([{"status": "affected", "version": "8.3.*", "lessThan": "8.3.36"},
+               {"status": "affected", "version": "8.4.*", "lessThan": "8.4.27"}]),
+        "unaffected",
+    );
+    assert_eq!(judge(&parts("8.4.20"), &trains), affected(">=8.4.*, <8.4.27", "8.4.27"));
+    assert_eq!(judge(&parts("8.4.0"), &trains), affected(">=8.4.*, <8.4.27", "8.4.27"));
+    assert_eq!(judge(&parts("8.3.13"), &trains), affected(">=8.3.*, <8.3.36", "8.3.36"));
+    for clean in ["8.4.27", "8.3.36", "8.5.0", "8.2.9"] {
+        assert_eq!(judge(&parts(clean), &trains), Verdict::Unaffected, "{clean}");
+    }
+    // The same with a default of affected (CVE-2024-8932): past the fix of its
+    // own listed train is clean; a train the record doesn't list is unknown.
+    let default = php(json!([{"status": "affected", "version": "8.3.*", "lessThan": "8.3.14"}]), "affected");
+    assert_eq!(judge(&parts("8.3.13"), &default), affected(">=8.3.*, <8.3.14", "8.3.14"));
+    assert_eq!(judge(&parts("8.3.14"), &default), Verdict::Unaffected);
+    assert_eq!(judge(&parts("8.4.20"), &default), Verdict::Unknown);
+    assert_eq!(judge(&parts("7.4.33"), &default), Verdict::Unknown);
+    // A plain start and fix in one train (CVE-2026-14355, `8.4.0` to `8.4.23`).
+    let plain = php(json!([{"status": "affected", "version": "8.4.0", "lessThan": "8.4.23"}]), "affected");
+    assert_eq!(judge(&parts("8.4.22"), &plain), affected(">=8.4.0, <8.4.23", "8.4.23"));
+    assert_eq!(judge(&parts("8.4.27"), &plain), Verdict::Unaffected);
+    // `7.4.X` (CVE-2022-31629) and `7.3.x` with `lessThanOrEqual` (CVE-2021-21703).
+    let upper = php(json!([{"version": "7.4.X", "status": "affected", "lessThan": "7.4.31"}]), "");
+    assert_eq!(judge(&parts("7.4.30"), &upper), affected(">=7.4.X, <7.4.31", "7.4.31"));
+    let le = php(json!([{"lessThanOrEqual": "7.3.31", "status": "affected", "version": "7.3.x"}]), "");
+    assert_eq!(judge(&parts("7.3.31"), &le), affected(">=7.3.x, <=7.3.31", ""));
+    // Trains with their fix in words (CVE-2020-7067, CVE-2019-11038, CVE-2014-3622).
+    let below = php(
+        json!([{"status": "affected", "version": "7.2.x below 7.2.30"},
+               {"status": "affected", "version": "7.3.x below 7.3.17 and 7.4.x below 7.4.5"}]),
+        "",
+    );
+    assert_eq!(judge(&parts("7.2.29"), &below), affected(">=7.2.x, <7.2.30", "7.2.30"));
+    assert_eq!(judge(&parts("7.3.16"), &below), affected(">=7.3.x, <7.3.17", "7.3.17"));
+    assert_eq!(judge(&parts("7.4.4"), &below), affected(">=7.4.x, <7.4.5", "7.4.5"));
+    assert_eq!(judge(&parts("7.4.5"), &below), Verdict::Unaffected);
+    let lt = php(json!([{"status": "affected", "version": "7.1.x < 7.1.30"}]), "");
+    assert_eq!(judge(&parts("7.1.29"), &lt), affected(">=7.1.x, <7.1.30", "7.1.30"));
+    let before = php(json!([{"status": "affected", "version": "5.6.x before 5.6.1"}]), "");
+    assert_eq!(judge(&parts("5.6.0"), &before), affected(">=5.6.x, <5.6.1", "5.6.1"));
+    assert_eq!(judge(&parts("8.4.20"), &before), Verdict::Unaffected);
+    // Comparisons alone, as GitHub's records write them (CVE-2024-24576, CVE-2023-40030).
+    let rust =
+        |v: &str| json!({"vendor": "rust-lang", "product": "rust", "versions": [{"version": v, "status": "affected"}]});
+    assert_eq!(judge(&parts("1.76.0"), &rust("< 1.77.2")), affected("<1.77.2", "1.77.2"));
+    assert_eq!(judge(&parts("1.77.2"), &rust("< 1.77.2")), Verdict::Unaffected);
+    assert_eq!(judge(&parts("1.71.1"), &rust(">= 1.60.0, < 1.72")), affected(">=1.60.0, <1.72", "1.72"));
+    assert_eq!(judge(&parts("1.59.0"), &rust(">= 1.60.0, < 1.72")), Verdict::Unaffected);
+    assert_eq!(judge(&parts("1.72.0"), &rust(">= 1.60.0, < 1.72")), Verdict::Unaffected);
+    assert_eq!(judge(&parts("3.0"), &rust("<= 3.0")), affected("<=3.0", ""));
+    assert_eq!(judge(&parts("9.1"), &rust(">= 5.0")), affected(">=5.0", ""));
+    // Spellings not read stay unknown, never clean.
+    for odd in ["> 1.0", "= 1.0", "1.18.0 and later [fixed: 1.30.0]", "8.3.x below soon", ">= 1.0, >= 2.0", "< "] {
+        assert_eq!(judge(&parts("1.5"), &rust(odd)), Verdict::Unknown, "{odd}");
+    }
+}
+
+#[test]
+fn spelled_versions_and_release_trains() {
+    let one = |v: &str| spelled(&json!({"status": "affected", "version": v}));
+    assert_eq!(one("< 1.77.2"), Some(vec![json!({"status": "affected", "version": "0", "lessThan": "1.77.2"})]));
+    assert_eq!(one(">= 5.0"), Some(vec![json!({"status": "affected", "version": "5.0", "lessThan": "*"})]));
+    assert_eq!(
+        one("7.3.x below 7.3.17 and 7.4.x below 7.4.5"),
+        Some(vec![
+            json!({"status": "affected", "version": "7.3.x", "lessThan": "7.3.17"}),
+            json!({"status": "affected", "version": "7.4.x", "lessThan": "7.4.5"})
+        ])
+    );
+    // One version, a span, a train missing its fix, a fixed train without the `.x`: not spelled out.
+    for none in ["8.4.20", "8.4.0-8.4.13", "7.2.x below", "7.2 below 7.2.30", "7.2.x below 7.2.30 and soon"] {
+        assert_eq!(one(none), None, "{none}");
+    }
+    // An entry that already has its bound is read as it is.
+    assert_eq!(spelled(&json!({"status": "affected", "version": "< 1", "lessThan": "2"})), None);
+    assert_eq!(train_of("8.3.*", "8.3.36"), Some(parts("8.3")));
+    assert_eq!(train_of("7.4.X", "7.4.31"), Some(parts("7.4")));
+    assert_eq!(train_of("8.4.0", "8.4.23"), Some(parts("8.4")));
+    assert_eq!(train_of("1.87.0", "1.89.0"), None, "spans trains");
+    assert_eq!(train_of("24.8.0", "24.11.17.0"), None);
+    assert_eq!(train_of("0", "1.77.2"), None);
+    assert_eq!(train_of("*", "3"), None);
+}
+
+#[test]
+fn php_8_4_20_fails_cve_2026_109618_and_8_4_27_does_not() {
+    let d = TempDir::new("php-cve").unwrap();
+    let net = runtimes_index();
+    let mut s = testing::scan(&net, &d);
+    let php = [runtime("php", "8.4.20")];
+    tools(&mut s, &php, &osv_empty(&php)).unwrap();
+    assert_eq!(
+        failures(&s),
+        [row("php", "CVE-2026-109618", "fail", "8.4.27"), row("php", "CVE-2026-14355", "fail", "8.4.23")]
+    );
+    let f = &s.findings[0];
+    assert_eq!(
+        (f.kind.as_str(), f.affected_range.as_str(), f.severity.as_str()),
+        ("runtime", ">=8.4.*, <8.4.27", "HIGH")
+    );
+    assert_eq!(f.note, "RCE via OOM corruption (CVE record for vendor \"PHP Group\", product \"PHP\")");
+    assert_eq!(f.fix_cmd, "Update php to 8.4.27 or later from its vendor");
+    // CVE-2024-8932 lists the 8.1 to 8.3 trains with a default of affected:
+    // 8.4 can't be judged by it, and says so.
+    assert_eq!(testing::unchecked_note(&s, &unjudged(TOOLS_WHAT)), "php");
+    let urls: Vec<String> = net.requests().iter().map(|r| r.url.clone()).collect();
+    assert!(urls.iter().any(|u| u.ends_with("/browse/php%20group")) && urls.iter().any(|u| u.ends_with("/browse/php")));
+
+    // The fixed release: neither record fails it (CVE-2026-14355's 8.4 train ends at 8.4.23).
+    let mut s = testing::scan(&net, &d);
+    let fixed = [runtime("php", "8.4.27")];
+    tools(&mut s, &fixed, &osv_empty(&fixed)).unwrap();
+    assert_eq!(failures(&s), []);
+    assert_eq!(testing::unchecked_note(&s, &unjudged(TOOLS_WHAT)), "php");
+
+    // 8.3.13, which OSV's php-src answer leaves clean: CVE-2024-8932 among three.
+    let mut s = testing::scan(&net, &d);
+    let old = [runtime("php", "8.3.13")];
+    tools(&mut s, &old, &osv_empty(&old)).unwrap();
+    assert_eq!(
+        failures(&s),
+        [
+            row("php", "CVE-2026-109618", "fail", "8.3.36"),
+            row("php", "CVE-2024-8932", "fail", "8.3.14"),
+            row("php", "CVE-2026-14355", "fail", "8.3.32")
+        ]
+    );
+    assert_eq!(s.findings[1].severity, "CRITICAL");
+    assert!(!s.findings.iter().any(|f| f.kind == "unchecked"), "every record judges 8.3: {:?}", testing::kinds(&s));
+}
+
+#[test]
+fn rust_is_judged_by_the_rust_lang_and_std_records() {
+    let d = TempDir::new("rust-cve").unwrap();
+    let net = runtimes_index();
+    let mut s = testing::scan(&net, &d);
+    let old = [runtime("rust", "1.76.0")];
+    tools(&mut s, &old, &osv_empty(&old)).unwrap();
+    assert_eq!(failures(&s), [row("rust", "CVE-2024-24576", "fail", "1.77.2")]);
+    assert_eq!((s.findings[0].affected_range.as_str(), s.findings[0].severity.as_str()), ("<1.77.2", "CRITICAL"));
+    assert!(s.findings.iter().all(|f| f.kind != "unchecked"), "{:?}", testing::kinds(&s));
+    // The index keeps `rust-lang` with its hyphen.
+    assert!(net.requests().iter().any(|r| r.url.ends_with("/browse/rust-lang")));
+    for (version, want) in [("1.77.2", vec![]), ("1.88.0", vec![row("rust", "CVE-2025-11233", "fail", "1.89.0")])] {
+        let mut s = testing::scan(&net, &d);
+        let c = [runtime("rust", version)];
+        tools(&mut s, &c, &osv_empty(&c)).unwrap();
+        assert_eq!(failures(&s), want, "{version}");
+    }
+}
+
+#[test]
+fn php_and_rust_ask_cve_records_only_when_osv_has_nothing() {
+    let d = TempDir::new("osv-first").unwrap();
+    let net = runtimes_index();
+    let found = [runtime("php", "8.4.20"), runtime("rust", "1.76.0")];
+    // OSV answered for both: its findings stand, nothing else is asked.
+    let mut answered = osv_empty(&found);
+    for v in answered.values_mut() {
+        v.push(json!({"id": "CVE-2026-1"}));
+    }
+    let mut s = testing::scan(&net, &d);
+    tools(&mut s, &found, &answered).unwrap();
+    assert!(s.findings.is_empty() && net.requests().is_empty(), "{:?}", testing::kinds(&s));
+    // OSV couldn't be asked (no answer at all): the records decide too.
+    let mut s = testing::scan(&net, &d);
+    tools(&mut s, &found[1..], &HashMap::new()).unwrap();
+    assert_eq!(failures(&s), [row("rust", "CVE-2024-24576", "fail", "1.77.2")]);
+    // OSV had nothing and the index can't be reached: not checked, not clean.
+    let d = TempDir::new("osv-first-offline").unwrap();
+    let offline = Fake::offline();
+    let mut s = testing::scan(&offline, &d);
+    tools(&mut s, &found, &osv_empty(&found)).unwrap();
+    assert_eq!(failures(&s), []);
+    assert_eq!(testing::unchecked_note(&s, &unreached(TOOLS_WHAT)), "php, rust");
+    // The other table tools don't wait for OSV.
+    let java = crate::component::Component { name: "java".into(), version: "17.0.12".into(), ..runtime("rust", "1") };
+    assert_eq!(tool_subjects(std::slice::from_ref(&java), &|_| true).len(), 1);
+    assert_eq!(tool_subjects(&found, &|_| true), []);
+    assert_eq!(tool_subjects(&found, &|_| false).len(), 4, "two spellings each");
+}
+
+/// endoflife.date's PHP cycles as it serves them (2026-11-17), trimmed:
+/// 8.4 was first released 2024-11-21, 8.3 2023-11-23.
+const PHP_CYCLES: &str = r#"[{"cycle": "8.5", "releaseDate": "2025-11-20", "eol": "2029-12-31", "latest": "8.5.12"},
+    {"cycle": "8.4", "releaseDate": "2024-11-21", "eol": "2028-12-31", "latest": "8.4.27"},
+    {"cycle": "8.3", "releaseDate": "2023-11-23", "eol": "2027-12-31", "latest": "8.3.36"},
+    {"cycle": "5.6", "eol": "2018-12-31", "latest": "5.6.40"}]"#;
+
+fn php_subject(version: &str, released: Option<&str>) -> Subject {
+    let mut x = tool_subjects(&[runtime("php", version)], &|_| false).remove(0);
+    x.released = released.map(str::to_string);
+    x
+}
+
+fn on(entry: Value, id: &str, day: &str) -> Record {
+    Record { id: id.into(), title: "t".into(), published: day.into(), score: None, affected: vec![entry] }
+}
+
+#[test]
+fn a_train_released_after_the_record_is_not_what_it_calls_affected() {
+    let entry = |rec: Value| rec["containers"]["cna"]["affected"][0].clone();
+    let (group, _) = php_records();
+    let e8932 = entry(group[1].clone());
+    let e4577 = entry(php_4577());
+    let i = |v: &str| parts(v);
+    // Every listed train is older than 8.4, under a default of affected.
+    assert!(unlisted_later_train(&i("8.4.27"), &e8932) && unlisted_later_train(&i("8.5.0"), &e4577));
+    // Not for a listed train, a default of unaffected, or a range that names no train.
+    assert!(!unlisted_later_train(&i("8.3.20"), &e8932));
+    assert!(!unlisted_later_train(&i("8.4.27"), &entry(group[0].clone())));
+    let open = json!({"defaultStatus": "affected", "versions": [{"status": "affected", "version": "0", "lessThan": "8.3.14"}]});
+    assert!(!unlisted_later_train(&i("8.4.27"), &open));
+    assert!(!unlisted_later_train(&i("8.4.27"), &json!({"defaultStatus": "affected", "versions": []})));
+    let words =
+        json!({"defaultStatus": "affected", "versions": [{"status": "affected", "version": "7.3.x below 7.3.17"}]});
+    assert!(unlisted_later_train(&i("8.4.27"), &words));
+
+    let day84 = Some("2024-11-21");
+    // CVE-2024-4577, published 2024-06-09, before 8.4's first release: 8.4.27 is clean.
+    let x = php_subject("8.4.27", day84);
+    assert_eq!(
+        assess(&x, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false),
+        (vec![], false)
+    );
+    // CVE-2024-8932 was published 2024-11-22, the day after 8.4's first
+    // release (2024-11-21): it could have meant 8.4, so 8.4.27 stays unjudged.
+    assert_eq!(
+        assess(&x, "php group", &[on(e8932.clone(), "CVE-2024-8932", "2024-11-22")], &|_| false),
+        (vec![], true)
+    );
+    // A record published after 8.4 that lists only 8.3: unjudged.
+    let only83 = json!({"vendor": "PHP Group", "product": "PHP", "defaultStatus": "affected",
+        "versions": [{"status": "affected", "version": "8.3.*", "lessThan": "8.3.40"}]});
+    assert_eq!(assess(&x, "php group", &[on(only83, "CVE-2026-6", "2025-03-01")], &|_| false), (vec![], true));
+    // Either date unknown: unjudged.
+    let unknown = php_subject("8.4.27", None);
+    assert_eq!(
+        assess(&unknown, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false),
+        (vec![], true)
+    );
+    assert_eq!(assess(&x, "php group", &[on(e4577.clone(), "CVE-2024-4577", "")], &|_| false), (vec![], true));
+    let odd = php_subject("8.4.27", Some("soon"));
+    assert_eq!(
+        assess(&odd, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false),
+        (vec![], true)
+    );
+    // A listed train is still judged by its range.
+    let (found, unknown) = assess(
+        &php_subject("8.3.5", Some("2023-11-23")),
+        "php group",
+        &[on(e4577, "CVE-2024-4577", "2024-06-09")],
+        &|_| false,
+    );
+    assert!(!unknown);
+    assert_eq!((found[0].vuln_id.as_str(), found[0].fixed.as_str()), ("CVE-2024-4577", "8.3.8"));
+}
+
+#[test]
+fn the_tool_check_takes_the_train_date_from_the_end_of_life_copy() {
+    let d = TempDir::new("php-later").unwrap();
+    let net = Fake::new(|r| {
+        let page = crate::sources::cve_records::tests::page;
+        let u = r.url.as_str();
+        Ok(if u.ends_with("/php.json") {
+            Response::ok(PHP_CYCLES)
+        } else if u.ends_with("/browse/php%20group") {
+            Response::ok(json!(["php"]).to_string())
+        } else if u.contains("/browse/") {
+            Response::ok("[]")
+        } else if u.contains("search/php%20group/php?") {
+            Response::ok(page(&[php_4577()], 1))
+        } else {
+            Response::not_found()
+        })
+    });
+    let mut php = runtime("php", "8.4.27");
+    php.eol = Some(("php".into(), "8.4".into()));
+    let found = [php];
+    // endoflife.date not fetched yet: 8.4's first release is unknown.
+    let mut s = testing::scan(&net, &d);
+    tools(&mut s, &found, &osv_empty(&found)).unwrap();
+    assert_eq!(testing::unchecked_note(&s, &unjudged(TOOLS_WHAT)), "php");
+    // Fetched, as the inventory check does before this one: clean, nothing more asked of it.
+    let mut s = testing::scan(&net, &d);
+    crate::sources::endoflife::eol_prefetch(&s.cache, &net, &["php".to_string()], false).unwrap();
+    let before = net.requests().iter().filter(|r| r.url.ends_with("/php.json")).count();
+    tools(&mut s, &found, &osv_empty(&found)).unwrap();
+    assert!(s.findings.is_empty(), "{:?}", testing::kinds(&s));
+    assert_eq!(net.requests().iter().filter(|r| r.url.ends_with("/php.json")).count(), before);
+    assert_eq!(crate::sources::endoflife::released(&s.cache, "php", "8.4").unwrap().as_deref(), Some("2024-11-21"));
+    assert_eq!(crate::sources::endoflife::released(&s.cache, "php", "5.6").unwrap(), None, "no date on the page");
+    assert_eq!(crate::sources::endoflife::released(&s.cache, "nodejs", "24").unwrap(), None, "never fetched");
 }

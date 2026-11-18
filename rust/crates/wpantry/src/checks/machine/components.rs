@@ -9,10 +9,13 @@ use crate::error::Result;
 use crate::finding::Finding;
 use crate::sources::osv::Item;
 use crate::sources::{endoflife, osv, releases};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
-/// OSV, end of life and (PostgreSQL) the project's own table.
-pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
+/// OSV, end of life and (PostgreSQL) the project's own table. Returns
+/// OSV's answers, for the checks that go on where OSV had nothing
+/// ([`crate::checks::machine::software_cves::tools`]).
+pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, Vec<Value>>> {
     let items: Vec<Item> = found.iter().filter_map(|c| c.osv.clone()).collect();
     let answers = scan.lookup(&items, "tools, runtimes and packages against OSV")?;
     // For upstream repos, ask OSV about the newer release tags too: the first
@@ -70,7 +73,7 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<()> {
             scan.eol(c, failing)?;
         }
     }
-    Ok(())
+    Ok(answers)
 }
 
 /// A newer mise release only warns (OSV decides failures): a human bumps it

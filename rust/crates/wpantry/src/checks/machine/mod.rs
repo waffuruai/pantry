@@ -81,8 +81,8 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         });
         let brew_ran = brew_job.as_ref().filter(|j| j.stale).map(|j| s.spawn(move || brew_vulns::brew_scan(j)));
         let found = inventory(scan);
-        components::components(scan, &found)?;
-        software_cves::tools(scan, &found)?;
+        let osv = components::components(scan, &found)?;
+        software_cves::tools(scan, &found, &osv)?;
         app_updates::apps(scan)?;
         os_updates::os_updates(scan, joined(updates))?;
         brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;

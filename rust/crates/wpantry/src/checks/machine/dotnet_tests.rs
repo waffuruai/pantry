@@ -62,10 +62,11 @@ fn runtimes_and_sdks_from_their_version_folders() {
         ]
     );
     let c = &found[1];
-    assert_eq!(c.path, format!("{rs}/{NETCORE}/8.0.10"));
+    // Compared as paths, so either separator matches on Windows.
+    assert_eq!(Path::new(&c.path), Path::new(&rs).join(NETCORE).join("8.0.10"));
     assert_eq!(c.osv, Some(("NuGet".into(), "Microsoft.NETCore.App.Runtime.osx-arm64".into(), "8.0.10".into())));
     assert_eq!(c.eol, Some(("dotnet".into(), "8".into())));
-    assert_eq!((c.fix.as_str(), c.auto), (&*format!("{FIX} {rs}/{NETCORE}/8.0.10"), false));
+    assert_eq!((c.fix.as_str(), c.auto), (&*format!("{FIX} {}", c.path), false));
     assert_eq!(found[0].eol, Some(("dotnet".into(), "10".into())));
     assert_eq!(found[2].osv.as_ref().unwrap().1, "Microsoft.AspNetCore.App.Runtime.osx-arm64");
     // The SDK has no OSV package: only its end of life is judged.
@@ -103,8 +104,8 @@ fn installs_reads_the_install_script_folder_under_home() {
     let r = crate::utils::files::home().join(".dotnet");
     root(&r, &[(ASPNET, "9.0.5", ASPNET_DEPS)]);
     let found = installs();
-    let want = realpath(&r.join(ASPNET).join("9.0.5").display().to_string());
-    assert!(found.iter().any(|c| c.name == "aspnetcore-runtime" && c.path == want), "{found:?}");
+    let want = Path::new(&realpath(&r.display().to_string())).join(ASPNET).join("9.0.5");
+    assert!(found.iter().any(|c| c.name == "aspnetcore-runtime" && Path::new(&c.path) == want), "{found:?}");
     drop(home);
 }
 

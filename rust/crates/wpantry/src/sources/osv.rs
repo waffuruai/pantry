@@ -28,6 +28,38 @@ pub const PARALLEL: usize = 8;
 /// (ecosystem, package, version)
 pub type Item = (String, String, String);
 
+/// OSV packages filed apart from another one that the same install also
+/// is: (ecosystem, package, also). Go publishes the advisories for its
+/// toolchain (cmd/go, cmd/link, cmd/cgo, ...) under `toolchain`, apart
+/// from the standard library's under `stdlib`, and one Go release is both.
+pub const ALSO: &[(&str, &str, &str)] = &[("Go", "stdlib", "toolchain")];
+
+/// The other packages `item` also is, at its version (see [`ALSO`]).
+///
+/// ```ignore
+/// let go = ("Go".to_string(), "stdlib".to_string(), "1.26.10".to_string());
+/// assert_eq!(also(&go), [("Go".to_string(), "toolchain".to_string(), "1.26.10".to_string())]);
+/// ```
+pub fn also(item: &Item) -> Vec<Item> {
+    ALSO.iter()
+        .filter(|(eco, pkg, _)| item.0 == *eco && item.1 == *pkg)
+        .map(|(eco, _, other)| (eco.to_string(), other.to_string(), item.2.clone()))
+        .collect()
+}
+
+/// Every record OSV gave for `items`, each once: an advisory filed under
+/// two of them is one record.
+pub fn records_for<'a>(answers: &HashMap<Item, Vec<Value>>, items: impl IntoIterator<Item = &'a Item>) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter_map(|it| answers.get(it))
+        .flatten()
+        .filter(|r| seen.insert(str_at(r, "id").to_string()))
+        .cloned()
+        .collect()
+}
+
 /// OSV's answers for some items, and what makes them incomplete.
 #[derive(Debug, Default)]
 pub struct Answers {

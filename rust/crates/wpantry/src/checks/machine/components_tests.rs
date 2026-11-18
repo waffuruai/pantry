@@ -175,3 +175,35 @@ fn postgres_skips_other_majors_and_known_cves() {
     assert!(postgres(&mut s, &c, &[adv(&["17"], &["17.6"])]).unwrap());
     assert_eq!(s.findings.len(), 2);
 }
+
+/// An installed Go is checked as its toolchain too: a toolchain-only
+/// advisory fails it, and one filed under both packages is one finding.
+#[test]
+fn installed_go_is_checked_as_its_toolchain_too() {
+    let d = crate::utils::temp::TempDir::new("gotc").unwrap();
+    let net = testing::go_osv();
+    let mut s = testing::scan(&net, &d);
+    let go = |v: &str| {
+        let mut c = Component::new("runtime", "go", v, "/usr/local/go/bin/go");
+        c.osv = Some(("Go".into(), "stdlib".into(), v.into()));
+        c.osv_also = osv::also(c.osv.as_ref().unwrap());
+        c.fix = "Update Go to {safe}".into();
+        c
+    };
+    components(&mut s, &[go("1.26.10"), go("1.26.11")]).unwrap();
+    let got = testing::kinds(&s);
+    assert_eq!(
+        got,
+        [
+            ("go".to_string(), "CVE-2026-0002".to_string(), "fail".to_string()),
+            ("go".to_string(), "CVE-2026-0001".to_string(), "fail".to_string()),
+        ],
+        "{got:?}"
+    );
+    for f in &s.findings {
+        assert_eq!(
+            (f.version.as_str(), f.fixed.as_str(), f.affected_range.as_str()),
+            ("1.26.10", "1.26.11", "<1.26.11")
+        );
+    }
+}

@@ -261,11 +261,16 @@ pub fn judge(installed: &[String], entry: &Value) -> Verdict {
     let mut affected: Option<Verdict> = None;
     for v in versions {
         let status = s(v, "status");
-        let start = s(v, "version");
-        let (bound, inclusive) = match (s(v, "lessThan"), s(v, "lessThanOrEqual")) {
-            ("", "") => ("", false),
-            (lt, "") => (lt, false),
-            (_, le) => (le, true),
+        let raw = s(v, "version");
+        // `8.0.30 and prior` (also `and earlier`), as Oracle writes some
+        // MySQL entries: everything up to that version, included.
+        let prior = [" and prior", " and earlier"].iter().find_map(|w| raw.strip_suffix(w)).map(str::trim);
+        let start = if prior.is_some() { "" } else { raw };
+        let (bound, inclusive) = match (prior, s(v, "lessThan"), s(v, "lessThanOrEqual")) {
+            (Some(top), "", "") => (top, true),
+            (_, "", "") => ("", false),
+            (_, lt, "") => (lt, false),
+            (_, _, le) => (le, true),
         };
         let span = if bound.is_empty() { inclusive_span(start) } else { None };
         let hit = if let Some((from, to)) = &span {
@@ -361,24 +366,51 @@ pub fn java_parts(v: &str) -> Option<Vec<String>> {
 
 /// [`judge`] for a product in [`TRAINS`]: each bare `affected` version is
 /// the last affected one of its train (its first number).
+///
+/// Oracle also lists its Java SE Performance Pack (`8u511b33-perf`), a
+/// separate build; a Java 8 is judged only by the plain 8 entries, and a
+/// record naming Java 8 only as Performance Pack doesn't affect it.
 pub fn judge_trains(installed: &[String], entry: &Value) -> Verdict {
+    let mut perf_only = false;
     for v in crate::utils::json::arr_at(entry, "versions") {
         if s(v, "status") != "affected" {
             continue;
         }
-        let Some(last) = java_parts(s(v, "version")) else { continue };
+        // Some entries carry the product first: `Oracle Java SE:17.0.13`.
+        let raw = s(v, "version");
+        let shown =
+            raw.rsplit_once(':').filter(|(p, _)| p.chars().any(char::is_alphabetic)).map_or(raw, |(_, b)| b.trim());
+        let Some(last) = java_parts(shown) else { continue };
         if last[0] != installed[0] {
             continue;
         }
-        return if cmp_parts(installed, &last) == Ordering::Greater {
+        if shown.contains("perf") {
+            perf_only = true;
+            continue;
+        }
+        return if java_cmp(installed, &last) == Ordering::Greater {
             Verdict::Unaffected
         } else {
-            Verdict::Affected { range: format!("<={} (the {} train)", s(v, "version"), last[0]), fixed: String::new() }
+            Verdict::Affected { range: format!("<={shown} (the {} train)", last[0]), fixed: String::new() }
         };
+    }
+    if perf_only {
+        return Verdict::Unaffected;
     }
     // A train the record doesn't list (or lists in a form not read): it
     // may be out of public support rather than fixed; it can't be judged.
     Verdict::Unknown
+}
+
+/// Two versions of one Java train. Java 8 is compared by quarterly update:
+/// OpenJDK numbers each one above Oracle's (OpenJDK 8u412 is Oracle's 8u411,
+/// April 2024), so `8u411` as the last affected covers OpenJDK's 8u412 too.
+fn java_cmp(a: &[String], b: &[String]) -> Ordering {
+    let quarter = |p: &[String]| p.get(2).and_then(|u| u.parse::<u64>().ok()).map(|u| u / 10);
+    match (a.first().map(String::as_str), quarter(a), quarter(b)) {
+        (Some("8"), Some(x), Some(y)) => x.cmp(&y),
+        _ => cmp_parts(a, b),
+    }
 }
 
 fn first_unaffected_above(versions: &[Value], bound: &str) -> String {
@@ -558,8 +590,17 @@ pub fn check(scan: &mut Scan, subjects: &[Subject], what: &str) -> Result<()> {
                 unjudged_names.insert(p.name.clone());
             }
             for f in findings {
-                if !found.iter().any(|g| g.component == f.component && g.version == f.version && g.vuln_id == f.vuln_id)
-                {
+                // One finding per install and CVE: a second install at
+                // another path is its own, and a CVE OSV already reported
+                // for this install (MySQL has both; OSV findings show the
+                // CVE id) isn't repeated.
+                let same = |g: &Finding| {
+                    g.component == f.component
+                        && g.version == f.version
+                        && g.location == f.location
+                        && g.vuln_id == f.vuln_id
+                };
+                if !found.iter().any(same) && !scan.findings.iter().any(same) {
                     found.push(f);
                 }
             }

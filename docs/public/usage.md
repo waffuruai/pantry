@@ -250,6 +250,7 @@ See [upgrade](install.md#upgrade).
 
 - Package names and versions go to OSV.dev.
 - The id of a CVE that applies and has no CVSS score goes to OSV.dev, then CVE.org.
+- The vendor and product names of the runtimes and datastores Pantry looks up CVE records for (Oracle's Java SE and MySQL Server) go to CIRCL's Vulnerability-Lookup. Versions aren't sent: the records are compared here.
 - Feeds are downloaded whole.
 - The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
 

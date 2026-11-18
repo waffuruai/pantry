@@ -242,9 +242,11 @@ fn server_net(r: &crate::utils::net::Request) -> crate::error::Result<crate::uti
         let body = r.body.clone().unwrap_or_default();
         return Ok(testing::querybatch(&body, &|_, _| vec![]));
     }
+    let ago = |days: i64| crate::utils::dates::iso(crate::utils::dates::today() - days);
     if url == "https://endoflife.date/api/metabase.json" {
         return Ok(Response::ok(
-            serde_json::json!([{"cycle": "0.64", "eol": "2099-12-01", "latest": "0.64.7"},
+            serde_json::json!([{"cycle": "0.65", "eol": "2099-12-01", "latest": "0.65.3", "releaseDate": ago(30)},
+                               {"cycle": "0.64", "eol": "2099-12-01", "latest": "0.64.7"},
                                {"cycle": "0.61", "eol": "2026-09-01", "latest": "0.61.21.1"}])
             .to_string(),
         ));
@@ -257,7 +259,7 @@ fn server_net(r: &crate::utils::net::Request) -> crate::error::Result<crate::uti
         ));
     }
     if url == "https://api.github.com/repos/signalwire/freeswitch/releases/latest" {
-        return Ok(Response::ok(r#"{"tag_name": "v1.11.3"}"#));
+        return Ok(Response::ok(serde_json::json!({"tag_name": "v1.11.3", "published_at": ago(82)}).to_string()));
     }
     if url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
         return Ok(Response::not_found());
@@ -280,7 +282,13 @@ fn self_hosted_servers_behind_their_release_warn_and_name_exploited_cves() {
     let today = crate::utils::dates::iso(crate::utils::dates::today());
     let year = &today[..4];
     s.kev_entries = vec![
-        kev_entry(&format!("CVE-{year}-11"), &today, "SignalWire", "FreeSwitch"),
+        // Listed before the latest FreeSWITCH release came out (82 days ago).
+        kev_entry(
+            &format!("CVE-{year}-11"),
+            &crate::utils::dates::iso(crate::utils::dates::today() - 90),
+            "SignalWire",
+            "FreeSwitch",
+        ),
         kev_entry(&format!("CVE-{year}-12"), &today, "Metabase", "Metabase"),
         // Another vendor's product of the same name escalates nothing.
         kev_entry(&format!("CVE-{year}-13"), &today, "Someone", "UnrealIRCd"),
@@ -353,4 +361,49 @@ fn the_latest_release_check_stays_quiet_when_an_advisory_fails_or_github_is_down
         (s2.findings[0].kind.as_str(), s2.findings[0].component.as_str()),
         ("unchecked", "latest freeswitch release (GitHub)")
     );
+}
+
+/// Entries the release dates rule out aren't named. Metabase 0.65.0: an
+/// entry listed two months before the 0.65 line came out. FreeSWITCH
+/// 1.11.2: an entry added after 1.11.3, the latest release, was published,
+/// so 1.11.3 may not fix it. Both stay plain OUTDATED warnings.
+#[test]
+fn exploited_cves_outside_the_release_dates_are_not_named() {
+    let d = crate::utils::temp::TempDir::new("servers-dates").unwrap();
+    let net = Fake::new(server_net);
+    let mut s = testing::scan(&net, &d);
+    let ago = |days: i64| crate::utils::dates::iso(crate::utils::dates::today() - days);
+    s.kev_entries = vec![
+        kev_entry("CVE-2026-72898", &ago(90), "Metabase", "Metabase"),
+        kev_entry("CVE-2026-116779", &ago(9), "SignalWire", "FreeSwitch"),
+    ];
+    let mut metabase = crate::checks::machine::servers::from_images(&["metabase/metabase:v0.65.0".to_string()]);
+    let found = vec![metabase.remove(0), server("freeswitch", "1.11.2", None)];
+    components(&mut s, &found).unwrap();
+    let got: Vec<(&str, &str, &str, bool, &str)> = s
+        .findings
+        .iter()
+        .map(|f| (f.component.as_str(), f.vuln_id.as_str(), f.status.as_str(), f.kev, f.note.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("metabase", "OUTDATED", "warn", false, "behind 0.65.3, the latest metabase 0.65 release"),
+            ("freeswitch", "OUTDATED", "warn", false, "behind 1.11.3, the latest freeswitch release"),
+        ],
+        "{:?}",
+        testing::kinds(&s)
+    );
+    // Inside both bounds, each is named.
+    let d2 = crate::utils::temp::TempDir::new("servers-dates-in").unwrap();
+    let mut s2 = testing::scan(&net, &d2);
+    s2.kev_entries = vec![
+        kev_entry("CVE-2026-72898", &ago(20), "Metabase", "Metabase"),
+        kev_entry("CVE-2026-116779", &ago(100), "SignalWire", "FreeSwitch"),
+    ];
+    let mut metabase = crate::checks::machine::servers::from_images(&["metabase/metabase:v0.65.0".to_string()]);
+    let found = vec![metabase.remove(0), server("freeswitch", "1.11.2", None)];
+    components(&mut s2, &found).unwrap();
+    assert!(s2.findings[0].note.contains(": CVE-2026-72898. "), "{}", s2.findings[0].note);
+    assert!(s2.findings[1].note.contains(": CVE-2026-116779. "), "{}", s2.findings[1].note);
 }

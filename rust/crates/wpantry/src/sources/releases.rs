@@ -179,6 +179,16 @@ pub fn firefox(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Firefox> {
 /// The version of `repo`'s latest GitHub release (its tag without a leading
 /// v), refreshed daily.
 pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<String> {
+    github_release(cache, net, repo, offline).map(|(v, _)| v)
+}
+
+/// `repo`'s latest GitHub release: its version (as [`github_latest`]) and
+/// when it was published (`published_at`, an epoch; 0.0 when GitHub gives
+/// none, or the cache holds only the version from before dates were kept).
+///
+/// Example: `{"tag_name": "v1.11.3", "published_at": "2026-08-28T10:00:00Z"}`
+/// gives `("1.11.3", <2026-08-28>)`.
+pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<(String, f64)> {
     let fetch = || -> Result<Value> {
         let headers = net::github_headers();
         let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -190,12 +200,13 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
         }
         let v =
             if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
-        Ok(Value::String(v.to_string()))
+        Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at"))}))
     };
-    Ok(fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?
-        .as_str()
-        .unwrap_or("")
-        .to_string())
+    let v = fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?;
+    Ok(match &v {
+        Value::String(s) => (s.clone(), 0.0),
+        o => (str_at(o, "version").to_string(), o.get("published").and_then(Value::as_f64).unwrap_or(0.0)),
+    })
 }
 
 /// One row of PostgreSQL's security table.

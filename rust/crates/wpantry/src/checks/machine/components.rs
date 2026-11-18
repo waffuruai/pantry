@@ -4,6 +4,7 @@
 
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, MISE_REPO};
+use crate::checks::machine::exploited::Gap;
 use crate::checks::{Scan, fill, fix_with};
 use crate::component::Component;
 use crate::error::Result;
@@ -105,10 +106,15 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
 /// A tool behind its latest GitHub release warns (OUTDATED), unless an
 /// advisory already fails it, naming the exploited CVEs CISA listed for
 /// its product in the last months (GitHub gives no date for when this
-/// version was superseded, so they can't fail it).
+/// version was superseded, so they can't fail it). An entry added after
+/// the latest release was published isn't named: that release may not
+/// fix it.
+///
+/// Example: FreeSWITCH 1.11.2, latest 1.11.3 published 2026-08-28, a KEV
+/// entry added 2026-11-09: a plain OUTDATED warning naming no CVE.
 pub fn latest(scan: &mut Scan, c: &Component, repo: &str, failing: bool) -> Result<()> {
-    let r = releases::github_latest(&scan.cache, scan.net, repo, scan.opts.offline);
-    let latest = scan.guard(&format!("latest {} release (GitHub)", c.name), r, String::new())?;
+    let r = releases::github_release(&scan.cache, scan.net, repo, scan.opts.offline);
+    let (latest, published) = scan.guard(&format!("latest {} release (GitHub)", c.name), r, (String::new(), 0.0))?;
     if latest.is_empty() || failing || versions::same_or_newer(&c.version, &latest) {
         return Ok(());
     }
@@ -122,7 +128,8 @@ pub fn latest(scan: &mut Scan, c: &Component, repo: &str, failing: bool) -> Resu
         note: format!("behind {latest}, the latest {} release", c.name),
         ..Finding::of(c)
     };
-    crate::checks::machine::exploited::escalate(&mut f, c, &scan.kev_entries, Default::default());
+    let gap = Gap { latest_released: Some(published).filter(|t| *t > 0.0), ..Gap::default() };
+    crate::checks::machine::exploited::escalate(&mut f, c, &scan.kev_entries, gap);
     scan.add(f);
     Ok(())
 }

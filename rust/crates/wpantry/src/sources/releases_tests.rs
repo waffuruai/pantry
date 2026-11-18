@@ -153,6 +153,22 @@ fn latest_release_drops_the_v_and_needs_a_tag() {
     assert!(matches!(github_latest(&c, &net, "a/none", false), Err(Error::Offline(_))));
 }
 
+/// The latest release keeps when it was published; a cache holding only
+/// the version, from before dates were kept, still reads, with no date.
+#[test]
+fn latest_release_keeps_its_publish_date() {
+    let (_d, c) = cache();
+    let net = Fake::new(|_| {
+        Ok(Response::ok(json!({"tag_name": "v1.11.3", "published_at": "2026-08-28T10:00:00Z"}).to_string()))
+    });
+    assert_eq!(github_release(&c, &net, "a/dated", false).unwrap(), ("1.11.3".to_string(), epoch("2026-08-28")));
+    let undated = Fake::new(|_| Ok(Response::ok(json!({"tag_name": "2.0"}).to_string())));
+    assert_eq!(github_release(&c, &undated, "a/undated", false).unwrap(), ("2.0".to_string(), 0.0));
+    c.put_run("github-latest:a/old", "", &json!("3.1")).unwrap();
+    assert_eq!(github_release(&c, &Fake::offline(), "a/old", true).unwrap(), ("3.1".to_string(), 0.0));
+    assert_eq!(github_latest(&c, &Fake::offline(), "a/old", true).unwrap(), "3.1");
+}
+
 #[test]
 fn postgres_table_is_fetched_as_html() {
     let (_d, c) = cache();

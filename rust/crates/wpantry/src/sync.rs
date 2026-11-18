@@ -41,8 +41,11 @@ pub fn run(cache: &Cache, net: &dyn Net, refresh: bool, status: Status) -> Resul
     if cfg!(target_os = "macos") {
         status("Fetching the Homebrew cask catalog");
         note("Homebrew casks", releases::casks(cache, net, false).map(|_| ()), &mut out);
+    }
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        let platform = if cfg!(target_os = "macos") { "mac" } else { "linux" };
         status("Fetching Chrome's release list");
-        note("Chrome releases", releases::chrome(cache, net, "mac", false).map(|_| ()), &mut out);
+        note("Chrome releases", releases::chrome(cache, net, platform, false).map(|_| ()), &mut out);
     }
     status("Fetching Firefox's release list");
     note("Firefox releases", releases::firefox(cache, net, false).map(|_| ()), &mut out);

@@ -139,6 +139,7 @@ The rule every module follows: when Pantry cannot tell, it says so; a gap never 
 | `composer.lock` | `Packagist` | | `packages` and `packages-dev`; `path` repositories and branches skipped |
 | `pubspec.lock` | `Pub` | | `hosted` packages only |
 | `mix.lock` | `Hex` | | `:hex` tuples from the public `hexpm` repository |
+| `build.gradle`, `build.gradle.kts`, `gradle/*.versions.toml` | `Maven` | | Only where no `gradle.lockfile` is beside the build. Scripts are tokenized, never run: literal `group:artifact:version` strings given to a configuration in `dependencies { }`; catalogs' `[libraries]` with `version`/`version.ref`/`strictly`. Interpolated, dynamic, ranged, versionless and helper-call declarations are reported not checked. `plugins { }` and `[plugins]` aren't read |
 | `gradle.lockfile`, `pom.xml` | `Maven` | | `pom.xml`: literal versions and same-file properties only, no parent or remote resolution |
 | `packages.lock.json` | `NuGet` | v1–v2 | `Project` references skipped |
 | `conan.lock` | `ConanCenter` | v0.4–v0.5 | A `@user/channel` recipe is private and skipped |

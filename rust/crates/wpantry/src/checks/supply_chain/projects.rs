@@ -87,7 +87,13 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     for (root, f) in &files {
         scan.status(&format!("Reading {}", short(&f.to_string_lossy())));
         match lockfiles::extract_within(f, root).map_err(as_source) {
-            Ok(Some(pkgs)) => read.push((f.clone(), pkgs)),
+            Ok(Some(pkgs)) => {
+                // Declarations a build script leaves to Gradle are not checked, not clean.
+                if let Some(why) = lockfiles::gradle_build::unresolved_note(f) {
+                    scan.unchecked(&format!("repo dependencies in {}", short(&f.to_string_lossy())), &why);
+                }
+                read.push((f.clone(), pkgs))
+            }
             Ok(None) => {
                 *unsupported.entry(f.file_name().unwrap_or_default().to_string_lossy().into_owned()).or_default() += 1
             }

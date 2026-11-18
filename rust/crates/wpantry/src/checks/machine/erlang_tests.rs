@@ -1,7 +1,6 @@
 use super::*;
 use crate::checks::machine::components::components;
 use crate::checks::machine::testing;
-use crate::utils::files::realpath;
 use crate::utils::net::{Fake, Response};
 use crate::utils::temp::TempDir;
 
@@ -15,8 +14,11 @@ fn otp(root: &Path, version: &str) {
     testing::write(&root.join(format!("releases/{major}/OTP_VERSION")), &format!("{version}\n"));
 }
 
+/// (shown path, real path), as `on_path` gives them; only the Unix tests,
+/// which make symlinks, use it.
+#[cfg(unix)]
 fn shown(p: &Path) -> (String, String) {
-    (p.display().to_string(), realpath(&p.display().to_string()))
+    (p.display().to_string(), crate::utils::files::realpath(&p.display().to_string()))
 }
 
 #[test]

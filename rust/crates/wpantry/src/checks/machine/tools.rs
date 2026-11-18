@@ -5,8 +5,11 @@
 //! [`files::owner`]): Homebrew formulae go to `brew vulns`, npm and pipx
 //! installs to their package listings, Apple's and the distro's files to the
 //! OS update check, and binaries inside an app bundle to the app check.
+//!
+//! A tool in [`READ_BINARY`] is never run: its version is read from the
+//! strings its binary holds.
 
-use crate::checks::machine::catalog::{TOOLS, Tool};
+use crate::checks::machine::catalog::{READ_BINARY, TOOLS, Tool};
 use crate::component::Component;
 use crate::utils::files::home;
 use crate::utils::files::owner;
@@ -61,6 +64,37 @@ pub fn updater(path: &str, name: &str) -> (String, bool) {
     (format!("Upgrade {name} at {path} to {{safe}}"), false)
 }
 
+/// The largest binary read for its embedded version.
+pub const MAX_BINARY: u64 = 64 << 20;
+
+/// The C strings in `path` that start with `prefix`, each up to its NUL
+/// (one per line), without running it. Nothing when the file is over
+/// [`MAX_BINARY`] or unreadable. Only a printable, NUL-terminated string
+/// counts: a script or a text file that mentions the prefix has none.
+///
+/// Example: a binary holding `UnrealIRCd-6.2.7.1\0` gives
+/// "UnrealIRCd-6.2.7.1".
+pub fn embedded(path: &str, prefix: &str) -> String {
+    let Ok(bytes) = files::read_capped_bytes(Path::new(path), MAX_BINARY) else { return String::new() };
+    let p = prefix.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(at) = bytes[i..].windows(p.len()).position(|w| w == p) {
+        let start = i + at;
+        // A version string is short: a longer run is something else.
+        let rest = &bytes[start..bytes.len().min(start + 64)];
+        // Printable up to its NUL: a newline or other control byte first
+        // means this is text that mentions the prefix, not a C string.
+        if let Some(end) = rest.iter().position(|b| !(0x20..0x7f).contains(b))
+            && rest[end] == 0
+        {
+            out.push(String::from_utf8_lossy(&rest[..end]).into_owned());
+        }
+        i = start + p.len();
+    }
+    out.join("\n")
+}
+
 /// Components for one catalog tool.
 pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
     let re = Regex::with_flags(t.pattern, "m");
@@ -73,9 +107,15 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
             if !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
                 continue;
             }
-            let mut argv: Vec<&OsStr> = vec![OsStr::new(&shown)];
-            argv.extend(t.args.iter().map(OsStr::new));
-            let Some(m) = re.search(&run(&argv, Duration::from_secs(15))) else { continue };
+            let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
+                Some((_, prefix)) => embedded(&real, prefix),
+                None => {
+                    let mut argv: Vec<&OsStr> = vec![OsStr::new(&shown)];
+                    argv.extend(t.args.iter().map(OsStr::new));
+                    run(&argv, Duration::from_secs(15))
+                }
+            };
+            let Some(m) = re.search(&said) else { continue };
             let v = m.get(1).to_string();
             let (mut fix, mut auto) = updater(&real, t.name);
             if who == "brew" {

@@ -1,9 +1,10 @@
 //! What the inventory found against OSV, end of life and (PostgreSQL) the
-//! project's own table, and mise against its latest release.
+//! project's own table, and mise and the tools endoflife.date doesn't know
+//! ([`GITHUB_LATEST`]) against their latest release.
 
 use crate::checks::ecosystems::versions;
-use crate::checks::machine::catalog::MISE_REPO;
-use crate::checks::{Scan, fill};
+use crate::checks::machine::catalog::{GITHUB_LATEST, MISE_REPO};
+use crate::checks::{Scan, fill, fix_with};
 use crate::component::Component;
 use crate::error::Result;
 use crate::finding::Finding;
@@ -69,6 +70,9 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
         if c.name == "mise" {
             mise(scan, c)?;
         }
+        if let Some((_, repo)) = GITHUB_LATEST.iter().find(|(n, _)| *n == c.name) {
+            latest(scan, c, repo, failing)?;
+        }
         if c.eol.is_some() {
             scan.eol(c, failing)?;
         }
@@ -95,6 +99,31 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
             ..Finding::of(c)
         });
     }
+    Ok(())
+}
+
+/// A tool behind its latest GitHub release warns (OUTDATED), unless an
+/// advisory already fails it, naming the exploited CVEs CISA listed for
+/// its product in the last months (GitHub gives no date for when this
+/// version was superseded, so they can't fail it).
+pub fn latest(scan: &mut Scan, c: &Component, repo: &str, failing: bool) -> Result<()> {
+    let r = releases::github_latest(&scan.cache, scan.net, repo, scan.opts.offline);
+    let latest = scan.guard(&format!("latest {} release (GitHub)", c.name), r, String::new())?;
+    if latest.is_empty() || failing || versions::same_or_newer(&c.version, &latest) {
+        return Ok(());
+    }
+    let (fix_cmd, fix_auto) = fix_with(c, &latest);
+    let mut f = Finding {
+        vuln_id: "OUTDATED".into(),
+        status: "warn".into(),
+        fixed: latest.clone(),
+        fix_cmd,
+        fix_auto,
+        note: format!("behind {latest}, the latest {} release", c.name),
+        ..Finding::of(c)
+    };
+    crate::checks::machine::exploited::escalate(&mut f, c, &scan.kev_entries, Default::default());
+    scan.add(f);
     Ok(())
 }
 

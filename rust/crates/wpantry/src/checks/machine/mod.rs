@@ -3,10 +3,10 @@
 //! certificate authorities it trusts.
 //!
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
-//! `dotnet`, `apps`, `editors`, `harnesses`, `images`, `os_packages`,
-//! `cellar`), what is judged of it (`components`, `app_updates`, `exploited`
-//! over `kev_catalog`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
-//! `downloads`, `software_cves`), and the security
+//! `dotnet`, `apps`, `servers`, `editors`, `harnesses`, `images`,
+//! `os_packages`, `cellar`), what is judged of it (`components`,
+//! `app_updates`, `exploited` over `kev_catalog`, `os_updates`, `brew_vulns`,
+//! `ca_trust`, `clipper`, `downloads`, `software_cves`), and the security
 //! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
 //! included). This file is the index: [`run`], the probes in order.
 
@@ -41,6 +41,7 @@ pub mod macos;
 pub mod os_packages;
 pub mod os_updates;
 pub mod packages;
+pub mod servers;
 pub mod settings;
 pub mod software_cves;
 #[cfg(test)]
@@ -108,16 +109,21 @@ fn joined<T>(probe: std::thread::ScopedJoinHandle<'_, T>) -> T {
 
 pub fn inventory(scan: &mut Scan) -> Vec<Component> {
     std::thread::scope(|s| {
-        let docker = s.spawn(apps_mod::docker);
+        let docker = s.spawn(|| {
+            let mut found = apps_mod::docker();
+            found.extend(servers::servers());
+            found
+        });
         let mut found = inventory_local(scan);
-        scan.status("Asking Docker for its engine version");
+        scan.status("Asking Docker for its engine version and running servers");
         found.extend(joined(docker));
         scan.count("tools, runtimes and packages", found.len() as i64);
         found
     })
 }
 
-/// What the machine has installed, without Docker's engine.
+/// What the machine has installed, without Docker's engine and the servers
+/// in its containers.
 fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     scan.status("Finding installed tools, runtimes and package managers");
     let mut found = tools::tools();

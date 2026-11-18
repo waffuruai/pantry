@@ -19,6 +19,45 @@ fn every_catalog_pattern_compiles_and_reads_its_tool() {
     assert_eq!(read("mysql", "mysql  Ver 15.1 Distrib 10.11.6-MariaDB"), None);
     assert_eq!(read("mariadb", "mysql  Ver 15.1 Distrib 10.11.6-MariaDB, for debian").as_deref(), Some("10.11.6"));
     assert_eq!(read("pi", "0.9.1").as_deref(), Some("0.9.1"));
+    // FreeSWITCH's `-version`: a release, a build from git past one, and a
+    // -dev build (no release to compare: not read).
+    assert_eq!(read("freeswitch", "FreeSWITCH version: 1.10.12-release~64bit ( 64bit)\n").as_deref(), Some("1.10.12"));
+    assert_eq!(
+        read("freeswitch", "FreeSWITCH version: 1.10.7-release-19-883d2cb662~64bit (-release-19-883d2cb662 64bit)")
+            .as_deref(),
+        Some("1.10.7")
+    );
+    assert_eq!(read("freeswitch", "FreeSWITCH version: 1.11.4-dev~64bit ( 64bit)"), None);
+    // UnrealIRCd's embedded version string: three or four parts, a debug
+    // build's suffix; a release candidate or anything else is not read.
+    assert_eq!(read("unrealircd", "UnrealIRCd-6.1.8").as_deref(), Some("6.1.8"));
+    assert_eq!(read("unrealircd", "UnrealIRCd-%s\nUnrealIRCd-6.2.7.1").as_deref(), Some("6.2.7.1"));
+    assert_eq!(read("unrealircd", "UnrealIRCd-6.2.7.1+(debug)(Debug)").as_deref(), Some("6.2.7.1"));
+    assert_eq!(read("unrealircd", "UnrealIRCd-6.2.8-rc1"), None);
+    assert_eq!(read("unrealircd", "UnrealIRCd-6.2.18-rc1"), None);
+    assert_eq!(read("unrealircd", "UnrealIRCd-6.2.7.1 is out"), None);
+}
+
+/// A catalog tool, by name.
+fn tool(name: &str) -> Tool {
+    *TOOLS.iter().find(|t| t.name == name).unwrap()
+}
+
+#[test]
+fn self_hosted_servers_are_catalog_tools() {
+    let fs = tool("freeswitch");
+    assert_eq!(
+        (fs.args, fs.osv, fs.eol),
+        (&["-version"][..], Some(("GIT", "https://github.com/signalwire/freeswitch.git", "v{v}")), None)
+    );
+    assert_eq!(tag(fs.osv.unwrap().2, "1.10.12"), "v1.10.12");
+    let irc = tool("unrealircd");
+    // Never run (even `-v` creates directories): read from its bytes.
+    assert_eq!((irc.args, irc.osv), (&[][..], None));
+    assert!(READ_BINARY.iter().any(|(n, p)| *n == "unrealircd" && !p.is_empty()));
+    assert_eq!(irc.eol.map(|(p, c)| (p, c.of("6.2.7.1"))), Some(("unrealircd", "6".to_string())));
+    // A distro or Homebrew copy is left to the OS update check or brew vulns.
+    assert!(!fs.always && !irc.always);
 }
 
 #[test]
@@ -120,6 +159,73 @@ fn find_checks_brew_and_app_copies_when_nobody_else_does() {
     let manual = Tool { always: true, fix: "Update it by hand", ..FAKE };
     let found = find(&manual, &dirs);
     assert!(found.iter().all(|c| c.fix == "Update it by hand" && !c.auto), "{found:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_server_built_from_source_is_read_and_a_packaged_one_is_left_to_its_owner() {
+    let d = crate::utils::temp::TempDir::new("servers").unwrap();
+    let prefix = d.path().join("freeswitch/bin");
+    let cellar = d.path().join("Cellar/freeswitch/1.10.12/bin");
+    script(&prefix.join("wpantry-fake-freeswitch"), "FreeSWITCH version: 1.10.11-release~64bit ( 64bit)");
+    script(&cellar.join("wpantry-fake-freeswitch"), "FreeSWITCH version: 1.10.12-release~64bit ( 64bit)");
+    let fs = Tool { bins: &["wpantry-fake-freeswitch"], paths: &[], ..tool("freeswitch") };
+    let found = find(&fs, &[prefix.display().to_string(), cellar.display().to_string()]);
+    // Homebrew's copy is brew vulns' to check.
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].name.as_str(), found[0].version.as_str()), ("freeswitch", "1.10.11"));
+    let osv = Some(("GIT".into(), "https://github.com/signalwire/freeswitch.git".into(), "v1.10.11".into()));
+    assert_eq!(found[0].osv, osv);
+    let irc_dir = d.path().join("unrealircd/bin");
+    let marker = d.path().join("ran");
+    let fake = irc_dir.join("wpantry-fake-unrealircd");
+    // An executable that, if run, would leave a marker and print another
+    // version; the version it holds is the NUL-terminated string.
+    let mut bytes = format!("#!/bin/sh\ntouch '{}'\necho UnrealIRCd-9.9.9\nexit 0\n", marker.display()).into_bytes();
+    bytes.extend_from_slice(b"\0UnrealIRCd-%s\0UnrealIRCd-6.1.8\0tail");
+    std::fs::create_dir_all(&irc_dir).unwrap();
+    std::fs::write(&fake, &bytes).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let irc = Tool { bins: &["wpantry-fake-unrealircd"], paths: &[], ..tool("unrealircd") };
+    let found = find(&irc, &[irc_dir.display().to_string()]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].version.as_str(), found[0].eol.clone()), ("6.1.8", Some(("unrealircd".into(), "6".into()))));
+    assert!(!marker.exists(), "the binary was run");
+    // The distro's binaries are the OS update check's whenever it can vouch.
+    let os = if crate::utils::os::os_vouches() { "os" } else { "" };
+    assert_eq!((owner("/usr/bin/freeswitch"), owner("/usr/sbin/unrealircd")), (os, os));
+    // Nothing installed: nothing found.
+    assert!(find(&irc, &[d.path().join("empty").display().to_string()]).is_empty());
+}
+
+#[test]
+fn embedded_strings_are_read_from_the_bytes_up_to_their_nul() {
+    let d = crate::utils::temp::TempDir::new("embedded").unwrap();
+    let at = |name: &str, bytes: &[u8]| {
+        let p = d.path().join(name);
+        std::fs::write(&p, bytes).unwrap();
+        embedded(&p.display().to_string(), "UnrealIRCd-")
+    };
+    assert_eq!(
+        at("bin", b"\x7fELF\0UnrealIRCd-%s\0junk UnrealIRCd-6.2.8-rc1\0UnrealIRCd-6.2.7.1\0"),
+        "UnrealIRCd-%s\nUnrealIRCd-6.2.8-rc1\nUnrealIRCd-6.2.7.1"
+    );
+    // Not NUL-terminated (a script, a text file, the end of the file), or
+    // too long to be a version string: nothing.
+    assert_eq!(at("script", b"#!/bin/sh\necho UnrealIRCd-6.2.7.1\n"), "");
+    // A line of text that happens to end near a NUL is still text.
+    assert_eq!(at("text", b"echo UnrealIRCd-6.2.7.1\nexit 0\n\0"), "");
+    let long = [b"UnrealIRCd-".as_slice(), &[b'1'; 80], b"\0"].concat();
+    assert_eq!(at("long", &long), "");
+    assert_eq!(at("short", b"Unreal"), "");
+    // Missing, or over the cap (a sparse file: nothing is read), is nothing.
+    assert_eq!(embedded(&d.path().join("missing").display().to_string(), "UnrealIRCd-"), "");
+    let big = d.path().join("big");
+    std::fs::File::create(&big).unwrap().set_len(MAX_BINARY + 1).unwrap();
+    assert_eq!(embedded(&big.display().to_string(), "UnrealIRCd-"), "");
 }
 
 #[test]

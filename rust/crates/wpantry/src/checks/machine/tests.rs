@@ -16,7 +16,8 @@ fn windows_reads_its_programs_and_says_what_it_does_not_read() {
     assert_eq!(s.counts, [("installed programs".to_string(), 3)]);
     assert_eq!(
         testing::unchecked_note(&s, &software_cves::unreached(programs::WHAT)),
-        "Example Viewer (x86), PowerStudio SCADA Wave"
+        "PowerStudio SCADA Wave",
+        "only the programs table's: Example Viewer and Portable Tool aren't asked about"
     );
     assert!(testing::unchecked_note(&s, "machine inventory on Windows").starts_with("winget, Scoop and Chocolatey"));
 }

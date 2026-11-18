@@ -16,7 +16,7 @@
 
 use crate::checks::Scan;
 use crate::checks::machine::settings::Runner;
-use crate::checks::machine::software_cves::{self, Subject, vendors_for};
+use crate::checks::machine::software_cves::{self, Subject, product_key, vendor_key, vendors_for};
 use crate::error::Result;
 use std::collections::BTreeMap;
 
@@ -95,24 +95,59 @@ pub fn parse(out: &str) -> Vec<Program> {
         .collect()
 }
 
-/// A program as the CVE-record check judges it: its Publisher is the
-/// vendor, its DisplayName the product.
-pub fn subject(p: &Program) -> Subject {
-    Subject {
+/// The Windows programs checked against CVE records, and nothing else:
+/// (publisher, program) as Windows lists them, by [`vendor_key`] of the
+/// Publisher and [`product_key`] of the DisplayName (with the record
+/// vendor's words dropped from its front), then (vendor, product) as the
+/// records name them. Only these vendor and product names are sent to the
+/// index; a program not here is counted and never leaves the machine,
+/// since a Publisher can be a person or an internal tool.
+///
+/// Example: `IntelliJ IDEA 2026.2.1` published by `JetBrains s.r.o.` is
+/// (`jetbrains`, `intellij idea`), so it is asked about as `jetbrains` /
+/// `IntelliJ IDEA`.
+///
+/// TODO: grow from real misses (reported as issues), one reviewed row at a
+/// time; never by fuzzy matching or by sending unlisted publishers.
+pub const PROGRAMS: &[(&str, &str, &str, &str)] = &[
+    ("asustek computer", "armoury crate", "ASUS", "Armoury Crate"),
+    ("broadcom", "workstation", "VMware", "Workstation"),
+    ("circutor", "powerstudio scada wave", "Circutor", "PowerStudio SCADA Wave"),
+    ("jetbrains", "intellij idea", "JetBrains", "IntelliJ IDEA"),
+    ("jetbrains", "intellij idea community edition", "JetBrains", "IntelliJ IDEA"),
+    ("jetbrains", "intellij idea ultimate", "JetBrains", "IntelliJ IDEA"),
+    ("vmware", "workstation", "VMware", "Workstation"),
+];
+
+/// The [`PROGRAMS`] row a program is, if any.
+pub fn mapped(p: &Program) -> Option<(&'static str, &'static str)> {
+    let publisher = vendor_key(&p.publisher);
+    PROGRAMS.iter().find_map(|(pk, nk, vendor, product)| {
+        (publisher == *pk && product_key(&p.name, &vendor_key(vendor), &p.version) == *nk)
+            .then_some((*vendor, *product))
+    })
+}
+
+/// A program as the CVE-record check judges it, when [`PROGRAMS`] names
+/// it: the row's vendor and product, never the program's own Publisher.
+pub fn subject(p: &Program) -> Option<Subject> {
+    let (vendor, product) = mapped(p)?;
+    Some(Subject {
         kind: "app".into(),
         name: p.name.clone(),
         version: p.version.clone(),
         location: p.key.clone(),
-        vendors: vendors_for(&p.publisher),
-        product: None,
+        vendors: vendors_for(vendor),
+        product: Some(product.to_string()),
         released: None,
-    }
+    })
 }
 
-/// The installed programs, counted, against CVE records.
+/// The installed programs, counted, and the ones [`PROGRAMS`] names
+/// against CVE records.
 pub fn check(scan: &mut Scan, found: &[Program]) -> Result<()> {
     scan.count("installed programs", found.len() as i64);
-    let subjects: Vec<Subject> = found.iter().map(subject).collect();
+    let subjects: Vec<Subject> = found.iter().filter_map(subject).collect();
     software_cves::check(scan, &subjects, WHAT)
 }
 

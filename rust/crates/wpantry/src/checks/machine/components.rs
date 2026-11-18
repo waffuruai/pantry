@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 /// OSV's answers, for the checks that go on where OSV had nothing
 /// ([`crate::checks::machine::software_cves::tools`]).
 pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, Vec<Value>>> {
-    let items: Vec<Item> = found.iter().filter_map(|c| c.osv.clone()).collect();
+    let items: Vec<Item> = found.iter().flat_map(|c| c.osv.iter().chain(&c.osv_also).cloned()).collect();
     let answers = scan.lookup(&items, "tools, runtimes and packages against OSV")?;
     // For upstream repos, ask OSV about the newer release tags too: the first
     // one it stops reporting an advisory for is the fix.
@@ -61,7 +61,7 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
     scan.status("Fetching end-of-life dates");
     endoflife::eol_prefetch(&scan.cache, scan.net, &products, scan.opts.offline)?;
     for c in found {
-        let recs = c.osv.as_ref().and_then(|o| answers.get(o)).cloned().unwrap_or_default();
+        let recs = osv::records_for(&answers, c.osv.iter().chain(&c.osv_also));
         let mut failing = scan.advisories(c, &recs, c.osv.as_ref().and_then(|o| newer.get(o)), "fail", None);
         if c.name == "postgres" {
             failing = postgres(scan, c, &pg)? || failing;

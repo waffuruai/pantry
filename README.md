@@ -49,7 +49,7 @@ Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error. For eve
 
 ## Privacy
 
-Only package names and versions go to OSV.dev. Feeds are downloaded whole. Pantry connects only to a compiled-in list of hosts. Nothing else leaves the machine unless you opt in (the email breach check asks first). Source by source: [what is sent](docs/public/checks-and-sources.md#sources).
+Only package names and versions go to OSV.dev, and the vendor and product names of the runtimes and datastores Pantry looks up CVE records for (Oracle's Java SE and MySQL Server) go to CIRCL's Vulnerability-Lookup, without versions. Feeds are downloaded whole. Pantry connects only to a compiled-in list of hosts. Nothing else leaves the machine unless you opt in (the email breach check asks first). Source by source: [what is sent](docs/public/checks-and-sources.md#sources).
 
 ## Docs
 

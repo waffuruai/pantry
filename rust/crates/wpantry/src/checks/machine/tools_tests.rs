@@ -173,3 +173,22 @@ fn dedupe_counts_one_install_once() {
     let got: Vec<(&str, &str)> = out.iter().map(|c| (c.name.as_str(), c.version.as_str())).collect();
     assert_eq!(got, [("postgres", "17.4"), ("x", "1"), ("postgres", "16.1")]);
 }
+
+/// A Go install is asked about as Go's `toolchain` too, at its version.
+#[cfg(unix)]
+#[test]
+fn an_installed_go_is_also_its_toolchain() {
+    let go = Tool { name: "wpantry-fakego", bins: &["wpantry-fakego"], ..catalog_tool("go") };
+    let d = crate::utils::temp::TempDir::new("gotc").unwrap();
+    let bin = d.path().join("bin");
+    script(&bin.join("wpantry-fakego"), "go1.26.10");
+    let found = find(&go, &[bin.display().to_string()]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].osv, Some(("Go".into(), "stdlib".into(), "1.26.10".into())));
+    assert_eq!(found[0].osv_also, [("Go".to_string(), "toolchain".to_string(), "1.26.10".to_string())]);
+}
+
+#[cfg(unix)]
+fn catalog_tool(name: &str) -> Tool {
+    *crate::checks::machine::catalog::TOOLS.iter().find(|t| t.name == name).unwrap()
+}

@@ -3,7 +3,7 @@
 //! software no package ecosystem covers, so OSV has no advisory for it.
 //! What is judged is a [`Subject`]: a Windows program (its Publisher and
 //! DisplayName), or a catalog tool OSV can't map, named in [`TOOLS`] (PHP
-//! and Rust only when OSV answered nothing for them, [`OSV_FIRST`]).
+//! and Rust only when OSV answered no CVE for them, [`OSV_FIRST`]).
 //!
 //! Matching is deliberately narrow. A record applies only when both its
 //! vendor and its product equal the subject's after [`vendor_key`] and
@@ -95,8 +95,10 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
 /// Catalog tools in [`TOOLS`] that keep an OSV mapping (php-src's and
 /// rust-lang/rust's release tags) which often answers nothing for versions
 /// their CVE records name. OSV goes first; when its answer for the
-/// installed version is empty (or OSV couldn't be asked), the CVE records
-/// decide, so an empty answer is never read as clean.
+/// installed version names no CVE (or OSV couldn't be asked), the CVE
+/// records decide, so an empty answer is never read as clean. An answer
+/// with no CVE isn't coverage: for PHP 8.1 and 8.2 it is often one
+/// OSS-Fuzz crash record (`OSV-2021-1199`) and none of PHP's CVEs.
 pub const OSV_FIRST: &[&str] = &["php", "rust"];
 
 /// Products whose records list the last affected version of each release
@@ -308,11 +310,16 @@ pub fn judge(installed: &[String], entry: &Value) -> Verdict {
     let mut affected: Option<Verdict> = None;
     for v in versions {
         let status = s(v, "status");
-        let start = s(v, "version");
-        let (bound, inclusive) = match (s(v, "lessThan"), s(v, "lessThanOrEqual")) {
-            ("", "") => ("", false),
-            (lt, "") => (lt, false),
-            (_, le) => (le, true),
+        let raw = s(v, "version");
+        // `8.0.30 and prior` (also `and earlier`), as Oracle writes some
+        // MySQL entries: everything up to that version, included.
+        let prior = [" and prior", " and earlier"].iter().find_map(|w| raw.strip_suffix(w)).map(str::trim);
+        let start = if prior.is_some() { "" } else { raw };
+        let (bound, inclusive) = match (prior, s(v, "lessThan"), s(v, "lessThanOrEqual")) {
+            (Some(top), "", "") => (top, true),
+            (_, "", "") => ("", false),
+            (_, lt, "") => (lt, false),
+            (_, _, le) => (le, true),
         };
         let span = if bound.is_empty() { inclusive_span(start) } else { None };
         let hit = if let Some((from, to)) = &span {
@@ -519,24 +526,51 @@ pub fn java_parts(v: &str) -> Option<Vec<String>> {
 
 /// [`judge`] for a product in [`TRAINS`]: each bare `affected` version is
 /// the last affected one of its train (its first number).
+///
+/// Oracle also lists its Java SE Performance Pack (`8u511b33-perf`), a
+/// separate build; a Java 8 is judged only by the plain 8 entries, and a
+/// record naming Java 8 only as Performance Pack doesn't affect it.
 pub fn judge_trains(installed: &[String], entry: &Value) -> Verdict {
+    let mut perf_only = false;
     for v in crate::utils::json::arr_at(entry, "versions") {
         if s(v, "status") != "affected" {
             continue;
         }
-        let Some(last) = java_parts(s(v, "version")) else { continue };
+        // Some entries carry the product first: `Oracle Java SE:17.0.13`.
+        let raw = s(v, "version");
+        let shown =
+            raw.rsplit_once(':').filter(|(p, _)| p.chars().any(char::is_alphabetic)).map_or(raw, |(_, b)| b.trim());
+        let Some(last) = java_parts(shown) else { continue };
         if last[0] != installed[0] {
             continue;
         }
-        return if cmp_parts(installed, &last) == Ordering::Greater {
+        if shown.contains("perf") {
+            perf_only = true;
+            continue;
+        }
+        return if java_cmp(installed, &last) == Ordering::Greater {
             Verdict::Unaffected
         } else {
-            Verdict::Affected { range: format!("<={} (the {} train)", s(v, "version"), last[0]), fixed: String::new() }
+            Verdict::Affected { range: format!("<={shown} (the {} train)", last[0]), fixed: String::new() }
         };
+    }
+    if perf_only {
+        return Verdict::Unaffected;
     }
     // A train the record doesn't list (or lists in a form not read): it
     // may be out of public support rather than fixed; it can't be judged.
     Verdict::Unknown
+}
+
+/// Two versions of one Java train. Java 8 is compared by quarterly update:
+/// OpenJDK numbers each one above Oracle's (OpenJDK 8u412 is Oracle's 8u411,
+/// April 2024), so `8u411` as the last affected covers OpenJDK's 8u412 too.
+fn java_cmp(a: &[String], b: &[String]) -> Ordering {
+    let quarter = |p: &[String]| p.get(2).and_then(|u| u.parse::<u64>().ok()).map(|u| u / 10);
+    match (a.first().map(String::as_str), quarter(a), quarter(b)) {
+        (Some("8"), Some(x), Some(y)) => x.cmp(&y),
+        _ => cmp_parts(a, b),
+    }
 }
 
 fn first_unaffected_above(versions: &[Value], bound: &str) -> String {
@@ -637,7 +671,7 @@ pub fn matching_products(x: &Subject, vendor: &str, products: &[String]) -> Vec<
 
 /// The catalog tools found that [`TOOLS`] names, as subjects: one per
 /// spelling of the tool's records. A tool in [`OSV_FIRST`] only when
-/// `osv_answered` says OSV had nothing for it.
+/// `osv_answered` says OSV had no CVE for it.
 pub fn tool_subjects(found: &[Component], osv_answered: &dyn Fn(&Component) -> bool) -> Vec<Subject> {
     found
         .iter()
@@ -660,7 +694,11 @@ pub fn tool_subjects(found: &[Component], osv_answered: &dyn Fn(&Component) -> b
 /// OSV answered for the inventory ([`crate::checks::machine::components`]):
 /// a tool in [`OSV_FIRST`] with records there is OSV's to judge.
 pub fn tools(scan: &mut Scan, found: &[Component], osv: &HashMap<Item, Vec<Value>>) -> Result<()> {
-    let answered = |c: &Component| c.osv.as_ref().and_then(|o| osv.get(o)).is_some_and(|r| !r.is_empty());
+    let answered = |c: &Component| {
+        c.osv.as_ref().and_then(|o| osv.get(o)).is_some_and(|recs| {
+            recs.iter().any(|r| crate::sources::osv::ids_of(r).iter().any(|id| id.starts_with("CVE-")))
+        })
+    };
     let mut subjects = tool_subjects(found, &answered);
     // Each one's train release date, from endoflife.date's copy the
     // inventory check already fetched (nothing is asked here).
@@ -741,8 +779,17 @@ pub fn check(scan: &mut Scan, subjects: &[Subject], what: &str) -> Result<()> {
                 unjudged_names.insert(p.name.clone());
             }
             for f in findings {
-                if !found.iter().any(|g| g.component == f.component && g.version == f.version && g.vuln_id == f.vuln_id)
-                {
+                // One finding per install and CVE: a second install at
+                // another path is its own, and a CVE OSV already reported
+                // for this install (MySQL has both; OSV findings show the
+                // CVE id) isn't repeated.
+                let same = |g: &Finding| {
+                    g.component == f.component
+                        && g.version == f.version
+                        && g.location == f.location
+                        && g.vuln_id == f.vuln_id
+                };
+                if !found.iter().any(same) && !scan.findings.iter().any(same) {
                     found.push(f);
                 }
             }

@@ -40,8 +40,9 @@ pub const ID: &str = "cve-records";
 /// Requests in flight at once: the index is a public service, kept polite.
 const PARALLEL: usize = 4;
 /// Pages of 100 read per product; a product with more is read in part, and
-/// says so ([`Records::complete`]).
-pub const MAX_PAGES: u64 = 20;
+/// says so ([`Records::complete`]). MySQL Server, the largest Pantry asks
+/// about, had 23 on 2026-11-18 (2246 entries across the index's sources).
+pub const MAX_PAGES: u64 = 30;
 
 /// One CVE record, as much of it as the judgement needs.
 #[derive(Clone, Debug, PartialEq)]

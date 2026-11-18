@@ -368,6 +368,20 @@ fn oracle_mysql_ranges_are_inclusive_and_a_bare_version_is_that_version() {
     assert_eq!(inclusive_span("8.4.0-beta"), None);
     let backwards = entry(json!([{"status": "affected", "version": "2.0-1.0"}]));
     assert_eq!(judge(&parts("1.5"), &backwards), Verdict::Unknown);
+    // `and prior` / `and earlier`: up to that version, included.
+    for words in ["8.0.30 and prior", "8.0.30 and earlier"] {
+        let prior = entry(json!([{"status": "affected", "version": words}]));
+        assert_eq!(
+            judge(&parts("8.0.30"), &prior),
+            Verdict::Affected { range: "<=8.0.30".into(), fixed: String::new() },
+            "{words}"
+        );
+        assert_eq!(
+            judge(&parts("5.7.44"), &prior),
+            Verdict::Affected { range: "<=8.0.30".into(), fixed: String::new() }
+        );
+        assert_eq!(judge(&parts("8.0.31"), &prior), Verdict::Unaffected);
+    }
 }
 
 #[test]
@@ -383,12 +397,27 @@ fn java_versions_are_read_by_train() {
     assert_eq!(judge_trains(&i("17.0.12"), &java_entry()), affected("<=17.0.21.0.3 (the 17 train)"));
     assert_eq!(judge_trains(&i("17.0.21"), &java_entry()), affected("<=17.0.21.0.3 (the 17 train)"));
     assert_eq!(judge_trains(&i("17.0.22"), &java_entry()), Verdict::Unaffected);
-    // Java 8 as `java -version` reports it, `1.8.0_N`, against Oracle's `8u511b33-perf`.
-    assert_eq!(judge_trains(&i("1.8.0_412"), &java_entry()), affected("<=8u511b33-perf (the 8 train)"));
-    assert_eq!(judge_trains(&i("1.8.0_511"), &java_entry()), affected("<=8u511b33-perf (the 8 train)"));
-    assert_eq!(judge_trains(&i("1.8.0_512"), &java_entry()), Verdict::Unaffected);
+    // A record naming Java 8 only as Performance Pack (`8u511b33-perf`)
+    // doesn't affect a plain Java 8.
+    assert_eq!(judge_trains(&i("1.8.0_412"), &java_entry()), Verdict::Unaffected);
+    // With a plain 8 entry too, that one decides. Java 8 as `java -version`
+    // reports it, `1.8.0_N`, by quarterly update: OpenJDK's 8u512 is Oracle's
+    // 8u511, so it's affected; 8u521 and OpenJDK's 8u522 are the next quarter.
+    let eight = json!({"versions": [
+        {"version": "8u511-perf", "status": "affected"},
+        {"version": "8u511b33", "status": "affected"},
+        {"version": "17.0.21.0.3", "status": "affected"}
+    ]});
+    assert_eq!(judge_trains(&i("1.8.0_412"), &eight), affected("<=8u511b33 (the 8 train)"));
+    assert_eq!(judge_trains(&i("1.8.0_511"), &eight), affected("<=8u511b33 (the 8 train)"));
+    assert_eq!(judge_trains(&i("1.8.0_512"), &eight), affected("<=8u511b33 (the 8 train)"));
+    assert_eq!(judge_trains(&i("8u521"), &eight), Verdict::Unaffected);
+    assert_eq!(judge_trains(&i("1.8.0_522"), &eight), Verdict::Unaffected);
     assert_eq!(java_parts("1.8.0_512-b08"), Some(parts("8.0.512")), "a build suffix is not the update");
-    assert_eq!(judge_trains(&i("8u521"), &java_entry()), Verdict::Unaffected);
+    // An entry that names the product first.
+    let named = json!({"versions": [{"version": "Oracle Java SE:17.0.13", "status": "affected"}]});
+    assert_eq!(judge_trains(&i("17.0.12"), &named), affected("<=17.0.13 (the 17 train)"));
+    assert_eq!(judge_trains(&i("17.0.14"), &named), Verdict::Unaffected);
     assert_eq!(judge_trains(&i("21"), &java_entry()), affected("<=21.0.13.0.3 (the 21 train)"));
     // A train the record doesn't list can't be judged; unread versions are skipped.
     assert_eq!(judge_trains(&i("11.0.25"), &java_entry()), Verdict::Unknown);
@@ -433,15 +462,21 @@ fn catalog_tools_are_matched_by_the_table_only() {
     assert_eq!(matching_products(&subjects[0], "oracle corporation", &listed), ["java se", "oracle java se"]);
     // A Java 8 with its update is judged by it; one without can't be judged.
     let eight =
-        tool_subjects(&[tool("java", "1.8.0_412"), tool("java", "1.8.0_512"), tool("java", "1.8.0")], &|_| false);
-    let (affected, unknown) = assess(&eight[0], "oracle corporation", &recs(java_entry()), &|_| false);
+        tool_subjects(&[tool("java", "1.8.0_412"), tool("java", "1.8.0_522"), tool("java", "1.8.0")], &|_| false);
+    let plain = json!({"vendor": "Oracle Corporation", "product": "Oracle Java SE", "versions": [
+        {"version": "8u511b33-perf", "status": "affected"},
+        {"version": "8u511b33", "status": "affected"}
+    ]});
+    let (affected, unknown) = assess(&eight[0], "oracle corporation", &recs(plain.clone()), &|_| false);
     assert!(!unknown);
     assert_eq!(
         (affected[0].version.as_str(), affected[0].status.as_str(), affected[0].affected_range.as_str()),
-        ("1.8.0_412", "warn", "<=8u511b33-perf (the 8 train)")
+        ("1.8.0_412", "warn", "<=8u511b33 (the 8 train)")
     );
-    assert_eq!(assess(&eight[1], "oracle corporation", &recs(java_entry()), &|_| false), (vec![], false));
-    assert_eq!(assess(&eight[2], "oracle", &recs(java_entry()), &|_| false), (vec![], true));
+    assert_eq!(assess(&eight[1], "oracle corporation", &recs(plain.clone()), &|_| false), (vec![], false));
+    assert_eq!(assess(&eight[2], "oracle", &recs(plain), &|_| false), (vec![], true));
+    // Performance Pack only: a plain Java 8 isn't affected.
+    assert_eq!(assess(&eight[0], "oracle corporation", &recs(java_entry()), &|_| false), (vec![], false));
 }
 
 #[test]
@@ -469,13 +504,19 @@ fn the_tool_check_asks_for_oracle_records() {
         ..Default::default()
     };
     let java = crate::component::Component { name: "java".into(), version: "17.0.22".into(), ..mysql.clone() };
-    tools(&mut s, &[mysql, java], &HashMap::new()).unwrap();
+    tools(&mut s, &[mysql.clone(), java], &HashMap::new()).unwrap();
     assert_eq!(testing::kinds(&s), [("mysql".into(), "CVE-2026-114952".into(), "warn".into())]);
     assert_eq!(s.findings[0].location, "/usr/sbin/mysqld");
     // No tool the table names: nothing asked.
     let before = net.requests().len();
     tools(&mut s, &[], &HashMap::new()).unwrap();
     assert_eq!(net.requests().len(), before);
+    // A CVE already reported for this install (by OSV) isn't repeated; a
+    // second install of the same version at another path is its own.
+    let other = crate::component::Component { path: "/opt/mysql/bin/mysqld".into(), ..mysql.clone() };
+    tools(&mut s, &[mysql, other], &HashMap::new()).unwrap();
+    let at: Vec<&str> = s.findings.iter().map(|f| f.location.as_str()).collect();
+    assert_eq!(at, ["/usr/sbin/mysqld", "/opt/mysql/bin/mysqld"]);
 }
 
 /// A CVE JSON 5 record trimmed to what is read: its id, title, one
@@ -824,6 +865,22 @@ fn php_and_rust_ask_cve_records_only_when_osv_has_nothing() {
     let mut s = testing::scan(&net, &d);
     tools(&mut s, &found, &answered).unwrap();
     assert!(s.findings.is_empty() && net.requests().is_empty(), "{:?}", testing::kinds(&s));
+    // An answer with no CVE in it (PHP 8.2's lone OSS-Fuzz record) isn't
+    // coverage: the records decide.
+    let mut fuzz = osv_empty(&found[1..]);
+    for v in fuzz.values_mut() {
+        v.push(json!({"id": "OSV-2021-1199", "aliases": []}));
+    }
+    let mut s = testing::scan(&net, &d);
+    tools(&mut s, &found[1..], &fuzz).unwrap();
+    assert_eq!(failures(&s), [row("rust", "CVE-2024-24576", "fail", "1.77.2")]);
+    // An alias counts: a GHSA or RUSTSEC record for a CVE is coverage.
+    for v in fuzz.values_mut() {
+        v.push(json!({"id": "RUSTSEC-2024-0001", "aliases": ["CVE-2024-24576"]}));
+    }
+    let mut s = testing::scan(&net, &d);
+    tools(&mut s, &found[1..], &fuzz).unwrap();
+    assert!(s.findings.is_empty(), "{:?}", testing::kinds(&s));
     // OSV couldn't be asked (no answer at all): the records decide too.
     let mut s = testing::scan(&net, &d);
     tools(&mut s, &found[1..], &HashMap::new()).unwrap();

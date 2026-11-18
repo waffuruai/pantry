@@ -69,3 +69,14 @@ fn the_cellar_is_the_variables_then_the_standard_prefixes() {
         find_cellar_from(std::env::var_os("HOMEBREW_CELLAR"), std::env::var_os("HOMEBREW_PREFIX"), STANDARD_CELLARS)
     );
 }
+
+#[test]
+fn a_cellar_go_is_also_its_toolchain() {
+    let d = crate::utils::temp::TempDir::new("gotc").unwrap();
+    let cellar = d.path().join("Cellar");
+    std::fs::create_dir_all(cellar.join("go/1.26.10")).unwrap();
+    let inv = read(&cellar, &d.path().join("mise/installs"));
+    let go = &inv.components[0];
+    assert_eq!(go.osv, Some(("Go".into(), "stdlib".into(), "1.26.10".into())));
+    assert_eq!(go.osv_also, [("Go".to_string(), "toolchain".to_string(), "1.26.10".to_string())]);
+}

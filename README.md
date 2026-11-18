@@ -85,6 +85,7 @@ Data it asks, each under its publisher's terms:
 - [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog).
 - [CVE®](https://www.cve.org) (The MITRE Corporation, under the [CVE Terms of Use](https://www.cve.org/Legal/TermsOfUse)), with the scores CISA adds to CVE records. CVE is a registered trademark of The MITRE Corporation.
 - [EPSS](https://www.first.org/epss/) (FIRST; scores published daily by Empirical Security).
+- [CIRCL Vulnerability-Lookup](https://vulnerability.circl.lu): CVE records indexed by vendor and product, for installed software no package ecosystem covers.
 - [endoflife.date](https://endoflife.date) (MIT) and [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages) (Apache-2.0).
 - [deps.dev](https://deps.dev), the [Homebrew](https://brew.sh) formulae API and `brew vulns`, the [Arch Linux security tracker](https://security.archlinux.org), the Chrome and Firefox release feeds, the PostgreSQL security page, the VS Code Marketplace, [Open VSX](https://open-vsx.org), [Have I Been Pwned](https://haveibeenpwned.com) and [XposedOrNot](https://xposedornot.com).
 - [signature-base](https://github.com/Neo23x0/signature-base)'s IOC lists (Florian Roth, Detection Rule License 1.1); [abuse.ch](https://abuse.ch)'s Feodo Tracker (CC0), YARAify (CC0) and MalwareBazaar; [CIRCL hashlookup](https://hashlookup.circl.lu).

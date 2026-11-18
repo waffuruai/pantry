@@ -30,6 +30,7 @@ fn every_id_the_code_names_is_bundled() {
         include_str!("breaches.rs"),
         include_str!("indicator_lists.rs"),
         include_str!("hash_lookups.rs"),
+        include_str!("cve_records.rs"),
         include_str!("../checks/malware/yara.rs"),
         include_str!("../checks/supply_chain/malicious.rs"),
     ]

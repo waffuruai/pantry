@@ -1,5 +1,5 @@
 # Development toolchain, pinned, and the tasks that use it. `mise bootstrap` installs all of it
-# (checksummed through mise's aqua registry) and runs the `bootstrap` task; `mise run test` runs the
+# (checksummed, through mise's aqua registry or against GitHub's release digest) and runs the `bootstrap` task; `mise run test` runs the
 # suites; `mise tasks ls` lists the rest. CI installs the same pins with jdx/mise-action and runs the
 # same tasks. Rust comes from rustup, at the toolchain rust/rust-toolchain.toml pins. wpantry itself
 # needs only git and openssl, so this file is for contributors and CI, not users. Keep the
@@ -11,6 +11,9 @@ gitleaks = "8.30.1" # the org pre-commit hook's scanner (ops finds it here); wpa
 shellcheck = "0.11.0"
 actionlint = "1.7.12"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1" # the coverage gate (mise run coverage)
+# The third-party notices (mise run notices): not in aqua's registry, so mise's GitHub backend, which
+# checks the release asset against its GitHub digest.
+"github:EmbarkStudios/cargo-about" = "0.9.3"
 
 # A global mise rust sets RUSTUP_TOOLCHAIN, which would win over rust/rust-toolchain.toml.
 [tasks.build]
@@ -88,6 +91,49 @@ case "${usage_what:-all}" in
   actions) actions_vet ;;
   crates) crates_vet ;;
 esac
+'''
+
+[tasks.notices]
+description = "Regenerate the third-party notices wpantry embeds (rust/crates/wpantry-cli/THIRD-PARTY-NOTICES.txt) with cargo-about, after any dependency bump; --check fails when the committed file differs"
+usage = '''
+flag "--check" help="Generate into a temp file and fail when it differs from the committed one (CI)"
+'''
+dir = "rust"
+run = '''
+set -e
+# The global mise rust sets RUSTUP_TOOLCHAIN, which would win over rust-toolchain.toml;
+# the pinned cargo-about goes ahead of any `cargo install`ed one on PATH.
+unset RUSTUP_TOOLCHAIN
+PATH="$(mise where github:EmbarkStudios/cargo-about):$PATH"; export PATH
+out=crates/wpantry-cli/THIRD-PARTY-NOTICES.txt
+raw="$(mktemp)"; new="$(mktemp)"; log="$(mktemp)"; trap 'rm -f "$raw" "$new" "$log"' EXIT
+# --frozen: the licence texts come from the crates' own packages, never from their repositories,
+# so every machine renders the same file; cargo fetch puts the packages there.
+cargo fetch --locked --quiet
+cargo about generate --frozen --fail -c about.toml -m crates/wpantry-cli/Cargo.toml about.hbs > "$raw" 2> "$log" ||
+  { cat "$log" >&2; exit 1; }
+cat "$log" >&2
+# A clarify entry whose files changed is only a warning to cargo-about, which then reads the crate
+# as if there were none.
+if grep -q "clarification" "$log"; then
+  echo "error: a clarify entry in rust/about.toml no longer matches its crate: check the new files and update it" >&2
+  exit 1
+fi
+# What the binary carries that isn't a crate, after the crates (about.hbs ends with its heading).
+notice() { printf '\n==== %s\n\n' "$1"; cat "$2"; }
+{
+  notice "Secret rules: pantry-rules, translated from betterleaks (MIT)" crates/wpantry/assets/secrets/NOTICE
+  notice "CVSS 4.0 scoring: FIRST's cvss-v4-calculator (BSD-2-Clause)" crates/wpantry/src/utils/cvss.NOTICE
+  notice "HTML report fonts: Geist and Geist Mono (SIL Open Font License 1.1)" crates/wpantry/assets/report/fonts/LICENSE-Geist-OFL.txt
+  notice "HTML report fonts: Instrument Serif (SIL Open Font License 1.1)" crates/wpantry/assets/report/fonts/LICENSE-InstrumentSerif-OFL.txt
+} >> "$raw"
+# Some crates ship CRLF licence files; the repository keeps LF (.gitattributes).
+tr -d '\r' < "$raw" > "$new"
+if [ "${usage_check:-false}" = true ]; then
+  diff -u "$out" "$new" || { echo "error: $out is stale: run \`mise run notices\` and commit it" >&2; exit 1; }
+else
+  cat "$new" > "$out"
+fi
 '''
 
 [tasks.contract]

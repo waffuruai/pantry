@@ -633,7 +633,7 @@ impl<'a> Scan<'a> {
                 note: format!("{product} {cycle} reached end of life on {ended}; supported: {}", shown.join(", ")),
                 ..Finding::of(c)
             });
-        } else if !res.latest.is_empty() && !failing && !versions::same_or_newer(&c.version, &res.latest) {
+        } else if !res.latest.is_empty() && !failing && !versions::current(&c.name, &c.version, &res.latest) {
             let (fix_cmd, fix_auto) = fix_with(c, &res.latest);
             self.add(Finding {
                 vuln_id: "OUTDATED".into(),

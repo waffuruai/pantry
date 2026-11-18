@@ -98,8 +98,13 @@ pub const GO_DIRS: &[&str] = &[
     "~/.asdf/installs/golang/*/go/bin",
     "~/.local/share/mise/installs/go/*/bin",
 ];
-pub const JAVA_DIRS: &[&str] =
-    &["~/.sdkman/candidates/java/*/bin", "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin"];
+pub const JAVA_DIRS: &[&str] = &[
+    "~/.sdkman/candidates/java/*/bin",
+    "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin",
+    // Debian, Ubuntu and Fedora; openSUSE keeps them under lib64.
+    "/usr/lib/jvm/*/bin",
+    "/usr/lib64/jvm/*/bin",
+];
 
 pub const TOOLS: &[Tool] = &[
     Tool {
@@ -167,7 +172,8 @@ pub const TOOLS: &[Tool] = &[
         kind: "runtime",
         bins: &["java"],
         args: &["-version"],
-        pattern: r#"version "(\d+(?:\.\d+)*)"#,
+        // Java 8 prints 1.8.0_412: the update after the underscore is kept.
+        pattern: r#"version "(\d+(?:\.\d+)*(?:_\d+)?)"#,
         osv: None,
         eol: Some(("eclipse-temurin", Cycle::Java)),
         always: false,

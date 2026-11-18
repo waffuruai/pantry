@@ -302,6 +302,7 @@ Commands:
   version [options]          Print the version, implementation and JSON schema
   tools [options]            List the external tools wpantry uses
   skill                      Print the agent skill (SKILL.md)
+  licenses                   Print the third-party licences built into wpantry
   help [command]             Print a command's help
 
 Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
@@ -674,6 +675,19 @@ Options:
 Usage: wpantry skill [options]
 
 Print the agent skill (SKILL.md).
+
+Options:
+  -h, --help  print this help
+```
+
+### licenses
+
+```
+Usage: wpantry licenses [options]
+
+Print the licences and notices of the third-party code, data and fonts built into wpantry: every
+crate with its licence text, then the rest. Each release ships the same text as
+THIRD-PARTY-NOTICES.txt.
 
 Options:
   -h, --help  print this help

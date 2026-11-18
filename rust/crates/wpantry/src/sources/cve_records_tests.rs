@@ -54,6 +54,11 @@ fn a_record_is_trimmed_to_what_is_judged() {
     assert_eq!(t["affected"][0]["product"], "PowerStudio SCADA Wave");
     assert_eq!(t["affected"][0]["versions"][0]["lessThan"], "24.11.17.0");
     assert!(t["affected"][0].get("platforms").is_none());
+    // The day it was published, when it says; "" otherwise.
+    assert_eq!(t["published"], "");
+    let mut dated = circutor_record();
+    dated["cveMetadata"]["datePublished"] = json!("2024-11-22T06:03:29.764Z");
+    assert_eq!(trim(&dated).unwrap()["published"], "2024-11-22");
     // Rejected, or without metadata or an id: nothing.
     let mut rejected = circutor_record();
     rejected["cveMetadata"]["state"] = json!("REJECTED");
@@ -103,7 +108,7 @@ fn products_and_records_are_fetched_once_and_kept() {
     assert_eq!(got.records.len(), 1, "NVD's copies aren't kept");
     let r = &got.records[0];
     assert_eq!((r.id.as_str(), r.score.clone()), ("CVE-2026-120387", Some((10.0, "4.0".to_string()))));
-    assert_eq!(r.affected.len(), 1);
+    assert_eq!((r.affected.len(), r.published.as_str()), (1, ""));
     assert_eq!(records(&c, "circutor", "lineeds").unwrap(), None);
 }
 

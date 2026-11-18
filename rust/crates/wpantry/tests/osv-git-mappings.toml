@@ -1,0 +1,344 @@
+# Each catalog GIT mapping (`checks/machine/catalog.rs`, ("GIT", repo, tag format)) with
+# one version and what OSV answered for its release tag, recorded 2026-11-17 with
+#   POST https://api.osv.dev/v1/query {"package": {"ecosystem": "GIT", "name": <repo>}, "version": <tag>}
+# counting every page. Read by `catalog_tests.rs`, offline.
+#
+# status:
+#   answers     OSV named advisories for the tag (`answers` > 0, one of them in `example`).
+#   empty       OSV answered nothing though `affected_by` names the version: the mapping is
+#               broken for it, and an empty answer for this tool must not be read as clean.
+#   unverified  OSV answered nothing and no CVE naming a version of the tool was found.
+# A row's tag must be what the catalog's tag format makes of its version, so a changed
+# format means re-recording the row. Re-record a row by hand with the request above.
+
+[[mapping]]
+tool = "node"
+version = "18.0.0"
+tag = "v18.0.0"
+answers = 27
+status = "answers"
+example = "CVE-2022-32212"
+
+# Broken: OSV's range for CVE-2024-24576 starts at 1.77.0 (1.77.0 answers 2), the record
+# says every version before 1.77.2. Covered by the CVE-record check (OSV_FIRST).
+[[mapping]]
+tool = "rust"
+version = "1.76.0"
+tag = "1.76.0"
+answers = 0
+status = "empty"
+affected_by = "CVE-2024-24576"
+
+# Broken for 3.2 (v3_0_0 answers 9, v3_1_0 3; v3_2_0 and v3_2_1 nothing though Ruby 3.2.2
+# fixes CVE-2023-28755). Not covered; to investigate.
+[[mapping]]
+tool = "ruby"
+version = "3.2.0"
+tag = "v3_2_0"
+answers = 0
+status = "empty"
+affected_by = "CVE-2023-28755"
+
+# Broken: php-8.3.0 to php-8.4.20 answer nothing (php-8.0.0 answers 5). Covered by the
+# CVE-record check (OSV_FIRST).
+[[mapping]]
+tool = "php"
+version = "8.3.13"
+tag = "php-8.3.13"
+answers = 0
+status = "empty"
+affected_by = "CVE-2024-8932"
+
+[[mapping]]
+tool = "deno"
+version = "1.30.0"
+tag = "v1.30.0"
+answers = 21
+status = "answers"
+example = "CVE-2023-28446"
+
+[[mapping]]
+tool = "bun"
+version = "1.0.0"
+tag = "bun-v1.0.0"
+answers = 1
+status = "answers"
+example = "CVE-2024-21548"
+
+# swift-5.2, 5.5, 5.8 and 5.9-RELEASE answer nothing.
+[[mapping]]
+tool = "swift"
+version = "5.9"
+tag = "swift-5.9-RELEASE"
+answers = 0
+status = "unverified"
+
+# llvmorg-12.0.0, 15.0.0, 16.0.0 and 17.0.1 answer nothing.
+[[mapping]]
+tool = "clang"
+version = "17.0.1"
+tag = "llvmorg-17.0.1"
+answers = 0
+status = "unverified"
+
+# releases/gcc-12.1.0 and 13.2.0 answer nothing.
+[[mapping]]
+tool = "gcc"
+version = "9.1.0"
+tag = "releases/gcc-9.1.0"
+answers = 1
+status = "answers"
+example = "CVE-2019-15847"
+
+[[mapping]]
+tool = "fnm"
+version = "1.30.0"
+tag = "v1.30.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "volta"
+version = "1.0.0"
+tag = "v1.0.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "rbenv"
+version = "1.1.0"
+tag = "v1.1.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "pyenv"
+version = "2.3.0"
+tag = "v2.3.0"
+answers = 2
+status = "answers"
+example = "CVE-2022-35861"
+
+[[mapping]]
+tool = "asdf"
+version = "0.10.0"
+tag = "v0.10.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "mise"
+version = "2024.1.0"
+tag = "v2024.1.0"
+answers = 6
+status = "answers"
+example = "CVE-2026-33646"
+
+[[mapping]]
+tool = "rustup"
+version = "1.25.0"
+tag = "1.25.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "conda"
+version = "23.1.0"
+tag = "23.1.0"
+answers = 1
+status = "answers"
+example = "CVE-2026-53940"
+
+# Broken: v2.7.0, v3.0.0 and v3.0.2 answer nothing; RubyGems 3.0.3 fixes CVE-2019-8325.
+# Not covered.
+[[mapping]]
+tool = "gem"
+version = "3.0.2"
+tag = "v3.0.2"
+answers = 0
+status = "empty"
+affected_by = "CVE-2019-8325"
+
+# 3.0.0 and 4.0.0 answer nothing.
+[[mapping]]
+tool = "brew"
+version = "4.0.0"
+tag = "4.0.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "git"
+version = "2.39.0"
+tag = "v2.39.0"
+answers = 7
+status = "answers"
+example = "CVE-2024-32002"
+
+[[mapping]]
+tool = "openssl"
+version = "3.0.0"
+tag = "openssl-3.0.0"
+answers = 49
+status = "answers"
+example = "CVE-2022-0778"
+
+[[mapping]]
+tool = "curl"
+version = "8.0.0"
+tag = "curl-8_0_0"
+answers = 108
+status = "answers"
+example = "CVE-2023-28319"
+
+[[mapping]]
+tool = "ssh"
+version = "9.6p1"
+tag = "V_9_6_P1"
+answers = 28
+status = "answers"
+example = "CVE-2025-26465"
+
+# v3.20.0 and v3.25.0 answer nothing.
+[[mapping]]
+tool = "cmake"
+version = "3.25.0"
+tag = "v3.25.0"
+answers = 0
+status = "unverified"
+
+# Broken: v6.0.0, v7.0.0, v7.5.0 and v8.0.0 answer nothing; Gradle 7.6.2 fixes
+# CVE-2023-35946. Not covered.
+[[mapping]]
+tool = "gradle"
+version = "7.0.0"
+tag = "v7.0.0"
+answers = 0
+status = "empty"
+affected_by = "CVE-2023-35946"
+
+# Broken: maven-3.0.0 and maven-3.8.1 answer nothing too; Maven 3.8.1 fixes CVE-2021-26291.
+# Not covered.
+[[mapping]]
+tool = "maven"
+version = "3.6.3"
+tag = "maven-3.6.3"
+answers = 0
+status = "empty"
+affected_by = "CVE-2021-26291"
+
+# 6.0.0 answers nothing.
+[[mapping]]
+tool = "bazel"
+version = "5.0.0"
+tag = "5.0.0"
+answers = 1
+status = "answers"
+example = "CVE-2022-3474"
+
+[[mapping]]
+tool = "aws"
+version = "2.0.0"
+tag = "2.0.0"
+answers = 2
+status = "answers"
+example = "CVE-2026-13769"
+
+# Broken for 1.24 (release-1.25.0 answers 22); CVE-2024-7347 names 1.5.13 to 1.27.0.
+# Not covered; to investigate.
+[[mapping]]
+tool = "nginx"
+version = "1.24.0"
+tag = "release-1.24.0"
+answers = 0
+status = "empty"
+affected_by = "CVE-2024-7347"
+
+[[mapping]]
+tool = "goose"
+version = "1.0.0"
+tag = "v1.0.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "crush"
+version = "0.1.0"
+tag = "v0.1.0"
+answers = 0
+status = "unverified"
+
+[[mapping]]
+tool = "mongodb"
+version = "6.0.0"
+tag = "r6.0.0"
+answers = 29
+status = "answers"
+example = "CVE-2023-1409"
+
+[[mapping]]
+tool = "redis"
+version = "7.0.0"
+tag = "7.0.0"
+answers = 12
+status = "answers"
+example = "CVE-2022-24834"
+
+[[mapping]]
+tool = "valkey"
+version = "8.0.0"
+tag = "8.0.0"
+answers = 4
+status = "answers"
+example = "CVE-2025-67733"
+
+# Broken: mariadb-10.5.0, 10.6.0 and 10.11.0 answer nothing; CVE-2022-27376 names
+# 10.6.5 and below. Not covered.
+[[mapping]]
+tool = "mariadb"
+version = "10.6.0"
+tag = "mariadb-10.6.0"
+answers = 0
+status = "empty"
+affected_by = "CVE-2022-27376"
+
+[[mapping]]
+tool = "mysql"
+version = "8.0.30"
+tag = "mysql-8.0.30"
+answers = 3
+status = "answers"
+example = "CVE-2022-21608"
+
+[[mapping]]
+tool = "sqlite"
+version = "3.40.0"
+tag = "version-3.40.0"
+answers = 20
+status = "answers"
+example = "CVE-2022-46908"
+
+[[mapping]]
+tool = "duckdb"
+version = "0.9.0"
+tag = "v0.9.0"
+answers = 2
+status = "answers"
+example = "CVE-2024-41672"
+
+[[mapping]]
+tool = "memcached"
+version = "1.6.0"
+tag = "1.6.0"
+answers = 6
+status = "answers"
+example = "CVE-2020-10931"
+
+# 3.0.0 and 3.3.1 answer nothing, though CVE-2023-25194 names Kafka Connect 2.3.0 to 3.3.2.
+[[mapping]]
+tool = "kafka"
+version = "2.8.0"
+tag = "2.8.0"
+answers = 1
+status = "answers"
+example = "CVE-2021-38153"

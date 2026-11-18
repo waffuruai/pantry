@@ -49,6 +49,9 @@ pub const MAX_PAGES: u64 = 30;
 pub struct Record {
     pub id: String,
     pub title: String,
+    /// When the record was published (`cveMetadata.datePublished`, its
+    /// day), "" when it doesn't say.
+    pub published: String,
     /// The best CVSS base score the record carries (the publisher's, else an
     /// added one's), and its CVSS version.
     pub score: Option<(f64, String)>,
@@ -102,6 +105,7 @@ pub fn records(cache: &Cache, vendor: &str, product: &str) -> Result<Option<Reco
         .map(|r| Record {
             id: r["id"].as_str().unwrap_or_default().to_string(),
             title: r["title"].as_str().unwrap_or_default().to_string(),
+            published: r["published"].as_str().unwrap_or_default().to_string(),
             score: r["score"].as_f64().map(|s| (s, r["cvss_version"].as_str().unwrap_or_default().to_string())),
             affected: arr_at(r, "affected").to_vec(),
         })
@@ -226,9 +230,12 @@ pub fn trim(rec: &Value) -> Option<Value> {
         })
         .collect();
     let score = cve_scores::of_cve_record(rec).map(|(s, _, _)| s);
+    let published: String =
+        meta.get("datePublished").and_then(Value::as_str).unwrap_or_default().chars().take(10).collect();
     Some(json!({
         "id": id,
         "title": title,
+        "published": published,
         "score": score.as_ref().map(|s| s.value),
         "cvss_version": score.as_ref().map(|s| s.version.clone()),
         "affected": affected,

@@ -2,7 +2,8 @@
 //! ([`crate::sources::cve_records`]): desktop, server and industrial
 //! software no package ecosystem covers, so OSV has no advisory for it.
 //! What is judged is a [`Subject`]: a Windows program (its Publisher and
-//! DisplayName), or a catalog tool OSV can't map, named in [`TOOLS`].
+//! DisplayName), or a catalog tool OSV can't map, named in [`TOOLS`] (PHP
+//! and Rust only when OSV answered no CVE for them, [`OSV_FIRST`]).
 //!
 //! Matching is deliberately narrow. A record applies only when both its
 //! vendor and its product equal the subject's after [`vendor_key`] and
@@ -18,10 +19,19 @@
 //! `lessThanOrEqual` is a range (`0` or `*` as its start means from the
 //! first release, `*` as its end means every later one); `version` alone
 //! is that one version, and `a-b` alone (as Oracle writes MySQL's) the
-//! inclusive range from `a` to `b`. An `unaffected` match wins over an
-//! `affected` one. Products in [`TRAINS`] are the exception: their vendor
-//! lists, per release train, the last affected version alone, so a bare
-//! version there means that version or any earlier one of its train.
+//! inclusive range from `a` to `b`. A `version` alone may also be spelled
+//! out ([`spelled`]): comparisons (`< 1.77.2`, `>= 1.60.0, < 1.72`) or a
+//! train with its fix in words (`7.2.x below 7.2.30`, `5.6.x before 5.6.1`).
+//! An `unaffected` match wins over an `affected` one. A record whose
+//! `defaultStatus` is `affected` leaves every version it doesn't list
+//! affected, so a miss there is unknown, unless the installed version's own
+//! train is listed and it is at or past that train's fix ([`train_of`]), or
+//! its train is newer than every train the record lists and was first
+//! released after the record was published ([`unlisted_later_train`]): the
+//! record couldn't have meant it.
+//! Products in [`TRAINS`] are the exception: their vendor lists, per
+//! release train, the last affected version alone, so a bare version there
+//! means that version or any earlier one of its train.
 //!
 //! Example: a program `PowerStudio SCADA Wave 24.10.3.0` published by
 //! `CIRCUTOR, SA` matches records for vendor `Circutor`, product
@@ -35,10 +45,11 @@ use crate::error::Result;
 use crate::finding::Finding;
 use crate::sources::cve_records::{self, Record};
 use crate::sources::fetch;
+use crate::sources::osv::Item;
 use crate::utils::cvss;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// What the tool check's not-checked lines are called.
 pub const TOOLS_WHAT: &str = "tools against CVE records";
@@ -59,11 +70,36 @@ pub fn partial(what: &str) -> String {
 }
 
 /// Catalog tools whose advisories are CVE records rather than OSV
-/// entries: (catalog name, vendor, product) as the records name them.
-/// OpenJDK builds are matched to Oracle Java SE: the same code, and
-/// Oracle's records are the CVEs for it.
-pub const TOOLS: &[(&str, &str, &str)] =
-    &[("java", "Oracle Corporation", "Oracle Java SE"), ("mysql", "Oracle Corporation", "MySQL Server")];
+/// entries: (catalog name, vendor, product) as the records name them, one
+/// row per spelling the records use. OpenJDK builds are matched to Oracle
+/// Java SE: the same code, and Oracle's records are the CVEs for it.
+///
+/// PHP's records are filed as `PHP Group` / `PHP` (most), `PHP` / `PHP`
+/// (CVE-2019-11043) and `php` / `php` (CVE-2026-14355); the last two compare
+/// the same. Rust's as `rust-lang` / `rust` (CVE-2024-24576) and, for the
+/// standard library that ships with each `rustc`, `Rust Project` / `std`
+/// (CVE-2025-11233).
+///
+/// TODO: `The Rust Programming Language` / `Standard Library` has one record
+/// (CVE-2019-1010299, fixed in 1.30.0) whose version is free text; mapped,
+/// it would leave every Rust "not checked", so it is left out.
+pub const TOOLS: &[(&str, &str, &str)] = &[
+    ("java", "Oracle Corporation", "Oracle Java SE"),
+    ("mysql", "Oracle Corporation", "MySQL Server"),
+    ("php", "PHP Group", "PHP"),
+    ("php", "PHP", "PHP"),
+    ("rust", "rust-lang", "rust"),
+    ("rust", "Rust Project", "std"),
+];
+
+/// Catalog tools in [`TOOLS`] that keep an OSV mapping (php-src's and
+/// rust-lang/rust's release tags) which often answers nothing for versions
+/// their CVE records name. OSV goes first; when its answer for the
+/// installed version names no CVE (or OSV couldn't be asked), the CVE
+/// records decide, so an empty answer is never read as clean. An answer
+/// with no CVE isn't coverage: for PHP 8.1 and 8.2 it is often one
+/// OSS-Fuzz crash record (`OSV-2021-1199`) and none of PHP's CVEs.
+pub const OSV_FIRST: &[&str] = &["php", "rust"];
 
 /// Products whose records list the last affected version of each release
 /// train alone (by [`vendor_key`], [`product_key`]): Oracle's Java SE
@@ -83,6 +119,9 @@ pub struct Subject {
     /// The product to match, when it isn't the name ("Oracle Java SE" for
     /// `java`).
     pub product: Option<String>,
+    /// When the installed version's release train was first released
+    /// (endoflife.date's `releaseDate` for its cycle), when known.
+    pub released: Option<String>,
 }
 
 impl Subject {
@@ -100,6 +139,8 @@ pub const VENDOR_ALIASES: &[(&str, &[&str])] = &[
     ("adobe systems", &["adobe"]),
     ("broadcom", &["vmware", "broadcom"]),
     ("circutor", &["circutor"]),
+    // The index keeps the hyphen: `browse/rust-lang`.
+    ("rust lang", &["rust-lang"]),
     ("vmware", &["vmware"]),
 ];
 
@@ -256,8 +297,16 @@ fn s<'a>(v: &'a Value, key: &str) -> &'a str {
 /// an unaffected match wins over an affected one; with no match, an entry
 /// that couldn't be read, or a default of "affected", is Unknown.
 pub fn judge(installed: &[String], entry: &Value) -> Verdict {
-    let versions = crate::utils::json::arr_at(entry, "versions");
-    let mut unknown = s(entry, "defaultStatus") == "affected";
+    let versions: Vec<Value> = crate::utils::json::arr_at(entry, "versions")
+        .iter()
+        .flat_map(|v| spelled(v).unwrap_or_else(|| vec![v.clone()]))
+        .collect();
+    let versions = versions.as_slice();
+    let default_affected = s(entry, "defaultStatus") == "affected";
+    // A version entry that couldn't be read; the installed version's train
+    // listed with a fix it is at or past.
+    let mut unknown = false;
+    let mut fixed_in_train = false;
     let mut affected: Option<Verdict> = None;
     for v in versions {
         let status = s(v, "status");
@@ -299,6 +348,14 @@ pub fn judge(installed: &[String], entry: &Value) -> Verdict {
                     Ordering::Equal => inclusive,
                     Ordering::Greater => false,
                 };
+            if !below
+                && status == "affected"
+                && let Some(train) = train_of(start, bound)
+            {
+                let head: Vec<String> =
+                    (0..train.len()).map(|i| installed.get(i).cloned().unwrap_or_else(|| "0".into())).collect();
+                fixed_in_train |= cmp_parts(&head, &train) == Ordering::Equal;
+            }
             above && below
         };
         if !hit {
@@ -332,8 +389,111 @@ pub fn judge(installed: &[String], entry: &Value) -> Verdict {
     }
     match affected {
         Some(a) => a,
-        None if unknown => Verdict::Unknown,
+        None if unknown || (default_affected && !fixed_in_train) => Verdict::Unknown,
         None => Verdict::Unaffected,
+    }
+}
+
+/// The release train a range covers, when it covers one: a wildcard start
+/// (`8.3.*`, `7.4.X`) names it, or a start and fix that differ only in
+/// their last part (`8.4.0` to `8.4.23` is the 8.4 train). None otherwise
+/// (`1.87.0` to `1.89.0` spans trains).
+pub fn train_of(start: &str, bound: &str) -> Option<Vec<String>> {
+    if dotted(start, false).is_none() {
+        return dotted(start, true);
+    }
+    let (a, b) = (dotted(start, false)?, dotted(bound, false)?);
+    let n = a.len();
+    (n >= 2 && b.len() == n && a[..n - 1] == b[..n - 1]).then(|| a[..n - 1].to_vec())
+}
+
+/// A `version` given alone in words or comparisons, as the `version` plus
+/// `lessThan` / `lessThanOrEqual` entries it stands for; None for any other
+/// `version` (one version, `a-b`, something unread). Each shape is from
+/// real records:
+///
+/// - comparisons, as GitHub's records write them: `< 1.77.2`
+///   (CVE-2024-24576), `>= 1.60.0, < 1.72` (CVE-2023-40030), `<= 3.0`,
+///   `>= 5.0`;
+/// - a train and its fix in words, as PHP's older records do: `7.1.x <
+///   7.1.30` (CVE-2019-11038), `7.2.x below 7.2.30` and `7.3.x below 7.3.17
+///   and 7.4.x below 7.4.5` (CVE-2020-7067), `5.6.x before 5.6.1`
+///   (CVE-2014-3622).
+///
+/// Example: `{"status": "affected", "version": "< 1.77.2"}` reads as
+/// `{"status": "affected", "version": "0", "lessThan": "1.77.2"}`.
+pub fn spelled(v: &Value) -> Option<Vec<Value>> {
+    if !s(v, "lessThan").is_empty() || !s(v, "lessThanOrEqual").is_empty() {
+        return None;
+    }
+    let status = s(v, "status");
+    s(v, "version").split(" and ").map(|c| spelled_clause(c.trim(), status)).collect()
+}
+
+fn spelled_clause(c: &str, status: &str) -> Option<Value> {
+    if c.starts_with(['<', '>']) {
+        let (mut from, mut to): (Option<&str>, Option<(&str, bool)>) = (None, None);
+        for part in c.split(',').map(str::trim) {
+            let (op, ver) = [">=", "<=", "<"].iter().find_map(|op| part.strip_prefix(op).map(|r| (*op, r.trim())))?;
+            dotted(ver, false)?;
+            match op {
+                ">=" if from.is_none() => from = Some(ver),
+                "<" | "<=" if to.is_none() => to = Some((ver, op == "<=")),
+                _ => return None,
+            }
+        }
+        let mut item = serde_json::json!({"status": status, "version": from.unwrap_or("0")});
+        match to {
+            Some((bound, true)) => item["lessThanOrEqual"] = bound.into(),
+            Some((bound, false)) => item["lessThan"] = bound.into(),
+            None => item["lessThan"] = "*".into(),
+        }
+        return Some(item);
+    }
+    let (train, bound) = [" below ", " before ", " < "].iter().find_map(|sep| c.split_once(sep))?;
+    let (train, bound) = (train.trim(), bound.trim());
+    // The start must be a train (`7.2.x`), the fix a version.
+    (dotted(train, false).is_none() && dotted(train, true).is_some() && dotted(bound, false).is_some())
+        .then(|| serde_json::json!({"status": status, "version": train, "lessThan": bound}))
+}
+
+/// Whether `installed` sits in a train newer than every train `entry`
+/// lists, under a default of affected: every `affected` range of the entry
+/// names a train ([`train_of`]) below the installed one. Such a version is
+/// judged by dates ([`assess`]): the record says nothing about a train
+/// released after it was published.
+///
+/// Example: CVE-2024-4577 lists 8.1.*, 8.2.* and 8.3.* with a default of
+/// affected and was published 2024-06-09; PHP 8.4 was first released
+/// 2024-11-21, so 8.4.27 is not what it calls affected.
+pub fn unlisted_later_train(installed: &[String], entry: &Value) -> bool {
+    if s(entry, "defaultStatus") != "affected" {
+        return false;
+    }
+    let versions: Vec<Value> = crate::utils::json::arr_at(entry, "versions")
+        .iter()
+        .flat_map(|v| spelled(v).unwrap_or_else(|| vec![v.clone()]))
+        .collect();
+    let mut trains = 0;
+    for v in versions.iter().filter(|v| s(v, "status") == "affected") {
+        let bound = if s(v, "lessThan").is_empty() { s(v, "lessThanOrEqual") } else { s(v, "lessThan") };
+        let Some(train) = train_of(s(v, "version"), bound).filter(|_| !bound.is_empty()) else { return false };
+        let head: Vec<String> =
+            (0..train.len()).map(|i| installed.get(i).cloned().unwrap_or_else(|| "0".into())).collect();
+        if cmp_parts(&head, &train) != Ordering::Greater {
+            return false;
+        }
+        trains += 1;
+    }
+    trains > 0
+}
+
+/// Whether day `a` (`YYYY-MM-DD`) is strictly before day `b`; false when
+/// either can't be read.
+fn before(a: &str, b: &str) -> bool {
+    match (crate::utils::dates::parse_date(a.get(..10).unwrap_or(a)), crate::utils::dates::parse_date(b)) {
+        (Some(x), Some(y)) => x < y,
+        _ => false,
     }
 }
 
@@ -445,8 +605,18 @@ pub fn assess(x: &Subject, vendor: &str, records: &[Record], kev: &dyn Fn(&str) 
             .iter()
             .filter(|a| vendor_key(s(a, "vendor")) == vkey && product_key(s(a, "product"), &vkey, "") == pkey)
             .collect();
-        let verdicts: Vec<Verdict> =
-            entries.iter().map(|e| if trains { judge_trains(&installed, e) } else { judge(&installed, e) }).collect();
+        // A train released after the record was published, newer than every
+        // train it lists: not what the record calls affected.
+        let later = |e: &Value| {
+            x.released.as_deref().is_some_and(|day| before(&r.published, day)) && unlisted_later_train(&installed, e)
+        };
+        let verdicts: Vec<Verdict> = entries
+            .iter()
+            .map(|e| match if trains { judge_trains(&installed, e) } else { judge(&installed, e) } {
+                Verdict::Unknown if !trains && later(e) => Verdict::Unaffected,
+                v => v,
+            })
+            .collect();
         let Some(Verdict::Affected { range, fixed }) = verdicts.iter().find(|v| matches!(v, Verdict::Affected { .. }))
         else {
             unjudged |= verdicts.contains(&Verdict::Unknown);
@@ -499,27 +669,46 @@ pub fn matching_products(x: &Subject, vendor: &str, products: &[String]) -> Vec<
     out
 }
 
-/// The catalog tools found that [`TOOLS`] names, as subjects.
-pub fn tool_subjects(found: &[Component]) -> Vec<Subject> {
+/// The catalog tools found that [`TOOLS`] names, as subjects: one per
+/// spelling of the tool's records. A tool in [`OSV_FIRST`] only when
+/// `osv_answered` says OSV had no CVE for it.
+pub fn tool_subjects(found: &[Component], osv_answered: &dyn Fn(&Component) -> bool) -> Vec<Subject> {
     found
         .iter()
-        .filter_map(|c| {
-            let (_, vendor, product) = TOOLS.iter().find(|(name, _, _)| *name == c.name)?;
-            Some(Subject {
+        .filter(|c| !(OSV_FIRST.contains(&c.name.as_str()) && osv_answered(c)))
+        .flat_map(|c| {
+            TOOLS.iter().filter(|(name, _, _)| *name == c.name).map(|(_, vendor, product)| Subject {
                 kind: c.kind.clone(),
                 name: c.name.clone(),
                 version: c.version.clone(),
                 location: c.path.clone(),
                 vendors: vendors_for(vendor),
                 product: Some(product.to_string()),
+                released: None,
             })
         })
         .collect()
 }
 
-/// The catalog tools [`TOOLS`] names, against CVE records.
-pub fn tools(scan: &mut Scan, found: &[Component]) -> Result<()> {
-    check(scan, &tool_subjects(found), TOOLS_WHAT)
+/// The catalog tools [`TOOLS`] names, against CVE records. `osv` is what
+/// OSV answered for the inventory ([`crate::checks::machine::components`]):
+/// a tool in [`OSV_FIRST`] with records there is OSV's to judge.
+pub fn tools(scan: &mut Scan, found: &[Component], osv: &HashMap<Item, Vec<Value>>) -> Result<()> {
+    let answered = |c: &Component| {
+        c.osv.as_ref().and_then(|o| osv.get(o)).is_some_and(|recs| {
+            recs.iter().any(|r| crate::sources::osv::ids_of(r).iter().any(|id| id.starts_with("CVE-")))
+        })
+    };
+    let mut subjects = tool_subjects(found, &answered);
+    // Each one's train release date, from endoflife.date's copy the
+    // inventory check already fetched (nothing is asked here).
+    for x in &mut subjects {
+        let cycle = found.iter().find(|c| c.name == x.name && c.version == x.version && c.path == x.location);
+        if let Some((product, cycle)) = cycle.and_then(|c| c.eol.as_ref()) {
+            x.released = crate::sources::endoflife::released(&scan.cache, product, cycle)?;
+        }
+    }
+    check(scan, &subjects, TOOLS_WHAT)
 }
 
 /// The check over `subjects`: every record that applies is a finding;

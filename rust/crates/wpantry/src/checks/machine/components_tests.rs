@@ -127,7 +127,10 @@ fn components_against_osv_eol_postgres_and_mise() {
     let mut pg = Component::new("datastore", "postgres", "17.4", "/usr/local/bin/postgres");
     pg.fix = "Upgrade postgres to {safe}".into();
     let mise = Component::new("manager", "mise", "2026.10.19", "/h/.local/bin/mise");
-    components(&mut s, &[pad, foo, node, pg, mise]).unwrap();
+    let foo_item = foo.osv.clone().unwrap();
+    let answers = components(&mut s, &[pad, foo, node, pg, mise]).unwrap();
+    // OSV's answers go back to the caller, for the checks that go on where OSV had nothing.
+    assert_eq!(answers[&foo_item].len(), 1);
     let got = testing::kinds(&s);
     assert_eq!(
         got,

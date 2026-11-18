@@ -205,3 +205,73 @@ fn excluding_personal_files_keeps_their_folders_out_of_the_file_pass() {
     assert!(reads_downloads(&s));
     drop(home);
 }
+
+fn kev_entry(cve: &str, added: &str, vendor: &str, product: &str) -> kev::Entry {
+    kev::Entry { cve: cve.into(), added: added.into(), vendor: vendor.into(), product: product.into() }
+}
+
+/// A runtime behind its cycle's latest patch fails when KEV lists its
+/// product in the last months, names the CVE and keeps the fix; otherwise
+/// it warns as before, and an up-to-date one says nothing.
+#[test]
+fn an_outdated_runtime_with_recent_exploited_cves_fails() {
+    use crate::utils::net::Response;
+    let d = crate::utils::temp::TempDir::new("eol-kev").unwrap();
+    let net = Fake::new(|r| {
+        assert_eq!(r.url, crate::sources::file::url("endoflife").replace("{}", "eclipse-temurin"));
+        Ok(Response::ok(json!([{"cycle": "21", "eol": "2099-09-30", "latest": "21.0.5"}]).to_string()))
+    });
+    let mut s = scan(&net, &d);
+    let today = crate::utils::dates::iso(crate::utils::dates::today());
+    let recent = format!("CVE-{}-3", &today[..4]);
+    let java = |v: &str| {
+        let mut c = Component::new("runtime", "java", v, "/usr/bin/java");
+        c.eol = Some(("eclipse-temurin".into(), "21".into()));
+        c
+    };
+    // An old entry only: the warning stays.
+    s.kev_entries = vec![kev_entry("CVE-2013-2465", "2022-03-28", "Oracle", "Java SE")];
+    s.eol(&java("21.0.1"), false).unwrap();
+    assert_eq!((s.findings[0].status.as_str(), s.findings[0].kev), ("warn", false));
+    assert_eq!(s.findings[0].note, "behind 21.0.5, the latest eclipse-temurin 21 release");
+    s.kev_entries.push(kev_entry(&recent, &today, "Oracle", "Java SE"));
+    s.eol(&java("21.0.1"), false).unwrap();
+    let f = &s.findings[1];
+    assert_eq!((f.vuln_id.as_str(), f.status.as_str(), f.kev, f.fixed.as_str()), ("OUTDATED", "fail", true, "21.0.5"));
+    assert_eq!(
+        f.note,
+        format!(
+            "behind 21.0.5, the latest eclipse-temurin 21 release; CISA lists actively exploited Java SE CVEs added \
+             in the last 180 days: {recent}. Pantry knows this version is behind, not that each CVE affects this \
+             exact build"
+        )
+    );
+    s.eol(&java("21.0.5"), false).unwrap();
+    assert_eq!(s.findings.len(), 2);
+}
+
+/// KEV unreachable with nothing cached: no ids, no entries, reported
+/// unchecked, and an outdated finding keeps its warning. Cached, both load.
+#[test]
+fn kev_offline_leaves_outdated_findings_as_warnings() {
+    let d = crate::utils::temp::TempDir::new("kev-offline").unwrap();
+    let net = Fake::offline();
+    let mut s = scan(&net, &d);
+    s.load_kev().unwrap();
+    assert!(s.kev.is_empty() && s.kev_entries.is_empty());
+    assert!(s.findings.iter().any(|f| f.kind == "unchecked" && f.component.starts_with("CISA KEV")));
+    let c = Component::new("runtime", "java", "21.0.1", "/usr/bin/java");
+    let mut f = Finding { vuln_id: "OUTDATED".into(), status: "warn".into(), ..Finding::of(&c) };
+    machine::exploited::escalate(&mut f, &c, &s.kev_entries, None);
+    assert_eq!((f.status.as_str(), f.kev), ("warn", false));
+    s.cache
+        .conn
+        .execute(
+            "INSERT INTO kev (cve, added, name, vendor, product) VALUES ('CVE-2026-1', '2026-01-01', 'n', 'Oracle', 'Java SE')",
+            [],
+        )
+        .unwrap();
+    s.opts.offline = true;
+    s.load_kev().unwrap();
+    assert_eq!(s.kev_entries, [kev_entry("CVE-2026-1", "2026-01-01", "Oracle", "Java SE")]);
+}

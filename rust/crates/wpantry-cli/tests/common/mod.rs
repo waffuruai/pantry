@@ -366,7 +366,7 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "epss_percentile",
         ],
     ),
-    ("kev", &["cve", "added", "name"]),
+    ("kev", &["cve", "added", "name", "vendor", "product"]),
     ("eol", &["product", "cycle", "eol", "latest"]),
     ("casks", &["app", "token", "version"]),
     ("runs", &["source", "fingerprint", "ran_at", "result"]),

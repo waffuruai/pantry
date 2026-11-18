@@ -162,8 +162,14 @@ impl Advisories {
         let kev: Value = serde_json::from_str(&read(&fixtures().join("kev.json"))).unwrap();
         for v in arr(&kev["vulnerabilities"]) {
             conn.execute(
-                "INSERT OR REPLACE INTO kev VALUES (?, ?, ?)",
-                rusqlite::params![str_(&v["cveID"]), str_(&v["dateAdded"]), str_(&v["vulnerabilityName"])],
+                "INSERT OR REPLACE INTO kev (cve, added, name, vendor, product) VALUES (?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    str_(&v["cveID"]),
+                    str_(&v["dateAdded"]),
+                    str_(&v["vulnerabilityName"]),
+                    str_(&v["vendorProject"]),
+                    str_(&v["product"])
+                ],
             )
             .unwrap();
         }

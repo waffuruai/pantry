@@ -6,11 +6,14 @@
 //! inside a `dependencies { }` block counts. Everything Gradle would have
 //! to run to know (a `$variable`, a dynamic `1.+` or `latest.release`, a
 //! range, a version left to a platform or plugin, map notation, a helper
-//! call) is returned as [`Unresolved`] for the scan to report not
-//! checked, never dropped. Local dependencies (`project(..)`, `files(..)`)
-//! and catalog accessors (`libs.x`, read from the catalog itself) are
-//! skipped. `plugins { }` blocks and a catalog's `[plugins]` are not read:
-//! a plugin id isn't a Maven coordinate OSV knows.
+//! call) is returned as [`Unresolved`] for the scan to count as not
+//! checked, never dropped. A version read here is the one declared, not
+//! the one Gradle resolves (the highest any declaration, BOM or constraint
+//! asks for), so the scan warns on it rather than fails. Local
+//! dependencies (`project(..)`, `files(..)`) and catalog accessors
+//! (`libs.x`, read from the catalog itself) are skipped. `plugins { }`
+//! blocks and a catalog's `[plugins]` are not read: a plugin id isn't a
+//! Maven coordinate OSV knows.
 //!
 //! Example (`build.gradle`):
 //!
@@ -26,7 +29,7 @@ use super::{Package, Scope, lines, plausible};
 use crate::error::{Error, Result};
 use crate::utils::toml::{self, Val};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_DEPTH: usize = 256;
 
@@ -48,20 +51,35 @@ pub struct Declared {
     pub unresolved: Vec<Unresolved>,
 }
 
-/// Whether the repo walk reads `name` in `dir`: a build script unless a
-/// `gradle.lockfile` (which [`super::gradle`] reads) sits beside it, a
-/// `*.versions.toml` in a `gradle/` directory unless the project above it
-/// is locked.
-pub fn scanned(dir: &Path, name: &str, locked: bool) -> bool {
+/// Whether the repo walk reads `name` in `dir`, given the directories the
+/// walk found a `gradle.lockfile` in (which [`super::gradle`] reads): a
+/// build script unless one sits beside it, a `*.versions.toml` in a
+/// `gradle/` directory unless the project above it or any of its modules
+/// is locked (the lockfiles already list what the catalog declares).
+pub fn scanned(dir: &Path, name: &str, locked: &[PathBuf]) -> bool {
     match name {
-        "build.gradle" | "build.gradle.kts" => !locked,
+        "build.gradle" | "build.gradle.kts" => !locked.iter().any(|l| l == dir),
         n if is_catalog(n) => {
             dir.file_name().is_some_and(|d| d == "gradle")
-                && !dir.parent().is_some_and(|p| p.join("gradle.lockfile").exists())
+                && !dir
+                    .parent()
+                    .is_some_and(|p| locked.iter().any(|l| l.starts_with(p)) || p.join("gradle.lockfile").exists())
         }
         _ => false,
     }
 }
+
+/// Whether `path` is a build file this module reads, whose versions are
+/// declared rather than resolved.
+pub fn declared(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| matches!(n, "build.gradle" | "build.gradle.kts") || is_catalog(n))
+}
+
+/// How the scan qualifies an advisory matched on a declared version.
+pub const DECLARED: &str = "version as declared, not resolved: Gradle uses the highest version any declaration, BOM, \
+     constraint or dependency asks for; a gradle.lockfile would confirm it";
 
 /// A version catalog's name (`libs.versions.toml`).
 pub(crate) fn is_catalog(name: &str) -> bool {
@@ -76,11 +94,11 @@ pub fn parse_catalog(text: &str) -> Result<Vec<Package>> {
     Ok(catalog(text)?.packages)
 }
 
-/// The declarations of `path` that weren't checked, one line for the
-/// scan's not-checked row; None when every one was read (or the file isn't
-/// a Gradle build file, or can't be read: that error is the extractor's to
-/// report).
-pub fn unresolved_note(path: &Path) -> Option<String> {
+/// The declarations of `path` that weren't checked: how many, and one line
+/// naming the first for the scan's log; None when every one was read (or
+/// the file isn't a Gradle build file, or can't be read: that error is the
+/// extractor's to report).
+pub fn unresolved_note(path: &Path) -> Option<(usize, String)> {
     let name = path.file_name()?.to_str()?;
     let text = crate::utils::files::read_capped(path, super::MAX_FILE).ok()?;
     let found = match name {
@@ -91,11 +109,10 @@ pub fn unresolved_note(path: &Path) -> Option<String> {
     let first = found.unresolved.first()?;
     let more = found.unresolved.len() - 1;
     let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
-    Some(format!(
-        "{} not checked, Gradle would have to run to know the version: {} ({}){tail}",
-        found.unresolved.len(),
-        first.what,
-        first.why
+    let n = found.unresolved.len();
+    Some((
+        n,
+        format!("{n} not checked, Gradle would have to run to know the version: {} ({}){tail}", first.what, first.why),
     ))
 }
 
@@ -124,12 +141,13 @@ fn coordinate(s: &str) -> std::result::Result<(String, String), &'static str> {
     Ok((format!("{}:{}", parts[0], parts[1]), version.to_string()))
 }
 
+/// `s` with its whitespace runs as one space, cut at [`SHOWN`]
+/// characters. Lazy: it reads no further into `s` than the cut.
 fn shown(s: &str) -> String {
-    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    match flat.char_indices().nth(SHOWN) {
-        Some((i, _)) => format!("{}...", &flat[..i]),
-        None => flat,
-    }
+    let mut flat =
+        s.split_whitespace().enumerate().flat_map(|(k, w)| (k > 0).then_some(' ').into_iter().chain(w.chars()));
+    let head: String = flat.by_ref().take(SHOWN).collect();
+    if flat.next().is_some() { format!("{head}...") } else { head }
 }
 
 // Build scripts -----------------------------------------------------------------
@@ -356,7 +374,9 @@ impl Script<'_> {
     }
 
     /// The declaration starting with configuration `conf` at `i`, pushed
-    /// to `out`; the index to continue from.
+    /// to `out`; the index to continue from. An unresolved argument after
+    /// the first is shown from its own tokens (the first with the
+    /// configuration as written), so a long list costs its length once.
     fn declaration(&self, i: usize, out: &mut Declared) -> usize {
         // `implementation …`, or Kotlin's `"implementation"(…)`.
         let conf = match &self.toks[i].kind {
@@ -369,6 +389,7 @@ impl Script<'_> {
             j = self.skip_newlines(j + 1);
         }
         let scope = if conf.to_ascii_lowercase().contains("test") { Scope::Dev } else { Scope::Unknown };
+        let first = j;
         loop {
             let (arg, next) = self.arg(j, 0);
             let close = if parens && self.punct(next, ')') { next + 1 } else { next };
@@ -376,7 +397,16 @@ impl Script<'_> {
                 Arg::Dep(name, version) => {
                     out.packages.push(Package::new("Maven", &name, &version).scoped(scope).direct(true))
                 }
-                Arg::Unresolved(why) => out.unresolved.push(Unresolved { what: self.source(i, close), why }),
+                Arg::Unresolved(why) => {
+                    let what = if j == first {
+                        self.source(i, close)
+                    } else if parens {
+                        shown(&format!("{conf}({})", self.source(j, next)))
+                    } else {
+                        shown(&format!("{conf} {}", self.source(j, next)))
+                    };
+                    out.unresolved.push(Unresolved { what, why })
+                }
                 Arg::Skip => {}
             }
             // Groovy lists several: `implementation 'a:b:1', 'c:d:2'`.

@@ -233,16 +233,20 @@ fn jvm_osv(r: &crate::utils::net::Request) -> Result<crate::utils::net::Response
     Ok(Response::ok(rec.to_string()))
 }
 
-/// A Gradle build without a lockfile: a log4j-core 2.14.1 literal fails
-/// CVE-2021-44228 marked exploited, a catalog's jackson-databind 2.9.8
-/// fails, the interpolated `"org.x:y:$ver"` is a not-checked row (not
-/// clean), and a module with a `gradle.lockfile` is read from the lockfile
-/// alone.
+/// A Gradle build without a lockfile: a log4j-core 2.14.1 literal warns
+/// on CVE-2021-44228 marked exploited, a catalog's jackson-databind 2.9.8
+/// warns, each noting the version is declared, not resolved (a BOM can
+/// raise it); the interpolated `"org.x:y:$ver"` is counted not checked
+/// without an `unchecked` row (which would stop history resolving
+/// anything); a module with a `gradle.lockfile` is read from the lockfile
+/// alone, and the same log4j-core locked there still fails.
 #[cfg(unix)]
 #[test]
 fn gradle_builds_without_a_lockfile_are_read() {
     let d = TempDir::new("projects-gradle").unwrap();
     let net = crate::utils::net::Fake::new(jvm_osv);
+    let logged = std::cell::RefCell::new(Vec::<String>::new());
+    let log = |m: &str| logged.borrow_mut().push(m.to_string());
     let mut s = testing::scan(&net, &d, Options::default());
     s.kev = ["CVE-2021-44228".to_string()].into();
     let (name, root) = testing::repo(&d, "jvm");
@@ -262,16 +266,25 @@ fn gradle_builds_without_a_lockfile_are_read() {
         "[versions]\njackson = \"2.9.8\"\n\n[libraries]\njackson-databind = { module = \"com.fasterxml.jackson.core:jackson-databind\", version.ref = \"jackson\" }\n",
     );
     testing::write(&root, "locked/build.gradle", "dependencies { implementation \"org.z:z:$v\" }\n");
-    testing::write(&root, "locked/gradle.lockfile", "empty=\n");
+    testing::write(
+        &root,
+        "locked/gradle.lockfile",
+        "org.apache.logging.log4j:log4j-core:2.14.1=compileClasspath,runtimeClasspath\nempty=\n",
+    );
+    s.log = &log;
     projects(&mut s, &[(name, root.clone())]).unwrap();
-    assert!(s.counts.contains(&("project dependencies".to_string(), 2)), "{:?}", s.counts);
+    assert!(s.counts.contains(&("project dependencies".to_string(), 3)), "{:?}", s.counts);
     let log4shell = testing::by_id(&s, "CVE-2021-44228");
-    assert_eq!(log4shell.len(), 1, "{:?}", s.findings);
-    let f = log4shell[0];
+    assert_eq!(log4shell.len(), 2, "{:?}", s.findings);
+    let locked = log4shell.iter().find(|f| f.location.ends_with("gradle.lockfile")).unwrap();
+    assert_eq!((locked.status.as_str(), locked.kev), ("fail", true), "a locked version is resolved");
+    assert!(!locked.note.contains("declared"), "{}", locked.note);
+    let f = log4shell.iter().find(|f| f.location.ends_with("build.gradle")).unwrap();
     assert_eq!(
         (f.component.as_str(), f.version.as_str(), f.status.as_str(), f.fixed.as_str(), f.kev),
-        ("org.apache.logging.log4j:log4j-core", "2.14.1", "fail", "2.15.0", true)
+        ("org.apache.logging.log4j:log4j-core", "2.14.1", "warn", "2.15.0", true)
     );
+    assert!(f.note.ends_with(&format!("({})", lockfiles::gradle_build::DECLARED)), "{}", f.note);
     assert_eq!(f.dep_direct, Some(true));
     assert_eq!(f.location, root.join("build.gradle").to_string_lossy());
     assert_eq!(
@@ -280,14 +293,16 @@ fn gradle_builds_without_a_lockfile_are_read() {
     );
     let jackson = testing::by_id(&s, "CVE-2019-12086");
     assert_eq!(jackson.len(), 1, "{:?}", s.findings);
-    assert_eq!((jackson[0].version.as_str(), jackson[0].status.as_str(), jackson[0].kev), ("2.9.8", "fail", false));
+    assert_eq!((jackson[0].version.as_str(), jackson[0].status.as_str(), jackson[0].kev), ("2.9.8", "warn", false));
+    assert!(jackson[0].note.contains("not resolved"), "{}", jackson[0].note);
     assert_eq!(jackson[0].location, root.join("kts/gradle/libs.versions.toml").to_string_lossy());
-    // The variable is not checked, and only where no lockfile covers it.
-    assert_eq!(
-        testing::unchecked(&s),
-        [format!("repo dependencies in {}", short(&root.join("build.gradle").to_string_lossy()))]
-    );
-    let row = s.findings.iter().find(|f| f.kind == "unchecked").unwrap();
-    assert_eq!((row.status.as_str(), row.vuln_id.as_str()), ("warn", "UNCHECKED"));
-    assert!(row.note.contains("implementation \"org.x:y:$ver\" (version from a variable)"), "{}", row.note);
+    // The variable is not checked, and only where no lockfile covers it:
+    // counted and logged, not an `unchecked` row.
+    assert!(testing::unchecked(&s).is_empty(), "{:?}", testing::unchecked(&s));
+    assert!(s.counts.contains(&(GRADLE_UNRESOLVED.to_string(), 1)), "{:?}", s.counts);
+    let logged = logged.borrow();
+    let line = logged.iter().find(|l| l.contains("not checked")).unwrap();
+    assert!(line.contains("build.gradle: 1 not checked"), "{line}");
+    assert!(line.contains("implementation \"org.x:y:$ver\" (version from a variable)"), "{line}");
+    assert_eq!(logged.iter().filter(|l| l.contains("not checked")).count(), 1, "{logged:?}");
 }

@@ -185,7 +185,35 @@ fn coordinates() {
         assert_eq!(coordinate(s), Err(why), "{s}");
     }
     assert_eq!(shown(&"x".repeat(100)), format!("{}...", "x".repeat(SHOWN)));
+    assert_eq!(shown(&"x".repeat(SHOWN)), "x".repeat(SHOWN));
+    assert_eq!(shown(&format!("{} y", "x".repeat(SHOWN - 1))), format!("{} ...", "x".repeat(SHOWN - 1)));
     assert_eq!(shown("a \n   b"), "a b");
+    assert_eq!(shown("  a  "), "a");
+}
+
+/// A long list of unresolved arguments is read in time linear in its
+/// length: each is shown from its own tokens, not by flattening the whole
+/// declaration again from its start (16K items took 32 s that way).
+#[test]
+fn a_long_unresolved_list_reads_in_linear_time() {
+    const N: usize = 16_000;
+    let text = format!("dependencies {{\n    implementation {}'g:last'\n}}\n", "'g:a',\n".repeat(N - 1));
+    let started = std::time::Instant::now();
+    let d = script(&text).unwrap();
+    let took = started.elapsed();
+    assert_eq!(d.unresolved.len(), N);
+    assert!(took < std::time::Duration::from_secs(2), "{N} items took {took:?}");
+    assert_eq!(d.unresolved[0].what, "implementation 'g:a'");
+    assert_eq!(d.unresolved[N - 1].what, "implementation 'g:last'", "its own span, not the list so far");
+    // Kotlin's parenthesized form keeps the parentheses on the later ones.
+    let d = script("dependencies { implementation(\"a:b:$v\", \"c:d\") }\n").unwrap();
+    assert_eq!(
+        whys(&d),
+        [
+            ("implementation(\"a:b:$v\"", "version from a variable"),
+            ("implementation(\"c:d\")", "no version (left to a platform, BOM or plugin)")
+        ]
+    );
 }
 
 #[test]
@@ -247,19 +275,33 @@ spring = { id = "org.springframework.boot", version = "3.1.0" }
 #[test]
 fn which_files_the_walk_reads() {
     let d = crate::utils::temp::TempDir::new("gradle-scanned").unwrap();
-    let (locked, open) = (d.path().join("locked"), d.path().join("open"));
+    let (locked, open, modular) = (d.path().join("locked"), d.path().join("open"), d.path().join("modular"));
     std::fs::create_dir_all(locked.join("gradle")).unwrap();
     std::fs::create_dir_all(open.join("gradle")).unwrap();
     std::fs::write(locked.join("gradle.lockfile"), "empty=\n").unwrap();
-    assert!(scanned(&open, "build.gradle", false) && scanned(&open, "build.gradle.kts", false));
-    assert!(!scanned(&locked, "build.gradle", true) && !scanned(&locked, "build.gradle.kts", true));
-    assert!(scanned(&open.join("gradle"), "libs.versions.toml", false));
-    assert!(scanned(&open.join("gradle"), "tools.versions.toml", false));
-    assert!(!scanned(&locked.join("gradle"), "libs.versions.toml", false), "the project is locked");
-    assert!(!scanned(&open, "libs.versions.toml", false), "catalogs live under gradle/");
-    assert!(!scanned(&open.join("gradle"), ".versions.toml", false));
-    assert!(!scanned(&open, "settings.gradle", false) && !scanned(&open, "build.gradle.bak", false));
+    let none: &[PathBuf] = &[];
+    assert!(scanned(&open, "build.gradle", none) && scanned(&open, "build.gradle.kts", none));
+    let beside = [locked.clone()];
+    assert!(!scanned(&locked, "build.gradle", &beside) && !scanned(&locked, "build.gradle.kts", &beside));
+    assert!(scanned(&open.join("gradle"), "libs.versions.toml", none));
+    assert!(scanned(&open.join("gradle"), "tools.versions.toml", none));
+    assert!(!scanned(&locked.join("gradle"), "libs.versions.toml", none), "the project is locked");
+    // A multi-module build locks its modules, not its root: the catalog is
+    // still covered, and so is the module's script, not the root's.
+    let module = [modular.join("app")];
+    assert!(!scanned(&modular.join("gradle"), "libs.versions.toml", &module), "a module is locked");
+    assert!(!scanned(&modular.join("app"), "build.gradle", &module));
+    assert!(scanned(&modular, "build.gradle", &module));
+    assert!(scanned(&open.join("gradle"), "libs.versions.toml", &module), "another project's lockfile");
+    assert!(!scanned(&open, "libs.versions.toml", none), "catalogs live under gradle/");
+    assert!(!scanned(&open.join("gradle"), ".versions.toml", none));
+    assert!(!scanned(&open, "settings.gradle", none) && !scanned(&open, "build.gradle.bak", none));
     assert!(super::super::supported("build.gradle") && super::super::supported("libs.versions.toml"));
+    assert!(declared(&open.join("build.gradle")) && declared(&open.join("build.gradle.kts")));
+    assert!(declared(&open.join("gradle/libs.versions.toml")));
+    assert!(
+        !declared(&locked.join("gradle.lockfile")) && !declared(&open.join("pom.xml")) && !declared(Path::new("/"))
+    );
 }
 
 #[test]
@@ -273,12 +315,17 @@ fn the_not_checked_note() {
     let one = write("build.gradle", "dependencies { implementation \"org.x:y:$ver\" }\n");
     assert_eq!(
         unresolved_note(&one).unwrap(),
-        "1 not checked, Gradle would have to run to know the version: implementation \"org.x:y:$ver\" (version from a variable)"
+        (
+            1,
+            "1 not checked, Gradle would have to run to know the version: implementation \"org.x:y:$ver\" (version from a variable)"
+                .to_string()
+        )
     );
     let two = write("build.gradle.kts", "dependencies {\n implementation(\"a:b:$v\")\n implementation(\"c:d\")\n}\n");
-    assert!(unresolved_note(&two).unwrap().ends_with("(version from a variable) and 1 more"));
+    let (n, note) = unresolved_note(&two).unwrap();
+    assert!(n == 2 && note.ends_with("(version from a variable) and 1 more"), "{n} {note}");
     let cat = write("libs.versions.toml", "[libraries]\nx = { module = \"a:b\" }\n");
-    assert!(unresolved_note(&cat).unwrap().contains("[libraries] x (no version"));
+    assert!(unresolved_note(&cat).unwrap().1.contains("[libraries] x (no version"));
     let clean = write("other.versions.toml", "[libraries]\nx = \"a:b:1.0\"\n");
     assert_eq!(unresolved_note(&clean), None);
     assert_eq!(unresolved_note(&write("pom.xml", "<project/>")), None);

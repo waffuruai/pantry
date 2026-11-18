@@ -129,3 +129,67 @@ fn project_fixes_for_the_later_lockfiles() {
         format!("cd {} && yarn up @scope/x@1.0.1", quote(&command_path(tmp.path())))
     );
 }
+
+/// A go.mod's Go is checked as its toolchain too, at the version Go builds
+/// with (the `toolchain` directive, else `go`): a toolchain-only advisory
+/// fails it, one filed under `stdlib` and `toolchain` is one finding, and
+/// a fixed release is clean.
+#[test]
+fn a_go_mod_is_checked_as_its_toolchain_too() {
+    use crate::checks::supply_chain::testing;
+    let d = crate::utils::temp::TempDir::new("gotc").unwrap();
+    let net = crate::checks::machine::testing::go_osv();
+    let mut s = testing::scan(&net, &d, crate::checks::Options::default());
+    let (old, old_root) = testing::repo(&d, "old");
+    testing::write(&old_root, "go.mod", "module example.com/old\n\ngo 1.22\n\ntoolchain go1.26.10\n");
+    let (new, new_root) = testing::repo(&d, "new");
+    testing::write(&new_root, "go.mod", "module example.com/new\n\ngo 1.27.4\n");
+    projects(&mut s, &[(old, old_root.clone()), (new, new_root)]).unwrap();
+    // One dependency per go.mod: the toolchain isn't a second one.
+    assert!(s.counts.contains(&("project dependencies".to_string(), 2)), "{:?}", s.counts);
+    let got: Vec<(&str, &str, &str, &str)> = s
+        .findings
+        .iter()
+        .map(|f| (f.component.as_str(), f.vuln_id.as_str(), f.version.as_str(), f.fixed.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [("stdlib", "CVE-2026-0002", "1.26.10", "1.26.11"), ("stdlib", "CVE-2026-0001", "1.26.10", "1.26.11")],
+        "{:?}",
+        s.findings
+    );
+    assert!(s.findings.iter().all(|f| f.location == command_path(&old_root.join("go.mod"))), "{:?}", s.findings);
+    // The fix raises the toolchain line, the one that sets the version.
+    let want = format!("cd {} && go get toolchain@go1.26.11", quote(&command_path(&old_root)));
+    assert!(s.findings.iter().all(|f| f.fix_cmd == want), "{:?}", s.findings);
+}
+
+/// A go.mod's Go is raised on the line that sets it: the `toolchain` line
+/// when there is one, else the `go` line; a module's fix stays `go get`
+/// of that module.
+#[test]
+fn a_go_mod_go_version_is_raised_on_the_line_that_sets_it() {
+    let d = crate::utils::temp::TempDir::new("gotcfix").unwrap();
+    let write = |dir: &str, text: &str| {
+        let p = d.path().join(dir).join("go.mod");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, text).unwrap();
+        p
+    };
+    let with = write("with", "module m\n\ngo 1.22\n\ntoolchain go1.26.10 // pinned\n");
+    let without = write("without", "module m\n\ngo 1.27.3\n\n// toolchain go1.20 is only a comment\n");
+    let dir = |p: &Path| quote(&command_path(p.parent().unwrap()));
+    let fill = |cmd: String| crate::checks::fill(&cmd, "1.26.11");
+    assert_eq!(
+        fill(project_fix(&with, "Go", "stdlib", "{safe}")),
+        format!("cd {} && go get toolchain@go1.26.11", dir(&with))
+    );
+    assert_eq!(
+        fill(project_fix(&without, "Go", "stdlib", "{safe}")),
+        format!("cd {} && go get go@1.26.11", dir(&without))
+    );
+    assert_eq!(
+        project_fix(&with, "Go", "golang.org/x/net", "0.23.0"),
+        format!("cd {} && go get golang.org/x/net@v0.23.0 && go mod tidy", dir(&with))
+    );
+}

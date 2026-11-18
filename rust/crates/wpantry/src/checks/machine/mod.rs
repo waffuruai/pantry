@@ -3,8 +3,8 @@
 //! certificate authorities it trusts.
 //!
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
-//! `apps`, `editors`, `harnesses`, `images`, `os_packages`, `cellar`), what
-//! is judged of it (`components`, `app_updates`, `os_updates`,
+//! `dotnet`, `apps`, `editors`, `harnesses`, `images`, `os_packages`,
+//! `cellar`), what is judged of it (`components`, `app_updates`, `os_updates`,
 //! `brew_vulns`, `ca_trust`, `clipper`, `downloads`, `software_cves`), and the security
 //! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
 //! included). This file is the index: [`run`], the probes in order.
@@ -28,6 +28,7 @@ pub mod catalog;
 pub mod cellar;
 pub mod clipper;
 pub mod components;
+pub mod dotnet;
 pub mod downloads;
 pub mod editors;
 pub mod harnesses;
@@ -154,6 +155,8 @@ fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     found.extend(gems);
     found.extend(packages::cargo_installs());
     found.extend(packages::pipx_packages());
+    scan.status("Reading .NET runtimes and SDKs");
+    found.extend(dotnet::installs());
     found
 }
 

@@ -21,6 +21,10 @@ pub struct Component {
     pub path: String,
     /// (ecosystem, package, version as OSV knows it)
     pub osv: Option<(String, String, String)>,
+    /// More OSV packages the same install is filed under, asked at the same
+    /// version and reported as this one component (Go's `toolchain` beside
+    /// its `stdlib`); see [`crate::sources::osv::also`].
+    pub osv_also: Vec<(String, String, String)>,
     /// (endoflife.date product, cycle)
     pub eol: Option<(String, String)>,
     /// The command (or step) that updates it; "{safe}" is the fixed version.

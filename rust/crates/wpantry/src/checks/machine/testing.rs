@@ -74,6 +74,41 @@ pub(crate) fn querybatch(body: &[u8], answer: &dyn Fn(&str, &str) -> Vec<&'stati
     crate::utils::net::Response::ok(serde_json::json!({"results": results}).to_string())
 }
 
+/// A fake OSV for Go 1.26.10: a toolchain-only advisory (cmd/link), one
+/// filed under both `stdlib` and `toolchain`, both fixed in 1.26.11 and
+/// 1.27.4, and nothing for the fixed releases.
+pub(crate) fn go_osv() -> Fake {
+    Fake::new(|r| {
+        use crate::utils::net::Response;
+        let url = r.url.as_str();
+        if url.ends_with("/querybatch") {
+            let body = r.body.clone().unwrap_or_default();
+            return Ok(querybatch(&body, &|pkg, v| match (pkg, v) {
+                ("toolchain", "1.26.10") => vec!["GO-2026-0001", "GO-2026-0002"],
+                ("stdlib", "1.26.10") => vec!["GO-2026-0002"],
+                _ => vec![],
+            }));
+        }
+        if let Some(id) = url.strip_prefix("https://api.osv.dev/v1/vulns/") {
+            let range = serde_json::json!([{"type": "SEMVER", "events": [
+                {"introduced": "0"}, {"fixed": "1.26.11"}, {"introduced": "1.27.0"}, {"fixed": "1.27.4"}]}]);
+            let pkgs: &[&str] = if id == "GO-2026-0001" { &["toolchain"] } else { &["stdlib", "toolchain"] };
+            let affected: Vec<serde_json::Value> = pkgs
+                .iter()
+                .map(|p| serde_json::json!({"package": {"ecosystem": "Go", "name": p}, "ranges": range}))
+                .collect();
+            let alias = if id == "GO-2026-0001" { "CVE-2026-0001" } else { "CVE-2026-0002" };
+            let rec = serde_json::json!({"id": id, "aliases": [alias], "modified": "m",
+                                         "summary": format!("{id} summary"), "affected": affected});
+            return Ok(Response::ok(rec.to_string()));
+        }
+        if url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+            return Ok(Response::not_found());
+        }
+        panic!("unexpected request {url}")
+    })
+}
+
 pub(crate) fn npm_rec(id: &str, pkg: &str, fixed: Option<&str>, aliases: &[&str]) -> Value {
     let mut events = vec![serde_json::json!({"introduced": "0"})];
     if let Some(f) = fixed {

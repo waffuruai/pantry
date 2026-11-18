@@ -2,7 +2,8 @@
 //! blocks), `replace` applied (a versioned old path only replaces that
 //! version; a local-path replacement has no version and drops out), and
 //! the `toolchain` directive, else the `go` directive, as package `stdlib`
-//! (F5). Versions lose their "v".
+//! (F5). Versions lose their "v". The scan asks OSV about that version as
+//! Go's `toolchain` too (`sources::osv::also`), as one dependency.
 
 use super::{Package, lines};
 use crate::error::Result;

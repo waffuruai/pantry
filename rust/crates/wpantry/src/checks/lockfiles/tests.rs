@@ -56,5 +56,29 @@ fn every_scanned_name_is_supported() {
         assert!(supported(name), "{name}");
     }
     assert!(supported("requirements-dev.txt") && supported("requirements.in.txt"));
+    assert!(supported("App.csproj") && supported("Lib.fsproj") && supported("Old.vbproj"));
     assert!(!supported("requirements.in") && !supported("yarn.lock.bak"));
+}
+
+/// A .NET project file that isn't one is an error too, and its
+/// not-checked references come back beside the packages.
+#[test]
+fn dotnet_project_files_read_through_extract() {
+    let d = crate::utils::temp::TempDir::new("notproj").unwrap();
+    let f = d.path().join("App.csproj");
+    std::fs::write(&f, "this is not a project\n").unwrap();
+    assert!(matches!(extract(&f), Err(Error::Invalid(_))));
+    std::fs::write(
+        &f,
+        r#"<Project><ItemGroup>
+  <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+  <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+  <PackageReference Include="Foo" Version="$(Undefined)" />
+</ItemGroup></Project>"#,
+    )
+    .unwrap();
+    let (pkgs, notes) = extract_noting(&f, d.path()).unwrap().unwrap();
+    assert_eq!(pkgs, [Package::new("NuGet", "Newtonsoft.Json", "12.0.1").direct(true)]);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(extract(&f).unwrap().unwrap(), pkgs);
 }

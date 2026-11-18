@@ -36,6 +36,10 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
         ("Pub", _) => format!("cd {d} && dart pub upgrade {}", quote(name)),
         ("Hex", _) => format!("cd {d} && mix deps.update {}", quote(name)),
         ("Maven", "gradle.lockfile") => format!("cd {d} && gradle dependencies --update-locks {}", quote(name)),
+        ("NuGet", "packages.config") => format!("Update {name} to {safe} in {}", command_path(lock)),
+        ("NuGet", f) if lockfiles::csproj::is_project_file(f) => {
+            format!("cd {d} && dotnet add {} package {} --version {}", quote(f), quote(name), quote(safe))
+        }
         ("NuGet", _) => format!("cd {d} && dotnet add package {} --version {}", quote(name), quote(safe)),
         _ => format!("Update {name} to {safe} in {}", command_path(lock)),
     }
@@ -86,8 +90,16 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     for (root, f) in &files {
         scan.status(&format!("Reading {}", short(&f.to_string_lossy())));
-        match lockfiles::extract_within(f, root).map_err(as_source) {
-            Ok(Some(pkgs)) => read.push((f.clone(), pkgs)),
+        match lockfiles::extract_noting(f, root).map_err(as_source) {
+            Ok(Some((pkgs, unchecked))) => {
+                if !unchecked.is_empty() {
+                    scan.unchecked(
+                        &format!("repo dependencies in {}", short(&f.to_string_lossy())),
+                        &format!("not exact or not resolved: {}", unchecked.join(", ")),
+                    );
+                }
+                read.push((f.clone(), pkgs))
+            }
             Ok(None) => {
                 *unsupported.entry(f.file_name().unwrap_or_default().to_string_lossy().into_owned()).or_default() += 1
             }

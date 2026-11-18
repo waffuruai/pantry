@@ -119,6 +119,14 @@ fn project_fixes_for_the_later_lockfiles() {
         "cd /w/cs && dotnet add package Newtonsoft.Json --version 13.0.1"
     );
     assert_eq!(
+        fix("/w/cs/App.csproj", "NuGet", "Newtonsoft.Json", "13.0.1"),
+        "cd /w/cs && dotnet add App.csproj package Newtonsoft.Json --version 13.0.1"
+    );
+    assert_eq!(
+        fix("/w/cs/packages.config", "NuGet", "log4net", "2.0.15"),
+        "Update log4net to 2.0.15 in /w/cs/packages.config"
+    );
+    assert_eq!(
         fix("/w/x/Gemfile.lock", "RubyGems", "evil;rm", "1"),
         "cd /w/x && bundle update --conservative 'evil;rm'"
     );
@@ -192,4 +200,48 @@ fn a_go_mod_go_version_is_raised_on_the_line_that_sets_it() {
         project_fix(&with, "Go", "golang.org/x/net", "0.23.0"),
         format!("cd {} && go get golang.org/x/net@v0.23.0 && go mod tidy", dir(&with))
     );
+}
+
+/// .NET projects without a lock: versions on the reference, through
+/// central package management and in packages.config go to OSV; a
+/// version through an undefined property is a not-checked row, not a
+/// clean project; a project with its own packages.lock.json is read
+/// through the lock only.
+#[cfg(unix)]
+#[test]
+fn dotnet_projects_without_a_lock_are_read() {
+    let d = TempDir::new("projects-dotnet").unwrap();
+    let net = testing::osv_net(&[("NuGet", "Newtonsoft.Json"), ("NuGet", "System.Text.Json"), ("NuGet", "log4net")]);
+    let mut s = testing::scan(&net, &d, Options::default());
+    let (name, root) = testing::repo(&d, "dotnet");
+    let refs = |items: &str| format!("<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>{items}</ItemGroup></Project>");
+    testing::write(&root, "app/App.csproj", refs(r#"<PackageReference Include="Newtonsoft.Json" Version="9.0.1" />"#));
+    testing::write(
+        &root,
+        "Directory.Packages.props",
+        r#"<Project><ItemGroup><PackageVersion Include="System.Text.Json" Version="8.0.0" /></ItemGroup></Project>"#,
+    );
+    testing::write(&root, "svc/Svc.csproj", refs(r#"<PackageReference Include="System.Text.Json" />"#));
+    testing::write(&root, "legacy/packages.config", r#"<packages><package id="log4net" version="2.0.8" /></packages>"#);
+    testing::write(&root, "bad/Bad.csproj", refs(r#"<PackageReference Include="Foo" Version="$(Undefined)" />"#));
+    testing::write(&root, "locked/Locked.csproj", refs(r#"<PackageReference Include="Bar" Version="$(Undefined)" />"#));
+    testing::write(&root, "locked/packages.lock.json", r#"{"version": 1, "dependencies": {"net8.0": {}}}"#);
+    projects(&mut s, &[(name, root.clone())]).unwrap();
+    assert!(s.counts.contains(&("project dependencies".to_string(), 3)), "{:?}", s.counts);
+    for (id, file, version) in [
+        ("GHSA-Newtonsoft.Json", "app/App.csproj", "9.0.1"),
+        ("GHSA-System.Text.Json", "svc/Svc.csproj", "8.0.0"),
+        ("GHSA-log4net", "legacy/packages.config", "2.0.8"),
+    ] {
+        let hit = testing::by_id(&s, id);
+        assert_eq!(hit.len(), 1, "{id}: {:?}", s.findings);
+        assert_eq!((hit[0].status.as_str(), hit[0].version.as_str()), ("fail", version));
+        assert_eq!(hit[0].location, root.join(file).to_string_lossy());
+    }
+    assert_eq!(
+        testing::unchecked(&s),
+        [format!("repo dependencies in {}", short(&root.join("bad/Bad.csproj").to_string_lossy()))]
+    );
+    let row = s.findings.iter().find(|f| f.kind == "unchecked").unwrap();
+    assert!(row.note.starts_with("not exact or not resolved: Foo $(Undefined)"), "{}", row.note);
 }

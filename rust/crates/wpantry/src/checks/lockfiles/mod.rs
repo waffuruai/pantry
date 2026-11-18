@@ -12,6 +12,7 @@ pub mod bun;
 pub mod cargo;
 pub mod composer;
 pub mod conan;
+pub mod csproj;
 pub mod deno;
 pub mod gem;
 pub mod gomod;
@@ -160,26 +161,37 @@ pub fn extract(path: &Path) -> Result<Option<Vec<Package>>> {
 /// As [`extract`], letting a requirements file include any file under
 /// `root` (the repository it was found in), and nothing outside it.
 pub fn extract_within(path: &Path, root: &Path) -> Result<Option<Vec<Package>>> {
+    Ok(extract_noting(path, root)?.map(|(packages, _)| packages))
+}
+
+/// As [`extract_within`], with the dependencies the file names but pins
+/// no exact version for (`name (why)`): the caller reports them as not
+/// checked. Only .NET project files have these today.
+pub fn extract_noting(path: &Path, root: &Path) -> Result<Option<(Vec<Package>, Vec<String>)>> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     // A lockfile that links out of the repo isn't the repo's to report: its
     // packages would go to OSV as if they were.
-    if parser(name).is_some() || requirements::is_requirements(name) {
+    if supported(name) {
         let (real, base) = (path.canonicalize()?, root.canonicalize()?);
         if !real.starts_with(&base) {
             return Err(Error::Invalid(format!("{} links outside {}; not read", path.display(), root.display())));
         }
     }
-    let found = if requirements::is_requirements(name) {
-        requirements::parse_file(path, root)?
+    let (found, unchecked) = if requirements::is_requirements(name) {
+        (requirements::parse_file(path, root)?, Vec::new())
+    } else if csproj::is_project_file(name) {
+        let read = csproj::parse_file(path, root)?;
+        (read.packages, read.unchecked)
     } else {
         let Some(parse) = parser(name) else { return Ok(None) };
         let text = crate::utils::files::read_capped(path, MAX_FILE)?;
         if !looks_like(name, &text) {
             return Err(Error::Invalid(format!("{} isn't a {name} this can read", path.display())));
         }
-        parse(&text)?
+        (parse(&text)?, Vec::new())
     };
-    Ok(Some(dedupe(found.into_iter().filter(|p| !p.name.is_empty() && !p.version.is_empty()).collect())))
+    let packages = dedupe(found.into_iter().filter(|p| !p.name.is_empty() && !p.version.is_empty()).collect());
+    Ok(Some((packages, unchecked)))
 }
 
 /// Whether `text` has the structure every `name` its tool writes has (a
@@ -217,7 +229,7 @@ fn looks_like(name: &str, text: &str) -> bool {
 
 /// Whether [`extract`] reads this kind of lockfile.
 pub fn supported(name: &str) -> bool {
-    requirements::is_requirements(name) || parser(name).is_some()
+    requirements::is_requirements(name) || csproj::is_project_file(name) || parser(name).is_some()
 }
 
 /// The lines of a text, refusing any over [`MAX_LINE`].

@@ -141,6 +141,7 @@ The rule every module follows: when Pantry cannot tell, it says so; a gap never 
 | `mix.lock` | `Hex` | | `:hex` tuples from the public `hexpm` repository |
 | `gradle.lockfile`, `pom.xml` | `Maven` | | `pom.xml`: literal versions and same-file properties only, no parent or remote resolution |
 | `packages.lock.json` | `NuGet` | v1–v2 | `Project` references skipped |
+| `*.csproj`, `*.fsproj`, `*.vbproj`, `packages.config` | `NuGet` | | Projects without a `packages.lock.json` beside them. `PackageReference` versions, central `PackageVersion` from the nearest `Directory.Packages.props`, properties from the project and the nearest `Directory.Build.props`/`Directory.Packages.props` inside the repo. Exact versions only; a range, `*`, property function or undefined property is reported not checked |
 | `conan.lock` | `ConanCenter` | v0.4–v0.5 | A `@user/channel` recipe is private and skipped |
 
 OS packages are reported under their source package and version, the names OSV matches:

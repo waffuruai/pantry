@@ -305,3 +305,32 @@ fn paths_and_headers() {
     assert!(pax(b"3 \xff\xfe=1\n9 k=v\n").len() <= 1);
     assert!(pax(b"99 path=short\n").is_empty());
 }
+
+/// A .NET project in an image reads its Directory.Build.props from
+/// anywhere above it in the image; one it can't resolve is a gap.
+#[test]
+fn dotnet_projects_in_an_image() {
+    assert!(wanted("src/Directory.Build.props") && wanted("src/app/App.csproj") && wanted("src/packages.config"));
+    assert!(!wanted("src/node_modules/x/App.csproj"));
+    let d = TempDir::new("root-dotnet").unwrap();
+    let root = d.path();
+    std::fs::create_dir_all(root.join("src/app")).unwrap();
+    std::fs::write(
+        root.join("src/Directory.Build.props"),
+        "<Project><PropertyGroup><V>12.0.1</V></PropertyGroup></Project>",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/app/App.csproj"),
+        r#"<Project><ItemGroup>
+  <PackageReference Include="Newtonsoft.Json" Version="$(V)" />
+  <PackageReference Include="Foo" Version="$(Undefined)" />
+</ItemGroup></Project>"#,
+    )
+    .unwrap();
+    let (pkgs, gaps) = read_root(root);
+    let got: Vec<(String, String, String)> = pkgs.into_iter().map(|p| (p.name, p.version, p.source)).collect();
+    assert_eq!(got, [("Newtonsoft.Json".into(), "12.0.1".into(), "/src/app/App.csproj".into())]);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(gaps[0].starts_with("/src/app/App.csproj: not exact or not resolved: Foo $(Undefined)"), "{gaps:?}");
+}

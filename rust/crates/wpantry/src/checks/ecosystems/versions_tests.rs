@@ -48,3 +48,23 @@ fn common_prefix_counts_leading_numbers() {
     assert_eq!(common_prefix("1.02", "1.2.0"), 2);
     assert_eq!(numbers("v1.2.3+meta.4"), ["1", "2", "3"]);
 }
+
+#[test]
+fn java_8s_two_spellings_compare_as_one() {
+    let behind = |have: &str, latest: &str| !current("java", have, latest);
+    assert!(behind("1.8.0_412", "8u472-b08"));
+    assert!(!behind("1.8.0_472", "8u472-b08"));
+    assert!(!behind("1.8.0_480", "8u472"));
+    assert!(behind("1.8.0", "8u472"), "no update is update 0");
+    // 9 and later as before: build metadata is not a newer release.
+    assert!(!behind("21.0.5", "21.0.5+11"));
+    assert!(behind("21.0.4", "21.0.5+11"));
+    assert_eq!(java8("21.0.5+11"), "21.0.5+11");
+    for odd in ["1.8.0_", "1.8.0_x", "1.8.0-b1", "8u", "8ux", "18u1", "1.8.01"] {
+        assert_eq!(java8(odd), odd, "{odd}");
+    }
+    assert_eq!(java8("8u472+1"), "8.0.472");
+    // Only the java tool is read this way.
+    assert!(!current("node", "1.8.0_412", "8u472"), "other tools compare as before");
+    assert!(!current("node", "18.0.0", "18.1.0"));
+}

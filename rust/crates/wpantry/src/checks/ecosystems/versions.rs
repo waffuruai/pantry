@@ -187,6 +187,30 @@ pub fn same_or_newer(installed: &str, latest: &str) -> bool {
     true
 }
 
+/// Java 8's two spellings in one form, for comparing: `1.8.0_412` (what
+/// `java -version` prints; a bare `1.8.0` is update 0) and `8u412` or
+/// `8u412-b08` (endoflife.date's) all read `8.0.412`. Any other version,
+/// 9 and later included, is returned as it is.
+pub fn java8(v: &str) -> String {
+    let update = |u: &str| {
+        let u = u.split(['-', '+']).next().unwrap_or("");
+        (!u.is_empty() && u.bytes().all(|b| b.is_ascii_digit())).then(|| format!("8.0.{u}"))
+    };
+    let read = match v.strip_prefix("1.8.0") {
+        Some("") => Some("8.0.0".to_string()),
+        Some(rest) => rest.strip_prefix('_').and_then(update),
+        None => v.strip_prefix("8u").and_then(update),
+    };
+    read.unwrap_or_else(|| v.to_string())
+}
+
+/// [`same_or_newer`] for catalog tool `tool`'s installed version against a
+/// feed's latest: Java's both read through [`java8`], every other tool's
+/// as they are.
+pub fn current(tool: &str, installed: &str, latest: &str) -> bool {
+    if tool == "java" { same_or_newer(&java8(installed), &java8(latest)) } else { same_or_newer(installed, latest) }
+}
+
 #[cfg(test)]
 #[path = "versions_tests.rs"]
 mod tests;

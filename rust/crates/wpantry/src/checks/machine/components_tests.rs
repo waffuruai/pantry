@@ -207,3 +207,21 @@ fn installed_go_is_checked_as_its_toolchain_too() {
         );
     }
 }
+
+#[test]
+fn java_8_is_outdated_only_when_behind_temurins_latest_8() {
+    let d = crate::utils::temp::TempDir::new("jdk8").unwrap();
+    let net = Fake::new(|r| {
+        assert_eq!(r.url, "https://endoflife.date/api/eclipse-temurin.json");
+        Ok(crate::utils::net::Response::ok(r#"[{"cycle": "8", "eol": false, "latest": "8u472-b08"}]"#))
+    });
+    let mut s = testing::scan(&net, &d);
+    for v in ["1.8.0_412", "1.8.0_472", "1.8.0_480"] {
+        let mut c = Component::new("runtime", "java", v, "/j/bin/java");
+        c.eol = Some(("eclipse-temurin".into(), "8".into()));
+        s.eol(&c, false).unwrap();
+    }
+    let got: Vec<(&str, &str)> = s.findings.iter().map(|f| (f.version.as_str(), f.vuln_id.as_str())).collect();
+    assert_eq!(got, [("1.8.0_412", "OUTDATED")]);
+    assert_eq!(s.findings[0].fixed, "8u472-b08");
+}

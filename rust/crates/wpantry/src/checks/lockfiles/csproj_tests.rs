@@ -8,9 +8,15 @@ fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
     p
 }
 
-/// `name version` of each package, and the not-checked notes.
+/// `name version` of each package (`name version from <props file>` for
+/// one a props file declares), and the not-checked notes.
 fn got(read: &Read) -> (Vec<String>, Vec<String>) {
-    (read.packages.iter().map(|p| format!("{} {}", p.name, p.version)).collect(), read.unchecked.clone())
+    let own = read.packages.iter().map(|p| format!("{} {}", p.name, p.version));
+    let inherited = read
+        .inherited
+        .iter()
+        .map(|(f, p)| format!("{} {} from {}", p.name, p.version, f.file_name().unwrap_or_default().to_string_lossy()));
+    (own.chain(inherited).collect(), read.unchecked.clone())
 }
 
 fn one(d: &TempDir, rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
@@ -147,8 +153,13 @@ fn properties_from_the_project_and_the_props_above_it() {
 </ItemGroup>"#,
         ),
     );
-    let (pkgs, notes) = got(&parse_file(&f, &repo).unwrap());
-    assert_eq!(pkgs, ["Analyzer 4.0.0", "Serilog 3.1.1", "Shared 1.2.0", "Built 2.5.0", "Central 7.0.0"]);
+    let read = parse_file(&f, &repo).unwrap();
+    assert_eq!(read.inherited[0].0, repo.join("src/Directory.Build.props"), "the props file, as the walk names it");
+    let (pkgs, notes) = got(&read);
+    assert_eq!(
+        pkgs,
+        ["Serilog 3.1.1", "Shared 1.2.0", "Built 2.5.0", "Central 7.0.0", "Analyzer 4.0.0 from Directory.Build.props"]
+    );
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes[0].starts_with("Far $(Far) ($(Far) is not defined"), "only the nearest props: {notes:?}");
     assert!(notes[1].starts_with("Outside $(Outside) ($(Outside) is not defined"), "not above the repo: {notes:?}");
@@ -198,7 +209,14 @@ fn only_exact_versions_are_read() {
     );
     assert_eq!(
         pkgs,
-        ["Bare 1.2.3", "Bracket 2.0.1", "Child 3.0.0-beta.1", "Over 1.5.0", "Twice 1.1.0", "Global.Analyzer 3.0.0"]
+        [
+            "Bare 1.2.3",
+            "Bracket 2.0.1",
+            "Child 3.0.0-beta.1",
+            "Over 1.5.0",
+            "Twice 1.1.0",
+            "Global.Analyzer 3.0.0 from Directory.Packages.props"
+        ]
     );
     assert_eq!(
         notes,
@@ -271,23 +289,148 @@ fn item_operations_and_conditions() {
             "Varies $(Varies) ($(Varies) is set under a Condition)",
             "Windows $(OnlyWindows) ($(OnlyWindows) is set under a Condition)",
             "Chosen $(Chosen) ($(Chosen) is set under a Condition)",
-            "Looped $(Loop) (properties that loop or grow too long)",
+            "Looped $(Loop) ($(Loop) is read before it is set)",
             "$(PkgName) 1.0.0 ($(PkgName) is not defined in the project, Directory.Build.props or Directory.Packages.props)",
         ]
     );
 }
 
-#[test]
-fn multiplying_properties_are_refused() {
-    let mut props: Vec<(String, Def)> = vec![("p0".into(), Def { value: "1".into(), conditional: false })];
-    for i in 1..=8 {
-        props.push((format!("p{i}"), Def { value: format!("$(p{})", i - 1).repeat(100), conditional: false }));
-    }
-    assert_eq!(expand("$(p0).$(p0)", &props, 0), Ok("1.1".to_string()));
-    assert_eq!(expand("$(p8)", &props, 0), Err(Why::Loop));
+fn def(name: &str, value: &str) -> (String, Def) {
+    (name.to_ascii_lowercase(), Def { name: name.into(), value: value.into(), conditional: false })
 }
 
-/// A packages.lock.json beside the project wins: the project is skipped.
+/// A value that grows past MAX_EXPANSION is refused, and so is every
+/// property built from it.
+#[test]
+fn multiplying_properties_are_refused() {
+    let mut defs = vec![def("p0", "1")];
+    for i in 1..=8 {
+        defs.push(def(&format!("p{i}"), &format!("$(p{})", i - 1).repeat(100)));
+    }
+    let props = evaluate(&defs);
+    assert_eq!(expand("$(p0).$(p0)", &props), Val { value: "1.1".into(), why: None });
+    assert_eq!(props["p1"].value.len(), 100);
+    assert_eq!(expand("$(p8)", &props).why, Some(Why::TooLong));
+    assert_eq!(resolve("$(p2)", &props), Err(Why::TooLong));
+}
+
+/// Known-bad oracle for exponential expansion: properties P1..P8 that
+/// each read the one before 20 times, ending in an empty P0 (about 1 KB of
+/// Directory.Build.props). Expanding every reference again on each use
+/// takes 20^8 steps (hours); evaluating each definition once takes
+/// microseconds. The bound is generous for a slow, instrumented build.
+#[test]
+fn chained_properties_expand_in_linear_time() {
+    let d = TempDir::new("csproj-chain").unwrap();
+    let mut chain = String::from("<P0></P0>");
+    for i in 1..=8 {
+        chain.push_str(&format!("<P{i}>{}</P{i}>", format!("$(P{})", i - 1).repeat(20)));
+    }
+    write(d.path(), "Directory.Build.props", &format!("<Project><PropertyGroup>{chain}</PropertyGroup></Project>"));
+    let f = write(
+        d.path(),
+        "App.csproj",
+        &project(r#"<ItemGroup><PackageReference Include="Foo" Version="1.2.3$(P8)" /></ItemGroup>"#),
+    );
+    let root = d.path().to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(parse_file(&f, &root).map(|r| got(&r))));
+    let read = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("chained properties took more than 2 s");
+    assert_eq!(read.unwrap(), (vec!["Foo 1.2.3".to_string()], vec![]));
+}
+
+/// A property is read with the value it has where it is read, as MSBuild
+/// evaluates: a later redefinition, even a conditional one, doesn't change
+/// what an earlier definition took; one read before it is set (also across
+/// files: a props file can't see the project's properties) was empty there.
+/// Items run after every property, so they see the final values.
+#[test]
+fn a_property_takes_the_value_at_its_point_of_use() {
+    let d = TempDir::new("csproj-point-of-use").unwrap();
+    write(
+        d.path(),
+        "Directory.Build.props",
+        "<Project><PropertyGroup><FromProject>$(ProjectVersion)</FromProject></PropertyGroup></Project>",
+    );
+    let (pkgs, notes) = one(
+        &d,
+        "App.csproj",
+        &project(
+            r#"<PropertyGroup>
+  <V>1.0.0</V>
+  <Pinned>$(V)</Pinned>
+  <V>2.0.0</V>
+  <C>3.0.0</C>
+  <TakenC>$(C)</TakenC>
+  <C Condition="'$(Configuration)' == 'Release'">3.1.0</C>
+  <Early>$(Late)</Early>
+  <Late>4.0.0</Late>
+  <ProjectVersion>5.0.0</ProjectVersion>
+</PropertyGroup>
+<ItemGroup>
+  <PackageReference Include="Pinned" Version="$(Pinned)" />
+  <PackageReference Include="Final" Version="$(V)" />
+  <PackageReference Include="TakenC" Version="$(TakenC)" />
+  <PackageReference Include="C" Version="$(C)" />
+  <PackageReference Include="Early" Version="$(Early)" />
+  <PackageReference Include="FromProject" Version="$(FromProject)" />
+</ItemGroup>"#,
+        ),
+    );
+    assert_eq!(pkgs, ["Pinned 1.0.0", "Final 2.0.0", "TakenC 3.0.0"]);
+    assert_eq!(
+        notes,
+        [
+            "C $(C) ($(C) is set under a Condition)",
+            "Early $(Early) ($(Late) is read before it is set)",
+            "FromProject $(FromProject) ($(ProjectVersion) is read before it is set)",
+        ]
+    );
+}
+
+/// Each Directory.*.props reference is marked as that file's: one in
+/// Directory.Build.props, a GlobalPackageReference, and one whose version
+/// a props file declares but the project resolves. A project's own
+/// Update with a version makes the reference the project's.
+#[test]
+fn props_references_are_marked_as_the_props_files() {
+    let d = TempDir::new("csproj-inherited").unwrap();
+    write(
+        d.path(),
+        "Directory.Build.props",
+        r#"<Project><ItemGroup>
+  <PackageReference Include="Shared" Version="1.0.0" />
+  <PackageReference Include="PerProject" Version="$(PerProjectVersion)" />
+  <PackageReference Include="Moved" Version="1.0.0" />
+</ItemGroup></Project>"#,
+    );
+    write(
+        d.path(),
+        "Directory.Packages.props",
+        r#"<Project><ItemGroup><GlobalPackageReference Include="Global" Version="2.0.0" /></ItemGroup></Project>"#,
+    );
+    let (pkgs, notes) = one(
+        &d,
+        "a/A.csproj",
+        &project(
+            r#"<PropertyGroup><PerProjectVersion>3.0.0</PerProjectVersion></PropertyGroup>
+<ItemGroup><PackageReference Update="Moved" Version="1.1.0" /></ItemGroup>"#,
+        ),
+    );
+    assert_eq!(
+        pkgs,
+        [
+            "Moved 1.1.0",
+            "Shared 1.0.0 from Directory.Build.props",
+            "PerProject 3.0.0 from Directory.Build.props",
+            "Global 2.0.0 from Directory.Packages.props",
+        ]
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+/// A packages.lock.json beside the project wins: the project is skipped,
+/// before it is parsed, so a locked project this can't read is no error.
 #[test]
 fn a_sibling_lock_wins() {
     let d = TempDir::new("csproj-lock").unwrap();
@@ -302,6 +445,11 @@ fn a_sibling_lock_wins() {
         one(&d, "packages.config", r#"<packages><package id="a" version="1.0.0" /></packages>"#),
         (vec![], vec![])
     );
+    for (name, text) in [("Broken.csproj", "<Project"), ("packages.config", "not xml")] {
+        let f = write(d.path(), &format!("broken/{name}"), text);
+        write(d.path(), "broken/packages.lock.json", "{}");
+        assert_eq!(parse_file(&f, d.path()).unwrap(), Read::default(), "{name}");
+    }
 }
 
 /// XML details: entities and single quotes in attributes, `>` inside a

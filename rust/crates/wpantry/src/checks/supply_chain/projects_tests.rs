@@ -127,6 +127,10 @@ fn project_fixes_for_the_later_lockfiles() {
         "Update log4net to 2.0.15 in /w/cs/packages.config"
     );
     assert_eq!(
+        fix("/w/cs/Directory.Build.props", "NuGet", "log4net", "2.0.15"),
+        "Update log4net to 2.0.15 in /w/cs/Directory.Build.props"
+    );
+    assert_eq!(
         fix("/w/x/Gemfile.lock", "RubyGems", "evil;rm", "1"),
         "cd /w/x && bundle update --conservative 'evil;rm'"
     );
@@ -226,6 +230,9 @@ fn dotnet_projects_without_a_lock_are_read() {
     testing::write(&root, "bad/Bad.csproj", refs(r#"<PackageReference Include="Foo" Version="$(Undefined)" />"#));
     testing::write(&root, "locked/Locked.csproj", refs(r#"<PackageReference Include="Bar" Version="$(Undefined)" />"#));
     testing::write(&root, "locked/packages.lock.json", r#"{"version": 1, "dependencies": {"net8.0": {}}}"#);
+    // Locked and not readable here: the lock is read, the project never is.
+    testing::write(&root, "locked2/Odd.csproj", "<Project");
+    testing::write(&root, "locked2/packages.lock.json", r#"{"version": 1, "dependencies": {"net8.0": {}}}"#);
     projects(&mut s, &[(name, root.clone())]).unwrap();
     assert!(s.counts.contains(&("project dependencies".to_string(), 3)), "{:?}", s.counts);
     for (id, file, version) in [
@@ -244,4 +251,41 @@ fn dotnet_projects_without_a_lock_are_read() {
     );
     let row = s.findings.iter().find(|f| f.kind == "unchecked").unwrap();
     assert!(row.note.starts_with("not exact or not resolved: Foo $(Undefined)"), "{}", row.note);
+}
+
+/// A reference in Directory.Build.props is one finding at that file per
+/// (package, version), however many projects import it; one whose
+/// version each project sets is one finding per version. The fix edits
+/// the props file.
+#[cfg(unix)]
+#[test]
+fn a_props_reference_is_reported_once() {
+    let d = TempDir::new("projects-props").unwrap();
+    let net = testing::osv_net(&[("NuGet", "Newtonsoft.Json"), ("NuGet", "log4net")]);
+    let mut s = testing::scan(&net, &d, Options::default());
+    let (name, root) = testing::repo(&d, "dotnet");
+    testing::write(
+        &root,
+        "Directory.Build.props",
+        r#"<Project><ItemGroup>
+  <PackageReference Include="Newtonsoft.Json" Version="9.0.1" />
+  <PackageReference Include="log4net" Version="$(LogVersion)" />
+</ItemGroup></Project>"#,
+    );
+    let with = |v: &str| format!("<Project><PropertyGroup><LogVersion>{v}</LogVersion></PropertyGroup></Project>");
+    for (dir, v) in [("a/A.csproj", "2.0.8"), ("b/B.csproj", "2.0.8"), ("c/C.csproj", "2.0.10")] {
+        testing::write(&root, dir, with(v));
+    }
+    projects(&mut s, &[(name, root.clone())]).unwrap();
+    let props = root.join("Directory.Build.props").to_string_lossy().into_owned();
+    let json = testing::by_id(&s, "GHSA-Newtonsoft.Json");
+    assert_eq!(json.len(), 1, "{:?}", s.findings);
+    assert_eq!(json[0].location, props);
+    assert!(json[0].fix_cmd.starts_with("Update Newtonsoft.Json to "), "{}", json[0].fix_cmd);
+    assert!(json[0].fix_cmd.ends_with("Directory.Build.props"), "{}", json[0].fix_cmd);
+    let mut log: Vec<(&str, &str)> =
+        testing::by_id(&s, "GHSA-log4net").iter().map(|f| (f.version.as_str(), f.location.as_str())).collect();
+    log.sort();
+    assert_eq!(log, [("2.0.10", props.as_str()), ("2.0.8", props.as_str())]);
+    assert!(s.counts.contains(&("project dependencies".to_string(), 3)), "{:?}", s.counts);
 }

@@ -4,7 +4,7 @@
 //! `packages.lock.json` wins and the project is skipped (the lock is read
 //! on its own).
 //!
-//! Nothing is evaluated or restored. A project's versions come from the
+//! Nothing is built or restored. A project's versions come from the
 //! item itself (`Version`/`VersionOverride`, attribute or child element)
 //! or, with central package management, from a `PackageVersion` in the
 //! nearest `Directory.Packages.props`. The nearest `Directory.Build.props`
@@ -13,6 +13,14 @@
 //! MSBuild imports them; both are looked for from the project's directory
 //! up to the repository root and no further, and their own imports are
 //! not followed.
+//!
+//! Properties are evaluated as MSBuild evaluates them: in document order
+//! (`Directory.Build.props`, `Directory.Packages.props`, then the
+//! project), each definition expanded once, against the properties set
+//! before it. A property read before it is set expands to empty, as in
+//! MSBuild, and items see every property's final value. Expanding each
+//! definition once keeps the work linear in the file size; a value
+//! longer than [`MAX_EXPANSION`] is refused.
 //!
 //! Only exact versions are reported: a bare version (NuGet restores the
 //! lowest it allows, which is that one) or `[1.2.3]`. A range, a floating
@@ -27,6 +35,7 @@
 
 use super::{MAX_FILE, Package, Scope, plausible};
 use crate::error::{Error, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const MAX_DEPTH: usize = 256;
@@ -41,6 +50,10 @@ const PACKAGES_PROPS: &str = "Directory.Packages.props";
 pub struct Read {
     pub packages: Vec<Package>,
     pub unchecked: Vec<String>,
+    /// Pinned by a reference declared in a `Directory.*.props` (with that
+    /// file's path), which every project below it shares: the scan reports
+    /// these once per props file, not once per project.
+    pub inherited: Vec<(PathBuf, Package)>,
 }
 
 /// A project file or `packages.config`, the files this module reads.
@@ -193,6 +206,8 @@ fn document(xml: &str, what: &str) -> Result<Element> {
 /// A value as one file sets it, and whether a `Condition` guards it.
 #[derive(Clone, Debug)]
 struct Def {
+    /// The property's name as written (unused for a `PackageVersion`).
+    name: String,
     value: String,
     conditional: bool,
 }
@@ -210,6 +225,9 @@ struct Item {
     name: String,
     version: Option<String>,
     version_override: Option<String>,
+    /// The props file whose reference sets this version; None for the
+    /// project's own.
+    from: Option<PathBuf>,
 }
 
 /// What one MSBuild file defines.
@@ -226,7 +244,12 @@ struct Defs {
 }
 
 fn item(e: &Element, name: &str) -> Item {
-    Item { name: name.trim().to_string(), version: e.field("Version"), version_override: e.field("VersionOverride") }
+    Item {
+        name: name.trim().to_string(),
+        version: e.field("Version"),
+        version_override: e.field("VersionOverride"),
+        from: None,
+    }
 }
 
 /// The names an `Include`/`Update`/`Remove` lists (`A;B`).
@@ -242,7 +265,8 @@ fn collect(e: &Element, conditional: bool, out: &mut Defs) {
     if e.is("PropertyGroup") {
         for p in &e.children {
             let conditional = conditional || p.attr("Condition").is_some();
-            out.props.push((p.name.to_ascii_lowercase(), Def { value: p.text.trim().to_string(), conditional }));
+            let def = Def { name: p.name.clone(), value: p.text.trim().to_string(), conditional };
+            out.props.push((p.name.to_ascii_lowercase(), def));
         }
         return;
     }
@@ -262,7 +286,8 @@ fn collect(e: &Element, conditional: bool, out: &mut Defs) {
                     continue;
                 };
                 for n in names(inc) {
-                    out.versions.push((n.to_ascii_lowercase(), Def { value: v.clone(), conditional }));
+                    out.versions
+                        .push((n.to_ascii_lowercase(), Def { name: n.to_string(), value: v.clone(), conditional }));
                 }
             } else if i.is("GlobalPackageReference")
                 && let Some(inc) = i.attr("Include")
@@ -278,13 +303,15 @@ fn collect(e: &Element, conditional: bool, out: &mut Defs) {
 }
 
 /// Why a value isn't one exact version.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Why {
     Undefined(String),
+    /// Read in a definition before any definition of it.
+    TooEarly(String),
     Conditional(String),
     CentralConditional,
     Function,
-    Loop,
+    TooLong,
     Range,
     Floating,
     NoVersion,
@@ -295,10 +322,11 @@ impl Why {
     fn note(&self, name: &str, raw: &str) -> String {
         let why = match self {
             Why::Undefined(p) => format!("$({p}) is not defined in the project, {BUILD_PROPS} or {PACKAGES_PROPS}"),
+            Why::TooEarly(p) => format!("$({p}) is read before it is set"),
             Why::Conditional(p) => format!("$({p}) is set under a Condition"),
             Why::CentralConditional => "its PackageVersion is set under a Condition".into(),
             Why::Function => "a property function or item reference".into(),
-            Why::Loop => "properties that loop or grow too long".into(),
+            Why::TooLong => "a property that grows too long".into(),
             Why::Range => "a version range".into(),
             Why::Floating => "a floating version".into(),
             Why::NoVersion => "no version".into(),
@@ -321,39 +349,77 @@ fn settled<'a>(defs: &'a [(String, Def)], key: &str) -> std::result::Result<&'a 
     }
 }
 
-/// `$(Name)` references expanded from `props`, recursively.
-fn expand(s: &str, props: &[(String, Def)], depth: usize) -> std::result::Result<String, Why> {
+/// A property's value once evaluated, and what makes it doubtful: a
+/// reference to a property that is undefined, conditional, a function or
+/// too long, anywhere in the chain it was built from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Val {
+    value: String,
+    why: Option<Why>,
+}
+
+impl Val {
+    fn doubt(why: Why) -> Val {
+        Val { value: String::new(), why: Some(why) }
+    }
+}
+
+/// Lowercased property name → its value so far.
+type Props = HashMap<String, Val>;
+
+/// `s` with each `$(Name)` replaced by its value in `props`, one level:
+/// the values there are already expanded. An undefined name expands to
+/// empty, as in MSBuild, and makes the result doubtful.
+fn expand(s: &str, props: &Props) -> Val {
     if s.contains("@(") || s.contains("%(") || s.contains("$([") {
-        return Err(Why::Function);
+        return Val::doubt(Why::Function);
     }
-    if !s.contains("$(") {
-        return Ok(s.to_string());
-    }
-    if depth > 8 {
-        return Err(Why::Loop);
-    }
-    let mut out = String::new();
+    let mut out = Val::default();
     let mut rest = s;
     while let Some(i) = rest.find("$(") {
-        out.push_str(&rest[..i]);
-        let end = rest[i..].find(')').ok_or(Why::Function)? + i;
+        out.value.push_str(&rest[..i]);
+        let Some(end) = rest[i..].find(')').map(|e| e + i) else { return Val::doubt(Why::Function) };
         let name = &rest[i + 2..end];
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-            return Err(Why::Function);
+            return Val::doubt(Why::Function);
         }
-        let value = match settled(props, &name.to_ascii_lowercase()) {
-            Ok(v) => v,
-            Err(false) => return Err(Why::Undefined(name.to_string())),
-            Err(true) => return Err(Why::Conditional(name.to_string())),
-        };
-        out.push_str(&expand(value, props, depth + 1)?);
-        if out.len() > MAX_EXPANSION {
-            return Err(Why::Loop);
+        match props.get(&name.to_ascii_lowercase()) {
+            Some(v) => {
+                out.value.push_str(&v.value);
+                out.why = out.why.or_else(|| v.why.clone());
+            }
+            None => out.why = out.why.or_else(|| Some(Why::Undefined(name.to_string()))),
+        }
+        if out.value.len() > MAX_EXPANSION {
+            return Val::doubt(Why::TooLong);
         }
         rest = &rest[end + 1..];
     }
-    out.push_str(rest);
-    Ok(out)
+    out.value.push_str(rest);
+    if out.value.len() > MAX_EXPANSION {
+        return Val::doubt(Why::TooLong);
+    }
+    out
+}
+
+/// Every property's final value, evaluating `defs` in document order:
+/// each definition is expanded once, against what is set before it. A
+/// definition under a `Condition` that could change the value leaves it
+/// doubtful until an unconditional one sets it again.
+fn evaluate<'a>(defs: impl IntoIterator<Item = &'a (String, Def)>) -> Props {
+    let mut props = Props::new();
+    for (key, d) in defs {
+        let v = expand(&d.value, &props);
+        if !d.conditional {
+            props.insert(key.clone(), v);
+            continue;
+        }
+        let same = props.get(key).is_some_and(|cur| cur.why.is_none() && v.why.is_none() && cur.value == v.value);
+        if !same {
+            props.insert(key.clone(), Val { value: v.value, why: Some(Why::Conditional(d.name.clone())) });
+        }
+    }
+    props
 }
 
 /// The exact version a NuGet version string pins.
@@ -385,8 +451,9 @@ fn read(path: &Path, what: &str) -> Result<Element> {
     document(&crate::utils::files::read_capped(path, MAX_FILE)?, what)
 }
 
-/// What a `Directory.*.props` above the project defines; a note instead
-/// when it can't be read (its properties then count as undefined).
+/// What a `Directory.*.props` above the project defines, its references
+/// marked as coming from it; a note instead when it can't be read (its
+/// properties then count as undefined).
 fn context(dir: &Path, root: &Path, name: &str, notes: &mut Vec<String>) -> Defs {
     let mut defs = Defs::default();
     let Some(f) = nearest(dir, root, name) else { return defs };
@@ -400,14 +467,39 @@ fn context(dir: &Path, root: &Path, name: &str, notes: &mut Vec<String>) -> Defs
         Ok(e) => collect(&e, false, &mut defs),
         Err(e) => notes.push(e.to_string()),
     }
+    for op in &mut defs.refs {
+        if let Op::Include(i) | Op::Update(i) = op {
+            i.from = Some(f.clone());
+        }
+    }
+    for g in &mut defs.globals {
+        g.from = Some(f.clone());
+    }
     defs
 }
 
-fn package(name: &str, raw: &str, props: &[(String, Def)], out: &mut Read) {
-    let resolved = expand(name, props, 0).and_then(|n| expand(raw, props, 0).map(|v| (n, v)));
+/// The value of `s` against the final properties, or why it has none.
+fn resolve(s: &str, props: &Props) -> std::result::Result<String, Why> {
+    let v = expand(s, props);
+    match v.why {
+        // Set later than it was read: MSBuild read it as empty.
+        Some(Why::Undefined(p)) if props.contains_key(&p.to_ascii_lowercase()) => Err(Why::TooEarly(p)),
+        Some(why) => Err(why),
+        None => Ok(v.value),
+    }
+}
+
+fn package(i: &Item, raw: &str, props: &Props, out: &mut Read) {
+    let resolved = resolve(&i.name, props).and_then(|n| resolve(raw, props).map(|v| (n, v)));
     match resolved.and_then(|(n, v)| exact(&v).map(|e| (n.clone(), e.to_string()))) {
-        Ok((n, v)) => out.packages.push(Package::new("NuGet", &n, &v).direct(true)),
-        Err(why) => out.unchecked.push(why.note(name, raw)),
+        Ok((n, v)) => {
+            let p = Package::new("NuGet", &n, &v).direct(true);
+            match &i.from {
+                Some(f) => out.inherited.push((f.clone(), p)),
+                None => out.packages.push(p),
+            }
+        }
+        Err(why) => out.unchecked.push(why.note(&i.name, raw)),
     }
 }
 
@@ -423,7 +515,7 @@ fn project(text: &str, dir: &Path, root: &Path, what: &str) -> Result<Read> {
     collect(&doc, false, &mut own);
     // MSBuild's order: Directory.Build.props, Directory.Packages.props, then
     // the project. Properties are all set before any item reads them.
-    let props: Vec<(String, Def)> = [&build, &central, &own].iter().flat_map(|d| d.props.iter().cloned()).collect();
+    let props = evaluate([&build, &central, &own].iter().flat_map(|d| d.props.iter()));
     let versions: Vec<(String, Def)> =
         [&build, &central, &own].iter().flat_map(|d| d.versions.iter().cloned()).collect();
     let mut items: Vec<Item> = Vec::new();
@@ -432,6 +524,9 @@ fn project(text: &str, dir: &Path, root: &Path, what: &str) -> Result<Read> {
             Op::Include(i) => items.push(i.clone()),
             Op::Update(u) => {
                 for i in items.iter_mut().filter(|i| i.name.eq_ignore_ascii_case(&u.name)) {
+                    if u.version.is_some() || u.version_override.is_some() {
+                        i.from = u.from.clone(); // the version is now set where the Update is
+                    }
                     i.version = u.version.clone().or(i.version.take());
                     i.version_override = u.version_override.clone().or(i.version_override.take());
                 }
@@ -445,14 +540,14 @@ fn project(text: &str, dir: &Path, root: &Path, what: &str) -> Result<Read> {
             None => settled(&versions, &i.name.to_ascii_lowercase()),
         };
         match raw {
-            Ok(v) => package(&i.name, v, &props, &mut out),
+            Ok(v) => package(i, v, &props, &mut out),
             Err(false) => out.unchecked.push(Why::NoVersion.note(&i.name, "")),
             Err(true) => out.unchecked.push(Why::CentralConditional.note(&i.name, "")),
         }
     }
     for g in &central.globals {
         match &g.version {
-            Some(v) => package(&g.name, v, &props, &mut out),
+            Some(v) => package(g, v, &props, &mut out),
             None => out.unchecked.push(Why::NoVersion.note(&g.name, "")),
         }
     }
@@ -484,15 +579,23 @@ fn packages_config(text: &str) -> Result<Read> {
 }
 
 /// A project file (or `packages.config`) at `path` in the repository at
-/// `root`. An empty read when a `packages.lock.json` sits beside it.
+/// `root`. An empty read, without parsing it, when a `packages.lock.json`
+/// sits beside it: the lock is read on its own. Inherited references
+/// carry their props file's path under `root` as given (not resolved
+/// through links), so they match the paths a repository walk reports.
 pub fn parse_file(path: &Path, root: &Path) -> Result<Read> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let text = crate::utils::files::read_capped(path, MAX_FILE)?;
     let (real, base) = (path.canonicalize()?, root.canonicalize()?);
     let dir = real.parent().unwrap_or(&base);
-    let found = if name == "packages.config" { packages_config(&text)? } else { project(&text, dir, &base, name)? };
     if dir.join("packages.lock.json").is_file() {
         return Ok(Read::default());
+    }
+    let text = crate::utils::files::read_capped(path, MAX_FILE)?;
+    let mut found = if name == "packages.config" { packages_config(&text)? } else { project(&text, dir, &base, name)? };
+    for (f, _) in &mut found.inherited {
+        if let Ok(rel) = f.strip_prefix(&base) {
+            *f = root.join(rel);
+        }
     }
     Ok(found)
 }

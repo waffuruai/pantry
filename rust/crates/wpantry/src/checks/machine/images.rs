@@ -343,18 +343,27 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
         (None, _) => {}
     }
     let files = crate::checks::supply_chain::repos::lockfiles(root);
+    let mut shared: std::collections::HashSet<(String, Package)> = std::collections::HashSet::new();
     for f in files {
         let shown = format!("/{}", slash(f.strip_prefix(root).unwrap_or(&f)));
         match lockfiles::extract_noting(&f, root) {
-            Ok(Some((found, unchecked))) => {
-                if !unchecked.is_empty() {
-                    gaps.push(format!("{shown}: not exact or not resolved: {}", unchecked.join(", ")));
+            Ok(Some(x)) => {
+                if !x.unchecked.is_empty() {
+                    gaps.push(format!("{shown}: not exact or not resolved: {}", x.unchecked.join(", ")));
                 }
-                pkgs.extend(found.into_iter().map(|p: Package| ImagePackage {
+                let own = x.packages.into_iter().map(|p| (shown.clone(), p));
+                // A Directory.*.props reference is the props file's, once,
+                // however many projects below it share it.
+                let inherited = x
+                    .inherited
+                    .into_iter()
+                    .map(|(f, p)| (format!("/{}", slash(f.strip_prefix(root).unwrap_or(&f))), p))
+                    .filter(|(source, p)| shared.insert((source.clone(), p.clone())));
+                pkgs.extend(own.chain(inherited).map(|(source, p): (String, Package)| ImagePackage {
                     ecosystem: p.ecosystem,
                     name: p.name,
                     version: p.version,
-                    source: shown.clone(),
+                    source,
                 }))
             }
             Ok(None) => gaps.push(format!("{shown}: a lockfile kind not read yet")),

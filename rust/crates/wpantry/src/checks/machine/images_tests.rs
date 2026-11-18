@@ -317,9 +317,12 @@ fn dotnet_projects_in_an_image() {
     std::fs::create_dir_all(root.join("src/app")).unwrap();
     std::fs::write(
         root.join("src/Directory.Build.props"),
-        "<Project><PropertyGroup><V>12.0.1</V></PropertyGroup></Project>",
+        r#"<Project><PropertyGroup><V>12.0.1</V></PropertyGroup>
+<ItemGroup><PackageReference Include="Shared" Version="1.0.0" /></ItemGroup></Project>"#,
     )
     .unwrap();
+    std::fs::create_dir_all(root.join("src/lib")).unwrap();
+    std::fs::write(root.join("src/lib/Lib.csproj"), "<Project />").unwrap();
     std::fs::write(
         root.join("src/app/App.csproj"),
         r#"<Project><ItemGroup>
@@ -330,7 +333,14 @@ fn dotnet_projects_in_an_image() {
     .unwrap();
     let (pkgs, gaps) = read_root(root);
     let got: Vec<(String, String, String)> = pkgs.into_iter().map(|p| (p.name, p.version, p.source)).collect();
-    assert_eq!(got, [("Newtonsoft.Json".into(), "12.0.1".into(), "/src/app/App.csproj".into())]);
+    // Shared is the props file's, once for the two projects below it.
+    assert_eq!(
+        got,
+        [
+            ("Newtonsoft.Json".into(), "12.0.1".into(), "/src/app/App.csproj".into()),
+            ("Shared".into(), "1.0.0".into(), "/src/Directory.Build.props".into()),
+        ]
+    );
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(gaps[0].starts_with("/src/app/App.csproj: not exact or not resolved: Foo $(Undefined)"), "{gaps:?}");
 }

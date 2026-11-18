@@ -139,7 +139,7 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(str_at(hit, "fingerprint"), format!("{}:cfg.env:github-pat:2", added.trim()));
     assert_eq!(ran["unchecked"], 0);
     let scanned = ran["new"].as_array().unwrap().len();
-    let (leaks, unchecked) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
+    let (leaks, unchecked, _) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
     assert_eq!((leaks.len(), unchecked, leaks[0].confidence.as_str()), (1, 0, "high"));
     // Cached: the next job isn't stale, and finish reads it without a run.
     let j = job(&s.cache, &repo, &rules, 2).unwrap();
@@ -160,6 +160,27 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert!(stale(&j, false, false));
     let ran = run_job(&j, &scanner).unwrap();
     assert!(ran["hits"].as_array().unwrap().is_empty());
+    // A .pantryignore skipping the file for secrets: it isn't read again,
+    // and editing the file changes what's cached under.
+    std::fs::remove_file(repo.join(".gitleaksignore")).unwrap();
+    testing::write(&repo, ".pantryignore", "[secret]\ncfg.env\nfixtures/\n");
+    testing::write(&repo, "fixtures/t.env", format!("token = \"{}\"\n", token()));
+    assert!(git(&repo, &home, &["add", "fixtures"]) && git(&repo, &home, &["commit", "-q", "-m", "fixtures"]));
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    assert!(stale(&j, false, false));
+    let ran = run_job(&j, &scanner).unwrap();
+    assert!(ran["hits"].as_array().unwrap().is_empty(), "{ran}");
+    assert!(ran["new"].as_array().unwrap().is_empty(), "the new fixture isn't read: {ran}");
+    assert_eq!(ran["skipped"], 2, "cfg.env and the fixture: {ran}");
+    let (_, _, skipped) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
+    assert_eq!(skipped, 2);
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    assert_eq!(finish(&s.cache, &j, None, false, false).unwrap().2, 2, "kept with the cached run");
+    // A rule-only section still reads the file (other rules may hit it).
+    testing::write(&repo, ".pantryignore", "fixtures/\n[secret aws-access-token]\ncfg.env\n");
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    let ran = run_job(&j, &scanner).unwrap();
+    assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "{ran}");
     // Other rules are another fingerprint: everything is read again.
     let other = Rules::new(Some("// none\n".into()));
     assert_ne!(other.fingerprint, rules.fingerprint);
@@ -229,7 +250,7 @@ fn secrets_from_a_scan_run_ahead() {
     assert_eq!(
         aws[0].fix_cmd,
         format!(
-            "If it's real: rotate it, then purge it from history. If not: add fp1 to {}/.gitleaksignore",
+            "If it's real: rotate it, then purge it from history. If not: add x.env under [secret aws-access-token] in {}/.pantryignore",
             short(&root.to_string_lossy())
         )
     );

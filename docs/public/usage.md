@@ -80,6 +80,7 @@ wpantry scan
 
 - A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
 - A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
+- `ignore` in the same folder, and a repo's `.pantryignore`, leave paths out of the findings, for every check or one ([ignore.md](ignore.md)). They are gitignore patterns, not TOML.
 - `secrets.yar` in the same folder adds secret rules of your own (`--secret-rules`): YARA, in pantry-rules' form (a `$secret` regex, an `id` and `category = "secret"` meta). They must compile beside the bundled ones.
 
 ## Reading the report

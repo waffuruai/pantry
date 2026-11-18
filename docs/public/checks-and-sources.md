@@ -31,6 +31,8 @@ See also: [usage.md](usage.md) (running it), [install.md](install.md), [architec
 | Persistence | Every place a program can come back from after a reboot (launch agents and daemons, login items, cron, at, extensions and plugins, shell startup files, `DYLD_INSERT_LIBRARIES`, systemd units, XDG autostart, `/etc/ld.so.preload`, …), compared with the last scan's list: a new item warns (`PERSISTENCE-NEW`); library injection, a broken signature or a temporary or hidden location warns every scan ([posture.md](posture.md#persistence)) |
 | Developer-tool guardrails | Editor extensions wait 72 hours before a new version installs (`wpantry fix extension-cooldown`), git hooks that check commits |
 
+To leave a repo's fixtures, vendored code or revoked secrets out, list their paths in the repo's `.pantryignore`, for every check or one ([ignore.md](ignore.md)). A repo can't skip the checks that protect you from it; your own ignore file can.
+
 `--no-machine` limits a run to the repo rows: dependencies, secrets, malicious packages, harnesses, install scripts, suspicious code, programs listening with MPTCP on, hidden text, documents and images, repo hooks, licenses, images. What a run could not check shows as "not checked", never clean.
 
 A finding **fails** when it is a known vulnerability with a released fix, past end of life, a known malicious package, a committed secret from a provider-specific rule, a clipper or a clipper's swap, or a Critical or High posture setting.

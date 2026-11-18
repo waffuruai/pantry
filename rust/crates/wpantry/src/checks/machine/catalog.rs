@@ -105,6 +105,10 @@ pub const JAVA_DIRS: &[&str] = &[
     "/usr/lib/jvm/*/bin",
     "/usr/lib64/jvm/*/bin",
 ];
+/// Where .NET installs live besides `$DOTNET_ROOT` and PATH: the install
+/// script's folder, the macOS installer's, and the Linux tarball and
+/// Microsoft package folders. The `dotnet` module reads them; nothing is run.
+pub const DOTNET_DIRS: &[&str] = &["~/.dotnet", "/usr/local/share/dotnet", "/usr/share/dotnet", "/usr/lib/dotnet"];
 
 pub const TOOLS: &[Tool] = &[
     Tool {

@@ -30,7 +30,7 @@ mise use -g packslip:github.com/waffuruai/pantry                                
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # without
 ```
 
-Both verify the release before installing anything. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks only; the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
+Both verify the release before installing anything. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks, and installed programs against CVE records; the rest of the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
 
 ## Use
 

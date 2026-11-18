@@ -64,6 +64,48 @@ fn chrome_releases_carry_their_serving_date() {
     assert!(chrome(&c, &gone, "linux", false).is_err(), "a feed that is gone is unchecked, not empty");
 }
 
+/// The feed is asked for past releases too: with only the ones still
+/// served, the release that first superseded an install is missing and its
+/// date comes out as the newest release's. A version served more than once
+/// keeps its first start.
+#[test]
+fn chrome_releases_include_past_ones_with_their_first_start() {
+    let (_d, c) = cache();
+    let net = Fake::new(|r| {
+        assert!(!r.url.contains("endtime"), "past releases are filtered out: {}", r.url);
+        Ok(Response::ok(
+            json!({"releases": [
+                {"version": "142.0.2", "serving": {"startTime": "2026-10-20T00:00:00Z"}},
+                {"version": "142.0.1", "serving": {"startTime": "2026-10-09T00:00:00Z", "endTime": "2026-10-20T00:00:00Z"}},
+                {"version": "142.0.1", "serving": {"startTime": "2026-10-05T00:00:00Z", "endTime": "2026-10-09T00:00:00Z"}},
+                {"version": "142.0.1", "serving": {}},
+                {"version": "141.0.9", "serving": {"startTime": "2026-09-01T00:00:00Z", "endTime": "2026-10-05T00:00:00Z"}}
+            ]})
+            .to_string(),
+        ))
+    });
+    let got = chrome(&c, &net, "mac", false).unwrap();
+    assert_eq!(
+        got,
+        [
+            ("142.0.2".to_string(), epoch("2026-10-20")),
+            ("142.0.1".to_string(), epoch("2026-10-05")),
+            ("141.0.9".to_string(), epoch("2026-09-01")),
+        ]
+    );
+    let since = crate::checks::machine::exploited::superseded("141.0.9", &got);
+    assert_eq!(since, Some(epoch("2026-10-05")), "superseded when 142.0.1 first shipped, not when 142.0.2 did");
+    // A version first listed undated takes a later dated start.
+    let undated = Fake::new(|_| {
+        Ok(Response::ok(
+            json!({"releases": [{"version": "1.0", "serving": {}}, {"version": "1.0", "serving": {"startTime": "2026-01-02T00:00:00Z"}}]})
+                .to_string(),
+        ))
+    });
+    let (_d2, c2) = cache();
+    assert_eq!(chrome(&c2, &undated, "mac", false).unwrap(), [("1.0".to_string(), epoch("2026-01-02"))]);
+}
+
 #[test]
 fn firefox_feed_joins_versions_and_release_dates() {
     let (_d, c) = cache();

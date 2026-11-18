@@ -33,6 +33,8 @@ pub fn own(f: &Finding) -> &'static str {
                 "MEDIUM"
             }
         }
+        // Behind a release with exploited CVEs in the gap ([`crate::checks::machine::exploited`]).
+        ("OUTDATED", _) if fails => "HIGH",
         ("OUTDATED" | "UNPINNED" | "MISSING" | "LICENSE" | "DEPRECATED" | "REPO-POLICY", _) => "LOW",
         ("INSTALL-SCRIPT" | "NPM-SCRIPTS", _) => {
             if fails {

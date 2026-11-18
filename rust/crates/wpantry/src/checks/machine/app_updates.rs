@@ -5,7 +5,7 @@
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::GRACE;
 use crate::checks::machine::apps as apps_mod;
-use crate::checks::machine::exploited::{escalate, superseded};
+use crate::checks::machine::exploited::{Gap, escalate, superseded};
 use crate::checks::{Scan, display_id, is_kev, is_malicious};
 use crate::component::Component;
 use crate::error::Result;
@@ -147,9 +147,9 @@ fn browser(scan: &mut Scan, a: &Component, behind: bool, latest: &str) -> Result
     Ok(())
 }
 
-/// An app or browser behind its cask's latest: a warning, or a failure
-/// naming the exploited CVEs listed in the last months (the cask catalog
-/// has no release dates).
+/// An app or browser behind its cask's latest: a warning, naming the
+/// exploited CVEs listed in the last months (the cask catalog has no
+/// release dates, so it can't fail on them).
 fn outdated(scan: &mut Scan, a: &Component, latest: &str) {
     let mut f = Finding {
         vuln_id: "OUTDATED".into(),
@@ -160,13 +160,14 @@ fn outdated(scan: &mut Scan, a: &Component, latest: &str) {
         fix_auto: a.auto,
         ..Finding::of(a)
     };
-    escalate(&mut f, a, &scan.kev_entries, None);
+    escalate(&mut f, a, &scan.kev_entries, Gap::default());
     scan.add(f);
 }
 
 /// A browser behind `target` (released at `start`, an epoch): fails once
-/// the release is past the grace period, or at once when KEV lists
-/// exploited CVEs for it since `since`, when this version was superseded.
+/// the release is past the grace period, or once the first newer release
+/// (`since`, when this version was superseded) is, when KEV lists
+/// exploited CVEs for it since then.
 fn browser_finding(scan: &mut Scan, a: &Component, (target, start): (&str, f64), since: Option<f64>, how: &str) {
     if !target.is_empty() && versions::lt(&a.version, target) {
         let old = start > 0.0 && start < now() - GRACE;
@@ -179,7 +180,7 @@ fn browser_finding(scan: &mut Scan, a: &Component, (target, start): (&str, f64),
             fix_auto: a.auto,
             ..Finding::of(a)
         };
-        escalate(&mut f, a, &scan.kev_entries, since);
+        escalate(&mut f, a, &scan.kev_entries, Gap { superseded: since, ..Gap::default() });
         scan.add(f);
     }
 }

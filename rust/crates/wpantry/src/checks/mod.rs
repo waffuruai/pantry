@@ -665,8 +665,10 @@ impl<'a> Scan<'a> {
                 note: format!("behind {}, the latest {product} {cycle} release", res.latest),
                 ..Finding::of(c)
             };
-            // endoflife.date doesn't say when this version was superseded.
-            machine::exploited::escalate(&mut f, c, &self.kev_entries, None);
+            // endoflife.date doesn't say when this version was superseded,
+            // only when its cycle came out.
+            let gap = machine::exploited::Gap { line_released: res.released, ..Default::default() };
+            machine::exploited::escalate(&mut f, c, &self.kev_entries, gap);
             self.add(f);
         }
         Ok(())

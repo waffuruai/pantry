@@ -81,3 +81,34 @@ fn odd_cycles_and_stale_pages() {
     assert_eq!(parse_date("2026-1-1"), None);
     assert_eq!(parse_date("2026-01"), None);
 }
+
+/// The cycle's `releaseDate` is kept; a page without one gives None, and a
+/// cache from before release dates were kept is fetched again online.
+#[test]
+fn eol_keeps_the_cycles_release_date_and_refetches_an_old_cache() {
+    let (_d, c) = cache();
+    let net = Fake::new(|_| {
+        Ok(Response::ok(
+            json!([{"cycle": "8.4", "eol": "2999-01-01", "latest": "8.4.5", "releaseDate": "2024-11-21"},
+                   {"cycle": "8.3", "eol": "2999-01-01", "latest": "8.3.9"}])
+            .to_string(),
+        ))
+    });
+    let e = eol(&c, &net, "php", "8.4", false).unwrap().unwrap();
+    assert_eq!(e.released, Some(crate::utils::dates::epoch("2024-11-21")));
+    assert_eq!(eol(&c, &net, "php", "8.3", true).unwrap().unwrap().released, None);
+    assert_eq!(net.requests().len(), 1);
+    assert_eq!(eol(&c, &net, "php", "8.4", false).unwrap().unwrap().latest, "8.4.5");
+    assert_eq!(net.requests().len(), 1, "fresh, with dates: not asked again");
+    // As a cache from before the column was added leaves it.
+    c.conn.execute("UPDATE eol SET released = NULL WHERE product = 'php'", []).unwrap();
+    assert_eq!(eol(&c, &net, "php", "8.4", true).unwrap().unwrap().released, None, "offline serves what it has");
+    assert_eq!(net.requests().len(), 1);
+    eol_prefetch(&c, &net, &["php".to_string()], false).unwrap();
+    assert_eq!(net.requests().len(), 2, "an old page is fetched again");
+    assert_eq!(
+        eol(&c, &net, "php", "8.4", false).unwrap().unwrap().released,
+        Some(crate::utils::dates::epoch("2024-11-21"))
+    );
+    assert_eq!(net.requests().len(), 2);
+}

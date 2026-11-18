@@ -123,7 +123,7 @@ fn kev_entry(cve: &str, added: &str, vendor: &str, product: &str) -> crate::sour
 }
 
 #[test]
-fn exploited_cves_since_a_browser_or_app_was_superseded_fail_and_are_named() {
+fn exploited_cves_since_a_browser_was_superseded_fail_and_an_apps_are_named() {
     let d = crate::utils::temp::TempDir::new("exploited").unwrap();
     let net = Fake::new(testing::app_net);
     let mut s = testing::scan(&net, &d);
@@ -134,13 +134,15 @@ fn exploited_cves_since_a_browser_or_app_was_superseded_fail_and_are_named() {
         kev_entry("CVE-2024-0519", "2024-01-17", "Google", "Chromium V8"),
         // Firefox 128.3.0 was superseded on 2024-10-29: this one came before.
         kev_entry("CVE-2024-9680", "2024-10-15", "Mozilla", "Firefox"),
-        // The cask catalog has no dates: the last 180 days count.
+        // The cask catalog has no dates: the last 180 days count, and the
+        // finding stays a warning (the install may have the fix).
         kev_entry(&format!("CVE-{year}-7"), &today, "Adobe", "Acrobat and Reader"),
+        kev_entry(&format!("CVE-{year}-8"), &today, "Google", "Chromium V8"),
     ];
     let found = vec![
         testing::app("Google Chrome", "129.0.6668.100", &[("browser", "chrome")]),
         testing::app("Firefox", "128.3.0", &[("browser", "firefox")]),
-        testing::app("Brave Browser", "1.70.0", &[("browser", "brave")]),
+        testing::app("Brave Browser", "1.70.9", &[("browser", "brave")]),
         testing::app("Adobe Acrobat Reader", "24.001.20000", &[("id", "com.adobe.Reader")]),
     ];
     apps_found(&mut s, found, BTreeMap::new).unwrap();
@@ -149,20 +151,27 @@ fn exploited_cves_since_a_browser_or_app_was_superseded_fail_and_are_named() {
     assert_eq!(chrome.fixed, "130.0.6723.117");
     assert_eq!(
         chrome.note,
-        "Google Chrome 130.0.6723.117 is out; its releases carry security fixes; CISA lists actively exploited \
-         Chromium CVEs added since this version was superseded on 2024-01-01: CVE-2024-0519. Pantry knows this \
-         version is behind, not that each CVE affects this exact build"
+        format!(
+            "Google Chrome 130.0.6723.117 is out; its releases carry security fixes; CISA lists actively exploited \
+             Chromium CVEs added since this version was superseded on 2024-01-01: CVE-{year}-8, CVE-2024-0519. \
+             Pantry knows this version is behind, not that each CVE affects this exact build"
+        )
     );
     assert_eq!(chrome.fix_cmd, "Chrome menu → About Google Chrome, then Relaunch");
     // The KEV entry predates the gap: the warning stays as it was.
     let ff = &s.findings[1];
     assert_eq!((ff.status.as_str(), ff.kev), ("warn", false));
     assert_eq!(ff.note, "Firefox 128.5.0 is out; its releases carry security fixes");
-    // Chromium's 2024 entry is older than 180 days: Brave only warns.
+    // One patch behind its cask (1.71.0), with a recent V8 entry it may
+    // already have fixed: Brave warns and names it, without `kev`.
     let brave = &s.findings[2];
     assert_eq!((brave.vuln_id.as_str(), brave.status.as_str(), brave.kev), ("OUTDATED", "warn", false));
+    let tail = format!(
+        ": CVE-{year}-8. Pantry doesn't know when this version was superseded, so it may already have their fixes"
+    );
+    assert!(brave.note.ends_with(&tail), "{}", brave.note);
     let reader = &s.findings[3];
-    assert_eq!((reader.vuln_id.as_str(), reader.status.as_str(), reader.kev), ("OUTDATED", "fail", true));
+    assert_eq!((reader.vuln_id.as_str(), reader.status.as_str(), reader.kev), ("OUTDATED", "warn", false));
     assert!(reader.note.starts_with("latest release is 25.001.20000; CISA lists actively exploited Acrobat and Reader CVEs added in the last 180 days: CVE-"), "{}", reader.note);
     assert_eq!(reader.fix_cmd, "Update Adobe Acrobat Reader from its vendor (or its own updater)");
     assert_eq!(s.findings.len(), 4, "{:?}", testing::kinds(&s));

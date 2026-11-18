@@ -49,6 +49,18 @@ const ACROBAT: Pairs = &[
     ("Adobe", "Acrobat and Reader, Flash Player"),
 ];
 
+/// VMware's entries, filed under "VMware" until 2025 and under "Broadcom"
+/// since, with the product then prefixed "VMware" ("Broadcom" / "VMware
+/// ESX", "VMware vCenter").
+const FUSION: Pairs = &[
+    ("VMware", "ESXi, Workstation, and Fusion"),
+    ("VMware", "Workstation and Fusion"),
+    ("VMware", "Fusion"),
+    ("Broadcom", "VMware ESXi, Workstation, and Fusion"),
+    ("Broadcom", "VMware Workstation and Fusion"),
+    ("Broadcom", "VMware Fusion"),
+];
+
 /// (`vendorProject`, `product`) pairs.
 pub type Pairs = &'static [(&'static str, &'static str)];
 
@@ -65,7 +77,7 @@ pub const PRODUCTS: &[(&str, &str, Pairs)] = &[
     ("browser:firefox-dev", "Firefox", FIREFOX),
     ("app:com.adobe.Reader", "Acrobat and Reader", ACROBAT),
     ("app:com.adobe.Acrobat.Pro", "Acrobat and Reader", ACROBAT),
-    ("app:com.vmware.fusion", "VMware Fusion", &[("VMware", "ESXi, Workstation, and Fusion")]),
+    ("app:com.vmware.fusion", "VMware Fusion", FUSION),
     (
         "tool:java",
         "Java SE",

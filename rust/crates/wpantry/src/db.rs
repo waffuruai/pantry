@@ -73,6 +73,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("fixes", "host", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("kev", "product", "TEXT"),
+    ("eol", "released", "TEXT"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

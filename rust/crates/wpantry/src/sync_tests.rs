@@ -64,7 +64,9 @@ fn a_sync_refreshes_every_feed_and_names_what_failed() {
     let (_d, c) = cache();
     let net = Fake::new(feeds);
     endoflife::eol(&c, &net, "nodejs", "24", false).unwrap();
-    c.conn.execute("INSERT INTO eol VALUES ('python', '3.9', 'true', '3.9.9')", []).unwrap();
+    c.conn
+        .execute("INSERT INTO eol (product, cycle, eol, latest) VALUES ('python', '3.9', 'true', '3.9.9')", [])
+        .unwrap();
     c.put_query("npm", "left-pad", "1.0.0", &[]).unwrap();
     let seen = std::sync::Mutex::new(Vec::new());
     let got = run(&c, &net, true, &|s| seen.lock().unwrap().push(s.to_string())).unwrap();
@@ -110,7 +112,9 @@ fn a_bug_in_a_feed_is_internal_and_one_in_end_of_life_stops_the_sync() {
     let got = run(&c, &Fake::new(feeds), false, &|_| {}).unwrap();
     assert_eq!(got.packages, 1);
     assert!(got.failed.iter().any(|(n, why)| n == "OSV" && why.contains("MAL-GHSA-1")), "{:?}", got.failed);
-    c.conn.execute("INSERT INTO eol VALUES ('python', '3.9', 'true', '3.9.9')", []).unwrap();
+    c.conn
+        .execute("INSERT INTO eol (product, cycle, eol, latest) VALUES ('python', '3.9', 'true', '3.9.9')", [])
+        .unwrap();
     let bug = Fake::new(|r| {
         if r.url.starts_with("https://endoflife.date/") {
             return Err(Error::Missing("not a source failure".into()));

@@ -367,7 +367,7 @@ pub const CACHE: &[(&str, &[&str])] = &[
         ],
     ),
     ("kev", &["cve", "added", "name", "vendor", "product"]),
-    ("eol", &["product", "cycle", "eol", "latest"]),
+    ("eol", &["product", "cycle", "eol", "latest", "released"]),
     ("casks", &["app", "token", "version"]),
     ("runs", &["source", "fingerprint", "ran_at", "result"]),
     ("malicious", &["ecosystem", "name", "id"]),

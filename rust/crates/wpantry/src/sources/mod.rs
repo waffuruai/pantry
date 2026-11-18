@@ -5,6 +5,7 @@
 //! [`crate::checks`].
 
 pub mod breaches;
+pub mod cve_records;
 pub mod cve_scores;
 pub mod distros;
 pub mod endoflife;

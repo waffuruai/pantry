@@ -50,6 +50,8 @@ pub const HOSTS: &[&str] = &[
     "feodotracker.abuse.ch",
     "yaraify-api.abuse.ch",
     "hashlookup.circl.lu",
+    // CVE records by vendor and product, for installed programs OSV doesn't cover.
+    "vulnerability.circl.lu",
     "mb-api.abuse.ch",
 ];
 

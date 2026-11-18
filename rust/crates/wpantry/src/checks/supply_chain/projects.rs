@@ -29,6 +29,7 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
         ("PyPI", "uv.lock") => format!("cd {d} && uv lock --upgrade-package {name}=={safe}"),
         ("PyPI", "poetry.lock") => format!("cd {d} && poetry update {}", quote(name)),
         ("PyPI", "Pipfile.lock") => format!("cd {d} && pipenv update {}", quote(name)),
+        ("Go", _) if name == "stdlib" => go_version_fix(lock, &d, safe),
         ("Go", _) => format!("cd {d} && go get {name}@v{} && go mod tidy", safe.trim_start_matches('v')),
         ("RubyGems", _) => format!("cd {d} && bundle update --conservative {}", quote(name)),
         ("Packagist", _) => format!("cd {d} && composer update {} --with-dependencies", quote(name)),
@@ -38,6 +39,25 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
         ("NuGet", _) => format!("cd {d} && dotnet add package {} --version {}", quote(name), quote(safe)),
         _ => format!("Update {name} to {safe} in {}", command_path(lock)),
     }
+}
+
+/// How to raise the Go a go.mod builds with (its `stdlib`, also asked as
+/// `toolchain`), which `go get` manages like a dependency
+/// (https://go.dev/doc/toolchain#get): with a `toolchain` line, that line
+/// sets the version, and `go get toolchain@go1.x.y` raises only it, leaving
+/// the language version the module asks of its users alone; with only a
+/// `go` line, the toolchain is implied by it, and `go get go@1.x.y` raises
+/// both, the form the Go docs prefer for moving a module to a new Go.
+///
+/// For example, `cd /w/app && go get toolchain@go1.26.11` for a go.mod with
+/// `toolchain go1.26.10`, and `cd /w/app && go get go@1.27.4` for one with
+/// only `go 1.27.3`.
+fn go_version_fix(lock: &Path, d: &str, safe: &str) -> String {
+    let safe = safe.trim_start_matches('v').trim_start_matches("go");
+    let toolchain_line = std::fs::read_to_string(lock).is_ok_and(|text| {
+        text.lines().any(|l| l.split("//").next().unwrap_or("").split_whitespace().next() == Some("toolchain"))
+    });
+    if toolchain_line { format!("cd {d} && go get toolchain@go{safe}") } else { format!("cd {d} && go get go@{safe}") }
 }
 
 /// Whether a yarn.lock is Yarn 2+'s (berry), which `yarn up` updates.
@@ -87,26 +107,33 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     }
     let total: usize = read.iter().map(|(_, p)| p.len()).sum();
     scan.count("project dependencies", total as i64);
+    // Go's `stdlib` from a go.mod is also its `toolchain` (osv::also).
     let items: Vec<Item> = read
         .iter()
         .flat_map(|(_, ps)| ps.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())))
+        .flat_map(|it| {
+            let also = osv::also(&it);
+            std::iter::once(it).chain(also)
+        })
         .collect();
     let answers = scan.lookup(&items, "repo dependencies against OSV")?;
     for (f, pkgs) in &read {
         for p in pkgs {
             let item = (p.ecosystem.clone(), p.name.clone(), p.version.clone());
-            let Some(recs) = answers.get(&item) else { continue };
+            let also = osv::also(&item);
+            let recs = osv::records_for(&answers, std::iter::once(&item).chain(&also));
             if recs.is_empty() {
                 continue;
             }
             let mut c = Component::new("project", &p.name, &p.version, &command_path(f));
             c.fix = project_fix(f, &p.ecosystem, &p.name, "{safe}");
             c.osv = Some(item);
+            c.osv_also = also;
             if p.scope != lockfiles::Scope::Unknown {
                 c.scope = p.scope.as_str().to_string();
             }
             c.direct = p.direct;
-            scan.advisories(&c, &[], None, "fail", Some(osv::group_by_alias(recs)));
+            scan.advisories(&c, &[], None, "fail", Some(osv::group_by_alias(&recs)));
         }
     }
     if scan.opts.licenses {

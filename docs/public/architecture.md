@@ -50,7 +50,7 @@ flowchart TB
 - **Freshness.** An answer given after its ecosystem's chain started stays current while the list keeps being read. More than 5,000 changes since the last read, or `--refresh`, starts a new chain and asks again. A list read in the last 15 minutes isn't reread. Without a list (git repos, your own advisory APIs) an answer is reused for a day. Failures are never cached.
 - **Feeds** use the same memo: a key, a time to live, and an input fingerprint, so a cached result is reused offline or after a failure only for the same input (a changed repo HEAD, Homebrew listing or image gets a fresh answer).
 
-**Judge.** Records are grouped by id, aliases and upstream CVE, so one vulnerability from two databases is one finding, named by its bare CVE when a record carries one. The fix a finding recommends is the version that repairs every record in the group, ordered by the ecosystem's own comparator. OSV decides whether a version is affected; Pantry only orders fixed versions to pick the safe one and to compare against "latest".
+**Judge.** Records are grouped by id, aliases and upstream CVE, so one vulnerability from two databases is one finding, named by its bare CVE when a record carries one. A Go release is asked as two OSV packages, `stdlib` and `toolchain` (Go files cmd/go, cmd/link and cmd/cgo advisories under `toolchain`), for an installed Go and a `go.mod`'s Go alike; the answers are one component's, so a record filed under both is one finding. A Go binary in a container image is asked as `stdlib` only: it carries the standard library, not the toolchain that built it. The fix a finding recommends is the version that repairs every record in the group, ordered by the ecosystem's own comparator. OSV decides whether a version is affected; Pantry only orders fixed versions to pick the safe one and to compare against "latest".
 
 **Report.**
 
@@ -132,7 +132,7 @@ The rule every module follows: when Pantry cannot tell, it says so; a gap never 
 | `bun.lock` | `npm` | JSONC | The binary `bun.lockb` isn't read |
 | `deno.lock` | `npm` | v3–v5 | `npm:` entries; `jsr:` has no OSV ecosystem yet; another version is unchecked |
 | `Package.resolved` | `SwiftURL` | v1–v3 | The repository URL without scheme or `.git`, as osv-scalibr names it |
-| `go.mod` | `Go` | | `require` and `replace`; `toolchain goX`, else `go X`, is the `stdlib` package |
+| `go.mod` | `Go` | | `require` and `replace`; `toolchain goX`, else `go X`, is the `stdlib` package, also asked as `toolchain` |
 | `uv.lock`, `poetry.lock`, `Pipfile.lock` | `PyPI` | | Editable, virtual, git, directory, file and url sources skipped; names PEP 503-normalized |
 | `requirements*.txt` | `PyPI` | | `==` pins only; `-r` includes followed inside the repo, each once |
 | `Gemfile.lock` | `RubyGems` | | `GEM` `specs:`; a platform suffix is dropped |

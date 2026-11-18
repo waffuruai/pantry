@@ -463,3 +463,22 @@ fn batch_microseconds_match_full_record_nanoseconds() {
     assert!(!same_revision(Some("invalid"), "2026-10-17T13:00:02Z"));
     assert!(!same_revision(Some("2026-10-17T13:00:02.1234567890Z"), "2026-10-17T13:00:02.123456Z"));
 }
+
+#[test]
+fn go_stdlib_is_also_its_toolchain_and_nothing_else_is() {
+    let item = |e: &str, p: &str, v: &str| (e.to_string(), p.to_string(), v.to_string());
+    assert_eq!(also(&item("Go", "stdlib", "1.26.10")), [item("Go", "toolchain", "1.26.10")]);
+    assert!(also(&item("Go", "golang.org/x/net", "0.17.0")).is_empty());
+    assert!(also(&item("npm", "stdlib", "1.0.0")).is_empty());
+    // A record filed under both is returned once.
+    let rec = |id: &str| serde_json::json!({"id": id});
+    let answers: HashMap<Item, Vec<Value>> = [
+        (item("Go", "stdlib", "1.26.10"), vec![rec("GO-2")]),
+        (item("Go", "toolchain", "1.26.10"), vec![rec("GO-1"), rec("GO-2")]),
+    ]
+    .into_iter()
+    .collect();
+    let asked = [item("Go", "stdlib", "1.26.10"), item("Go", "toolchain", "1.26.10")];
+    let ids: Vec<String> = records_for(&answers, &asked).iter().map(|r| str_at(r, "id").to_string()).collect();
+    assert_eq!(ids, ["GO-2", "GO-1"]);
+}

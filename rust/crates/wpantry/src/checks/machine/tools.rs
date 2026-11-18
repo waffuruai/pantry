@@ -93,6 +93,7 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
             c.auto = auto;
             if let Some((eco, pkg, fmt)) = t.osv {
                 c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
+                c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
             }
             if let Some((product, cycle)) = t.eol {
                 c.eol = Some((product.to_string(), cycle.of(&v)));

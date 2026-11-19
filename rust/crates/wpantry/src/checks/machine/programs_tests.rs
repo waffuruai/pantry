@@ -65,7 +65,7 @@ fn a_reg_query_listing_is_read() {
 #[test]
 fn every_uninstall_key_is_read_once_each_program() {
     let run = machine(ANSWERS);
-    let found = programs(&run);
+    let found = programs(&run).expect("the machine's Uninstall key read");
     let names: Vec<(&str, &str, &str)> =
         found.iter().map(|p| (p.name.as_str(), p.version.as_str(), p.publisher.as_str())).collect();
     assert_eq!(
@@ -85,8 +85,17 @@ fn reg_is_run_by_its_full_path_read_only() {
         asked.lock().unwrap().push(argv.join(" "));
         String::new()
     };
-    assert!(programs(&run).is_empty());
+    // Nothing back from the machine's own key: a failed read, not a clean machine.
+    assert!(programs(&run).is_none());
     let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1, "it stops at the first key");
+    let seen = std::sync::Mutex::new(Vec::new());
+    let run = |argv: &[&str]| {
+        seen.lock().unwrap().push(argv.join(" "));
+        format!("{}\n", KEYS[0].replace("HKLM", "HKEY_LOCAL_MACHINE"))
+    };
+    assert_eq!(programs(&run), Some(Vec::new()), "a key with no programs under it is read, and empty");
+    let asked = seen.into_inner().unwrap();
     assert_eq!(asked.len(), KEYS.len());
     for (a, key) in asked.iter().zip(KEYS) {
         assert!(a.ends_with(&format!(r"\System32\reg.exe query {key} /s")), "{a}");

@@ -100,8 +100,10 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
 /// the repo checks still run.
 pub(crate) fn windows(scan: &mut Scan, run: settings::Runner) -> Result<()> {
     scan.status("Reading installed programs from the registry");
-    let found = programs::programs(run);
-    programs::check(scan, &found)?;
+    match programs::programs(run) {
+        Some(found) => programs::check(scan, &found)?,
+        None => scan.unchecked("installed programs on Windows", "the registry's Uninstall keys couldn't be read"),
+    }
     scan.unchecked(
         "machine inventory on Windows",
         "winget, Scoop and Chocolatey packages, Windows Update and the certificate store aren't read yet",

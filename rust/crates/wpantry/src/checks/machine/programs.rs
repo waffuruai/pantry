@@ -46,19 +46,26 @@ fn reg_exe() -> String {
     format!(r"{root}\System32\reg.exe")
 }
 
-/// Every installed program the Uninstall keys list, once each, sorted.
-pub fn programs(run: Runner) -> Vec<Program> {
+/// Every installed program the Uninstall keys list, once each, sorted; None
+/// when the machine's own Uninstall key (the first, always there on Windows)
+/// gave nothing back: `reg` failed or timed out, which isn't a machine with
+/// nothing installed.
+pub fn programs(run: Runner) -> Option<Vec<Program>> {
     let reg = reg_exe();
     let mut found: Vec<Program> = Vec::new();
-    for key in KEYS {
-        for p in parse(&run(&[reg.as_str(), "query", key, "/s"])) {
+    for (i, key) in KEYS.iter().enumerate() {
+        let out = run(&[reg.as_str(), "query", key, "/s"]);
+        if i == 0 && !out.lines().any(|l| l.starts_with("HKEY_")) {
+            return None;
+        }
+        for p in parse(&out) {
             if !found.iter().any(|f| f.name == p.name && f.version == p.version && f.publisher == p.publisher) {
                 found.push(p);
             }
         }
     }
     found.sort();
-    found
+    Some(found)
 }
 
 /// The programs in `reg query /s` output; lines that are neither a key nor

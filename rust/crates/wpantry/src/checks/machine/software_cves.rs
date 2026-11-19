@@ -1,7 +1,8 @@
 //! Installed software against the CVE records its publishers filed
 //! ([`crate::sources::cve_records`]): desktop, server and industrial
 //! software no package ecosystem covers, so OSV has no advisory for it.
-//! What is judged is a [`Subject`]: a Windows program (its Publisher and
+//! What is judged is a [`Subject`]: a Windows program named in
+//! [`crate::checks::machine::programs::PROGRAMS`] (by its Publisher and
 //! DisplayName), or a catalog tool OSV can't map, named in [`TOOLS`] (PHP
 //! and Rust only when OSV answered no CVE for them, [`OSV_FIRST`]).
 //!
@@ -12,8 +13,10 @@
 //! whose records are filed under another name is in [`VENDOR_ALIASES`].
 //! The installed version is then judged by the record's own `versions[]`
 //! ([`judge`]), numerically; a record whose versions aren't dotted numbers
-//! (`25H2`, `5.x.x`, a URL) can't be judged, and the subject is reported
-//! not checked rather than clean.
+//! (`25H2`, `5.x.x`, a URL), or whose numbers follow another scheme than
+//! the installed version ([`same_scheme`]: a build number against release
+//! numbers), can't be judged, and the subject is reported not checked
+//! rather than clean or failed.
 //!
 //! How `versions[]` is read (CVE JSON 5): `version` with `lessThan` or
 //! `lessThanOrEqual` is a range (`0` or `*` as its start means from the
@@ -488,6 +491,43 @@ pub fn unlisted_later_train(installed: &[String], entry: &Value) -> bool {
     trains > 0
 }
 
+/// Whether a version's first number is written the way a record's is: both
+/// a year (four digits, 1990 to 2100) or neither, and no more than one
+/// digit apart in length (`9` and `10` are one scheme, `262` and `9` aren't).
+fn same_major(a: &str, b: &str) -> bool {
+    let len = |x: &str| x.trim_start_matches('0').len().max(1);
+    let year = |x: &str| x.len() == 4 && x.parse::<u32>().is_ok_and(|y| (1990..=2100).contains(&y));
+    year(a) == year(b) && len(a).abs_diff(len(b)) <= 1
+}
+
+/// Whether `installed` uses the same version scheme as `entry`'s
+/// versions: its first number fits ([`same_major`]) the first number of
+/// at least one dotted start or bound the entry names (`0` and `*` name
+/// none). An entry naming none is taken as fitting; [`judge`] decides it.
+///
+/// Example: JetBrains' Windows installers write IntelliJ IDEA's build
+/// (`262.8665.42`) as its DisplayVersion, while its records name releases
+/// (`lessThan 2026.3`). Compared as numbers, 262 is below 2026 and a current
+/// IntelliJ would fail; by scheme, it is not comparable.
+pub fn same_scheme(installed: &[String], entry: &Value) -> bool {
+    let Some(mine) = installed.first() else { return true };
+    let mut firsts: Vec<String> = Vec::new();
+    for v in
+        crate::utils::json::arr_at(entry, "versions").iter().flat_map(|v| spelled(v).unwrap_or_else(|| vec![v.clone()]))
+    {
+        let raw = s(&v, "version");
+        let raw = [" and prior", " and earlier"].iter().find_map(|w| raw.strip_suffix(w)).map_or(raw, str::trim);
+        let mut ends: Vec<&str> = match inclusive_span(raw) {
+            Some(_) => raw.split('-').collect(),
+            None if matches!(raw, "" | "0" | "*") => Vec::new(),
+            None => vec![raw],
+        };
+        ends.extend([s(&v, "lessThan"), s(&v, "lessThanOrEqual")].into_iter().filter(|b| !matches!(*b, "" | "*")));
+        firsts.extend(ends.iter().filter_map(|e| dotted(e, true)).filter_map(|p| p.first().cloned()));
+    }
+    firsts.is_empty() || firsts.iter().any(|f| same_major(mine, f))
+}
+
 /// Whether day `a` (`YYYY-MM-DD`) is strictly before day `b`; false when
 /// either can't be read.
 fn before(a: &str, b: &str) -> bool {
@@ -612,9 +652,16 @@ pub fn assess(x: &Subject, vendor: &str, records: &[Record], kev: &dyn Fn(&str) 
         };
         let verdicts: Vec<Verdict> = entries
             .iter()
-            .map(|e| match if trains { judge_trains(&installed, e) } else { judge(&installed, e) } {
-                Verdict::Unknown if !trains && later(e) => Verdict::Unaffected,
-                v => v,
+            .map(|e| {
+                // Numbered another way than the record (a build number
+                // against release numbers): the ranges can't place it.
+                if !trains && !same_scheme(&installed, e) {
+                    return Verdict::Unknown;
+                }
+                match if trains { judge_trains(&installed, e) } else { judge(&installed, e) } {
+                    Verdict::Unknown if !trains && later(e) => Verdict::Unaffected,
+                    v => v,
+                }
             })
             .collect();
         let Some(Verdict::Affected { range, fixed }) = verdicts.iter().find(|v| matches!(v, Verdict::Affected { .. }))

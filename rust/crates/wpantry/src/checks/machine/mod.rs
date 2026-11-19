@@ -4,8 +4,9 @@
 //!
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
 //! `dotnet`, `apps`, `editors`, `harnesses`, `images`, `os_packages`,
-//! `cellar`), what is judged of it (`components`, `app_updates`, `os_updates`,
-//! `brew_vulns`, `ca_trust`, `clipper`, `downloads`, `software_cves`), and the security
+//! `cellar`, `programs` on Windows), what is judged of it (`components`,
+//! `app_updates`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
+//! `downloads`, `software_cves`), and the security
 //! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
 //! included). This file is the index: [`run`], the probes in order.
 
@@ -38,6 +39,7 @@ pub mod macos;
 pub mod os_packages;
 pub mod os_updates;
 pub mod packages;
+pub mod programs;
 pub mod settings;
 pub mod software_cves;
 #[cfg(test)]
@@ -55,15 +57,8 @@ pub(crate) fn manual(formula: &str) -> Option<&'static str> {
 /// The machine checks; returns what the inventory found, for the
 /// supply-chain sweep.
 pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
-    // Windows has no machine inventory yet (#11): winget, Scoop and
-    // Chocolatey packages, the registry's installed apps, Windows Update and
-    // the certificate store aren't read. Say so, rather than report a clean
-    // machine; the repo checks still run.
     if cfg!(windows) {
-        scan.unchecked(
-            "machine inventory on Windows",
-            "winget, Scoop and Chocolatey packages, installed apps, Windows Update and the certificate store aren't read yet",
-        );
+        windows(scan, &|argv: &[&str]| process::run(argv, std::time::Duration::from_secs(60)))?;
         return Ok(Vec::new());
     }
     // The probes that need nothing from the scan run beside it: the trust
@@ -96,6 +91,24 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         clipper::clipper(scan);
         Ok(found)
     })
+}
+
+/// Windows' machine checks: the installed programs (the registry's
+/// Uninstall keys) against CVE records. The rest of the inventory isn't
+/// read yet (#11): winget, Scoop and Chocolatey packages, Windows Update
+/// and the certificate store. Say so, rather than report a clean machine;
+/// the repo checks still run.
+pub(crate) fn windows(scan: &mut Scan, run: settings::Runner) -> Result<()> {
+    scan.status("Reading installed programs from the registry");
+    match programs::programs(run) {
+        Some(found) => programs::check(scan, &found)?,
+        None => scan.unchecked("installed programs on Windows", "the registry's Uninstall keys couldn't be read"),
+    }
+    scan.unchecked(
+        "machine inventory on Windows",
+        "winget, Scoop and Chocolatey packages, Windows Update and the certificate store aren't read yet",
+    );
+    Ok(())
 }
 
 /// A probe's result; its panic, if it had one, carries on here.

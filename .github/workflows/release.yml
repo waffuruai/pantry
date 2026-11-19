@@ -214,8 +214,8 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # crates.io trusted publishing can only be set up for a crate that
-      # exists, so the first release publishes the crates by hand
-      # (docs/internal/release.md) and this stays off until the repository
+      # exists, so a crate's first release is published by hand
+      # (docs/internal/crates-io.md). This stays off unless the repository
       # variable CRATES_IO_TRUSTED_PUBLISHING is "true".
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         if: vars.CRATES_IO_TRUSTED_PUBLISHING == 'true'
@@ -232,9 +232,26 @@ jobs:
           # building here would run dependency build scripts with this job's
           # OIDC token in reach.
           # Dependencies first: cargo waits for each to appear on crates.io.
-          cargo publish --locked --no-verify -p wpantry-yara
-          cargo publish --locked --no-verify -p wpantry
-          cargo publish --locked --no-verify -p wpantry-cli
+          # A crate crates.io doesn't have yet can't trust this workflow, so
+          # it's skipped with a warning and published by hand
+          # (docs/internal/crates-io.md). A version already there is skipped
+          # too, so a rerun goes on from where it stopped.
+          version="${GITHUB_REF_NAME#v}"
+          for crate in wpantry-yara wpantry wpantry-cli; do
+            api="https://crates.io/api/v1/crates/$crate"
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -A 'waffuruai/pantry release workflow' "$api")"
+            case "$code" in
+              200) ;;
+              404) echo "::warning::$crate isn't on crates.io yet: publish its $GITHUB_REF_NAME by hand (docs/internal/crates-io.md)"; continue ;;
+              *) echo "::error::crates.io answered $code for $crate"; exit 1 ;;
+            esac
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -A 'waffuruai/pantry release workflow' "$api/$version")"
+            case "$code" in
+              200) echo "$crate $version is already on crates.io" ;;
+              404) cargo publish --locked --no-verify -p "$crate" ;;
+              *) echo "::error::crates.io answered $code for $crate $version"; exit 1 ;;
+            esac
+          done
 
   # A signed packslip (https://packslip.dev) for the release: the binaries'
   # digests, platforms and executable name, signed keylessly with this

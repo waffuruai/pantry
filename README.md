@@ -63,7 +63,7 @@ Only package names and versions go to OSV.dev, and the vendor and product names 
 ```bash
 mise bootstrap    # the pinned tools, then build wpantry
 mise run test     # every test, offline
-mise tasks ls     # the rest: build, lint, contract, coverage, scan
+mise tasks ls     # the rest: build, lint, contract, coverage, notices, scan
 ```
 
 The code is in [`rust/`](rust/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
@@ -96,4 +96,4 @@ Rust crates, pinned in [rust/Cargo.toml](rust/Cargo.toml) under their own permis
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). The licences and notices of everything third-party built into the binary travel with it: `wpantry licenses` prints them, and each release ships them as `THIRD-PARTY-NOTICES.txt`.

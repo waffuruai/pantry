@@ -1,0 +1,59 @@
+# cargo-about (docs/internal/dependencies.md): the crates compiled into the wpantry binary and their
+# licence texts, rendered with about.hbs into crates/wpantry-cli/THIRD-PARTY-NOTICES.txt by
+# `mise run notices`, which then appends the notices of what isn't a crate. CI fails when the
+# committed file differs from a fresh run.
+
+# The licences deny.toml allows, in the order a choice prefers them: `MIT OR Apache-2.0` takes MIT,
+# whose text carries the copyright line and is a tenth of Apache-2.0's.
+accepted = [
+  "MIT",
+  "ISC",
+  "Zlib",
+  "BSD-3-Clause",
+  "Apache-2.0",
+  "CDLA-Permissive-2.0",
+  "Unlicense",
+]
+
+# Every target a release ships (.github/workflows/release.yml; universal-apple-darwin is the two
+# Apple ones), so Windows-only crates are listed too. cargo-about weighs them together, so a crate
+# one target's dependency needs only on another (schannel) is listed as well: a notice too many,
+# never one too few.
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+
+# Only what is compiled into the binary: build scripts and tests run on the build machine.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Crate-specific entries come last. Each pins the files it names by SHA-256; a release that changes
+# one fails `mise run notices` until the entry is checked again.
+
+# ring declares `Apache-2.0 AND ISC`, and its license headers make every source file look like a
+# licence of its own. Its LICENSE points at the two texts that apply.
+[ring.clarify]
+license = "Apache-2.0 AND ISC"
+
+[[ring.clarify.files]]
+path = "LICENSE-BoringSSL"
+license = "Apache-2.0"
+checksum = "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d"
+
+[[ring.clarify.files]]
+path = "LICENSE-other-bits"
+license = "ISC"
+checksum = "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f"
+
+# Ours: its LICENSE, not the secret rules' NOTICE (appended after the crates, with the rest of what
+# isn't a crate).
+[wpantry.clarify]
+license = "MIT"
+
+[[wpantry.clarify.files]]
+path = "LICENSE"
+checksum = "7f78975bfef0cc633d6643a309752f88eb9077b2365c623253155997d81b8e30"

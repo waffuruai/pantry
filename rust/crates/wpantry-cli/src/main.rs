@@ -33,6 +33,10 @@ const EXIT_UPDATE_AVAILABLE: i32 = 10;
 /// `watch`: a fix has landed for something that had none.
 const EXIT_AVAILABLE: i32 = 10;
 
+/// What `licenses` prints: the crates compiled in and their licence texts,
+/// then the notices of the data and fonts. `mise run notices` writes it.
+const NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES.txt");
+
 /// A line of text on stdout, never coloured (search results, the skill),
 /// with terminal escapes from scanned content dropped.
 fn say(line: &str) {
@@ -1009,11 +1013,14 @@ fn cmd_rules_gen(
     Ok(EXIT_OK)
 }
 
-fn cmd_skill() -> Result<i32> {
+/// `skill` and `licenses`: a bundled text on stdout, as is. A reader that
+/// stops early (`wpantry licenses | head`) ends it quietly, as with `cat`.
+fn cmd_print(text: &str) -> Result<i32> {
     let mut out = std::io::stdout().lock();
-    out.write_all(wpantry::SKILL.as_bytes())?;
-    out.flush()?;
-    Ok(EXIT_OK)
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e.into()),
+        _ => Ok(EXIT_OK),
+    }
 }
 
 fn dispatch(cmd: Command) -> Result<i32> {
@@ -1027,7 +1034,8 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Watch { json, offline } => cmd_watch(json, offline),
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
-        Command::Skill => cmd_skill(),
+        Command::Skill => cmd_print(wpantry::SKILL),
+        Command::Licenses => cmd_print(NOTICES),
         Command::Sources { json, file } => cmd_sources(json, file),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),

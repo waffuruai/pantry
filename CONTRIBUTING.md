@@ -12,7 +12,7 @@ Start with the [README](README.md) for what Pantry is, [docs/public/architecture
 
 ## Open an issue first
 
-Even for small changes. The issue is where we agree on scope, surface related work and pick an approach; five minutes there saves a rewrite on the PR. Search [existing issues](https://github.com/waffuruai/pantry/issues?q=is%3Aissue) and the [roadmap](https://github.com/orgs/waffuruai/projects/1) first; it may already be planned or fixed on `dev`.
+Even for small changes. The issue is where we agree on scope, surface related work and pick an approach; five minutes there saves a rewrite on the PR. Search [existing issues](https://github.com/waffuruai/pantry/issues?q=is%3Aissue) and [specs/](specs/README.md) first; it may already be planned or fixed on `dev`.
 
 Use the [issue template](.github/ISSUE_TEMPLATE/issue.yml): tick the type (bug, feature, coverage, performance, discussion), give a minimal reproducer or the proposal, name the spec section and criteria it serves, and tick the AI-assistance boxes. Blank issues are turned off so every issue carries that metadata. A vulnerability in Pantry itself does not go in an issue: follow [SECURITY.md](SECURITY.md).
 
@@ -36,10 +36,10 @@ mise bootstrap
 mise run test
 ```
 
-- `mise bootstrap` installs the pinned tools from [`mise.toml`](mise.toml) (Python for `scripts/`, gitleaks, shellcheck, actionlint, cargo-llvm-cov), builds `wpantry` on the toolchain `rust/rust-toolchain.toml` pins, and runs `wpantry tools` to confirm them.
-- `mise run test` runs every test offline; `mise tasks ls` lists the rest (`build`, `contract`, `coverage`, `lint`, `vet`).
+- `mise bootstrap` installs the pinned tools from [`mise.toml`](mise.toml) (Python for `scripts/`, gitleaks, shellcheck, actionlint, cargo-llvm-cov, cargo-about), builds `wpantry` on the toolchain `rust/rust-toolchain.toml` pins, and runs `wpantry tools` to confirm them.
+- `mise run test` runs every test offline; `mise tasks ls` lists the rest (`build`, `contract`, `coverage`, `lint`, `notices`, `vet`).
 - CI runs the same tasks from the same file, so a pin bumped there is bumped everywhere.
-- Before a pull request: `mise run test` and `mise run lint`; `mise run contract` when the change touches the CLI; `mise run vet` when it bumps a dependency or an action ([dependencies](docs/internal/dependencies.md)). In `rust/`: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.
+- Before a pull request: `mise run test` and `mise run lint`; `mise run contract` when the change touches the CLI; `mise run vet` and `mise run notices` when it bumps a dependency, `mise run vet` when it bumps an action ([dependencies](docs/internal/dependencies.md)). In `rust/`: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.
 
 **Coverage.** `mise run coverage` measures line coverage of every Rust test in one instrumented build ([cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)) and fails under 90%; `--html` also writes the per-line report to `rust/target/llvm-cov/html`. Nothing is excluded: code that shells out to the real machine is covered through recorded output where possible and counts as uncovered where not. A change that adds code adds its tests in the same PR; the fix for a drop is tests, not an exclusion.
 

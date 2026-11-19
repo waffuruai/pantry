@@ -105,28 +105,28 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
     (auto, manual, optional)
 }
 
-/// One step for every hit in a file: `component` is `repo/file`, and each
-/// finding's own fix names its fingerprint.
+/// One step for every hit in a file, in every version of it: `component`
+/// is `repo/file`, and each finding's own fix names the file, its rule and
+/// the repo's .pantryignore.
 fn secrets_fix(fs: &[&Finding]) -> String {
     let file = fs[0].component.as_str();
     let generic = fs.iter().all(|f| f.status != "fail");
-    let ignore = fs[0]
+    // `… If not: add <path> under [secret <rule>] in <repo>/.pantryignore`
+    let (path, ignore) = fs[0]
         .fix_cmd
-        .rsplit_once(" to ")
-        .map(|(_, path)| path.to_string())
-        .unwrap_or_else(|| "its repo's .gitleaksignore".to_string());
-    let fps: Vec<&str> = fs
-        .iter()
-        .filter_map(|f| f.fix_cmd.strip_prefix("If it's real: rotate it, then purge it from history. If not: add "))
-        .filter_map(|rest| rest.split_once(" to ").map(|(fp, _)| fp))
-        .collect();
-    let listed = if fps.len() <= 3 {
-        fps.join(", ")
-    } else {
-        format!("the {} fingerprints (each hit's `fix_cmd` in `wpantry scan --json` names one)", fps.len())
+        .strip_prefix("If it's real: rotate it, then purge it from history. If not: add ")
+        .and_then(|rest| rest.split_once(" under ["))
+        .and_then(|(path, rest)| rest.split_once("] in ").map(|(_, ignore)| (path, ignore)))
+        .unwrap_or((file, "its repo's .pantryignore"));
+    let mut rules: Vec<&str> = fs.iter().map(|f| f.vuln_id.as_str()).collect();
+    rules.sort_unstable();
+    rules.dedup();
+    let section = match rules[..] {
+        [rule] => format!("[secret {rule}]"),
+        _ => "[secret]".to_string(),
     };
     format!(
-        "{} hits in {file}{}: if any is real, rotate it, then purge it from history; if none are, add {listed} to {ignore}",
+        "{} hits in {file}{}: if any is real, rotate it, then purge it from history; if none are, add {path} under {section} in {ignore}",
         fs.len(),
         if generic { " (generic rules: review)" } else { "" }
     )

@@ -13,8 +13,8 @@ body:
 
         **Before filing:**
         - Search [existing issues](https://github.com/waffuruai/pantry/issues?q=is%3Aissue) to avoid duplicates.
-        - For features: check the [Roadmap](https://github.com/orgs/waffuruai/projects/1) and [specs/](https://github.com/waffuruai/pantry/tree/dev/specs) — it may already be planned.
-        - For bugs: try `main` HEAD; many issues are already fixed.
+        - For features: check [specs/](https://github.com/waffuruai/pantry/tree/dev/specs) and the open issues; it may already be planned.
+        - For bugs: try the latest release or `dev`; many issues are already fixed.
         - **A vulnerability in wpantry itself does not go here.** Follow [SECURITY.md](https://github.com/waffuruai/pantry/blob/main/SECURITY.md).
 
   - type: checkboxes
@@ -128,5 +128,5 @@ body:
       options:
         - label: I searched for duplicate issues.
           required: true
-        - label: I read [`CONTRIBUTING.md`](https://github.com/waffuruai/pantry/blob/main/CONTRIBUTING.md).
+        - label: I read CONTRIBUTING.md.
           required: true

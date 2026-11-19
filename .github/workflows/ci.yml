@@ -125,11 +125,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The same pins laptops use: shellcheck and actionlint from mise.toml,
-      # fetched through mise's checksummed registry, and Python for the
-      # actions audit check and the scripts/ tests.
+      # fetched through mise's checksummed registry, Python for the actions
+      # audit check and the scripts/ tests, and cargo-about for the notices.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          install_args: shellcheck actionlint python
+          install_args: shellcheck actionlint python github:EmbarkStudios/cargo-about
           cache: true
 
       - name: Cut PATH to mise and the base system
@@ -154,6 +154,18 @@ jobs:
 
       - name: scripts tests
         run: PATH="$TASK_PATH" mise run test scripts
+
+      - name: Install the pinned toolchain
+        working-directory: rust
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # The third-party notices the binary embeds and each release ships
+      # (rust/crates/wpantry-cli/THIRD-PARTY-NOTICES.txt), regenerated with
+      # cargo-about and compared with the committed file: a dependency bump
+      # that changes them fails here until `mise run notices` is committed.
+      # Rust comes from rustup (~/.cargo/bin), not mise.
+      - name: third-party notices
+        run: PATH="$HOME/.cargo/bin:$TASK_PATH" mise run notices --check
 
   # The Rust port (rust/): rustfmt, clippy, unit and golden-file tests, the
   # release build, then the contract suite against the binary it built. The

@@ -54,6 +54,18 @@ redistribute = false
 sends = "repository"
 
 [[source]]
+id = "cve-records"
+kind = "advisories"
+format = "vulnerability-lookup"
+url = "https://vulnerability.circl.lu/api/{}"
+tier = "default"
+refresh = "1d"
+license = "CVE Program terms of use (records); index by CIRCL"
+redistribute = false
+max_bytes = 16777216
+sends = "product"
+
+[[source]]
 id = "cisa-kev"
 kind = "kev"
 format = "kev"

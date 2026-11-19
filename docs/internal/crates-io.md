@@ -6,7 +6,7 @@ The crates are `wpantry-yara` (the YARA engine), `wpantry` (the library) and `wp
 
 ## The first publish (by hand, once)
 
-Done so far: `wpantry-yara` and `wpantry` 0.4.0 were published on 2026-11-15 from the `v0.4.0` tag, the release they were built in. `wpantry-cli` 0.4.0 could not be: at that tag it pinned `wcli` at the workspace version, which crates.io never had. It is published with 0.5.0, the first release whose `wcli` pin is the crates.io crate (0.4.1 was bumped and never tagged); steps 11 and 12 follow it.
+Done so far: `wpantry-yara` and `wpantry` 0.4.0 were published on 2026-11-15 from the `v0.4.0` tag, the release they were built in. `wpantry-cli` 0.4.0 could not be: at that tag it pinned `wcli` at the workspace version, which crates.io never had. It is published with 0.5.0, the first release whose `wcli` pin is the crates.io crate (0.4.1 was bumped and never tagged); steps 11 and 12 follow it. Trusted publishing was set up for `wpantry-yara` and `wpantry` (and `wcli`) on 2026-11-17, so at 0.5.0 the release workflow publishes those two and warns that `wpantry-cli` isn't on crates.io yet. Only `wpantry-cli` is published by hand, after the workflow, with a token scoped to `publish-new` and the crate `wpantry-cli`.
 
 1. **Account.** Sign in to [crates.io](https://crates.io) with GitHub, and verify your email under Account Settings: crates.io refuses to publish without a verified email.
 2. **Names.** Check each name is free: `https://crates.io/crates/<name>` returns "not found". The first publish claims a name for good.
@@ -27,7 +27,7 @@ Done so far: `wpantry-yara` and `wpantry` 0.4.0 were published on 2026-11-15 fro
 9. **Check.** Both crates show the version on crates.io, docs.rs builds the library's docs within a few minutes, and `cargo install --locked wpantry-cli@X.Y.Z` works in a clean `rust` container.
 10. **Revoke.** Delete the token on crates.io, then `cargo logout`.
 11. **Co-owners.** `cargo owner --add github:waffuruai:owners wpantry wpantry-cli`, so the crates don't depend on one person's account. The waffuruai org has to allow the crates.io GitHub app first (org settings → Third-party access).
-12. **Trusted publishing.** For each crate: crates.io → the crate → Settings → Trusted Publishing → add repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`.
+12. **Trusted publishing.** For each crate: crates.io → the crate → Settings → Trusted Publishing → add repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. The repository variable `CRATES_IO_TRUSTED_PUBLISHING` must be `true` (it is). Once every crate has it, turn on each crate's setting that allows publishing only through trusted publishing, so no API token can publish it.
 
 ## Every release after that
 

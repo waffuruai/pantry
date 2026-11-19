@@ -8,6 +8,7 @@ rust/
 ├── Cargo.toml            workspace, pinned dependencies, release profile
 ├── Cargo.lock            committed; every build is --locked
 ├── deny.toml             cargo deny: advisories, sources, licenses
+├── about.toml, about.hbs cargo-about: the third-party notices (mise run notices)
 ├── supply-chain/         cargo vet: audits, imports, exemptions
 ├── release/              build.sh, install.sh and its test
 └── crates/

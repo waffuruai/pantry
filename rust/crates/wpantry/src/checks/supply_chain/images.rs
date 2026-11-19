@@ -65,6 +65,8 @@ pub fn images_with(scan: &mut Scan, repos: &[Repo], engine: Option<PathBuf>) -> 
         }
         let pkgs: Vec<_> = pkgs.into_iter().filter(|p| !crate::checks::machine::images::host_kernel(p)).collect();
         scan.count("image packages", pkgs.len() as i64);
+        // A Go binary in an image carries the standard library, not the
+        // toolchain that built it: its `stdlib` isn't asked as `toolchain`.
         let items: Vec<Item> = pkgs.iter().map(|p| (p.ecosystem.clone(), p.name.clone(), p.version.clone())).collect();
         let answers = scan.lookup(&items, &format!("image {r} against OSV"))?;
         for (p, item) in pkgs.iter().zip(items) {

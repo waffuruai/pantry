@@ -516,7 +516,9 @@ impl<'a> Scan<'a> {
     /// failed. `groups` bundles records that are aliases of one
     /// vulnerability; otherwise each record is its own, deduplicated by CVE
     /// id. `newer` (upstream repos) maps later release tags to the
-    /// advisories OSV still reports for them.
+    /// advisories OSV still reports for them. A record's fix and range come
+    /// from whichever of the component's OSV packages it names
+    /// (`osv`, then `osv_also`).
     pub fn advisories(
         &mut self,
         c: &Component,
@@ -526,6 +528,8 @@ impl<'a> Scan<'a> {
         groups: Option<Vec<Vec<Value>>>,
     ) -> bool {
         let (eco, pkg, qver) = c.osv.clone().unwrap_or_default();
+        let mut asked = vec![(eco.clone(), pkg.clone(), qver.clone())];
+        asked.extend(c.osv_also.iter().cloned());
         let order = ecosystems::order(&eco);
         let groups = groups.unwrap_or_else(|| recs.iter().map(|r| vec![r.clone()]).collect());
         let mut failing = false;
@@ -560,7 +564,8 @@ impl<'a> Scan<'a> {
             let safe = group
                 .iter()
                 .filter_map(|r| {
-                    let fixes = osv::fixed_versions(r, &eco, &pkg, newer);
+                    let fixes: Vec<String> =
+                        asked.iter().flat_map(|(e, p, _)| osv::fixed_versions(r, e, p, newer)).collect();
                     versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b))
                 })
                 .max_by(|a, b| order.cmp(a, b));
@@ -598,7 +603,8 @@ impl<'a> Scan<'a> {
             // of the group names one.
             let affected_range = group
                 .iter()
-                .map(|r| osv::affected_range(r, &eco, &pkg, &qver, |a, b| order.cmp(a, b)))
+                .flat_map(|r| asked.iter().map(move |(e, p, v)| (r, e, p, v)))
+                .map(|(r, e, p, v)| osv::affected_range(r, e, p, v, |a, b| order.cmp(a, b)))
                 .find(|s| !s.is_empty())
                 .unwrap_or_default();
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
@@ -635,7 +641,7 @@ impl<'a> Scan<'a> {
                 note: format!("{product} {cycle} reached end of life on {ended}; supported: {}", shown.join(", ")),
                 ..Finding::of(c)
             });
-        } else if !res.latest.is_empty() && !failing && !versions::same_or_newer(&c.version, &res.latest) {
+        } else if !res.latest.is_empty() && !failing && !versions::current(&c.name, &c.version, &res.latest) {
             let (fix_cmd, fix_auto) = fix_with(c, &res.latest);
             self.add(Finding {
                 vuln_id: "OUTDATED".into(),

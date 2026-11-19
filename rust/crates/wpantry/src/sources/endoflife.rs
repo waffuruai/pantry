@@ -51,12 +51,16 @@ pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: 
 fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
     cache.conn.execute("DELETE FROM eol WHERE product = ?", [product])?;
     let rows = data.and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut released = serde_json::Map::new();
     for c in rows {
         let cyc = match &c["cycle"] {
             Value::String(s) => s.clone(),
             Value::Null => continue,
             other => other.to_string(),
         };
+        if let Some(day) = c.get("releaseDate").and_then(Value::as_str).filter(|d| parse_date(d).is_some()) {
+            released.insert(cyc.clone(), day.into());
+        }
         let latest = match c.get("latest") {
             Some(Value::String(s)) => s.clone(),
             Some(Value::Null) | None => String::new(),
@@ -65,7 +69,21 @@ fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
         let end = c.get("eol").cloned().unwrap_or(Value::Null).to_string();
         cache.conn.execute("INSERT OR REPLACE INTO eol VALUES (?, ?, ?, ?)", params![product, cyc, end, latest])?;
     }
+    cache.set(&released_key(product), &Value::Object(released).to_string())?;
     cache.touch(&format!("eol_at:{product}"))
+}
+
+fn released_key(product: &str) -> String {
+    format!("eol_released:{product}")
+}
+
+/// When `cycle` of `product` was first released (`2024-11-21` for PHP
+/// 8.4), from the copy [`eol`] and [`eol_prefetch`] keep; None when it was
+/// never fetched or the page names no date. Nothing is asked.
+pub fn released(cache: &Cache, product: &str, cycle: &str) -> Result<Option<String>> {
+    let Some(text) = cache.get(&released_key(product))? else { return Ok(None) };
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Ok(v.get(cycle).and_then(Value::as_str).map(str::to_string))
 }
 
 /// endoflife.date's view of `cycle` of `product`, or None when it doesn't

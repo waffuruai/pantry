@@ -3,9 +3,9 @@
 //! certificate authorities it trusts.
 //!
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
-//! `apps`, `editors`, `harnesses`, `images`, `os_packages`, `cellar`), what
-//! is judged of it (`components`, `app_updates`, `os_updates`,
-//! `brew_vulns`, `ca_trust`, `clipper`, `downloads`), and the security
+//! `dotnet`, `apps`, `editors`, `harnesses`, `images`, `os_packages`,
+//! `cellar`), what is judged of it (`components`, `app_updates`, `os_updates`,
+//! `brew_vulns`, `ca_trust`, `clipper`, `downloads`, `software_cves`), and the security
 //! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
 //! included). This file is the index: [`run`], the probes in order.
 
@@ -28,6 +28,7 @@ pub mod catalog;
 pub mod cellar;
 pub mod clipper;
 pub mod components;
+pub mod dotnet;
 pub mod downloads;
 pub mod editors;
 pub mod harnesses;
@@ -38,6 +39,7 @@ pub mod os_packages;
 pub mod os_updates;
 pub mod packages;
 pub mod settings;
+pub mod software_cves;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod tools;
@@ -80,7 +82,8 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         });
         let brew_ran = brew_job.as_ref().filter(|j| j.stale).map(|j| s.spawn(move || brew_vulns::brew_scan(j)));
         let found = inventory(scan);
-        components::components(scan, &found)?;
+        let osv = components::components(scan, &found)?;
+        software_cves::tools(scan, &found, &osv)?;
         app_updates::apps(scan)?;
         os_updates::os_updates(scan, joined(updates))?;
         brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;
@@ -152,6 +155,8 @@ fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     found.extend(gems);
     found.extend(packages::cargo_installs());
     found.extend(packages::pipx_packages());
+    scan.status("Reading .NET runtimes and SDKs");
+    found.extend(dotnet::installs());
     found
 }
 

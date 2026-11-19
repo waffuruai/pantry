@@ -38,6 +38,22 @@ Used by: {{#each used_by}}{{{crate.name}}}{{#if crate.source}} {{{crate.version}
 Other material
 --------------
 
-What the binary carries that is not a crate. The secret scan's word list is
-web2 (Webster's Second International Dictionary, 1934), which is in the public
-domain and needs no notice. The rest follow, each as its source ships it.
+What the binary carries that is not a crate.
+
+- The Rust standard library (std, core, alloc), compiled into every binary:
+  MIT or Apache-2.0, at the user's option; its MIT licence follows.
+- musl libc, statically linked into the Linux binaries: MIT; its notice follows.
+- SQLite, compiled in through rusqlite's bundled build: public domain, no
+  notice needed.
+- The secret scan's word list: web2 (Webster's Second International
+  Dictionary, 1934), public domain, no notice needed.
+- The typosquat check's popular package names (assets/defaults/popular.toml),
+  from public download rankings:
+  - npm: npm-high-impact (MIT); its licence follows.
+  - PyPI: hugovk/top-pypi-packages, from PyPI's public download statistics.
+  - crates.io: the crates.io API's download counts.
+  - RubyGems: packages.ecosyste.ms, whose data is CC BY-SA 4.0
+    (https://creativecommons.org/licenses/by-sa/4.0/). The RubyGems list is
+    from Ecosyste.ms and is under the same licence.
+
+The rest follow, each as its source ships it.

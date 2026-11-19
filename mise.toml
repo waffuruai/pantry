@@ -122,6 +122,9 @@ fi
 # What the binary carries that isn't a crate, after the crates (about.hbs ends with its heading).
 notice() { printf '\n==== %s\n\n' "$1"; cat "$2"; }
 {
+  notice "The Rust standard library (MIT or Apache-2.0; the MIT licence)" notices/rust-LICENSE-MIT
+  notice "musl libc, in the Linux binaries (MIT)" notices/musl-COPYRIGHT
+  notice "Popular npm package names: npm-high-impact (MIT)" notices/npm-high-impact-license
   notice "Secret rules: pantry-rules, translated from betterleaks (MIT)" crates/wpantry/assets/secrets/NOTICE
   notice "CVSS 4.0 scoring: FIRST's cvss-v4-calculator (BSD-2-Clause)" crates/wpantry/src/utils/cvss.NOTICE
   notice "HTML report fonts: Geist and Geist Mono (SIL Open Font License 1.1)" crates/wpantry/assets/report/fonts/LICENSE-Geist-OFL.txt

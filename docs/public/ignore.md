@@ -38,7 +38,7 @@ A finding left out isn't reported, cached as current or counted as a failure. Th
 
 ## What a repo can't skip
 
-A repo's own file can't silence the checks that protect you from that repo: `malware`, `suspect-code`, `hidden-text`, `repo-hook` and `clipper`. Lines before any section don't apply to those checks, and a section naming one of them isn't honoured. Instead, the scan reports it in the Configuration area (`IGNORE-PROTECTED`, a warning): a repo that asks to hide its own malware is worth a look. Only your own ignore file can skip those checks.
+A repo's own file can't silence the checks that protect you from that repo: `malware`, `suspect-code`, `hidden-text`, `repo-hook`, `clipper`, `document`, `mcp` and `install-script`. Nor can it skip, under any check, a known-malicious package (`MAL-…`), an actively exploited CVE (`kev`), malware found in a document (`MALWARE`), or the note that its own `.gitleaks.toml` isn't obeyed (`REPO-POLICY`). Lines before any section don't apply to those, and a section naming one of them isn't honoured. Instead, the scan reports it in the Configuration area (`IGNORE-PROTECTED`, a warning): a repo that asks to hide its own malware is worth a look. Only your own ignore file can skip those. A repo's file is read only when it's a regular file, not a link.
 
 ## Your ignore file
 
@@ -64,7 +64,7 @@ If it's real: rotate it, then purge it from history. If not: add config/legacy.p
 ```
 
 - A path every secret rule skips (lines before any section, `[*]` or `[secret]`) isn't read from the history at all. A `[secret id]` entry still reads the file, since other rules may match it.
-- `.gitleaksignore` still works: a fingerprint it lists (`commit:path:rule:line`) leaves out that one finding. It covers one version of one line, so `.pantryignore` is the better fit for anything that persists.
+- `.gitleaksignore` isn't read: list the path, or the path under `[secret <rule>]`, in `.pantryignore` instead. (gitleaks, which some pre-commit hooks run, still reads its own file.)
 - Editing `.pantryignore` doesn't rescan the history: the files' results are cached, and only the ones it no longer skips are read.
 
 ## Problems in the file

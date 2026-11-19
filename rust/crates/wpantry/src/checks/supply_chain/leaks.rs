@@ -88,7 +88,7 @@ impl Rules {
 pub struct Job {
     repo: PathBuf,
     key: String,
-    /// The rules' fingerprint, and the repo's .gitleaksignore's and .pantryignore's.
+    /// The rules' fingerprint, and the repo's .pantryignore's.
     fingerprint: String,
     rules: String,
     tips: BTreeSet<String>,
@@ -105,7 +105,7 @@ pub struct Job {
 
 pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<Job> {
     let own_policy = repo.join(".gitleaks.toml").is_file();
-    let files = [repo.join(".gitleaksignore"), repo.join(crate::checks::ignore::FILE)];
+    let files = [repo.join(crate::checks::ignore::FILE)];
     let fingerprint = format!("{}:{}", rules.fingerprint, fingerprint(&files));
     let key = format!("secrets:{}", repo.display());
     let cached = cache.run(&key)?.filter(|(fp, _, _)| *fp == fingerprint).and_then(|(_, _, res)| {
@@ -321,6 +321,46 @@ fn read_blobs<'b>(
     Ok(read)
 }
 
+/// Every path each of `wanted` (blob hashes) has been at in the history,
+/// from its raw diffs.
+fn paths_of(repo: &Path, wanted: &HashSet<String>) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let argv = git_argv(
+        repo,
+        &[
+            "-c",
+            "log.showRoot=true",
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--all",
+            "--raw",
+            "--diff-merges=first-parent",
+            "--no-abbrev",
+            "--no-renames",
+            "--format=",
+        ],
+    );
+    let _ = lines(&argv, LIST_TIMEOUT, |line| {
+        // `:100644 100644 <old> <new> M\tpath`
+        if line.first() != Some(&b':') {
+            return;
+        }
+        let Some(tab) = line.iter().position(|&b| b == b'\t') else { return };
+        let new = line[..tab].split(|&b| b == b' ').nth(3).map(|s| String::from_utf8_lossy(s).into_owned());
+        if let Some(new) = new
+            && wanted.contains(&new)
+        {
+            let path = String::from_utf8_lossy(&line[tab + 1..]).into_owned();
+            let list = out.entry(new).or_default();
+            if !list.contains(&path) {
+                list.push(path);
+            }
+        }
+    });
+    out
+}
+
 /// The first commit (full hash) that added each of `wanted`, from the
 /// history's raw diffs, oldest first.
 fn added_in(repo: &Path, wanted: &HashSet<String>) -> HashMap<String, String> {
@@ -396,8 +436,27 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
     // What .pantryignore skips for the secret check isn't read at all.
     let ignore = crate::checks::ignore::Ignore::load(&job.repo.join(crate::checks::ignore::FILE)).and_then(|r| r.ok());
     let skipped = |path: &str| ignore.as_ref().is_some_and(|ig| ig.skips_kind("secret", path));
-    let (wanted, unread): (Vec<Blob>, Vec<Blob>) =
+    let (mut wanted, mut unread): (Vec<Blob>, Vec<Blob>) =
         all.into_iter().filter(|b| !scanner.skips_path(&b.path)).partition(|b| !skipped(&b.path));
+    // A blob is listed at the first path it's found at. One the file skips
+    // there is read anyway when another of its paths isn't skipped, at that
+    // path: ignoring a copy mustn't hide the original.
+    if !unread.is_empty() {
+        let shas: HashSet<String> = unread.iter().map(|b| b.sha.clone()).collect();
+        let paths = paths_of(&job.repo, &shas);
+        let mut still = Vec::new();
+        for mut b in unread {
+            let other = paths.get(&b.sha).and_then(|ps| ps.iter().find(|p| !skipped(p) && !scanner.skips_path(p)));
+            match other {
+                Some(p) => {
+                    b.path = p.clone();
+                    wanted.push(b);
+                }
+                None => still.push(b),
+            }
+        }
+        unread = still;
+    }
     let cached = cached_blobs(&job.db, &job.rules, &wanted);
     for b in &wanted {
         if cached.contains_key(&blob_key(b)) {
@@ -451,7 +510,6 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
         .collect();
     let shas: HashSet<String> = hit_blobs.iter().map(|b| b.sha.clone()).collect();
     let commits = added_in(&job.repo, &shas);
-    let ignored = ignored(&job.repo);
     let mut rows = Vec::new();
     for b in hit_blobs {
         let commit = commits.get(&b.sha).cloned().unwrap_or_default();
@@ -459,9 +517,6 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
             let rule = str_at(h, "rule");
             let line = h.get("line").and_then(Value::as_i64).unwrap_or(0);
             let fp = format!("{commit}:{}:{rule}:{line}", b.path);
-            if ignored.contains(&fp) {
-                continue;
-            }
             rows.push(json!({"rule": rule, "file": b.path, "line": line,
                              "commit": commit.chars().take(12).collect::<String>(), "fingerprint": fp,
                              "description": str_at(h, "description"), "confidence": str_at(h, "confidence"),
@@ -480,17 +535,6 @@ fn confidence(c: Option<rules::Confidence>) -> &'static str {
         Some(rules::Confidence::Medium) => "medium",
         Some(rules::Confidence::Low) => "low",
     }
-}
-
-/// The fingerprints the repo's .gitleaksignore lists.
-fn ignored(repo: &Path) -> BTreeSet<String> {
-    crate::utils::files::read_capped(&repo.join(".gitleaksignore"), 1 << 20)
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
-        .collect()
 }
 
 /// The leaks in the job's repo, how many of its files weren't checked, and

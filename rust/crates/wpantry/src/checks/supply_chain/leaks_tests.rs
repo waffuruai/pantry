@@ -154,15 +154,13 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(ran["new"].as_array().unwrap().len(), 1, "of {} blobs before, none read again", scanned);
     assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "the old hit stands");
     finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
-    // Listing its fingerprint in .gitleaksignore drops it, and changes what's cached under.
+    // A .gitleaksignore is gitleaks' business, not Pantry's: it changes nothing.
     testing::write(&repo, ".gitleaksignore", format!("{}:cfg.env:github-pat:2\n", added.trim()));
     let j = job(&s.cache, &repo, &rules, 2).unwrap();
-    assert!(stale(&j, false, false));
-    let ran = run_job(&j, &scanner).unwrap();
-    assert!(ran["hits"].as_array().unwrap().is_empty());
+    assert!(!stale(&j, false, false), "not part of what's cached under");
+    assert_eq!(run_job(&j, &scanner).unwrap()["hits"].as_array().unwrap().len(), 1);
     // A .pantryignore skipping the file for secrets: it isn't read again,
     // and editing the file changes what's cached under.
-    std::fs::remove_file(repo.join(".gitleaksignore")).unwrap();
     testing::write(&repo, ".pantryignore", "[secret]\ncfg.env\nfixtures/\n");
     testing::write(&repo, "fixtures/t.env", format!("token = \"{}\"\n", token()));
     assert!(git(&repo, &home, &["add", "fixtures"]) && git(&repo, &home, &["commit", "-q", "-m", "fixtures"]));
@@ -186,6 +184,32 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_ne!(other.fingerprint, rules.fingerprint);
     let j = job(&s.cache, &repo, &other, 2).unwrap();
     assert!(stale(&j, false, false));
+}
+
+#[test]
+fn ignoring_a_copy_doesnt_hide_the_original() {
+    let d = TempDir::new("secrets-copy").unwrap();
+    let (home, repo) = (d.path().join("home"), d.path().join("repo"));
+    std::fs::create_dir_all(&home).unwrap();
+    let text = format!("token = \"{}\"\n", token());
+    // The same blob at two paths; history lists it at the first, fixtures/.
+    testing::write(&repo, "fixtures/a.env", &text);
+    testing::write(&repo, "src/a.env", &text);
+    testing::write(&repo, ".pantryignore", "fixtures/\n");
+    for args in [&["init", "-q"][..], &["add", "."], &["commit", "-q", "-m", "add"]] {
+        if !git(&repo, &home, args) {
+            eprintln!("skipped: no git");
+            return;
+        }
+    }
+    let net = Fake::offline();
+    let s = testing::scan(&net, &d, Options::default());
+    let rules = Rules::new(None);
+    let j = job(&s.cache, &repo, &rules, 1).unwrap();
+    let ran = run_job(&j, &rules.scanner().unwrap()).unwrap();
+    let files: Vec<&str> = ran["hits"].as_array().unwrap().iter().map(|h| str_at(h, "file")).collect();
+    assert_eq!(files, ["src/a.env"], "{ran}");
+    assert_eq!(ran["skipped"], 0, "{ran}");
 }
 
 #[test]

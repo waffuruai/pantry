@@ -7,8 +7,11 @@
 //! what was left out (`specs/design/pantryignore.md`).
 //!
 //! A repo's own file can't silence the checks that protect you from that
-//! repo ([`PROTECTIVE`]): only your file can. A repo's section for one of
-//! them is reported, not honoured.
+//! repo ([`PROTECTIVE`]), nor anything malicious or actively exploited,
+//! nor the note that its own gitleaks config isn't obeyed
+//! ([`repo_cannot_skip`]): only your file can. A repo's section for one of
+//! those checks is reported, not honoured. A repo's file is read only when
+//! it's a regular file, not a link to one.
 
 use crate::checks::Scan;
 use crate::finding::Finding;
@@ -18,7 +21,21 @@ use std::path::{Component as Part, Path, PathBuf};
 /// A repo's ignore file, at its root.
 pub const FILE: &str = ".pantryignore";
 /// The checks a repo can't silence for itself: they protect you from it.
-pub const PROTECTIVE: &[&str] = &["malware", "suspect-code", "hidden-text", "repo-hook", "clipper"];
+pub const PROTECTIVE: &[&str] =
+    &["malware", "suspect-code", "hidden-text", "repo-hook", "clipper", "document", "mcp", "install-script"];
+/// Findings no repo's file can skip, whatever their check: known malware.
+const PROTECTED_IDS: &[&str] = &["MALWARE", "REPO-POLICY"];
+
+/// Whether a finding is beyond a repo's own ignore file: its check protects
+/// you from the repo, it names something malicious or actively exploited, or
+/// it's the note that the repo's own policy isn't obeyed.
+pub fn repo_cannot_skip(f: &Finding) -> bool {
+    PROTECTIVE.contains(&f.kind.as_str())
+        || f.kev
+        || f.severity == "MALICIOUS"
+        || f.vuln_id.starts_with("MAL-")
+        || PROTECTED_IDS.contains(&f.vuln_id.as_str())
+}
 /// The largest ignore file read.
 const MAX: u64 = 1 << 20;
 
@@ -85,8 +102,14 @@ impl Ignore {
         out
     }
 
-    /// The file at `path`: None if there is none, an error if it can't be read.
+    /// A repo's file at `path`: None if there is none, an error if it can't
+    /// be read or isn't a regular file (a link could point anywhere, or at a
+    /// pipe that never answers).
     pub fn load(path: &Path) -> Option<std::result::Result<Ignore, String>> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if !meta.file_type().is_file() {
+            return Some(Err("not a regular file (a link or a special file); not read".into()));
+        }
         read(path).map(|r| r.map(|text| Ignore::parse(&text)))
     }
 
@@ -256,42 +279,71 @@ fn escape(s: &str) -> String {
 
 /// Whether pattern segments match path segments. `**` matches any number
 /// of segments, and one or more when it ends the pattern (`dir/**` is what
-/// is inside `dir`, not `dir`).
+/// is inside `dir`, not `dir`). Dynamic programming over (pattern, path)
+/// positions, so a file of many `**` can't make it exponential.
 fn matches(pat: &[String], path: &[&str]) -> bool {
-    match pat.split_first() {
-        None => path.is_empty(),
-        Some((p, rest)) if p == "**" => {
-            if rest.is_empty() {
-                return !path.is_empty();
-            }
-            (0..=path.len()).any(|i| matches(rest, &path[i..]))
+    let (n, m) = (pat.len(), path.len());
+    // ok[i][j]: pat[i..] matches path[j..].
+    let mut ok = vec![vec![false; m + 1]; n + 1];
+    ok[n][m] = true;
+    for i in (0..n).rev() {
+        for j in (0..=m).rev() {
+            ok[i][j] = if pat[i] == "**" {
+                if i + 1 == n { j < m } else { ok[i + 1][j] || (j < m && ok[i][j + 1]) }
+            } else {
+                j < m && glob(&pat[i], path[j]) && ok[i + 1][j + 1]
+            };
         }
-        Some((p, rest)) => !path.is_empty() && glob(p, path[0]) && matches(rest, &path[1..]),
     }
+    ok[0][0]
 }
 
 /// One segment against a glob: `*`, `?`, `[a-z]` (`[!a]` and `[^a]` negate)
-/// and `\` escapes.
+/// and `\` escapes. Linear in practice: on a mismatch it returns to the last
+/// `*` only, never to earlier ones.
 fn glob(pat: &str, s: &str) -> bool {
     let p: Vec<char> = pat.chars().collect();
     let s: Vec<char> = s.chars().collect();
-    go(&p, &s)
+    let (mut pi, mut si) = (0, 0);
+    // The last `*`'s pattern position, and where in `s` it's matched to.
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        if pi < p.len() && p[pi] == '*' {
+            while pi < p.len() && p[pi] == '*' {
+                pi += 1;
+            }
+            star = Some((pi, si));
+            continue;
+        }
+        if let Some(len) = step(&p[pi..], s[si]) {
+            pi += len;
+            si += 1;
+            continue;
+        }
+        match star {
+            Some((sp, ss)) => {
+                pi = sp;
+                si = ss + 1;
+                star = Some((sp, ss + 1));
+            }
+            None => return false,
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
 }
 
-fn go(p: &[char], s: &[char]) -> bool {
-    match p.first() {
-        None => s.is_empty(),
-        Some('*') => {
-            let rest = &p[p.iter().take_while(|c| **c == '*').count()..];
-            (0..=s.len()).any(|i| go(rest, &s[i..]))
-        }
-        Some('?') => !s.is_empty() && go(&p[1..], &s[1..]),
-        Some('[') => match class(p, s.first().copied()) {
-            Some((hit, len)) => hit && go(&p[len..], &s[1..]),
-            None => s.first() == Some(&'[') && go(&p[1..], &s[1..]),
+/// How much of the pattern at `p` one character `c` uses, if it matches:
+/// `?`, a class, an escape or a literal.
+fn step(p: &[char], c: char) -> Option<usize> {
+    match p.first()? {
+        '?' => Some(1),
+        '[' => match class(p, Some(c)) {
+            Some((hit, len)) => hit.then_some(len),
+            None => (c == '[').then_some(1),
         },
-        Some('\\') if p.len() > 1 => s.first() == Some(&p[1]) && go(&p[2..], &s[1..]),
-        Some(c) => s.first() == Some(c) && go(&p[1..], &s[1..]),
+        '\\' if p.len() > 1 => (p[1] == c).then_some(2),
+        '*' => None,
+        lit => (*lit == c).then_some(1),
     }
 }
 
@@ -449,7 +501,7 @@ pub(crate) fn apply_with(scan: &mut Scan, user_path: &Path) {
                 return true;
             }
             let places = [f.component.as_str(), f.location.as_str()];
-            if !PROTECTIVE.contains(&f.kind.as_str()) {
+            if !repo_cannot_skip(f) {
                 for place in places {
                     if let Some((r, rel)) = in_repo(&repos, place, &home)
                         && r.ignore.as_ref().is_some_and(|ig| ig.skips(&f.kind, &f.vuln_id, &rel))

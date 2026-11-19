@@ -216,3 +216,66 @@ fn globs_and_classes() {
     assert!(glob("\\*", "*") && !glob("\\*", "a"));
     assert!(glob("***", "anything"));
 }
+
+#[test]
+fn a_repo_cant_hide_what_threatens_you_whatever_its_check() {
+    let d = TempDir::new("ignore-protected").unwrap();
+    let net = Fake::offline();
+    let mut s = testing::scan(&net, &d, Options::default());
+    let (name, root) = testing::repo(&d, "app");
+    // Everything, for every check, and each protected check by name.
+    testing::write(&root, FILE, "*\n[document]\n*\n[mcp]\n*\n[install-script]\n*\n");
+    s.repos = vec![(name.clone(), root.clone())];
+    let lock = format!("{name}/package-lock.json");
+    let f = |kind: &str, id: &str, severity: &str, kev: bool| Finding {
+        kind: kind.into(),
+        component: lock.clone(),
+        vuln_id: id.into(),
+        severity: severity.into(),
+        kev,
+        status: "fail".into(),
+        ..Default::default()
+    };
+    s.findings = vec![
+        f("project", "MAL-2026-1", "MALICIOUS", false),
+        f("project", "GHSA-x", "HIGH", true),
+        f("document", "MALWARE", "", false),
+        f("mcp", "UNPINNED", "", false),
+        f("install-script", "CURL-BASH", "", false),
+        f("secret", "REPO-POLICY", "", false),
+        f("project", "GHSA-ordinary", "LOW", false),
+    ];
+    apply_with(&mut s, &d.path().join("no-user-file"));
+    let kept: Vec<&str> = s.findings.iter().filter(|f| f.kind != "config").map(|f| f.vuln_id.as_str()).collect();
+    assert_eq!(
+        kept,
+        ["MAL-2026-1", "GHSA-x", "MALWARE", "UNPINNED", "CURL-BASH", "REPO-POLICY"],
+        "only the ordinary one goes"
+    );
+    let protected: Vec<&str> =
+        s.findings.iter().filter(|f| f.vuln_id == "IGNORE-PROTECTED").map(|f| f.location.as_str()).collect();
+    assert_eq!(protected, ["line 2", "line 4", "line 6"]);
+}
+
+#[test]
+fn hostile_patterns_match_in_bounded_time() {
+    let start = std::time::Instant::now();
+    let name = "a".repeat(60);
+    assert!(!glob(&format!("{}b", "*a".repeat(40)), &name));
+    let deep: Vec<String> = (0..40).map(|i| format!("d{i}")).collect();
+    let deep: Vec<&str> = deep.iter().map(String::as_str).collect();
+    let stars: Vec<String> = std::iter::repeat_n("**".to_string(), 40).chain(["nope".to_string()]).collect();
+    assert!(!matches(&stars, &deep));
+    assert!(start.elapsed() < std::time::Duration::from_secs(1), "took {:?}", start.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_repos_file_is_read_only_when_its_a_regular_file() {
+    let d = TempDir::new("ignore-link").unwrap();
+    std::fs::write(d.path().join("elsewhere"), "*\n").unwrap();
+    let link = d.path().join(FILE);
+    std::os::unix::fs::symlink(d.path().join("elsewhere"), &link).unwrap();
+    assert!(matches!(Ignore::load(&link), Some(Err(_))), "a link isn't followed");
+    assert!(Ignore::load(&d.path().join("missing")).is_none());
+}

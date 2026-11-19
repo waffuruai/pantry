@@ -14,6 +14,7 @@ pub mod ecosystems;
 pub mod email;
 pub mod files;
 pub mod hidden;
+pub mod ignore;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
@@ -485,6 +486,7 @@ impl<'a> Scan<'a> {
         if !self.opts.no_malware {
             crate::checks::malware::run(&mut self);
         }
+        crate::checks::ignore::apply(&mut self);
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);
         self.status("Saving the findings");

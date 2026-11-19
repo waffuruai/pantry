@@ -80,6 +80,7 @@ wpantry scan
 
 - A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
 - A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
+- `ignore` in the same folder, and a repo's `.pantryignore`, leave paths out of the findings, for every check or one ([ignore.md](ignore.md)). They are gitignore patterns, not TOML.
 - `secrets.yar` in the same folder adds secret rules of your own (`--secret-rules`): YARA, in pantry-rules' form (a `$secret` regex, an `id` and `category = "secret"` meta). They must compile beside the bundled ones.
 
 ## Reading the report
@@ -303,6 +304,7 @@ Commands:
   version [options]          Print the version, implementation and JSON schema
   tools [options]            List the external tools wpantry uses
   skill                      Print the agent skill (SKILL.md)
+  licenses                   Print the third-party licences built into wpantry
   help [command]             Print a command's help
 
 Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
@@ -675,6 +677,19 @@ Options:
 Usage: wpantry skill [options]
 
 Print the agent skill (SKILL.md).
+
+Options:
+  -h, --help  print this help
+```
+
+### licenses
+
+```
+Usage: wpantry licenses [options]
+
+Print the licences and notices of the third-party code, data and fonts built into wpantry: every
+crate with its licence text, then the rest. Each release ships the same text as
+THIRD-PARTY-NOTICES.txt.
 
 Options:
   -h, --help  print this help

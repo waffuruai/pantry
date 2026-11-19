@@ -8,7 +8,7 @@
 | `wpantry report all` | The logs with the findings |
 | `wpantry report summary` | One page over all of them |
 
-In the terminal, Markdown and HTML reports, a dependency at one version is one row across every lockfile that locks it (`and 8 more`); JSON and CSV keep a finding per lockfile.
+In the terminal, Markdown and HTML reports, a dependency at one version is one row across every lockfile that locks it (`and 8 more`), and a file holding secrets is one row across every line and version of it; JSON and CSV keep a finding per lockfile and per version.
 
 Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; the report is a file you keep or hand to an auditor, a CSO or an insurer.
 

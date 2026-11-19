@@ -95,9 +95,10 @@ pub fn is_bundle(kind: &str) -> bool {
 
 /// One package at one version is one row whatever lockfiles lock it:
 /// the same advisory in 300 lockfiles is one thing to know, with 300
-/// places to fix it.
+/// places to fix it. One file holding secrets is one row too, whatever
+/// lines and versions (commits) of it hold them.
 pub fn spans_places(kind: &str) -> bool {
-    kind == "project"
+    kind == "project" || kind == "secret"
 }
 
 /// Severity labels from worst to least.

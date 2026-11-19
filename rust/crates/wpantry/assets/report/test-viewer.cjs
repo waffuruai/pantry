@@ -48,7 +48,7 @@ const every=[
   finding('suspect-code','repo-a/setup.js','SUSPECT-EXEC-DECODED','fail',{fix_cmd:'Read repo-a/setup.js before running anything in repo-a'}),
   finding('clipper','ClipGrab','CLIPPER-PERSISTENCE','fail',{fix_cmd:"Don't send funds from this machine; remove ClipGrab"}),
   finding('extension','evil.helper','MALICIOUS','fail',{severity:'MALICIOUS',kev:true,fix_cmd:'code --uninstall-extension evil.helper',fix_auto:true}),
-  finding('secret','repo-b/.env','aws-access-token','fail',{fix_cmd:'If it\'s real: rotate it, then purge it from history. If not: add abc:.env:aws-access-token:3 to ~/w/repo-b/.gitleaksignore'}),
+  finding('secret','repo-b/.env','aws-access-token','fail',{fix_cmd:'If it\'s real: rotate it, then purge it from history. If not: add .env under [secret aws-access-token] in ~/w/repo-b/.pantryignore'}),
   finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock',cvss:9.8,cvss_version:'3.1',epss:0.0213,epss_percentile:0.84}),
   finding('project','smallvec','CVE-2019-15551','fail',{severity:'HIGH',fixed:'1.0.0',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,location:'/Users/me/w/app/Cargo.lock'}),
   finding('runtime','python','EOL','fail',{version:'3.8',fixed:'3.13',fix_cmd:'mise install python@3.13'}),

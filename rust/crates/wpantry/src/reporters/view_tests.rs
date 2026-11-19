@@ -132,3 +132,22 @@ fn a_package_is_one_row_across_the_lockfiles_that_lock_it() {
     let hooks = vec![hook("/a/.vscode/tasks.json"), hook("/b/.vscode/tasks.json")];
     assert_eq!(view(&hooks).areas[0].rows.len(), 2, "other kinds keep a row per place");
 }
+
+#[test]
+fn a_file_with_secrets_is_one_row_across_its_versions() {
+    let at =
+        |id: &str, location: &str| Finding { location: location.into(), ..f("secret", "~/app/cfg.env", id, "fail") };
+    let all = vec![
+        at("github-pat", "line 2, commit 0123456789ab"),
+        at("github-pat", "line 3, commit abcdef012345"),
+        at("aws-access-token", "line 9, commit abcdef012345"),
+        Finding { location: "line 1, commit 0123456789ab".into(), ..f("secret", "~/app/other.env", "jwt", "warn") },
+    ];
+    let v = view(&all);
+    let rows = &v.areas[0].rows;
+    assert_eq!(rows.len(), 2, "one row per file");
+    assert_eq!(rows[0].name, "~/app/cfg.env");
+    assert_eq!(rows[0].findings.len(), 3);
+    assert_eq!(rows[0].places.len(), 3, "every version and line is listed");
+    assert_eq!(rows[0].ids, ["github-pat", "aws-access-token"]);
+}

@@ -249,7 +249,7 @@ fn scan_opts() -> Vec<Opt> {
     let mut opts = vec![
         Opt::new(
             "--path <dir>",
-            "check only the repos and files at or under this directory, not Downloads, Desktop, Documents or temp; repeat it for more (default: every git repo under ~)",
+            "check only the repos at or under this directory; repeat it for more (default: every git repo under ~)",
         ),
         Opt::new("--no-machine", "skip the machine inventory: repo checks only"),
         Opt::new("--refresh", "ignore cached answers and ask every source again"),
@@ -273,7 +273,7 @@ fn scan_opts() -> Vec<Opt> {
             "--no-malware",
             "skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)",
         ),
-        Opt::new("--deep", "read everything in scope (slower): the malware scan, all of ~ (or each --path) with every system's rules; the secret scan, history files up to 256 MB with no time limit"),
+        Opt::new("--deep", "the malware scan reads everything under ~ with every system's rules (slower)"),
         Opt::new(
             "--no-personal-files",
             "leave Downloads, Desktop and Documents out of the document and malware passes, reported as not checked (for unattended runs)",

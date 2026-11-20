@@ -219,20 +219,6 @@ pub struct Options {
     pub sources: Option<PathBuf>,
 }
 
-impl Options {
-    /// Whether `--path` limits the scan to some folders: then it reads
-    /// files only there, and of the machine only its inventory.
-    pub fn scoped(&self) -> bool {
-        self.paths.as_ref().is_some_and(|p| !p.is_empty())
-    }
-
-    /// Whether the scan reads Downloads, Desktop and Documents: a machine
-    /// scan, not limited by `--path`, without `--no-personal-files`.
-    pub fn personal_files(&self) -> bool {
-        self.machine && !self.no_personal_files && !self.scoped()
-    }
-}
-
 /// What a finished scan found.
 #[derive(Clone, Debug, Default)]
 pub struct Outcome {
@@ -374,7 +360,7 @@ impl<'a> Scan<'a> {
             for (_, dir) in supply_chain::suspect_code::installed_code() {
                 jobs.push(Job::new(Check::Suspects(suspects::Kind::Installed), &dir, suspects::DEPTH));
             }
-            if self.opts.personal_files() {
+            if !self.opts.no_personal_files {
                 for dir in machine::downloads::dirs() {
                     jobs.push(Job::new(Check::Documents, &dir, 1));
                 }
@@ -387,8 +373,7 @@ impl<'a> Scan<'a> {
                 &repos,
                 self.opts.machine,
                 self.opts.deep,
-                self.opts.personal_files(),
-                self.opts.scoped(),
+                !self.opts.no_personal_files,
             ));
         }
         jobs

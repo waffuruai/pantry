@@ -140,7 +140,7 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(ran["unchecked"], 0);
     let scanned = ran["new"].as_array().unwrap().len();
     let (leaks, unchecked, _) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
-    assert_eq!((leaks.len(), unchecked.total(), leaks[0].confidence.as_str()), (1, 0, "high"));
+    assert_eq!((leaks.len(), unchecked, leaks[0].confidence.as_str()), (1, 0, "high"));
     // Cached: the next job isn't stale, and finish reads it without a run.
     let j = job(&s.cache, &repo, &rules, 2).unwrap();
     assert!(!stale(&j, false, false));
@@ -366,50 +366,4 @@ fn a_secrets_fix_is_the_commands_to_run() {
             && !many.contains("c4:a.txt"),
         "{many}"
     );
-}
-
-/// A file over 10 MB is left unread, and said so; `--deep` reads it, and
-/// the note names the command that would.
-#[test]
-fn a_deep_scan_reads_what_a_default_one_is_too_big_for() {
-    let d = TempDir::new("secrets-deep").unwrap();
-    let home = d.path().join("home");
-    let repo = d.path().join("big");
-    std::fs::create_dir_all(&home).unwrap();
-    let mut dump = "x = 1\n".repeat((MAX_BLOB as usize / 6) + 1);
-    dump.push_str(&format!("token = \"{}\"\n", token()));
-    testing::write(&repo, "dump.txt", dump);
-    for args in [&["init", "-q"][..], &["add", "."], &["commit", "-q", "-m", "dump"]] {
-        if !git(&repo, &home, args) {
-            eprintln!("skipped: no git");
-            return;
-        }
-    }
-    let net = Fake::offline();
-    let s = testing::scan(&net, &d, Options::default());
-    let rules = Rules::new(None);
-    let scanner = rules.scanner().unwrap();
-    let j = job(&s.cache, &repo, &rules, 2).unwrap();
-    let ran = run_job(&j, &scanner).unwrap();
-    assert!(ran["hits"].as_array().unwrap().is_empty());
-    assert_eq!(Unread::read(&ran), Unread { too_big: 1, ..Unread::default() });
-    let mut j = job(&s.cache, &repo, &rules, 2).unwrap();
-    j.deep = true;
-    let ran = run_job(&j, &scanner).unwrap();
-    assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "{ran}");
-    assert_eq!(Unread::read(&ran).total(), 0);
-}
-
-#[test]
-fn the_unread_note_gives_the_command_that_reads_them() {
-    let u = Unread { late: 2, too_big: 1, missing: 3 };
-    assert_eq!(
-        unread_note(&u, "~/my repo", false),
-        "2 not reached in this scan's time, 1 over 10 MB, 3 missing from this partial clone. \
-         Scan this repo on its own, with files up to 256 MB and no time limit: `wpantry scan --path ~/'my repo' --no-machine --deep`. \
-         Download them with `git -C ~/'my repo' backfill` (git 2.49+), then scan again"
-    );
-    assert_eq!(unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true), "1 over 256 MB");
-    // A result cached before the reasons were kept counts them as late.
-    assert_eq!(Unread::read(&json!({"unchecked": 4})), Unread { late: 4, ..Unread::default() });
 }

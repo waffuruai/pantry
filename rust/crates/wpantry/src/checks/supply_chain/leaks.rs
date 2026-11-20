@@ -682,7 +682,7 @@ pub(crate) fn secrets(
 }
 
 /// What to do about secrets found in one file of a repo's history, as a
-/// script to read and run a line at a time: show the line each secret is
+/// script to read and run a step at a time: show the line each secret is
 /// on, then, if one is real (and rotated), rewrite history without it in
 /// a fresh mirror clone and force-push; if none is, add the file to the
 /// repo's .pantryignore. The secret itself is never in it: it is pasted
@@ -691,8 +691,6 @@ pub(crate) fn secrets(
 /// rules hit.
 pub fn fix(repo: &str, file: &str, hits: &[(&str, i64, &str)], review: bool) -> String {
     use crate::checks::supply_chain::quote;
-    let r = sh_path(repo);
-    let ignore = format!("{}/{}", repo, crate::checks::ignore::FILE);
     let one = hits.len() == 1;
     let mut by_commit: Vec<(&str, Vec<i64>)> = Vec::new();
     for (_, line, commit) in hits {
@@ -710,48 +708,71 @@ pub fn fix(repo: &str, file: &str, hits: &[(&str, i64, &str)], review: bool) -> 
         _ => "[secret]".to_string(),
     };
     let review = if review { " (generic rules: review)" } else { "" };
-    let mut out = vec![if one {
-        format!(
-            "# If it's real{review}: rotate it first, then take it out of history (git-filter-repo 2.47+). This rewrites history: warn everyone with a clone, and re-clone afterwards."
-        )
-    } else {
-        format!(
-            "# {} hits in {file}{review}: if any is real, rotate it first, then take it out of history (git-filter-repo 2.47+), pasting each secret once. This rewrites history: warn everyone with a clone, and re-clone afterwards.",
-            hits.len()
-        )
-    }];
+    let mut out = vec![
+        if one {
+            format!("# If it's real{review}: rotate it first, then take it out of history.")
+        } else {
+            format!(
+                "# {} hits in {file}{review}. If any is real: rotate it first, then take it out of history.",
+                hits.len()
+            )
+        },
+        "# This rewrites history: warn everyone with a clone, and re-clone afterwards. Needs git-filter-repo 2.47+."
+            .to_string(),
+        format!("repo={}", sh_path(repo)),
+        String::new(),
+        format!("# 1. Show the line{} the secret is on", if one { "" } else { "s" }),
+    ];
     for (commit, lines) in by_commit.iter().take(3) {
         let lines: Vec<String> = lines.iter().map(|l| format!("{l}p")).collect();
         out.push(format!(
-            "git -C {r} show {} | sed -n {}",
+            "git -C \"$repo\" show {} | sed -n {}",
             quote(&format!("{commit}:{file}")),
             quote(&lines.join(";"))
         ));
     }
-    out.push(
-        "printf 'Paste the secret: '; stty -echo; read -r SECRET; stty echo; echo; printf '%s==>REDACTED\\n' \"$SECRET\" >> ~/.pantry-redact; unset SECRET".into(),
-    );
-    out.push(format!("git clone --mirror \"$(git -C {r} remote get-url origin)\" ~/.pantry-rewrite.git"));
-    out.push("git -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact && git -C ~/.pantry-rewrite.git push --force --mirror origin".into());
-    out.push("rm -rf ~/.pantry-redact ~/.pantry-rewrite.git".into());
-    out.push(if one {
-        "# If it isn't a secret: leave the file out of this rule's findings.".into()
-    } else {
+    out.extend([
+        String::new(),
+        if one {
+            "# 2. Paste the secret: it isn't shown, or kept in your shell history".to_string()
+        } else {
+            "# 2. Paste each secret: run these two lines once for each".to_string()
+        },
+        "printf 'Secret: '; stty -echo; read -r SECRET; stty echo; echo".to_string(),
+        "printf '%s==>REDACTED\\n' \"$SECRET\" >> ~/.pantry-redact; unset SECRET".to_string(),
+        String::new(),
+        "# 3. Rewrite history in a fresh mirror clone, push it, and clean up".to_string(),
+        "git clone --mirror \"$(git -C \"$repo\" remote get-url origin)\" ~/.pantry-rewrite.git".to_string(),
+        "git -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact".to_string(),
+        "git -C ~/.pantry-rewrite.git push --force --mirror origin".to_string(),
+        "rm -rf ~/.pantry-redact ~/.pantry-rewrite.git".to_string(),
+        String::new(),
+        if one {
+            "# If it isn't a secret: leave the file out of this rule's findings".to_string()
+        } else {
+            format!(
+                "# If none is: leave the file out of {} findings",
+                if rules.len() == 1 { "this rule's" } else { "the secret rules'" }
+            )
+        },
         format!(
-            "# If none is: leave the file out of {} findings.",
-            if rules.len() == 1 { "this rule's" } else { "the secret rules'" }
-        )
-    });
-    out.push(format!("printf '\\n{section}\\n%s\\n' {} >> {}", quote(&format!("/{file}")), sh_path(&ignore)));
+            "printf '\\n{section}\\n%s\\n' {} >> \"$repo/{}\"",
+            quote(&format!("/{file}")),
+            crate::checks::ignore::FILE
+        ),
+    ]);
     out.join("\n")
 }
 
 /// The repo and file a secret's [`fix`] is for, read back from it.
 pub fn fix_target(fix: &str) -> Option<(String, String)> {
-    let line = fix.lines().find(|l| l.starts_with("git -C ") && l.contains(" show "))?;
-    let words = crate::remediation::shlex_split(line)?;
+    let split = crate::remediation::shlex_split;
+    let repo =
+        fix.lines().find_map(|l| l.strip_prefix("repo=").and(split(l)))?.first()?.strip_prefix("repo=")?.to_string();
+    let show = fix.lines().find(|l| l.starts_with("git -C \"$repo\" show "))?;
+    let words = split(show)?;
     let (_, file) = words.get(4)?.split_once(':')?;
-    Some((words.get(2)?.clone(), file.to_string()))
+    Some((repo, file.to_string()))
 }
 
 /// A path for the shell: quoted, with a leading `~/` left outside the

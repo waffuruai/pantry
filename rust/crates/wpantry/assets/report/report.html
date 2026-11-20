@@ -197,6 +197,14 @@ button.rhead:hover{background:var(--bg)}
 .fix{display:flex;align-items:flex-start;gap:10px;margin-top:14px;padding:10px 12px;border:1px solid var(--off);border-radius:8px;background:var(--card)}
 .fix .who{flex:none;font:11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding-top:4px;width:84px}
 .fix code{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55}
+/* a fix that is a script: shell colours from the palette */
+code.sh{color:var(--soft);line-height:1.7}
+code.sh .c{color:var(--muted);font-style:italic}
+code.sh .k{color:var(--ink);font-weight:600}
+code.sh .s{color:var(--gold-ink)}
+code.sh .v{color:var(--ok)}
+code.sh .f{color:var(--ext)}
+code.sh .o{color:var(--muted)}
 .copy{flex:none;height:26px;padding:0 9px;font-size:12px;border:1px solid var(--off);border-radius:6px;background:var(--card);color:var(--ink)}
 .copy:hover{border-color:var(--muted)}
 .detail .kv{margin-top:14px}
@@ -701,7 +709,7 @@ function detailHTML(row,print){
   var cmd=top.fix_cmd||row.fs.map(function(f){return f.fix_cmd}).filter(Boolean)[0]||'';
   if(cmd){
     var who=top.fix_auto?'runs for you':'by hand';
-    out+='<div class="fix"><span class="who">'+who+'</span><code>'+esc(cmd)+'</code>'+copyBtn(cmd,print)+'</div>';
+    out+='<div class="fix"><span class="who">'+who+'</span>'+fixCode(cmd)+copyBtn(cmd,print)+'</div>';
   } else if(row.fixed){
     out+='<div class="fix"><span class="who">by hand</span><code>Update to '+esc(row.fixed)+'</code></div>';
   } else if(isAdvisory(top)){
@@ -782,7 +790,7 @@ function patchingHTML(r,print){
   rowsOf(unfixed).forEach(function(row){var k=row.name+'\u0000'+row.version; if(seen[k]){seen[k].places++;return} row.places=1; seen[k]=row; rows.push(row)});
   var items=rows.map(function(row){
     return '<li><div class="l1"><span>'+esc(row.name)+(row.version?' '+esc(row.version):'')+'</span><span class="mono" style="font-size:13px">'+esc(row.ids.join(', '))+'</span>'+(row.kev?badge('kev','KEV'):'')+sevBadge(row.severity)+(row.places>1?'<span class="muted">in '+row.places+' places</span>':'')+'</div>'+
-      (row.top.fix_cmd?'<div class="fix"><code>'+esc(row.top.fix_cmd)+'</code>'+copyBtn(row.top.fix_cmd,print)+'</div>':'<div class="l2">No mitigation given.</div>')+'</li>';
+      (row.top.fix_cmd?'<div class="fix">'+fixCode(row.top.fix_cmd)+copyBtn(row.top.fix_cmd,print)+'</div>':'<div class="l2">No mitigation given.</div>')+'</li>';
   });
   body=rows.length?whole(items):'<p>No listed advisory is without a released fix.</p>';
   if(r.unfixed&&!r.partial)body+='<p class="hint">'+esc(fmt(r.unfixed))+' more applicable '+(r.unfixed===1?'advisory has':'advisories have')+' no released fix and are only counted: wpantry search --applicable</p>';
@@ -799,7 +807,7 @@ function manualHTML(r,print){
   if(!manual.length&&!optional.length){
     out+='<div class="empty"><b>No manual steps in this report</b>'+(r.partial?'CSV exports do not include suggested actions.':'Anything that needs doing by hand would be listed here with its command.')+'</div>';
   } else {
-    function li(s,opt){return '<li'+(opt?' class="opt"':'')+'><div><div class="step-cmd"><code>'+esc(s.cmd)+'</code>'+copyBtn(s.cmd,print)+'</div><div class="step-for">Clears <span class="mono">'+esc(s.findings.map(describe).slice(0,4).join('; '))+(s.findings.length>4?'; and '+(s.findings.length-4)+' more':'')+'</span></div></div></li>'}
+    function li(s,opt){return '<li'+(opt?' class="opt"':'')+'><div><div class="step-cmd">'+fixCode(s.cmd)+copyBtn(s.cmd,print)+'</div><div class="step-for">Clears <span class="mono">'+esc(s.findings.map(describe).slice(0,4).join('; '))+(s.findings.length>4?'; and '+(s.findings.length-4)+' more':'')+'</span></div></div></li>'}
     var pgM=paged(manual.map(function(s){return li(s,false)}),'manual',print,'steps'), pgO=paged(optional.map(function(s){return li(s,true)}),'optional',print,'steps');
     if(manual.length)out+='<div class="sub">Needs you · '+esc(plural(manual.length,'step'))+'</div><ol class="steps" data-paged="manual" style="counter-reset:step '+pgM.from+'">'+pgM.html+'</ol>'+pgM.nav;
     if(optional.length)out+='<div class="sub">Also worth doing (warnings) · '+esc(plural(optional.length,'step'))+'</div><ol class="steps" data-paged="optional" style="counter-reset:step '+(manual.length+pgO.from)+'">'+pgO.html+'</ol>'+pgO.nav;
@@ -819,6 +827,25 @@ function rescanCmd(sc){
 }
 // A short guide for any coding agent: it reads the findings from wpantry's
 // cache, one at a time, rather than carrying them in the prompt.
+// A fix as code: a script (several lines) with shell colours, anything
+// else as plain text. Every piece is escaped.
+function fixCode(cmd){
+  if(String(cmd).indexOf('\n')<0)return '<code>'+esc(cmd)+'</code>';
+  var re=/(#.*$)|('[^']*'?)|("\$\([^)]*\)"|"(?:\\.|[^"\\])*"?)|(\$\([^)]*\)?|\$\{?\w+\}?)|(&&|\|\||>>|[;|>])|(\s+)|([^\s;|&>'"$]+|[&$])/g;
+  return '<code class="sh">'+String(cmd).split('\n').map(function(line){
+    if(/^\s*#/.test(line))return '<span class="c">'+esc(line)+'</span>';
+    var out='', head=true, m; re.lastIndex=0;
+    while((m=re.exec(line))&&m[0]){
+      var t=m[0], cls='';
+      if(m[1])cls='c'; else if(m[2]||m[3])cls='s'; else if(m[4])cls='v'; else if(m[5]){cls='o';head=!/>/.test(t)}
+      else if(m[6]){out+=esc(t);continue}
+      else if(/^-/.test(t))cls='f'; else if(head){cls=/=/.test(t)?'v':'k';head=false}
+      if(!m[5]&&!m[6]&&cls!=='k'&&cls!=='v')head=false;
+      out+=cls?'<span class="'+cls+'">'+esc(t)+'</span>':esc(t);
+    }
+    return out;
+  }).join('\n')+'</code>';
+}
 function agentPrompt(r){
   var sc=r.original&&bundle.scope&&typeof bundle.scope==='object'?bundle.scope:null, rescan=rescanCmd(sc);
   var what=!sc?null:(sc.machine?'this computer and ':'')+(sc.paths&&sc.paths.length?'the repos and folders under '+sc.paths.map(shortPath).join(', '):'every git repo under ~');

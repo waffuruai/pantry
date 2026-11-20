@@ -175,11 +175,15 @@ const failSteps=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto&&f.status==='
 assert(section('manual').includes('1\u201310 of '+(manualCmds.length-failSteps)+' steps') && !section('manual').includes('of '+failSteps+' steps'),'ten steps a page by default; a list that fits is not paged');
 click({size:'manual',n:'100'}); // one page, for the checks below
 const manual=section('manual');
-for(const c of manualCmds)assert(manual.includes('<code>'+esc(c)+'</code>'),'by hand: '+c);
+// a script is highlighted, so it is compared as text
+const text=h=>h.replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
+for(const c of manualCmds)assert(c.includes('\n')?text(manual).includes(c):manual.includes('<code>'+esc(c)+'</code>'),'by hand: '+c);
+assert(manual.includes('<code class="sh"><span class="c"># If it&#39;s real: rotate it first') && manual.includes('<span class="k">git</span> <span class="f">-C</span>'),'a script is highlighted');
+assert(!manual.includes('<code class="sh">sudo fdesetup'),'one line is not a script');
 for(const c of autoCmds)assert(!manual.includes('<code>'+esc(c)+'</code>'),'not by hand: '+c);
 assert.equal((manual.match(/<li class="opt">|<li>/g)||[]).length,manualCmds.length);
 const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth doing')[1];
-assert(needs.includes('sudo fdesetup enable') && needs.includes('git -C ~/w/repo-b show abc:.env | sed -n 3p\ngit -C ~/.pantry-rewrite.git filter-repo') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
+assert(needs.includes('sudo fdesetup enable') && text(needs).includes('git -C ~/w/repo-b show abc:.env | sed -n 3p\ngit -C ~/.pantry-rewrite.git filter-repo') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
 assert(manual.includes('Clears <span class="mono">FileVault 1.0 · POSTURE-FILEVAULT</span>'));
 assert(manual.includes('<ol class="steps" data-paged="optional" style="counter-reset:step '+failSteps+'">'),'warnings continue the numbering');
 // the agent call-out sits under the verdict, above Scanned, with its caution; the liability notice is in the footer; the preview renders on request
@@ -211,8 +215,9 @@ assert(page.includes('2 sources not checked: coverage is incomplete.'));
 assert(page.includes('href="#risk"') && page.includes('href="#manual"') && page.includes('href="#history"'));
 
 // escaping: hostile text stays text
-load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:[{...every[4],kind:'__proto__',component:'<img src=x onerror=alert(1)>',note:'unsafe <script>',fix_cmd:'update x'}]}}],plan:[{command:'update x',mode:'manual',findings:[0]}]});
+load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:[{...every[4],kind:'__proto__',component:'<img src=x onerror=alert(1)>',note:'unsafe <script>',fix_cmd:'# <img src=y onerror=alert(2)>\necho "<b>" \'<i>\' $(<u>) >> <s>'}]}}],plan:[{command:'# <img src=y onerror=alert(2)>\necho "<b>" \'<i>\' $(<u>) >> <s>',mode:'manual',findings:[0]}]});
 assert(main().includes('&lt;img src=x onerror=alert(1)&gt;') && !main().includes('<img src=x onerror=alert(1)>'));
+assert(!main().includes('<img src=y') && !main().includes('<u>') && !main().includes('<s>') && !main().includes('<i>') && main().includes('&lt;img src=y onerror=alert(2)&gt;') && main().includes('&quot;&lt;b&gt;&quot;'),'a highlighted script stays text');
 click({open:'0'});
 assert(main().includes('unsafe &lt;script&gt;') && !main().includes('<script>unsafe'));
 assert.equal(wellFormed(main()),null);

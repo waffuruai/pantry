@@ -51,10 +51,10 @@ fn secret_hits_in_one_file_are_one_step() {
     assert!(auto.is_empty() && manual.is_empty());
     assert_eq!(optional.len(), 1, "{optional:?}");
     let step = &optional[0];
-    assert!(step.starts_with("# 5 hits in TestVectors/xts.txt (generic rules: review): if any is real"), "{step}");
-    assert!(step.contains("\ngit -C ~/repo show abc:TestVectors/xts.txt | sed -n '1p;2p;3p;4p;5p'\n"), "{step}");
+    assert!(step.starts_with("# 5 hits in TestVectors/xts.txt (generic rules: review). If any is real"), "{step}");
+    assert!(step.contains("\ngit -C \"$repo\" show abc:TestVectors/xts.txt | sed -n '1p;2p;3p;4p;5p'\n"), "{step}");
     assert!(
-        step.ends_with("printf '\\n[secret generic-api-key]\\n%s\\n' /TestVectors/xts.txt >> ~/repo/.pantryignore"),
+        step.ends_with("printf '\\n[secret generic-api-key]\\n%s\\n' /TestVectors/xts.txt >> \"$repo/.pantryignore\""),
         "{step}"
     );
     // Hits of two rules: the section for every secret rule.
@@ -62,7 +62,7 @@ fn secret_hits_in_one_file_are_one_step() {
     two[1].vuln_id = "jwt".into();
     let (_, _, optional) = plan(&two);
     assert!(
-        optional[0].ends_with("printf '\\n[secret]\\n%s\\n' /TestVectors/xts.txt >> ~/repo/.pantryignore"),
+        optional[0].ends_with("printf '\\n[secret]\\n%s\\n' /TestVectors/xts.txt >> \"$repo/.pantryignore\""),
         "{}",
         optional[0]
     );

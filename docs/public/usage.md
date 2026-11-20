@@ -25,7 +25,8 @@ wpantry help                                       # every command (wpantry help
 
 By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
-- `--path DIR` checks only the repos at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks.
+- `--path DIR` checks only the repos and files at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks. Nothing else of yours is read: not Downloads, Desktop, Documents or the temp directories. The machine inventory still runs, unless `--no-machine`.
+- `--deep` reads everything in scope, and is slower: the malware scan reads every file (all of `~`, or each `--path`) with every system's rules, and the secret scan reads history files up to 256 MB with no time limit. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
 - `--no-machine` skips the machine: repo checks only.
 
 What a run couldn't check is reported "not checked", never clean.
@@ -98,7 +99,7 @@ Project dependencies  1 fail
 
 Secrets  1 fail
     COMPONENT    ADVISORY          SEVERITY  FIX
-  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it, then purge it from history
+  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it first, then take it out of …
     line 3, commit 1a2b3c4d5e6f · AWS Access Key
 
 MCP servers  1 warn
@@ -318,8 +319,9 @@ Usage: wpantry scan [options]
 Scan this computer and its repos, then show the report. Changes nothing.
 
 Options:
-  --path <dir>              check only the repos at or under this directory; repeat it for more
-                            (default: every git repo under ~)
+  --path <dir>              check only the repos and files at or under this directory, not
+                            Downloads, Desktop, Documents or temp; repeat it for more (default:
+                            every git repo under ~)
   --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache
@@ -353,8 +355,11 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    the malware scan reads everything under ~ with every system's rules
-                            (slower)
+  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
+                            --path) with every system's rules; the secret scan, history files up to
+                            256 MB with no time limit
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
@@ -387,8 +392,9 @@ Options:
   --undo                    with an id: take wpantry's stopgap away once the real fix is installed
   --bundle <file>           ca-trust: rewrite this PEM bundle instead of the system trust store
   --hours <n>               extension-cooldown: the cooldown (default: 72)
-  --path <dir>              check only the repos at or under this directory; repeat it for more
-                            (default: every git repo under ~)
+  --path <dir>              check only the repos and files at or under this directory, not
+                            Downloads, Desktop, Documents or temp; repeat it for more (default:
+                            every git repo under ~)
   --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache
@@ -422,8 +428,11 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    the malware scan reads everything under ~ with every system's rules
-                            (slower)
+  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
+                            --path) with every system's rules; the secret scan, history files up to
+                            256 MB with no time limit
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml

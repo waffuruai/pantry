@@ -48,6 +48,11 @@ pub const BUDGET: Duration = Duration::from_secs(30 * 60);
 pub const MAX_BLOB: u64 = 10 << 20;
 /// How long listing a repo's objects, or its commits' files, may take.
 const LIST_TIMEOUT: Duration = Duration::from_secs(600);
+/// With `--deep`: no blob bigger than this is read, and a repo's scan may
+/// read history for this long. Blobs over [`MAX_BLOB`] are read one at a
+/// time, so memory stays bounded.
+pub const DEEP_MAX_BLOB: u64 = 256 << 20;
+pub const DEEP_BUDGET: Duration = Duration::from_secs(6 * 60 * 60);
 /// Bumped when the scanner's results change for the same rules.
 const SCANNER: &str = "secrets-v1";
 
@@ -83,6 +88,33 @@ impl Rules {
     }
 }
 
+/// The files of a repo's history a scan didn't read, by why.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Unread {
+    /// Not reached in the scan's time.
+    pub late: u64,
+    /// Bigger than the scan reads.
+    pub too_big: u64,
+    /// Missing from a partial clone.
+    pub missing: u64,
+}
+
+impl Unread {
+    pub fn total(&self) -> u64 {
+        self.late + self.too_big + self.missing
+    }
+
+    /// As a run's or the cache's JSON keeps it; a result without the
+    /// reasons counts them all as late.
+    fn read(v: &Value) -> Unread {
+        let count = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        if v.get("late").is_none() {
+            return Unread { late: count("unchecked"), ..Unread::default() };
+        }
+        Unread { late: count("late"), too_big: count("too_big"), missing: count("missing") }
+    }
+}
+
 /// One repo's scan: what its cached result is kept under, the tips of its
 /// refs now, and what the cache remembers.
 pub struct Job {
@@ -92,15 +124,17 @@ pub struct Job {
     fingerprint: String,
     rules: String,
     tips: BTreeSet<String>,
-    /// The tips last scanned at, the hits, how many files weren't reached,
-    /// and how many .pantryignore skipped.
-    cached: Option<(BTreeSet<String>, Vec<Value>, u64, u64)>,
+    /// The tips last scanned at, the hits, the files not read, and how
+    /// many .pantryignore skipped.
+    cached: Option<(BTreeSet<String>, Vec<Value>, Unread, u64)>,
     /// The cache file, read from the scan's own thread.
     db: PathBuf,
     /// The repo carries a `.gitleaks.toml`, which this scan doesn't use.
     pub own_policy: bool,
     /// Threads the scan may use.
     threads: usize,
+    /// `--deep`: blobs up to [`DEEP_MAX_BLOB`], for up to [`DEEP_BUDGET`].
+    pub deep: bool,
 }
 
 pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<Job> {
@@ -112,7 +146,7 @@ pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<
         let tips: BTreeSet<String> = json::strs_at(&res, "tips").into_iter().collect();
         let hits = res.get("hits")?.as_array()?.clone();
         let count = |k: &str| res.get(k).and_then(Value::as_u64).unwrap_or(0);
-        Some((tips, hits, count("unchecked"), count("skipped")))
+        Some((tips, hits, Unread::read(&res), count("skipped")))
     });
     Ok(Job {
         repo: repo.to_path_buf(),
@@ -124,6 +158,7 @@ pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<
         db: cache.file().to_path_buf(),
         own_policy,
         threads,
+        deep: false,
     })
 }
 
@@ -210,7 +245,7 @@ pub fn stale(job: &Job, refresh: bool, offline: bool) -> bool {
     if offline {
         return false;
     }
-    refresh || job.cached.as_ref().is_none_or(|(tips, _, unchecked, _)| *tips != job.tips || *unchecked > 0)
+    refresh || job.cached.as_ref().is_none_or(|(tips, _, unread, _)| *tips != job.tips || unread.total() > 0)
 }
 
 /// A blob of history to read: its hash, the first path it's at, its size.
@@ -436,16 +471,16 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
     // What .pantryignore skips for the secret check isn't read at all.
     let ignore = crate::checks::ignore::Ignore::load(&job.repo.join(crate::checks::ignore::FILE)).and_then(|r| r.ok());
     let skipped = |path: &str| ignore.as_ref().is_some_and(|ig| ig.skips_kind("secret", path));
-    let (mut wanted, mut unread): (Vec<Blob>, Vec<Blob>) =
+    let (mut wanted, mut ignored): (Vec<Blob>, Vec<Blob>) =
         all.into_iter().filter(|b| !scanner.skips_path(&b.path)).partition(|b| !skipped(&b.path));
     // A blob is listed at the first path it's found at. One the file skips
     // there is read anyway when another of its paths isn't skipped, at that
     // path: ignoring a copy mustn't hide the original.
-    if !unread.is_empty() {
-        let shas: HashSet<String> = unread.iter().map(|b| b.sha.clone()).collect();
+    if !ignored.is_empty() {
+        let shas: HashSet<String> = ignored.iter().map(|b| b.sha.clone()).collect();
         let paths = paths_of(&job.repo, &shas);
         let mut still = Vec::new();
-        for mut b in unread {
+        for mut b in ignored {
             let other = paths.get(&b.sha).and_then(|ps| ps.iter().find(|p| !skipped(p) && !scanner.skips_path(p)));
             match other {
                 Some(p) => {
@@ -455,14 +490,14 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
                 None => still.push(b),
             }
         }
-        unread = still;
+        ignored = still;
     }
     let cached = cached_blobs(&job.db, &job.rules, &wanted);
     for b in &wanted {
         if cached.contains_key(&blob_key(b)) {
             continue;
         }
-        if b.size > MAX_BLOB {
+        if b.size > if job.deep { DEEP_MAX_BLOB } else { MAX_BLOB } {
             too_big += 1;
         } else {
             todo.push(b);
@@ -472,35 +507,42 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
     // data dumps, so a scan cut short by the budget has read what matters
     // most. Ties stay newest first.
     todo.sort_by_key(|b| b.size);
-    let deadline = Instant::now() + BUDGET;
+    let deadline = Instant::now() + if job.deep { DEEP_BUDGET } else { BUDGET };
     let results: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
-    let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(job.threads * 2);
-    let rx = Mutex::new(rx);
-    std::thread::scope(|s| -> Result<usize> {
-        for _ in 0..job.threads.max(1) {
-            s.spawn(|| {
-                loop {
-                    let next = rx.lock().expect("lock").recv();
-                    let Ok((blob, data)) = next else { break };
-                    // Out of time: the blob is left for the next scan.
-                    let Some(found) = scanner.scan_until(&data, &blob.path, None, Some(deadline)) else { continue };
-                    let hits: Vec<Value> = found
-                        .into_iter()
-                        .map(|f| {
-                            json!({"rule": f.rule, "line": f.start_line, "description": f.description,
-                                   "confidence": confidence(f.confidence), "tags": f.tags})
-                        })
-                        .collect();
-                    results.lock().expect("lock").push((blob_key(blob), Value::Array(hits)));
-                }
-            });
+    // The blobs over MAX_BLOB a deep scan reads come last, one at a time.
+    let split = todo.partition_point(|b| b.size <= MAX_BLOB);
+    for (part, threads) in [(&todo[..split], job.threads.max(1)), (&todo[split..], 1)] {
+        if part.is_empty() {
+            continue;
         }
-        let read = read_blobs(&job.repo, &todo, deadline, |blob, data| tx.send((blob, data)).is_ok());
-        drop(tx);
-        read
-    })?;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(threads * 2);
+        let rx = Mutex::new(rx);
+        std::thread::scope(|s| -> Result<usize> {
+            for _ in 0..threads {
+                s.spawn(|| {
+                    loop {
+                        let next = rx.lock().expect("lock").recv();
+                        let Ok((blob, data)) = next else { break };
+                        // Out of time: the blob is left for the next scan.
+                        let Some(found) = scanner.scan_until(&data, &blob.path, None, Some(deadline)) else { continue };
+                        let hits: Vec<Value> = found
+                            .into_iter()
+                            .map(|f| {
+                                json!({"rule": f.rule, "line": f.start_line, "description": f.description,
+                                       "confidence": confidence(f.confidence), "tags": f.tags})
+                            })
+                            .collect();
+                        results.lock().expect("lock").push((blob_key(blob), Value::Array(hits)));
+                    }
+                });
+            }
+            let read = read_blobs(&job.repo, part, deadline, |blob, data| tx.send((blob, data)).is_ok());
+            drop(tx);
+            read
+        })?;
+    }
     let new = results.into_inner().expect("lock");
-    let unchecked = (todo.len() - new.len()) as u64 + too_big + missing;
+    let unread = Unread { late: (todo.len() - new.len()) as u64, too_big, missing };
     // Every blob's hits, cached or new, with the commit that added it.
     let by_key: HashMap<&str, &Value> =
         cached.iter().map(|(k, v)| (k.as_str(), v)).chain(new.iter().map(|(k, v)| (k.as_str(), v))).collect();
@@ -523,10 +565,9 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
                              "tags": h.get("tags").cloned().unwrap_or(Value::Array(vec![]))}));
         }
     }
-    Ok(
-        json!({"tips": job.tips.iter().collect::<Vec<_>>(), "hits": rows, "unchecked": unchecked, "skipped": unread.len(),
-              "new": new.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()}),
-    )
+    Ok(json!({"tips": job.tips.iter().collect::<Vec<_>>(), "hits": rows, "unchecked": unread.total(),
+               "late": unread.late, "too_big": unread.too_big, "missing": unread.missing, "skipped": ignored.len(),
+              "new": new.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()}))
 }
 
 fn confidence(c: Option<rules::Confidence>) -> &'static str {
@@ -537,8 +578,8 @@ fn confidence(c: Option<rules::Confidence>) -> &'static str {
     }
 }
 
-/// The leaks in the job's repo, how many of its files weren't checked, and
-/// how many its .pantryignore skipped:
+/// The leaks in the job's repo, the files it didn't read and why, and how
+/// many its .pantryignore skipped:
 /// the cached result while the refs haven't moved, else `ran` (a
 /// [`run_job`] made ahead, beside other work). A run's new blob results and
 /// its summary are stored.
@@ -548,10 +589,10 @@ pub fn finish(
     ran: Option<Result<Value>>,
     refresh: bool,
     offline: bool,
-) -> Result<(Vec<Leak>, u64, u64)> {
-    let (hits, unchecked, skipped) = if !stale(job, refresh, offline) {
+) -> Result<(Vec<Leak>, Unread, u64)> {
+    let (hits, unread, skipped) = if !stale(job, refresh, offline) {
         match &job.cached {
-            Some((_, hits, unchecked, skipped)) => (hits.clone(), *unchecked, *skipped),
+            Some((_, hits, unread, skipped)) => (hits.clone(), *unread, *skipped),
             None => return Err(Error::Offline(format!("{}: offline and not cached", job.key))),
         }
     } else {
@@ -564,16 +605,16 @@ pub fn finish(
                 rusqlite::params![key, job.rules, hits.to_string()],
             )?;
         }
-        let count = |k: &str| res.get(k).and_then(Value::as_u64).unwrap_or(0);
-        let (unchecked, skipped) = (count("unchecked"), count("skipped"));
+        let (unread, skipped) = (Unread::read(&res), res.get("skipped").and_then(Value::as_u64).unwrap_or(0));
         let hits = res.get("hits").and_then(Value::as_array).cloned().unwrap_or_default();
         cache.put_run(
             &job.key,
             &job.fingerprint,
-            &json!({"tips": res.get("tips"), "hits": hits, "unchecked": unchecked, "skipped": skipped}),
+            &json!({"tips": res.get("tips"), "hits": hits, "unchecked": unread.total(), "late": unread.late,
+                    "too_big": unread.too_big, "missing": unread.missing, "skipped": skipped}),
         )?;
         cache.commit()?;
-        (hits, unchecked, skipped)
+        (hits, unread, skipped)
     };
     let leaks = hits
         .iter()
@@ -588,7 +629,7 @@ pub fn finish(
             tags: json::strs_at(f, "tags"),
         })
         .collect();
-    Ok((leaks, unchecked, skipped))
+    Ok((leaks, unread, skipped))
 }
 
 /// Secret scans at once on a first run (`--jobs`): each is CPU-bound, so
@@ -602,7 +643,10 @@ pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], rules: &Rules) -> Result<
     let mut jobs: Vec<(Result<Job>, bool)> = repos
         .iter()
         .map(|(_, root)| {
-            let job = job(&scan.cache, root, rules, 1);
+            let job = job(&scan.cache, root, rules, 1).map(|mut j| {
+                j.deep = scan.opts.deep;
+                j
+            });
             let stale = job.as_ref().is_ok_and(|j| stale(j, scan.opts.refresh, scan.opts.offline));
             Ok((job, stale))
         })
@@ -642,7 +686,7 @@ pub(crate) fn secrets(
                 ..Default::default()
             });
         }
-        let (found, unchecked, skipped) = match job.and_then(|job| finish(&scan.cache, &job, ran, refresh, offline)) {
+        let (found, unread, skipped) = match job.and_then(|job| finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
             Err(e) if e.is_source() => {
                 scan.unchecked(&format!("secrets in {name}'s history"), &e.to_string());
@@ -652,10 +696,10 @@ pub(crate) fn secrets(
         };
         scan.count("repos scanned for secrets", 1);
         scan.count("files in git history skipped by a repo's .pantryignore", skipped as i64);
-        if unchecked > 0 {
+        if unread.total() > 0 {
             scan.unchecked(
-                &format!("secrets in {unchecked} files of {name}'s history"),
-                "not reached in this scan's time, over 10 MB, or missing from a partial clone; the next scan goes on from here",
+                &format!("secrets in {} files of {name}'s history", unread.total()),
+                &unread_note(&unread, &short(&root.to_string_lossy()), scan.opts.deep),
             );
         }
         for f in found {
@@ -673,18 +717,125 @@ pub(crate) fn secrets(
                     decoded.unwrap_or_default(),
                     if sure { String::new() } else { format!(" (review: {} confidence rule)", f.confidence) }
                 ),
-                fix_cmd: format!(
-                    "If it's real: rotate it, then purge it from history. If not: add {} under [secret {}] in {}/{}",
-                    f.file,
-                    f.rule,
-                    short(&root.to_string_lossy()),
-                    crate::checks::ignore::FILE
-                ),
+                fix_cmd: fix(&short(&root.to_string_lossy()), &f.file, &[(&f.rule, f.line, &f.commit)], !sure),
                 ..Default::default()
             });
         }
     }
     Ok(())
+}
+
+/// Why history files went unread, and the command that reads them: a deep
+/// scan of the one repo for those out of time or too big, `git backfill`
+/// for a partial clone's.
+fn unread_note(u: &Unread, repo: &str, deep: bool) -> String {
+    let mut why = Vec::new();
+    if u.late > 0 {
+        why.push(format!("{} not reached in this scan's time", u.late));
+    }
+    if u.too_big > 0 {
+        why.push(format!("{} over {} MB", u.too_big, if deep { DEEP_MAX_BLOB } else { MAX_BLOB } >> 20));
+    }
+    if u.missing > 0 {
+        why.push(format!("{} missing from this partial clone", u.missing));
+    }
+    let r = sh_path(repo);
+    let mut out = why.join(", ");
+    if !deep && u.late + u.too_big > 0 {
+        out.push_str(&format!(
+            ". Scan this repo on its own, with files up to {} MB and no time limit: `wpantry scan --path {r} --no-machine --deep`",
+            DEEP_MAX_BLOB >> 20
+        ));
+    } else if deep && u.late > 0 {
+        out.push_str(". The next scan goes on from here");
+    }
+    if u.missing > 0 {
+        out.push_str(&format!(". Download them with `git -C {r} backfill` (git 2.49+), then scan again"));
+    }
+    out
+}
+
+/// What to do about secrets found in one file of a repo's history, as a
+/// script to read and run a line at a time: show the line each secret is
+/// on, then, if one is real (and rotated), rewrite history without it in
+/// a fresh mirror clone and force-push; if none is, add the file to the
+/// repo's .pantryignore. The secret itself is never in it: it is pasted
+/// at a prompt with echo off. `repo` is a `~/…` path, `hits` the rule,
+/// line and commit of each, and `review` whether only lower-confidence
+/// rules hit.
+pub fn fix(repo: &str, file: &str, hits: &[(&str, i64, &str)], review: bool) -> String {
+    use crate::checks::supply_chain::quote;
+    let r = sh_path(repo);
+    let ignore = format!("{}/{}", repo, crate::checks::ignore::FILE);
+    let one = hits.len() == 1;
+    let mut by_commit: Vec<(&str, Vec<i64>)> = Vec::new();
+    for (_, line, commit) in hits {
+        match by_commit.iter_mut().find(|(c, _)| c == commit) {
+            Some((_, lines)) if !lines.contains(line) => lines.push(*line),
+            Some(_) => {}
+            None => by_commit.push((commit, vec![*line])),
+        }
+    }
+    let mut rules: Vec<&str> = hits.iter().map(|(rule, _, _)| *rule).collect();
+    rules.sort_unstable();
+    rules.dedup();
+    let section = match rules[..] {
+        [rule] => format!("[secret {rule}]"),
+        _ => "[secret]".to_string(),
+    };
+    let review = if review { " (generic rules: review)" } else { "" };
+    let mut out = vec![if one {
+        format!(
+            "# If it's real{review}: rotate it first, then take it out of history (git-filter-repo 2.47+). This rewrites history: warn everyone with a clone, and re-clone afterwards."
+        )
+    } else {
+        format!(
+            "# {} hits in {file}{review}: if any is real, rotate it first, then take it out of history (git-filter-repo 2.47+), pasting each secret once. This rewrites history: warn everyone with a clone, and re-clone afterwards.",
+            hits.len()
+        )
+    }];
+    for (commit, lines) in by_commit.iter().take(3) {
+        let lines: Vec<String> = lines.iter().map(|l| format!("{l}p")).collect();
+        out.push(format!(
+            "git -C {r} show {} | sed -n {}",
+            quote(&format!("{commit}:{file}")),
+            quote(&lines.join(";"))
+        ));
+    }
+    out.push(
+        "printf 'Paste the secret: '; stty -echo; read -r SECRET; stty echo; echo; printf '%s==>REDACTED\\n' \"$SECRET\" >> ~/.pantry-redact; unset SECRET".into(),
+    );
+    out.push(format!("git clone --mirror \"$(git -C {r} remote get-url origin)\" ~/.pantry-rewrite.git"));
+    out.push("git -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact && git -C ~/.pantry-rewrite.git push --force --mirror origin".into());
+    out.push("rm -rf ~/.pantry-redact ~/.pantry-rewrite.git".into());
+    out.push(if one {
+        "# If it isn't a secret: leave the file out of this rule's findings.".into()
+    } else {
+        format!(
+            "# If none is: leave the file out of {} findings.",
+            if rules.len() == 1 { "this rule's" } else { "the secret rules'" }
+        )
+    });
+    out.push(format!("printf '\\n{section}\\n%s\\n' {} >> {}", quote(&format!("/{file}")), sh_path(&ignore)));
+    out.join("\n")
+}
+
+/// The repo and file a secret's [`fix`] is for, read back from it.
+pub fn fix_target(fix: &str) -> Option<(String, String)> {
+    let line = fix.lines().find(|l| l.starts_with("git -C ") && l.contains(" show "))?;
+    let words = crate::remediation::shlex_split(line)?;
+    let (_, file) = words.get(4)?.split_once(':')?;
+    Some((words.get(2)?.clone(), file.to_string()))
+}
+
+/// A path for the shell: quoted, with a leading `~/` left outside the
+/// quotes so it still expands.
+fn sh_path(p: &str) -> String {
+    use crate::checks::supply_chain::quote;
+    match p.strip_prefix("~/") {
+        Some(rest) => format!("~/{}", quote(rest)),
+        None => quote(p),
+    }
 }
 
 #[cfg(test)]

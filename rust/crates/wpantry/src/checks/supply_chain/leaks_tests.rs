@@ -140,7 +140,7 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(ran["unchecked"], 0);
     let scanned = ran["new"].as_array().unwrap().len();
     let (leaks, unchecked, _) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
-    assert_eq!((leaks.len(), unchecked, leaks[0].confidence.as_str()), (1, 0, "high"));
+    assert_eq!((leaks.len(), unchecked.total(), leaks[0].confidence.as_str()), (1, 0, "high"));
     // Cached: the next job isn't stale, and finish reads it without a run.
     let j = job(&s.cache, &repo, &rules, 2).unwrap();
     assert!(!stale(&j, false, false));
@@ -273,10 +273,7 @@ fn secrets_from_a_scan_run_ahead() {
     );
     assert_eq!(
         aws[0].fix_cmd,
-        format!(
-            "If it's real: rotate it, then purge it from history. If not: add x.env under [secret aws-access-token] in {}/.pantryignore",
-            short(&root.to_string_lossy())
-        )
+        fix(&short(&root.to_string_lossy()), "x.env", &[("aws-access-token", 3, "0123456789ab")], false)
     );
     let generic = testing::by_id(&s, "generic-api-key");
     assert_eq!(
@@ -329,4 +326,90 @@ fn a_partial_clones_missing_files_are_not_checked_and_not_fetched() {
     assert_eq!(ran["unchecked"], 3, "the three files history holds, none fetched");
     let listed = run(&git_argv(&part, &["rev-list", "--objects", "--all", "--missing=print"]), Duration::from_secs(10));
     assert_eq!(listed.lines().filter(|l| l.starts_with('?')).count(), 3, "still missing: {listed}");
+}
+
+/// A secret's fix is a script: the line to look at, the history rewrite in
+/// a mirror clone, and the ignore entry; paths quoted, `~` left to expand,
+/// and never the secret itself.
+#[test]
+fn a_secrets_fix_is_the_commands_to_run() {
+    let one = fix("~/my repo", "config/app's.env", &[("aws-access-token", 3, "0123456789ab")], false);
+    let lines: Vec<&str> = one.lines().collect();
+    assert!(lines[0].starts_with("# If it's real: rotate it first"), "{one}");
+    assert_eq!(lines[1], "git -C ~/'my repo' show '0123456789ab:config/app'\"'\"'s.env' | sed -n 3p");
+    assert!(lines[2].contains("stty -echo; read -r SECRET") && lines[2].contains(">> ~/.pantry-redact"), "{one}");
+    assert_eq!(lines[3], "git clone --mirror \"$(git -C ~/'my repo' remote get-url origin)\" ~/.pantry-rewrite.git");
+    assert!(
+        lines[4].contains("filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact")
+            && lines[4].ends_with("push --force --mirror origin")
+    );
+    assert_eq!(
+        lines[7],
+        "printf '\\n[secret aws-access-token]\\n%s\\n' '/config/app'\"'\"'s.env' >> ~/'my repo/.pantryignore'"
+    );
+    // Each word reads back as the shell would split it.
+    assert_eq!(fix_target(&one), Some(("~/my repo".to_string(), "config/app's.env".to_string())));
+    for l in one.lines().filter(|l| !l.starts_with('#')) {
+        assert!(crate::remediation::shlex_split(l).is_some(), "{l}");
+    }
+    // Several hits: one line per commit, at most three.
+    let many = fix(
+        "~/r",
+        "a.txt",
+        &[("jwt", 1, "c1"), ("jwt", 9, "c1"), ("jwt", 2, "c2"), ("jwt", 3, "c3"), ("jwt", 4, "c4")],
+        true,
+    );
+    assert!(many.starts_with("# 5 hits in a.txt (generic rules: review)"), "{many}");
+    assert!(
+        many.contains("git -C ~/r show c1:a.txt | sed -n '1p;9p'\n")
+            && many.contains("c3:a.txt")
+            && !many.contains("c4:a.txt"),
+        "{many}"
+    );
+}
+
+/// A file over 10 MB is left unread, and said so; `--deep` reads it, and
+/// the note names the command that would.
+#[test]
+fn a_deep_scan_reads_what_a_default_one_is_too_big_for() {
+    let d = TempDir::new("secrets-deep").unwrap();
+    let home = d.path().join("home");
+    let repo = d.path().join("big");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut dump = "x = 1\n".repeat((MAX_BLOB as usize / 6) + 1);
+    dump.push_str(&format!("token = \"{}\"\n", token()));
+    testing::write(&repo, "dump.txt", dump);
+    for args in [&["init", "-q"][..], &["add", "."], &["commit", "-q", "-m", "dump"]] {
+        if !git(&repo, &home, args) {
+            eprintln!("skipped: no git");
+            return;
+        }
+    }
+    let net = Fake::offline();
+    let s = testing::scan(&net, &d, Options::default());
+    let rules = Rules::new(None);
+    let scanner = rules.scanner().unwrap();
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    let ran = run_job(&j, &scanner).unwrap();
+    assert!(ran["hits"].as_array().unwrap().is_empty());
+    assert_eq!(Unread::read(&ran), Unread { too_big: 1, ..Unread::default() });
+    let mut j = job(&s.cache, &repo, &rules, 2).unwrap();
+    j.deep = true;
+    let ran = run_job(&j, &scanner).unwrap();
+    assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "{ran}");
+    assert_eq!(Unread::read(&ran).total(), 0);
+}
+
+#[test]
+fn the_unread_note_gives_the_command_that_reads_them() {
+    let u = Unread { late: 2, too_big: 1, missing: 3 };
+    assert_eq!(
+        unread_note(&u, "~/my repo", false),
+        "2 not reached in this scan's time, 1 over 10 MB, 3 missing from this partial clone. \
+         Scan this repo on its own, with files up to 256 MB and no time limit: `wpantry scan --path ~/'my repo' --no-machine --deep`. \
+         Download them with `git -C ~/'my repo' backfill` (git 2.49+), then scan again"
+    );
+    assert_eq!(unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true), "1 over 256 MB");
+    // A result cached before the reasons were kept counts them as late.
+    assert_eq!(Unread::read(&json!({"unchecked": 4})), Unread { late: 4, ..Unread::default() });
 }

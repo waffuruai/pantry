@@ -62,7 +62,25 @@ run || { cat "$tmp/out" >&2; fail "a good release should install"; }
 grep -q "checksum matches" "$tmp/out" || fail "it should say the checksum matched"
 grep -q "only the checksum was checked" "$tmp/out" || fail "without a verifier it should say only the checksum was checked"
 grep -q "Run: wpantry scan$" "$tmp/out" || fail "it should suggest wpantry scan, a command that exists"
+grep -q "runs .*, not this install" "$tmp/out" && fail "with no other wpantry on PATH it shouldn't warn about one"
 echo "✓ installs a good release, says when only the checksum was checked, and suggests wpantry scan"
+
+# An older wpantry earlier on PATH runs instead: say which, and never run it.
+mkdir -p "$tmp/old" "$tmp/mise/installs/pantry/0.4.0"
+for d in "$tmp/old" "$tmp/mise/installs/pantry/0.4.0"; do
+  printf '#!/bin/sh\ntouch "%s/ran"\necho "wpantry 0.4.0 (rust, schema 1)"\n' "$d" > "$d/$binname"
+  chmod +x "$d/$binname"
+done
+run PATH="$tmp/old:$tmp/bin:$tmp/path" || { cat "$tmp/out" >&2; fail "a shadowed install should still install"; }
+grep -q "wpantry runs $tmp/old/$binname, not this install" "$tmp/out" || { cat "$tmp/out" >&2; fail "it should name the wpantry that runs instead"; }
+grep -q "that one is mise's" "$tmp/out" && fail "a wpantry outside mise shouldn't get the mise hint"
+[ ! -e "$tmp/old/ran" ] || fail "it should never run the other wpantry"
+run PATH="$tmp/mise/installs/pantry/0.4.0:$tmp/bin:$tmp/path" || fail "a mise-shadowed install should still install"
+grep -q "that one is mise's" "$tmp/out" || { cat "$tmp/out" >&2; fail "a wpantry from mise should get the mise hint"; }
+run PATH="$tmp/bin:$tmp/old:$tmp/path" || fail "an install first on PATH should install"
+grep -q "not this install" "$tmp/out" && { cat "$tmp/out" >&2; fail "an install first on PATH shouldn't warn"; }
+rm -rf "${tmp:?}/old" "${tmp:?}/mise"
+echo "✓ names an older wpantry earlier on PATH, with a hint when it's mise's, and never runs it"
 
 run WPANTRY_REQUIRE_SIGNATURE=1 && fail "WPANTRY_REQUIRE_SIGNATURE=1 with no verifier should fail"
 [ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed when the signature is required and can't be checked"

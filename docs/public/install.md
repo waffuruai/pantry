@@ -24,6 +24,7 @@ curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.
 - Picks the binary for your OS and CPU and checks it against `SHA256SUMS`.
 - Verifies the signature with the first of `packslip`, `gh` (logged in) or `cosign` you have, then installs to `~/.local/bin/wpantry`.
 - With none of the three, it says only the checksum was checked. `WPANTRY_REQUIRE_SIGNATURE=1` makes that an error.
+- If another `wpantry` comes first on PATH (an older install, a mise pin), it says which one runs instead. Remove that one, or put the install directory first on PATH. `command -v wpantry` and `wpantry version` show which one you're running.
 - Options: `--version vX.Y.Z` and `--dir DIR` (or `WPANTRY_VERSION` and `WPANTRY_INSTALL_DIR`).
 
 Each release ships its own `install.sh`, attested like the binaries. To read it first:

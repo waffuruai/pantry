@@ -185,4 +185,13 @@ case ":$PATH:" in
   *":$dir:"*) ;;
   *) warn "$dir is not on PATH: add it to your shell profile (export PATH=\"$dir:\$PATH\")" ;;
 esac
+# Another wpantry earlier on PATH (an older install, a mise pin) would run
+# instead of this one. Name it; never run it.
+found=$(command -v "$NAME" 2>/dev/null) || found=
+if [ -n "$found" ] && [ "$found" != "$dir/$dest" ] && ! [ "$found" -ef "$dir/$dest" ]; then
+  warn "$NAME runs $found, not this install: remove it, or put $dir first on PATH (export PATH=\"$dir:\$PATH\")"
+  case "$found" in
+    */mise/*) warn "  that one is mise's: change or remove its pin (mise ls, then mise use -g or mise unuse -g)" ;;
+  esac
+fi
 say "Run: ${bold}$NAME scan${reset}"

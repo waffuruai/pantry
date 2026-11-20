@@ -14,6 +14,7 @@ wpantry version
 - mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
 - It remembers the signer and refuses a later release signed by anyone else.
 - Pin a version with `packslip:github.com/waffuruai/pantry@0.5.0`, or put that line in a project's `mise.toml`.
+- mise puts `wpantry` on PATH only in a shell where it's active. If `wpantry` isn't found, add `eval "$(mise activate zsh)"` (or `bash`, `fish`) to your shell's rc file and open a new shell, or put `~/.local/share/mise/shims` on PATH. If an older `wpantry` runs instead, `command -v wpantry` shows which one: remove it.
 
 **With the install script** (no mise):
 
@@ -24,7 +25,7 @@ curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.
 - Picks the binary for your OS and CPU and checks it against `SHA256SUMS`.
 - Verifies the signature with the first of `packslip`, `gh` (logged in) or `cosign` you have, then installs to `~/.local/bin/wpantry`.
 - With none of the three, it says only the checksum was checked. `WPANTRY_REQUIRE_SIGNATURE=1` makes that an error.
-- If another `wpantry` comes first on PATH (an older install, a mise pin), it says which one runs instead. Remove that one, or put the install directory first on PATH. `command -v wpantry` and `wpantry version` show which one you're running.
+- If another `wpantry` comes first on PATH (an older install, a mise pin), it says which one runs instead and asks, on the terminal, whether to replace it with a link to this install, or for mise's, whether to move mise to this version (`mise use -g`). It never runs the other one. `WPANTRY_REPLACE=1` or `0` answers ahead, and with no terminal it only warns. `command -v wpantry` and `wpantry version` show which one you're running.
 - Options: `--version vX.Y.Z` and `--dir DIR` (or `WPANTRY_VERSION` and `WPANTRY_INSTALL_DIR`).
 
 Each release ships its own `install.sh`, attested like the binaries. To read it first:

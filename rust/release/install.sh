@@ -13,7 +13,9 @@
 # install says so; WPANTRY_REQUIRE_SIGNATURE=1 makes that an error.
 #
 # Environment: WPANTRY_VERSION (vX.Y.Z or latest), WPANTRY_INSTALL_DIR
-# (default ~/.local/bin), WPANTRY_REQUIRE_SIGNATURE=1, NO_COLOR.
+# (default ~/.local/bin), WPANTRY_REQUIRE_SIGNATURE=1, NO_COLOR, and
+# WPANTRY_REPLACE=1 or 0 to answer ahead whether to replace another wpantry
+# that comes first on PATH (asked on the terminal; without one, it isn't).
 # WPANTRY_DOWNLOAD_BASE replaces the release download URL, for a mirror or a
 # test; the signature checks still name this repository.
 #
@@ -44,6 +46,15 @@ warn() { say "${yellow}⚠${reset} $*"; }
 die() {
   say "${red}✗ $*${reset}"
   exit 1
+}
+
+# A yes/no question on the terminal: under `curl | sh`, stdin is the
+# script. WPANTRY_REPLACE=1 or 0 answers it ahead; no terminal is a no.
+ask() {
+  case "${WPANTRY_REPLACE:-}" in 1) return 0 ;; 0) return 1 ;; esac
+  { printf '%s [y/N] ' "$1" > /dev/tty; } 2>/dev/null || return 1
+  answer=$( (read -r a < /dev/tty && printf '%s' "$a") 2>/dev/null) || return 1
+  case "$answer" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
 
 usage() {
@@ -186,12 +197,34 @@ case ":$PATH:" in
   *) warn "$dir is not on PATH: add it to your shell profile (export PATH=\"$dir:\$PATH\")" ;;
 esac
 # Another wpantry earlier on PATH (an older install, a mise pin) would run
-# instead of this one. Name it; never run it.
+# instead of this one: say which, and offer to point it here. It is never run.
 found=$(command -v "$NAME" 2>/dev/null) || found=
 if [ -n "$found" ] && [ "$found" != "$dir/$dest" ] && ! [ "$found" -ef "$dir/$dest" ]; then
-  warn "$NAME runs $found, not this install: remove it, or put $dir first on PATH (export PATH=\"$dir:\$PATH\")"
+  warn "$NAME runs $found, not this install"
   case "$found" in
-    */mise/*) warn "  that one is mise's: change or remove its pin (mise ls, then mise use -g or mise unuse -g)" ;;
+    */mise/*)
+      pin="packslip:github.com/$REPO@${version#v}"
+      if command -v mise >/dev/null 2>&1 && ask "That one is mise's. Move mise to ${version} (mise use -g $pin)?"; then
+        if mise use -g "$pin" >&2; then
+          ok "mise now runs $NAME ${version#v}"
+        else
+          warn "mise use -g $pin failed: run it yourself, or remove mise's pin (mise unuse -g packslip:github.com/$REPO)"
+        fi
+      else
+        warn "  that one is mise's: move it to this version (mise use -g $pin), or remove its pin (mise unuse -g packslip:github.com/$REPO)"
+      fi
+      ;;
+    *)
+      if ask "Replace $found with a link to this install?"; then
+        if ln -sfn "$dir/$dest" "$found" 2>/dev/null; then
+          ok "$found now runs this install"
+        else
+          warn "can't replace $found: remove it, or put $dir first on PATH (export PATH=\"$dir:\$PATH\")"
+        fi
+      else
+        warn "  remove it, or put $dir first on PATH (export PATH=\"$dir:\$PATH\")"
+      fi
+      ;;
   esac
 fi
 say "Run: ${bold}$NAME scan${reset}"

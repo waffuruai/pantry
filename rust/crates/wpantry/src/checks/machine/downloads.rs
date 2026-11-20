@@ -21,6 +21,10 @@ pub(crate) fn downloads(scan: &mut Scan) {
         );
         return;
     }
+    // A scan limited by --path reads only those folders.
+    if scan.opts.scoped() {
+        return;
+    }
     let dirs = dirs();
     if dirs.is_empty() {
         return;

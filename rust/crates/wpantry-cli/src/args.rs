@@ -122,7 +122,12 @@ pub struct Check {
 pub enum Target {
     /// What can be fixed, from the latest scan.
     List,
-    /// One advisory, or one of wpantry's own fixes by name, upper-cased.
+    /// The first finding to fix that no fix has been tried for since the scan.
+    Next,
+    /// A committed secret, by finding id: take it out of history, guided.
+    Secret(String),
+    /// One advisory, one finding (`F-…`), or one of wpantry's own fixes
+    /// by name, upper-cased.
     Id(String),
 }
 
@@ -193,6 +198,8 @@ pub enum Command {
         /// `--bundle FILE` (`ca-trust`) and `--hours N` (`extension-cooldown`).
         bundle: Option<PathBuf>,
         hours: u32,
+        /// `list` and `next`: as JSON.
+        json: bool,
     },
     Skill,
     /// `licenses`: the third-party notices built into the binary.
@@ -310,8 +317,9 @@ pub fn program() -> Cli {
                 .summary("Scan, run the unattended fixes and stopgaps, then re-check (list, or one id)")
                 .arg(Arg::new(
                     "[target]",
-                    "all: a scan, the unattended fixes, every stopgap that applies, a re-check. list: what can be fixed, from the latest scan; nothing runs. An advisory id (CVE-…, GHSA-…; an alias works): its unattended fixes, wpantry's stopgap for it, the steps that need you. Or one of wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots), extension-cooldown (editors wait before installing a new extension version), cve-2026-98432",
+                    "all: a scan, the unattended fixes, every stopgap that applies, a re-check. list: what can be fixed, from the latest scan, in fix order with each finding's id; nothing runs. next: the first of those no fix has been tried for since the scan (for agents, with --json). A finding id (F-…, from list or the JSON report): its fix. secret ID: take that committed secret out of git history, a step at a time, at a terminal. An advisory id (CVE-…, GHSA-…; an alias works): its unattended fixes, wpantry's stopgap for it, the steps that need you. Or one of wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots), extension-cooldown (editors wait before installing a new extension version), cve-2026-98432",
                 ).default("all"))
+                .arg(Arg::new("[id]", "with secret: the finding id (F-…) of a committed secret"))
                 .option("--dry-run", "print what would run or be written; change nothing")
                 .option("--yes", "run the fixes and write the stopgaps without asking")
                 .option("--undo", "with an id: take wpantry's stopgap away once the real fix is installed")
@@ -546,12 +554,25 @@ fn command(m: &Matches) -> Result<Command, Exit> {
                 Command::Scan(check(m, true)?)
             }
             word => {
+                if word != "secret" && m.arg("id").is_some() {
+                    return Err(m.error("too many arguments for 'fix': only secret takes an id after it"));
+                }
                 let target = match word {
                     "list" => Target::List,
+                    "next" => Target::Next,
+                    "secret" => match m.arg("id") {
+                        Some(id) if wpantry::remediation::queue::is_id(id) => Target::Secret(id.to_ascii_uppercase()),
+                        Some(other) => {
+                            return Err(m.error(&format!(
+                                "argument 'id' expects a finding id such as F-3fa9c01b2e (wpantry fix list shows them), got '{other}'"
+                            )));
+                        }
+                        None => return Err(m.error("secret takes a finding id: wpantry fix secret F-3fa9c01b2e")),
+                    },
                     id if id.contains('-') && id.len() >= 6 => Target::Id(id.trim().to_ascii_uppercase()),
                     other => {
                         return Err(m.error(&format!(
-                            "argument 'target' expects all, list, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got '{other}'"
+                            "argument 'target' expects all, list, next, secret ID, a finding id such as F-3fa9c01b2e, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got '{other}'"
                         )));
                     }
                 };
@@ -560,7 +581,7 @@ fn command(m: &Matches) -> Result<Command, Exit> {
                         m.error("--dry-run and --undo can't be combined: --dry-run prints what applying would write")
                     );
                 }
-                if target == Target::List && flag("undo") {
+                if matches!(target, Target::List | Target::Next | Target::Secret(_)) && flag("undo") {
                     return Err(m.error("--undo takes one id: wpantry fix CVE-2026-98432 --undo"));
                 }
                 Command::Mitigate {
@@ -572,6 +593,7 @@ fn command(m: &Matches) -> Result<Command, Exit> {
                     bundle: m.value("bundle").map(expand),
                     hours: at_least_one::<u32>(m, "hours", "a number of hours")?
                         .unwrap_or(wpantry::remediation::editors::COOLDOWN_HOURS),
+                    json: flag("json"),
                 }
             }
         },

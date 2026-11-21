@@ -607,13 +607,25 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
             }
         }
     }
+    let by_finding = wpantry::remediation::queue::is_id(id);
     let findings: Vec<wpantry::finding::Finding> = wpantry::reporters::jsonl::findings(&cache)?
         .into_iter()
-        .filter(|f| ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id)))
+        .filter(|f| {
+            if by_finding {
+                f.id().eq_ignore_ascii_case(id)
+            } else {
+                ids.iter().any(|i| i.eq_ignore_ascii_case(&f.vuln_id))
+            }
+        })
         .collect();
-    let stopgap = mitigate::stopgap(id);
+    // A committed secret is fixed at a terminal, step by step.
+    if by_finding && findings.first().is_some_and(|f| f.kind == "secret") {
+        cache.close()?;
+        return cmd_fix_secret(id, dry_run, no_input);
+    }
+    let stopgap = if by_finding { None } else { mitigate::stopgap(id) };
     let interactive = !no_input && std::io::stdin().is_terminal();
-    let bundled = wpantry::checks::mitigation(id);
+    let bundled = if by_finding { None } else { wpantry::checks::mitigation(id) };
     let shown = stopgap.filter(|s| s.name.eq_ignore_ascii_case(id)).map_or(id, |s| s.name);
     show(&format!(
         "==> {shown}: {}{}",
@@ -755,8 +767,9 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
 /// `fix list`: what can be fixed, from the latest scan: the update plan in
 /// batches, then wpantry's stopgaps and whether each applies here. Nothing
 /// runs.
-fn cmd_fix_list() -> Result<i32> {
+fn cmd_fix_list(json: bool) -> Result<i32> {
     use wpantry::remediation::mitigate::{self, Done, Mode};
+    use wpantry::remediation::queue;
     let cache = Cache::open(None)?;
     let latest = wpantry::reporters::latest(&cache, None)?;
     cache.close()?;
@@ -765,6 +778,16 @@ fn cmd_fix_list() -> Result<i32> {
         return Ok(EXIT_FAIL);
     };
     let findings = &report.outcome.findings;
+    let items = queue::items(findings);
+    if json {
+        say(&obj([
+            ("scan", J::Int(report.outcome.scan_id)),
+            ("finished", wpantry::history::stamp(report.scan.row.finished_at).into()),
+            ("items", J::Arr(items.iter().map(|i| i.to_json()).collect())),
+        ])
+        .dumps_indent(1));
+        return Ok(EXIT_OK);
+    }
     let view = wpantry::reporters::view::view(findings);
     show(&format!(
         "==> What wpantry fix can do, from scan #{} ({})",
@@ -794,6 +817,25 @@ fn cmd_fix_list() -> Result<i32> {
         }
     }
     show("");
+    show(&format!(
+        "Findings in fix order ({}; wpantry fix next takes them one at a time, fix ID fixes one):",
+        items.len()
+    ));
+    for it in items.iter().take(20) {
+        let f = it.finding;
+        show(&format!(
+            "  {} {:<8} {} {} {}",
+            it.id,
+            it.how.name(),
+            if f.status == "fail" { "✗" } else { "⚠" },
+            f.component,
+            f.vuln_id
+        ));
+    }
+    if items.len() > 20 {
+        show(&format!("  … and {} more (wpantry fix list --json lists them all)", items.len() - 20));
+    }
+    show("");
     show("Fixes wpantry makes itself (wpantry fix NAME; wpantry fix runs the ones that apply):");
     let settings = mitigate::Settings::default();
     for s in mitigate::STOPGAPS {
@@ -814,6 +856,156 @@ fn cmd_fix_list() -> Result<i32> {
         show(&format!("  {:<20} {state}", ""));
     }
     Ok(EXIT_OK)
+}
+
+/// `fix next`: the first finding in fix order that no fix has been tried
+/// for since the latest scan, with how to carry it out. An agent loops on
+/// it: next, the fix (approved), next again; a fresh scan at the end.
+fn cmd_fix_next(json: bool) -> Result<i32> {
+    use wpantry::remediation::queue;
+    let cache = Cache::open(None)?;
+    let latest = wpantry::reporters::latest(&cache, None)?;
+    let Some(report) = latest else {
+        cache.close()?;
+        eprintln!("{}", Style::stderr().red("✗ wpantry: no scan yet: run wpantry scan"));
+        return Ok(EXIT_FAIL);
+    };
+    let tried = wpantry::history::tried_since(&cache, report.outcome.scan_id)?;
+    cache.close()?;
+    let items = queue::items(&report.outcome.findings);
+    let (next, left) = queue::next(&items, &tried);
+    if json {
+        say(&obj([
+            ("scan", J::Int(report.outcome.scan_id)),
+            ("left", J::Int(left as i64)),
+            ("item", next.map_or(J::Null, |i| i.to_json())),
+        ])
+        .dumps_indent(1));
+        return Ok(EXIT_OK);
+    }
+    let Some(it) = next else {
+        show(&format!(
+            "✓ nothing left to try from scan #{}: run wpantry scan to see what the fixes cleared",
+            report.outcome.scan_id
+        ));
+        return Ok(EXIT_OK);
+    };
+    let f = it.finding;
+    show(&format!("==> {} of {left} left: {} {} {} ({})", it.id, f.component, f.version, f.vuln_id, f.severity));
+    if !f.note.is_empty() {
+        show(&format!("  {}", f.note));
+    }
+    show(&format!(
+        "  {}",
+        match it.how {
+            queue::How::Wpantry => "wpantry runs this fix: look first, then run it once you approve:",
+            queue::How::You => "this fix needs you (or an agent you approve) to run:",
+            queue::How::Terminal => "a person at a terminal takes this one out of history:",
+        }
+    ));
+    for l in it.run().lines() {
+        show(&format!("    {l}"));
+    }
+    Ok(EXIT_OK)
+}
+
+/// A terminal for `fix secret`: questions and the secret on /dev/tty,
+/// commands run with their output captured.
+struct Tty {
+    no_input: bool,
+}
+
+impl wpantry::remediation::secret::Io for Tty {
+    fn say(&mut self, text: &str) {
+        for line in text.lines() {
+            show(line);
+        }
+    }
+    fn ask(&mut self, question: &str, default: bool) -> bool {
+        if self.no_input {
+            return false;
+        }
+        progress::Progress::new(false).ask(question, default).unwrap_or(false)
+    }
+    fn secret(&mut self, prompt: &str) -> Option<String> {
+        use std::io::{BufRead, Write};
+        let tty = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").ok()?;
+        let stty = |arg: &str| {
+            let _ = std::process::Command::new("stty").arg(arg).stdin(tty.try_clone().ok()?).status();
+            Some(())
+        };
+        let _ = (&tty).write_all(prompt.as_bytes());
+        stty("-echo")?;
+        let mut line = String::new();
+        let read = std::io::BufReader::new(&tty).read_line(&mut line);
+        stty("echo");
+        let _ = (&tty).write_all(b"\n");
+        read.ok().filter(|n| *n > 0).map(|_| line.trim_end_matches(['\r', '\n']).to_string())
+    }
+    fn run(&mut self, argv: &[&str]) -> (bool, String) {
+        match std::process::Command::new(argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).output() {
+            Ok(o) => {
+                let mut out = String::from_utf8_lossy(&o.stdout).into_owned();
+                out.push_str(&String::from_utf8_lossy(&o.stderr));
+                (o.status.success(), out)
+            }
+            Err(e) => (false, e.to_string()),
+        }
+    }
+}
+
+/// `fix secret ID`: take a committed secret out of git history, guided.
+fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
+    use wpantry::remediation::secret::{self, Outcome};
+    let cache = Cache::open(None)?;
+    let findings = wpantry::reporters::jsonl::findings(&cache)?;
+    let Some(f) = wpantry::remediation::queue::find(&findings, id) else {
+        cache.close()?;
+        eprintln!(
+            "{}",
+            Style::stderr()
+                .red(&format!("✗ wpantry: {id} isn't in the last scan's findings: wpantry fix list shows them"))
+        );
+        return Ok(EXIT_FAIL);
+    };
+    let Some(target) = secret::target(f, &findings) else {
+        cache.close()?;
+        eprintln!(
+            "{}",
+            Style::stderr().red(&format!("✗ wpantry: {id} isn't a committed secret ({} {})", f.kind, f.vuln_id))
+        );
+        return Ok(EXIT_USAGE);
+    };
+    if !dry_run && (no_input || !std::io::stdin().is_terminal()) {
+        cache.close()?;
+        eprintln!(
+            "{}",
+            Style::stderr().red("✗ wpantry: fix secret asks for the secret with echo off: run it at a terminal (--dry-run prints the steps)")
+        );
+        return Ok(EXIT_FAIL);
+    }
+    let home = wpantry::utils::files::home();
+    let work = std::env::temp_dir().join(format!("wpantry-rewrite-{}", std::process::id()));
+    let outcome = secret::run(&target, &mut Tty { no_input }, dry_run, &work, &home);
+    let keys: Vec<String> = findings
+        .iter()
+        .filter(|x| x.kind == "secret" && x.component == f.component)
+        .map(wpantry::history::key_of)
+        .collect();
+    let (command, ok) = match &outcome {
+        Ok(Outcome::Ignored) => (format!("wpantry fix secret {id} (ignored)"), true),
+        Ok(Outcome::Rewritten { pushed: true }) => (format!("wpantry fix secret {id} (history rewritten)"), true),
+        Err(_) => (format!("wpantry fix secret {id}"), false),
+        _ => (String::new(), true),
+    };
+    if !command.is_empty() {
+        wpantry::history::record_fix(&cache, wpantry::history::latest_scan(&cache)?, &command, "manual", ok, &keys)?;
+    }
+    cache.close()?;
+    match outcome? {
+        Outcome::Shown | Outcome::Ignored | Outcome::Rewritten { pushed: true } => Ok(EXIT_OK),
+        Outcome::NotRotated | Outcome::Declined | Outcome::Rewritten { pushed: false } => Ok(EXIT_FAIL),
+    }
 }
 
 /// `rules`: where the malware scan's rules come from and what compiled;
@@ -1057,8 +1249,10 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Update { check, yes, no_input, offline, version } => {
             update::run(update::Update { check, yes, no_input, offline, version })
         }
-        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours } => match target {
-            Target::List => cmd_fix_list(),
+        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json } => match target {
+            Target::List => cmd_fix_list(json),
+            Target::Next => cmd_fix_next(json),
+            Target::Secret(id) => cmd_fix_secret(&id, dry_run, no_input),
             Target::Id(id) => cmd_mitigate(
                 &id,
                 FixOne {

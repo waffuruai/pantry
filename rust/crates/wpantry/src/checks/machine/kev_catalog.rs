@@ -5,9 +5,14 @@
 //!
 //! A component is named by what Pantry knows it by: `browser:<id>` (the
 //! `BROWSERS` id in `apps.rs`), `app:<bundle id>` for a macOS app, and
-//! `tool:<name>` for a `catalog.rs` tool. Only pairs the catalog uses are
+//! `tool:<name>` for a `catalog.rs` tool or a server read from a container
+//! image (`catalog::IMAGES`). Only pairs the catalog uses are
 //! listed; a product CISA lists under a broader name ("Multiple Products")
 //! is left out, since it would match too much.
+//!
+//! TODO: N-able N-central ("N-able" / "N-central", and older entries as
+//! "N-Central") once Pantry can tell a server install from the agent; the
+//! entries are the server's.
 //!
 //! TODO: Apple's macOS entries ("macOS", "iOS, iPadOS, and macOS") once the
 //! Software Update check knows which release it is behind.
@@ -91,4 +96,8 @@ pub const PRODUCTS: &[(&str, &str, Pairs)] = &[
     ("tool:php", "PHP", &[("PHP Group", "PHP"), ("PHP", "PHP"), ("PHP", "FastCGI Process Manager (FPM)")]),
     ("tool:openssl", "OpenSSL", &[("OpenSSL", "OpenSSL")]),
     ("tool:mongodb", "MongoDB", &[("MongoDB", "MongoDB and MongoDB Server")]),
+    // Self-hosted servers. CISA spells FreeSWITCH "FreeSwitch".
+    ("tool:freeswitch", "FreeSWITCH", &[("SignalWire", "FreeSwitch")]),
+    ("tool:unrealircd", "UnrealIRCd", &[("UnrealIRCd", "UnrealIRCd")]),
+    ("tool:metabase", "Metabase", &[("Metabase", "Metabase")]),
 ];

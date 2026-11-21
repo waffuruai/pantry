@@ -47,6 +47,22 @@ pub struct Tool {
     pub fix: &'static str,
 }
 
+/// Tools whose version is read from their binary's bytes, never by running
+/// it: (tool name, the prefix of the C string that holds the version). The
+/// tool's pattern reads each such string; the first match wins.
+pub const READ_BINARY: &[(&str, &str)] = &[("unrealircd", "UnrealIRCd-")];
+
+/// Tools with no endoflife.date page, checked against their latest GitHub
+/// release instead: (tool name, repo). mise has its own check.
+pub const GITHUB_LATEST: &[(&str, &str)] = &[("freeswitch", "signalwire/freeswitch")];
+
+/// Server images whose tag is the product's version, read from the images
+/// behind running containers: (image, tool name, tag pattern whose group 1
+/// is the version, endoflife.date product and cycle). Only an explicit
+/// version tag is read; `latest` or a digest says nothing.
+pub const IMAGES: &[(&str, &str, &str, (&str, Cycle))] =
+    &[("metabase/metabase", "metabase", r"^v(0\.\d+\.\d+(?:\.\d+)?)$", ("metabase", Cycle::Minor))];
+
 pub const MISE_REPO: &str = "jdx/mise";
 pub const MISE_FIX: &str = "mise: manual, update it the way it was installed (https://mise.jdx.dev/installing-mise.html); wpantry never updates it";
 pub const NODE_DIRS: &[&str] = &[
@@ -649,6 +665,46 @@ pub const TOOLS: &[Tool] = &[
         eol: None,
         always: false,
         paths: &[],
+        fix: "",
+    },
+    // Self-hosted servers a developer or homelab machine runs. A source
+    // build lands under its own prefix; a distro or Homebrew package is the
+    // OS update check's or brew vulns' (see `files::owner`).
+    Tool {
+        name: "freeswitch",
+        kind: "tool",
+        bins: &["freeswitch"],
+        // `-version` is the first option `main` reads: it prints and exits
+        // before touching a directory, log or pid file.
+        args: &["-version"],
+        // "FreeSWITCH version: 1.10.12-release~64bit ( 64bit)"; a build from
+        // git adds "-release-19-<hash>". A -dev build has no release to
+        // compare, so it isn't read.
+        pattern: r#"^FreeSWITCH version: (\d+\.\d+\.\d+)-release"#,
+        osv: Some(("GIT", "https://github.com/signalwire/freeswitch.git", "v{v}")),
+        eol: None,
+        always: false,
+        paths: &["/usr/local/freeswitch/bin"],
+        fix: "",
+    },
+    Tool {
+        name: "unrealircd",
+        kind: "tool",
+        bins: &["unrealircd"],
+        // Never run: even `-v` creates the server's tmp and cache
+        // directories before it prints. The version is read from the
+        // binary's bytes instead ([`READ_BINARY`]).
+        args: &[],
+        // The string `src/version.c` compiles into the binary:
+        // "UnrealIRCd-6.2.7.1", with "+(debug)" or "(Debug)" on a debug
+        // build. A release candidate ("UnrealIRCd-6.2.8-rc1") isn't read:
+        // it is older than its release.
+        pattern: r#"^UnrealIRCd-(\d+\.\d+\.\d+(?:\.\d+)?)(?:\+\(debug\))?(?:\(Debug\))?$"#,
+        // Its repo has no release tags for OSV to match.
+        osv: None,
+        eol: Some(("unrealircd", Cycle::Major)),
+        always: false,
+        paths: &["~/unrealircd/bin"],
         fix: "",
     },
     Tool {

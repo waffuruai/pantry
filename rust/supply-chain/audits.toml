@@ -25,6 +25,12 @@ criteria = "safe-to-deploy"
 delta = "0.41.0 -> 0.42.0"
 notes = "Read the source diff. Slices from SQLite pointers now go through util::from_raw_parts, which returns an empty slice for a zero or negative length instead of calling slice::from_raw_parts on a possibly null pointer (statement and ValueRef column text and blob, the session, vtab and unlock_notify callbacks). set_clientdata resets the hook when sqlite3_set_clientdata fails, and each hook and the busy handler is installed without its callback when the client data is null, so an out-of-memory can't leave SQLite calling into freed data. Without extra_check, pragma names are checked as identifiers instead of against pragma_pragma_list; pragma_query_one added. New codec feature (sqlite3_key_v2/rekey_v2 for SQLCipher), functions and vtab argument access moved into a shared Values/RawValue type, and the session conflict callback takes a reference: all behind features wpantry does not enable (it uses bundled and the default cache). The wasm dependencies move to libsqlite3-sys 0.40.0 and sqlite-wasm-rs 0.6.3. No build script (build = false), no new native dependencies; no process, env, network or filesystem access added outside tests."
 
+[[audits.rusqlite]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.42.0 -> 0.43.0"
+notes = "Read the source diff. prepare and prepare_cached now return the new Error::Empty for empty or comment-only SQL instead of a statement wrapping a null pointer, so RawStatement::is_null and its checks in the cache, Debug and execute_batch paths are gone; InnerConnection::prepare returns Option<Statement>. column_metadata returns owned CStrings, the time feature guards a short-string slice, ChangesetIter::start_strm fixes its lifetime, and vtab in_values becomes a FallibleStreamingIterator over RawValue: all behind features wpantry does not enable (bundled and the default cache only). wpantry never prepares empty SQL and does not match exhaustively on rusqlite::Error. libsqlite3-sys stays 0.40.0 (SQLite 3.54.1). No build script (build = false), no new dependencies, no process, env, network or filesystem access added."
+
 [[audits.serde_json]]
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
@@ -60,3 +66,9 @@ who = "Eric Kryski <599019+ekryski@users.noreply.github.com>"
 criteria = "safe-to-deploy"
 version = "0.1.0"
 notes = "Our own crate: the code moved out of this workspace (#202) to waffuruai/wcli and was published from its v0.1.0 tag; the registry sources match that tag."
+
+[[audits.wcli]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.1.0 -> 0.1.2"
+notes = "Our own crate. Read the source diff (0.1.0 to 0.1.2, through 0.1.1); the registry sources match the v0.1.2 tag of waffuruai/wcli (598841811e62). Adds Opt::required, Command::one_of, Matches::count and an opt-in completions command whose bash, zsh and fish scripts are built as strings from the command tree, with words single-quoted, and returned for the program to print. Still no dependencies, build script (build = false), proc macros or unsafe; no process, env, network or filesystem access."

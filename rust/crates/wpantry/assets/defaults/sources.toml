@@ -103,7 +103,7 @@ max_bytes = 134217728
 id = "chrome-releases"
 kind = "releases"
 format = "chrome-versionhistory"
-url = "https://versionhistory.googleapis.com/v1/chrome/platforms/{}/channels/stable/versions/all/releases?filter=endtime=none"
+url = "https://versionhistory.googleapis.com/v1/chrome/platforms/{}/channels/stable/versions/all/releases"
 tier = "default"
 refresh = "1d"
 license = "unspecified"

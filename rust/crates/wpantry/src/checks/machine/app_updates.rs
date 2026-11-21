@@ -5,6 +5,7 @@
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::GRACE;
 use crate::checks::machine::apps as apps_mod;
+use crate::checks::machine::exploited::{Gap, escalate, superseded};
 use crate::checks::{Scan, display_id, is_kev, is_malicious};
 use crate::component::Component;
 use crate::error::Result;
@@ -63,15 +64,7 @@ fn apps_found(
             }
         }
         if behind {
-            scan.add(Finding {
-                vuln_id: "OUTDATED".into(),
-                status: "warn".into(),
-                fixed: latest.clone(),
-                note: format!("latest release is {latest}"),
-                fix_cmd: a.fix.clone(),
-                fix_auto: a.auto,
-                ..Finding::of(a)
-            });
+            outdated(scan, a, &latest);
         }
     }
     Ok(())
@@ -122,12 +115,13 @@ fn browser(scan: &mut Scan, a: &Component, behind: bool, latest: &str) -> Result
             scan.status("Fetching Chrome's release feed");
             let r = releases::chrome(&scan.cache, scan.net, "mac", scan.opts.offline);
             let releases = scan.guard("Chrome (Google's release feed)", r, Vec::new())?;
+            let since = superseded(&a.version, &releases);
             let newest = releases
                 .into_iter()
                 .filter(|(v, _)| versions::lt(&a.version, v))
                 .max_by(|x, y| versions::cmp(&x.0, &y.0));
             let (target, start) = newest.unwrap_or_default();
-            browser_finding(scan, a, &target, start, "Chrome menu → About Google Chrome, then Relaunch");
+            browser_finding(scan, a, (&target, start), since, "Chrome menu → About Google Chrome, then Relaunch");
         }
         "firefox" => {
             scan.status("Fetching Firefox's release feed");
@@ -137,27 +131,47 @@ fn browser(scan: &mut Scan, a: &Component, behind: bool, latest: &str) -> Result
                 let target =
                     ff.esr.iter().find(|e| e.split('.').next() == Some(major)).cloned().unwrap_or(ff.latest.clone());
                 let start = ff.dates.get(&target).copied().unwrap_or(0.0);
-                browser_finding(scan, a, &target, start, "Firefox menu → About Firefox, then Restart to Update");
+                // On an ESR line only that line's releases supersede it: a
+                // newer major can ship before the line's next patch.
+                let esr = ff.esr.contains(&target);
+                let dated: Vec<(String, f64)> =
+                    ff.dates.into_iter().filter(|(v, _)| !esr || v.split('.').next() == Some(major)).collect();
+                let since = superseded(&a.version, &dated);
+                let how = "Firefox menu → About Firefox, then Restart to Update";
+                browser_finding(scan, a, (&target, start), since, how);
             }
         }
-        _ if behind => scan.add(Finding {
-            vuln_id: "OUTDATED".into(),
-            status: "warn".into(),
-            fixed: latest.into(),
-            note: format!("latest release is {latest}"),
-            fix_cmd: a.fix.clone(),
-            fix_auto: a.auto,
-            ..Finding::of(a)
-        }),
+        _ if behind => outdated(scan, a, latest),
         _ => {}
     }
     Ok(())
 }
 
-fn browser_finding(scan: &mut Scan, a: &Component, target: &str, start: f64, how: &str) {
+/// An app or browser behind its cask's latest: a warning, naming the
+/// exploited CVEs listed in the last months (the cask catalog has no
+/// release dates, so it can't fail on them).
+fn outdated(scan: &mut Scan, a: &Component, latest: &str) {
+    let mut f = Finding {
+        vuln_id: "OUTDATED".into(),
+        status: "warn".into(),
+        fixed: latest.into(),
+        note: format!("latest release is {latest}"),
+        fix_cmd: a.fix.clone(),
+        fix_auto: a.auto,
+        ..Finding::of(a)
+    };
+    escalate(&mut f, a, &scan.kev_entries, Gap::default());
+    scan.add(f);
+}
+
+/// A browser behind `target` (released at `start`, an epoch): fails once
+/// the release is past the grace period, or once the first newer release
+/// (`since`, when this version was superseded) is, when KEV lists
+/// exploited CVEs for it since then.
+fn browser_finding(scan: &mut Scan, a: &Component, (target, start): (&str, f64), since: Option<f64>, how: &str) {
     if !target.is_empty() && versions::lt(&a.version, target) {
         let old = start > 0.0 && start < now() - GRACE;
-        scan.add(Finding {
+        let mut f = Finding {
             vuln_id: "BROWSER".into(),
             status: if old { "fail" } else { "warn" }.into(),
             fixed: target.into(),
@@ -165,7 +179,9 @@ fn browser_finding(scan: &mut Scan, a: &Component, target: &str, start: f64, how
             fix_cmd: if a.auto { a.fix.clone() } else { how.into() },
             fix_auto: a.auto,
             ..Finding::of(a)
-        });
+        };
+        escalate(&mut f, a, &scan.kev_entries, Gap { superseded: since, ..Gap::default() });
+        scan.add(f);
     }
 }
 

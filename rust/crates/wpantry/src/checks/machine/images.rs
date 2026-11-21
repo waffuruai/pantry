@@ -92,7 +92,10 @@ fn wanted(path: &str) -> bool {
     let name = parts.next_back().unwrap_or("");
     // The same pruning as a repo walk: dependency and build directories.
     let pruned = path.split('/').any(|p| crate::utils::walk::PRUNE.contains(&p));
-    !pruned && (lockfiles::supported(name) || (name.starts_with("requirements") && name.ends_with(".txt")))
+    !pruned
+        && (lockfiles::supported(name)
+            || lockfiles::csproj::is_context_file(name)
+            || (name.starts_with("requirements") && name.ends_with(".txt")))
 }
 
 /// A path as the tar spells it, `/`-separated, whatever the host uses.
@@ -340,15 +343,29 @@ pub fn read_root(root: &Path) -> (Vec<ImagePackage>, Vec<String>) {
         (None, _) => {}
     }
     let files = crate::checks::supply_chain::repos::lockfiles(root);
+    let mut shared: std::collections::HashSet<(String, Package)> = std::collections::HashSet::new();
     for f in files {
         let shown = format!("/{}", slash(f.strip_prefix(root).unwrap_or(&f)));
-        match lockfiles::extract(&f) {
-            Ok(Some(found)) => pkgs.extend(found.into_iter().map(|p: Package| ImagePackage {
-                ecosystem: p.ecosystem,
-                name: p.name,
-                version: p.version,
-                source: shown.clone(),
-            })),
+        match lockfiles::extract_noting(&f, root) {
+            Ok(Some(x)) => {
+                if !x.unchecked.is_empty() {
+                    gaps.push(format!("{shown}: not exact or not resolved: {}", x.unchecked.join(", ")));
+                }
+                let own = x.packages.into_iter().map(|p| (shown.clone(), p));
+                // A Directory.*.props reference is the props file's, once,
+                // however many projects below it share it.
+                let inherited = x
+                    .inherited
+                    .into_iter()
+                    .map(|(f, p)| (format!("/{}", slash(f.strip_prefix(root).unwrap_or(&f))), p))
+                    .filter(|(source, p)| shared.insert((source.clone(), p.clone())));
+                pkgs.extend(own.chain(inherited).map(|(source, p): (String, Package)| ImagePackage {
+                    ecosystem: p.ecosystem,
+                    name: p.name,
+                    version: p.version,
+                    source,
+                }))
+            }
             Ok(None) => gaps.push(format!("{shown}: a lockfile kind not read yet")),
             Err(e) => gaps.push(format!("{shown}: {e}")),
         }

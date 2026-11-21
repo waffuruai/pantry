@@ -315,6 +315,16 @@ impl View<'_> {
     }
 }
 
+/// A fix in one line: a script (a secret's, several lines) by its opening
+/// comment, a command as itself. A report table shows this; the plan shows
+/// the whole script.
+pub fn fix_summary(fix: &str) -> &str {
+    match fix.split_once('\n') {
+        Some((first, _)) => first.trim_start_matches('#').trim(),
+        None => fix,
+    }
+}
+
 fn fix_of(fs: &[&Finding]) -> String {
     let best = covering(fs);
     let cmd = if best.fix_cmd.is_empty() {

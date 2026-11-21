@@ -695,6 +695,23 @@ fn sync_offline_reports_unreachable_sources() {
     assert!(r.out.contains(&format!("{} unreachable", arr(&data["failed"]).len())), "{}", r.out);
 }
 
+#[test]
+fn sync_skips_what_sources_toml_turns_off() {
+    let t = Ctx::new();
+    let dir = t.home.join(".config/wpantry");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("sources.toml"), "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n").unwrap();
+    let data = t.run_env(&["sync", "--json"], UNREACHABLE).json();
+    let named: Vec<String> = arr(&data["failed"]).iter().map(|f| f["source"].as_str().unwrap().to_string()).collect();
+    assert!(named.iter().any(|n| n == "EPSS"), "{data}");
+    assert!(!named.iter().any(|n| n == "CISA KEV"), "turned off, so not asked: {data}");
+    std::fs::write(dir.join("sources.toml"), "[[source]]\nid = \"cisa-kev\"\nurl = \"https://example.com/\"\n")
+        .unwrap();
+    let r = t.run_env(&["sync"], UNREACHABLE);
+    assert_eq!(r.code, 2, "a sources file that can't be used stops the sync: {}", r.err);
+    assert!(r.err.contains("sources file"), "{}", r.err);
+}
+
 /// The release memo is a day old at most; a check that may use the
 /// network says when it names a newer wpantry (never under --offline or --json).
 #[test]

@@ -273,10 +273,7 @@ fn secrets_from_a_scan_run_ahead() {
     );
     assert_eq!(
         aws[0].fix_cmd,
-        format!(
-            "If it's real: rotate it, then purge it from history. If not: add x.env under [secret aws-access-token] in {}/.pantryignore",
-            short(&root.to_string_lossy())
-        )
+        fix(&short(&root.to_string_lossy()), "x.env", &[("aws-access-token", 3, "0123456789ab")], false)
     );
     let generic = testing::by_id(&s, "generic-api-key");
     assert_eq!(
@@ -375,4 +372,54 @@ fn the_unread_note_gives_the_command_that_reads_them() {
     assert_eq!(unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true), "1 over 256 MB");
     // A result cached before the reasons were kept counts them as late.
     assert_eq!(Unread::read(&json!({"unchecked": 4})), Unread { late: 4, ..Unread::default() });
+}
+
+/// A secret's fix is a script: the line to look at, the history rewrite in
+/// a mirror clone, and the ignore entry; paths quoted, `~` left to expand,
+/// and never the secret itself.
+#[test]
+fn a_secrets_fix_is_the_commands_to_run() {
+    let one = fix("~/my repo", "config/app's.env", &[("aws-access-token", 3, "0123456789ab")], false);
+    let want = [
+        "# If it's real: rotate it first, then take it out of history.",
+        "# This rewrites history: warn everyone with a clone, and re-clone afterwards. Needs git-filter-repo 2.47+.",
+        "repo=~/'my repo'",
+        "",
+        "# 1. Show the line the secret is on",
+        r#"git -C "$repo" show '0123456789ab:config/app'"'"'s.env' | sed -n 3p"#,
+        "",
+        "# 2. Paste the secret: it isn't shown, or kept in your shell history",
+        "printf 'Secret: '; stty -echo; read -r SECRET; stty echo; echo",
+        r#"printf '%s==>REDACTED\n' "$SECRET" >> ~/.pantry-redact; unset SECRET"#,
+        "",
+        "# 3. Rewrite history in a fresh mirror clone, push it, and clean up",
+        r#"git clone --mirror "$(git -C "$repo" remote get-url origin)" ~/.pantry-rewrite.git"#,
+        "git -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact",
+        "git -C ~/.pantry-rewrite.git push --force --mirror origin",
+        "rm -rf ~/.pantry-redact ~/.pantry-rewrite.git",
+        "",
+        "# If it isn't a secret: leave the file out of this rule's findings",
+        r#"printf '\n[secret aws-access-token]\n%s\n' '/config/app'"'"'s.env' >> "$repo/.pantryignore""#,
+    ];
+    assert_eq!(one.lines().collect::<Vec<_>>(), want);
+    assert_eq!(fix_target(&one), Some(("~/my repo".to_string(), "config/app's.env".to_string())));
+    // The shell reads it: `sh -n` parses without running anything.
+    if let Ok(out) = std::process::Command::new("sh").args(["-n", "-c", &one]).output() {
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // Several hits: one line per commit, at most three.
+    let many = fix(
+        "~/r",
+        "a.txt",
+        &[("jwt", 1, "c1"), ("jwt", 9, "c1"), ("jwt", 2, "c2"), ("jwt", 3, "c3"), ("jwt", 4, "c4")],
+        true,
+    );
+    assert!(many.starts_with("# 5 hits in a.txt (generic rules: review). If any is real"), "{many}");
+    assert!(many.contains("# 2. Paste each secret: run these two lines once for each"), "{many}");
+    assert!(
+        many.contains("git -C \"$repo\" show c1:a.txt | sed -n '1p;9p'\n")
+            && many.contains("c3:a.txt")
+            && !many.contains("c4:a.txt"),
+        "{many}"
+    );
 }

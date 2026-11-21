@@ -98,7 +98,7 @@ Project dependencies  1 fail
 
 Secrets  1 fail
     COMPONENT    ADVISORY          SEVERITY  FIX
-  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it, then purge it from history
+  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it first, then take it out of …
     line 3, commit 1a2b3c4d5e6f · AWS Access Key
 
 MCP servers  1 warn

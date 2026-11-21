@@ -783,7 +783,15 @@ fn cmd_fix_list() -> Result<i32> {
             _ => "optional",
         };
         let cmd = if b.sudo { b.cmd.strip_prefix("sudo ").unwrap_or(&b.cmd) } else { &b.cmd };
-        show(&format!("  {mode:<10} {}{cmd}  (clears {})", if b.sudo { "[sudo] " } else { "" }, b.findings));
+        show(&format!(
+            "  {mode:<10} {}{}  (clears {})",
+            if b.sudo { "[sudo] " } else { "" },
+            wpantry::reporters::view::fix_summary(cmd),
+            b.findings
+        ));
+        for l in cmd.lines().skip(1) {
+            show(&format!("             {l}"));
+        }
     }
     show("");
     show("Fixes wpantry makes itself (wpantry fix NAME; wpantry fix runs the ones that apply):");

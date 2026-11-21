@@ -57,10 +57,11 @@ A pattern without a `/` in it (`*.pem`) matches that name anywhere on the machin
 
 ## Secrets
 
-For secrets, `.pantryignore` replaces fingerprint lists. Pantry reads git history as files, so each version of a file that holds a secret is its own finding. A file whose secret stayed put over ten commits is ten findings, grouped into one row in the report. One `[secret]` entry for the file covers them all. A secret finding's fix says what to add:
+For secrets, `.pantryignore` replaces fingerprint lists. Pantry reads git history as files, so each version of a file that holds a secret is its own finding. A file whose secret stayed put over ten commits is ten findings, grouped into one row in the report. One `[secret]` entry for the file covers them all. A secret finding's fix is a script: if the secret is real, the lines that take it out of history; if it isn't, the line that adds the file to `.pantryignore`:
 
-```text
-If it's real: rotate it, then purge it from history. If not: add config/legacy.py under [secret github-pat] in ~/code/app/.pantryignore
+```sh
+# If it isn't a secret: leave the file out of this rule's findings.
+printf '\n[secret github-pat]\n%s\n' /config/legacy.py >> ~/code/app/.pantryignore
 ```
 
 - A path every secret rule skips (lines before any section, `[*]` or `[secret]`) isn't read from the history at all. A `[secret id]` entry still reads the file, since other rules may match it.

@@ -21,7 +21,7 @@ struct Leaf {
     text: String,
 }
 
-fn decode(s: &str) -> String {
+pub(super) fn decode(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }

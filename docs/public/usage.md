@@ -25,7 +25,8 @@ wpantry help                                       # every command (wpantry help
 
 By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
-- `--path DIR` checks only the repos at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks.
+- `--path DIR` checks only the repos and files at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks. Nothing else of yours is read: not Downloads, Desktop, Documents or the temp directories. The machine inventory still runs, unless `--no-machine`.
+- `--deep` reads everything in scope, and is slower: the malware scan reads every file (all of `~`, or each `--path`) with every system's rules, and the secret scan reads history files up to 256 MB with no time limit. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
 - `--no-machine` skips the machine: repo checks only.
 
 What a run couldn't check is reported "not checked", never clean.
@@ -98,7 +99,7 @@ Project dependencies  1 fail
 
 Secrets  1 fail
     COMPONENT    ADVISORY          SEVERITY  FIX
-  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it, then purge it from history
+  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it first, then take it out of …
     line 3, commit 1a2b3c4d5e6f · AWS Access Key
 
 MCP servers  1 warn
@@ -158,7 +159,12 @@ wpantry schedule uninstall
 wpantry cache prune                                # drop what no scan used in 90 days, compact the file
 ```
 
-- `sync` refreshes the feeds, end-of-life dates and OSV's answers for every version scanned before, so a later `scan --offline` is current.
+- `sync` refreshes what the cache already knows, so a later `scan --offline` is current. It inventories nothing:
+  - the feeds: CISA KEV, EPSS, the malicious-package index, Homebrew casks, Chrome, Firefox, VS Code's extension lists, the latest Pantry;
+  - once a malware scan fetched them: YARA Forge's rules, signature-base's and Feodo Tracker's lists;
+  - once PostgreSQL was found: its security page;
+  - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, upstream repos' release tags, and CVE scores (OSV, CVE.org).
+- `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).
 - `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
 - A scheduled run never changes anything. Run `wpantry fix` yourself.
 - The cache is one SQLite file: `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds advisories for what's here, which versions were checked, every scan's findings, and the feeds; never a mirror of OSV.
@@ -182,7 +188,10 @@ wpantry fix              # run the unattended fixes, then re-check
 ### One thing at a time
 
 ```bash
-wpantry fix list                            # the plan in batches, and Pantry's own fixes and whether each applies
+wpantry fix list                            # the plan in batches, the findings in fix order with their ids, and Pantry's own fixes
+wpantry fix next                            # the next finding to fix, and how (--json for agents)
+wpantry fix F-3fa9c01b2e --dry-run          # one finding, by its id: what its fix would run
+wpantry fix secret F-0c41d9a7b2             # a committed secret: check it, then take it out of git history, step by step
 wpantry fix GHSA-xxxx-yyyy-zzzz             # one advisory: its unattended fix, then the steps that need you
 wpantry fix ca-trust                        # distrust the leaked eMudhra roots in the system trust store
 wpantry fix extension-cooldown --hours 72   # editors wait before installing a new extension version
@@ -191,6 +200,8 @@ wpantry fix CVE-2026-98432                  # asks, then installs the stopgap (s
 wpantry fix CVE-2026-98432 --undo           # remove the stopgap once the kernel update is in
 ```
 
+- `fix next` gives the findings one at a time, in fix order. It skips what a fix was tried for since the scan, so an agent can loop on `wpantry fix next --json` until `"item": null`, then scan again. Each item says `how`: `wpantry` (run `fix <id>`), `you` (a command to run), or `terminal` (a secret for `fix secret`).
+- `fix secret ID` needs a terminal and git-filter-repo 2.47+. It shows the line, asks whether it's real, and adds the file to `.pantryignore` if it isn't. If it is and has been rotated, it takes the secret with echo off, rewrites history in a fresh mirror clone, checks it's gone, and asks before the force-push. The secret is never printed by Pantry, passed as an argument, or kept.
 - `fix ID` exits 1 when a step is left, a fix failed, nothing is known for the id, or a question went unanswered (no terminal and no `--yes`).
 - Every fix goes into the remediation log with who ran it (`wpantry report remediation`).
 - `wpantry fix` also runs `ca-trust` and `extension-cooldown` when the scan found what they fix, and the CVE-2026-98432 stopgap on a Linux host that needs it.
@@ -318,8 +329,9 @@ Usage: wpantry scan [options]
 Scan this computer and its repos, then show the report. Changes nothing.
 
 Options:
-  --path <dir>              check only the repos at or under this directory; repeat it for more
-                            (default: every git repo under ~)
+  --path <dir>              check only the repos and files at or under this directory, not
+                            Downloads, Desktop, Documents or temp; repeat it for more (default:
+                            every git repo under ~)
   --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache
@@ -353,8 +365,11 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    the malware scan reads everything under ~ with every system's rules
-                            (slower)
+  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
+                            --path) with every system's rules; the secret scan, history files up to
+                            256 MB with no time limit
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
@@ -369,17 +384,22 @@ Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ### fix
 
 ```
-Usage: wpantry fix [options] [target]
+Usage: wpantry fix [options] [target] [id]
 
 Scan, run the fixes that can run unattended and the stopgaps wpantry has for what it found, then
 re-check.
 
 Arguments:
   target  all: a scan, the unattended fixes, every stopgap that applies, a re-check. list: what can
-          be fixed, from the latest scan; nothing runs. An advisory id (CVE-…, GHSA-…; an alias
-          works): its unattended fixes, wpantry's stopgap for it, the steps that need you. Or one of
-          wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots), extension-cooldown
-          (editors wait before installing a new extension version), cve-2026-98432 (default: all)
+          be fixed, from the latest scan, in fix order with each finding's id; nothing runs. next:
+          the first of those no fix has been tried for since the scan (for agents, with --json). A
+          finding id (F-…, from list or the JSON report): its fix. secret ID: take that committed
+          secret out of git history, a step at a time, at a terminal. An advisory id (CVE-…, GHSA-…;
+          an alias works): its unattended fixes, wpantry's stopgap for it, the steps that need you.
+          Or one of wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots),
+          extension-cooldown (editors wait before installing a new extension version),
+          cve-2026-98432 (default: all)
+  id      with secret: the finding id (F-…) of a committed secret
 
 Options:
   --dry-run                 print what would run or be written; change nothing
@@ -387,8 +407,9 @@ Options:
   --undo                    with an id: take wpantry's stopgap away once the real fix is installed
   --bundle <file>           ca-trust: rewrite this PEM bundle instead of the system trust store
   --hours <n>               extension-cooldown: the cooldown (default: 72)
-  --path <dir>              check only the repos at or under this directory; repeat it for more
-                            (default: every git repo under ~)
+  --path <dir>              check only the repos and files at or under this directory, not
+                            Downloads, Desktop, Documents or temp; repeat it for more (default:
+                            every git repo under ~)
   --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache
@@ -422,8 +443,11 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    the malware scan reads everything under ~ with every system's rules
-                            (slower)
+  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
+                            --path) with every system's rules; the secret scan, history files up to
+                            256 MB with no time limit
+  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
+                            passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
@@ -509,7 +533,8 @@ Options:
 ```
 Usage: wpantry sync [options]
 
-Refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan
+Refresh the cache: the feeds, and every source a scan used for what it found (end-of-life dates,
+OSV, CVE records, extension versions, release tags, CVE scores, the malware rules), so scan
 --offline has fresh answers.
 
 Options:

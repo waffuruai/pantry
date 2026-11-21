@@ -4,18 +4,7 @@ Pantry's command is `wpantry`. It reads your whole home directory, so run only a
 
 ## Install
 
-**With [mise](https://mise.jdx.dev)** (recommended):
-
-```bash
-mise use -g packslip:github.com/waffuruai/pantry
-wpantry version
-```
-
-- mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
-- It remembers the signer and refuses a later release signed by anyone else.
-- Pin a version with `packslip:github.com/waffuruai/pantry@0.5.0`, or put that line in a project's `mise.toml`.
-
-**With the install script** (no mise):
+**With the install script** (recommended):
 
 ```bash
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh
@@ -24,15 +13,35 @@ curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.
 - Picks the binary for your OS and CPU and checks it against `SHA256SUMS`.
 - Verifies the signature with the first of `packslip`, `gh` (logged in) or `cosign` you have, then installs to `~/.local/bin/wpantry`.
 - With none of the three, it says only the checksum was checked. `WPANTRY_REQUIRE_SIGNATURE=1` makes that an error.
+- If another `wpantry` comes first on PATH (an older install, a mise pin), it says which one runs instead and asks, on the terminal, whether to replace it with a link to this install, or for mise's, whether to move mise to this version (`mise use -g`). It never runs the other one. `WPANTRY_REPLACE=1` or `0` answers ahead, and with no terminal it only warns. `command -v wpantry` and `wpantry version` show which one you're running.
 - Options: `--version vX.Y.Z` and `--dir DIR` (or `WPANTRY_VERSION` and `WPANTRY_INSTALL_DIR`).
 
 Each release ships its own `install.sh`, attested like the binaries. To read it first:
 
 ```bash
-curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.5.0/install.sh
+curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.6.0/install.sh
 less install.sh
 sh install.sh
 ```
+
+**With [mise](https://mise.jdx.dev)**, if you use it or want it to handle updates. New to mise? Install it and activate it in your shell first; [mise.run](https://mise.jdx.dev/installing-mise.html) adds the activation line to your shell's rc file:
+
+```bash
+curl -fsSL https://mise.run/zsh | sh     # zsh, the macOS default; on bash: https://mise.run/bash
+source ~/.zshrc                          # on bash: source ~/.bashrc
+```
+
+Then install Pantry:
+
+```bash
+mise use -g packslip:github.com/waffuruai/pantry
+wpantry version
+```
+
+- mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
+- It remembers the signer and refuses a later release signed by anyone else.
+- Pin a version with `packslip:github.com/waffuruai/pantry@0.6.0`, or put that line in a project's `mise.toml`.
+- mise puts `wpantry` on PATH only in a shell where it's active. If `wpantry` isn't found, add `eval "$(mise activate zsh)"` (or `bash`, `fish`) to your shell's rc file and open a new shell, or put `~/.local/share/mise/shims` on PATH. If an older `wpantry` runs instead, `command -v wpantry` shows which one: remove it.
 
 Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10). Windows: [#11](https://github.com/waffuruai/pantry/issues/11).
 
@@ -60,7 +69,7 @@ Each binary, `install.sh` and `THIRD-PARTY-NOTICES.txt` also has a GitHub artifa
 ### Download
 
 ```bash
-VERSION=0.5.0                                   # the release to install
+VERSION=0.6.0                                   # the release to install
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)         ASSET=wpantry-x86_64-unknown-linux-musl ;;
   Linux/aarch64)        ASSET=wpantry-aarch64-unknown-linux-musl ;;
@@ -88,7 +97,7 @@ grep " $ASSET\$" SHA256SUMS | shasum -a 256 -c -
 
 ```bash
 packslip verify packslip.sigstore.json --artifact "$ASSET"
-# ok: github.com/waffuruai/pantry 0.5.0 …
+# ok: github.com/waffuruai/pantry 0.6.0 …
 ```
 
 Check the first line names `github.com/waffuruai/pantry` and your version: packslip trusts whatever project the bundle claims.
@@ -131,7 +140,7 @@ If it doesn't match, don't install it. Open an issue, or a [security report](../
 
 ```bash
 install -m 0755 "$ASSET" ~/.local/bin/wpantry  # or anywhere on your PATH
-wpantry version                                # wpantry 0.5.0 (rust, schema 1)
+wpantry version                                # wpantry 0.6.0 (rust, schema 1)
 wpantry tools                                  # which external tools it found
 ```
 
@@ -163,7 +172,7 @@ cargo install --locked wpantry-cli             # installs the `wpantry` binary
 
 ```toml
 [dependencies]
-wpantry = { version = "=0.5.0" }
+wpantry = { version = "=0.6.0" }
 ```
 
 The library is what the binary is built on. `checks::Scan` runs a scan from a `checks::Options`, `db::Cache` is the local cache it reads and writes, `finding::Finding` is one row, and `reporters` render an outcome the way `wpantry report` does. It never prints and keeps no global state: progress and notes go to the callbacks you hand it. The crate's front page on [docs.rs](https://docs.rs/wpantry) has a worked example. Its API is `0.x`, so pin it exactly; what stays stable across versions is the [CLI contract](../../specs/cli-contract.md).
@@ -172,7 +181,7 @@ The library is what the binary is built on. `checks::Scan` runs a scan from a `c
 
 ```bash
 git clone https://github.com/waffuruai/pantry && cd pantry/rust
-git checkout v0.5.0                             # a release tag
+git checkout v0.6.0                             # a release tag
 cargo build --release --locked                  # target/release/wpantry
 ```
 

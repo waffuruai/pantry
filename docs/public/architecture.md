@@ -139,8 +139,10 @@ The rule every module follows: when Pantry cannot tell, it says so; a gap never 
 | `composer.lock` | `Packagist` | | `packages` and `packages-dev`; `path` repositories and branches skipped |
 | `pubspec.lock` | `Pub` | | `hosted` packages only |
 | `mix.lock` | `Hex` | | `:hex` tuples from the public `hexpm` repository |
+| `build.gradle`, `build.gradle.kts`, `gradle/*.versions.toml` | `Maven` | | Only where no `gradle.lockfile` covers the build: one beside a script, or one anywhere in a catalog's project (a module's). Scripts are tokenized, never run: literal `group:artifact:version` strings given to a configuration in `dependencies { }`; catalogs' `[libraries]` with `version`/`version.ref`/`strictly`. An advisory on a declared version is a `warn` noting the version is declared, not resolved (Gradle uses the highest any declaration, BOM or constraint asks for; a lockfile confirms it). Interpolated, dynamic, ranged, versionless and helper-call declarations are counted as not checked (`Gradle declarations not checked`) and named in the scan log, without an `unchecked` row. `plugins { }` and `[plugins]` aren't read |
 | `gradle.lockfile`, `pom.xml` | `Maven` | | `pom.xml`: literal versions and same-file properties only, no parent or remote resolution |
 | `packages.lock.json` | `NuGet` | v1–v2 | `Project` references skipped |
+| `*.csproj`, `*.fsproj`, `*.vbproj`, `packages.config` | `NuGet` | | Projects without a `packages.lock.json` beside them. `PackageReference` versions, central `PackageVersion` from the nearest `Directory.Packages.props`, properties from the project and the nearest `Directory.Build.props`/`Directory.Packages.props` inside the repo, evaluated in MSBuild's order (props files first, each definition once, against the properties set before it). A reference declared in a props file is reported once, at that file. Exact versions only; a range, `*`, property function or undefined property is reported not checked |
 | `conan.lock` | `ConanCenter` | v0.4–v0.5 | A `@user/channel` recipe is private and skipped |
 
 OS packages are reported under their source package and version, the names OSV matches:
@@ -161,7 +163,7 @@ Container images:
 3. The same lockfile and OS-database readers run on the result, without layer attribution. The kernel's source package (only headers in a container) is left out.
 4. The container and directory are removed, even on error. Answers are memoized per image id for 30 days.
 
-The machine inventory finds runtimes and tools on PATH and in every version manager (mise, asdf, pyenv, nvm, volta, uv, rustup, …), global packages (each Python's `site-packages` metadata read under `-I -S`, npm, cargo, pipx, gem), apps and browsers (plists, the Homebrew cask catalog), Electron bundles, pending OS updates, Docker, editor extensions, and the MCP servers, plugins and skills of the coding agents. The trust-store check reads the system, OpenSSL, Homebrew, certifi, pip and Node stores through `openssl`. The posture checks are read-only probes of the settings the CIS benchmarks name ([public/posture.md](posture.md)).
+The machine inventory finds runtimes and tools on PATH and in every version manager (mise, asdf, pyenv, nvm, volta, uv, rustup, …), Erlang/OTP from its `releases/<major>/OTP_VERSION` file (`erl` is never run: it boots a VM; a release OSV's lists for the OTP repo leave out, such as a side-branch patch like OTP 27.2.4, is reported not checked), global packages (each Python's `site-packages` metadata read under `-I -S`, npm, cargo, pipx, gem), apps and browsers (plists, the Homebrew cask catalog), Electron bundles, pending OS updates, Docker, editor extensions, and the MCP servers, plugins and skills of the coding agents. The trust-store check reads the system, OpenSSL, Homebrew, certifi, pip and Node stores through `openssl`. The posture checks are read-only probes of the settings the CIS benchmarks name ([public/posture.md](posture.md)).
 
 ## Comparing versions
 

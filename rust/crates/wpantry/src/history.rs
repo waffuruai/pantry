@@ -16,6 +16,7 @@ use crate::checks::Options;
 use crate::db::Cache;
 use crate::error::Result;
 use crate::finding::Finding;
+use crate::utils::dates::civil_from_days;
 use crate::utils::os::now;
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -74,7 +75,7 @@ pub fn scope_of(opts: &Options) -> String {
 
 /// The key one exposure is tracked under across scans.
 pub fn key_of(f: &Finding) -> String {
-    format!("{}|{}|{}|{}", f.kind, f.component, f.location, f.vuln_id)
+    f.key()
 }
 
 /// Record a finished scan: its row, the exposures it saw (new ones
@@ -268,6 +269,20 @@ pub fn event(cache: &Cache, kind: &str, detail: &Value) -> Result<()> {
 }
 
 /// The latest scan's id, if any.
+/// The finding keys a fix has been tried for since scan `scan_id` finished.
+pub fn tried_since(cache: &Cache, scan_id: i64) -> Result<std::collections::HashSet<String>> {
+    let mut st =
+        cache.conn.prepare("SELECT targets FROM fixes WHERE at >= (SELECT finished_at FROM scans WHERE id = ?)")?;
+    let rows = st.query_map(params![scan_id], |r| r.get::<_, Option<String>>(0))?;
+    let mut out = std::collections::HashSet::new();
+    for t in rows {
+        if let Some(t) = t? {
+            out.extend(serde_json::from_str::<Vec<String>>(&t).unwrap_or_default());
+        }
+    }
+    Ok(out)
+}
+
 pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
     Ok(cache.conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get::<_, Option<i64>>(0))?)
 }
@@ -562,20 +577,6 @@ pub fn file_stamp(t: f64) -> String {
     let rem = secs.rem_euclid(86400);
     let (y, m, d) = civil_from_days(secs.div_euclid(86400));
     format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
-}
-
-/// Howard Hinnant's days-to-civil.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]

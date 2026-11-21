@@ -56,5 +56,54 @@ fn every_scanned_name_is_supported() {
         assert!(supported(name), "{name}");
     }
     assert!(supported("requirements-dev.txt") && supported("requirements.in.txt"));
+    assert!(supported("App.csproj") && supported("Lib.fsproj") && supported("Old.vbproj"));
     assert!(!supported("requirements.in") && !supported("yarn.lock.bak"));
+}
+
+/// A .NET project file that isn't one is an error too, and its
+/// not-checked references come back beside the packages.
+#[test]
+fn dotnet_project_files_read_through_extract() {
+    let d = crate::utils::temp::TempDir::new("notproj").unwrap();
+    let f = d.path().join("App.csproj");
+    std::fs::write(&f, "this is not a project\n").unwrap();
+    assert!(matches!(extract(&f), Err(Error::Invalid(_))));
+    std::fs::write(
+        &f,
+        r#"<Project><ItemGroup>
+  <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+  <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+  <PackageReference Include="Foo" Version="$(Undefined)" />
+</ItemGroup></Project>"#,
+    )
+    .unwrap();
+    let x = extract_noting(&f, d.path()).unwrap().unwrap();
+    let (pkgs, notes) = (x.packages, x.unchecked);
+    assert_eq!(pkgs, [Package::new("NuGet", "Newtonsoft.Json", "12.0.1").direct(true)]);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(extract(&f).unwrap().unwrap(), pkgs);
+}
+
+/// What a Directory.Build.props declares comes back apart, with its path;
+/// `extract` folds it into the project's packages, each once.
+#[test]
+fn inherited_dotnet_references_come_back_apart() {
+    let d = crate::utils::temp::TempDir::new("inherited").unwrap();
+    let props = d.path().join("Directory.Build.props");
+    std::fs::write(
+        &props,
+        r#"<Project><ItemGroup><PackageReference Include="Shared" Version="1.0.0" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    let f = d.path().join("App.csproj");
+    std::fs::write(
+        &f,
+        r#"<Project><ItemGroup><PackageReference Include="Own" Version="2.0.0" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    let x = extract_noting(&f, d.path()).unwrap().unwrap();
+    let shared = Package::new("NuGet", "Shared", "1.0.0").direct(true);
+    let own = Package::new("NuGet", "Own", "2.0.0").direct(true);
+    assert_eq!((x.packages, x.inherited), (vec![own.clone()], vec![(props, shared.clone())]));
+    assert_eq!(extract(&f).unwrap().unwrap(), [own, shared]);
 }

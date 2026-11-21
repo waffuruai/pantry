@@ -1,9 +1,12 @@
 //! What the inventory found against OSV, end of life and (PostgreSQL) the
-//! project's own table, and mise against its latest release.
+//! project's own table, and mise and the tools endoflife.date doesn't know
+//! ([`GITHUB_LATEST`]) against their latest release.
 
 use crate::checks::ecosystems::versions;
-use crate::checks::machine::catalog::MISE_REPO;
-use crate::checks::{Scan, fill};
+use crate::checks::machine::catalog::{GITHUB_LATEST, MISE_REPO};
+use crate::checks::machine::erlang;
+use crate::checks::machine::exploited::Gap;
+use crate::checks::{Scan, fill, fix_with};
 use crate::component::Component;
 use crate::error::Result;
 use crate::finding::Finding;
@@ -18,6 +21,13 @@ use std::collections::{BTreeMap, HashMap};
 pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, Vec<Value>>> {
     let items: Vec<Item> = found.iter().flat_map(|c| c.osv.iter().chain(&c.osv_also).cloned()).collect();
     let answers = scan.lookup(&items, "tools, runtimes and packages against OSV")?;
+    // OTP's tags say which installs and fixes OSV's lists leave out.
+    let otp_tags = if found.iter().any(|c| c.name == "erlang" && c.osv.is_some()) {
+        scan.status("Listing Erlang/OTP's release tags");
+        osv::tags(&scan.cache, &erlang::repo(), scan.opts.offline)?
+    } else {
+        Vec::new()
+    };
     // For upstream repos, ask OSV about the newer release tags too: the first
     // one it stops reporting an advisory for is the fix.
     let mut candidates: Vec<(Item, Vec<String>)> = Vec::new();
@@ -28,7 +38,11 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
             && !candidates.iter().any(|(k, _)| k == it)
         {
             scan.status(&format!("Listing {}'s release tags", it.1));
-            candidates.push((it.clone(), osv::candidates(&scan.cache, &it.1, &it.2, scan.opts.offline)?));
+            let mut ts = osv::candidates(&scan.cache, &it.1, &it.2, scan.opts.offline)?;
+            if c.name == "erlang" {
+                ts.retain(|t| erlang::side_branch(t, &otp_tags).is_none());
+            }
+            candidates.push((it.clone(), ts));
         }
     }
     let later_items: Vec<Item> =
@@ -69,6 +83,14 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
         if c.name == "mise" {
             mise(scan, c)?;
         }
+        if c.name == "erlang"
+            && let Some(why) = erlang::unlisted(c, c.osv.as_ref().and_then(|o| answers.get(o)), &otp_tags)
+        {
+            scan.unchecked(&format!("Erlang/OTP at {}", c.path), &why);
+        }
+        if let Some((_, repo)) = GITHUB_LATEST.iter().find(|(n, _)| *n == c.name) {
+            latest(scan, c, repo, failing)?;
+        }
         if c.eol.is_some() {
             scan.eol(c, failing)?;
         }
@@ -95,6 +117,37 @@ pub fn mise(scan: &mut Scan, c: &Component) -> Result<()> {
             ..Finding::of(c)
         });
     }
+    Ok(())
+}
+
+/// A tool behind its latest GitHub release warns (OUTDATED), unless an
+/// advisory already fails it, naming the exploited CVEs CISA listed for
+/// its product in the last months (GitHub gives no date for when this
+/// version was superseded, so they can't fail it). An entry added after
+/// the latest release was published isn't named: that release may not
+/// fix it.
+///
+/// Example: FreeSWITCH 1.11.2, latest 1.11.3 published 2026-08-28, a KEV
+/// entry added 2026-11-09: a plain OUTDATED warning naming no CVE.
+pub fn latest(scan: &mut Scan, c: &Component, repo: &str, failing: bool) -> Result<()> {
+    let r = releases::github_release(&scan.cache, scan.net, repo, scan.opts.offline);
+    let (latest, published) = scan.guard(&format!("latest {} release (GitHub)", c.name), r, (String::new(), 0.0))?;
+    if latest.is_empty() || failing || versions::same_or_newer(&c.version, &latest) {
+        return Ok(());
+    }
+    let (fix_cmd, fix_auto) = fix_with(c, &latest);
+    let mut f = Finding {
+        vuln_id: "OUTDATED".into(),
+        status: "warn".into(),
+        fixed: latest.clone(),
+        fix_cmd,
+        fix_auto,
+        note: format!("behind {latest}, the latest {} release", c.name),
+        ..Finding::of(c)
+    };
+    let gap = Gap { latest_released: Some(published).filter(|t| *t > 0.0), ..Gap::default() };
+    crate::checks::machine::exploited::escalate(&mut f, c, &scan.kev_entries, gap);
+    scan.add(f);
     Ok(())
 }
 

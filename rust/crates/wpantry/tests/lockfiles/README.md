@@ -27,6 +27,7 @@ package, a private recipe), the table says what was dropped:
 | `pub` | `dart pub get` (Dart 3.13) with a path package and a dev dependency | `dart pub deps --json`, hosted packages |
 | `mix` | written by hand in Mix's format (no Hex repository reachable here): an aliased package, a git dependency, a private organization's package; checksums from the hex.pm API | by hand |
 | `gradle` | `gradle dependencies --write-locks` (Gradle 8.14) | `gradle dependencies`, every coordinate listed |
+| `gradle-groovy`, `gradle-kts`, `gradle-catalog` | written by hand (no lockfile, the build only declares): a platform, a versionless starter, an interpolated version, catalog accessors, a `version.ref` and a rich version | by hand: the literal `group:artifact:version` declarations; the versionless and interpolated ones are reported not checked, not listed |
 | `maven` | written by hand (Maven has no lockfile): properties, `dependencyManagement`, a test scope, a plugin dependency | `mvn dependency:list -DexcludeTransitive` (Maven 3.9) |
 | `nuget-v1`, `nuget-v2` | `dotnet restore` (.NET SDK 8.0) with `RestorePackagesWithLockFile`, a project reference; v2 with central package management and transitive pinning | `dotnet list package --include-transitive --format json` |
 | `conan-v04`, `conan-v05` | `conan lock create` (Conan 1.66 with revisions, Conan 2.32) over locally exported recipes (ConanCenter isn't reachable here), a `tool_requires` and a `@user/channel` recipe | `conan info --json`, `conan graph info --format=json`, the `@user/channel` recipe dropped |

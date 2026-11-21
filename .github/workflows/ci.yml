@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install: false
           cache: true
@@ -71,7 +71,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      OPS_REF: a296725712ee48f23b9b79967e431ae53a455250
+      # ops#201: bootstrap checks mise's release bundle with `packslip verify`,
+      # since `packslip install` fails on mise's release list, now over
+      # packslip's 8 MiB page limit (jdx/packslip#346). Move this to ops' main
+      # once #201 lands there.
+      OPS_REF: 0f942b678d9315438b09ce44d87c11ef57003ca8
       IMAGE: waffuru-bootstrap:ci
     steps:
       - name: Check for the ops deploy key
@@ -127,7 +131,7 @@ jobs:
       # The same pins laptops use: shellcheck and actionlint from mise.toml,
       # fetched through mise's checksummed registry, Python for the actions
       # audit check and the scripts/ tests, and cargo-about for the notices.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install_args: shellcheck actionlint python github:EmbarkStudios/cargo-about
           cache: true
@@ -268,7 +272,7 @@ jobs:
 
       # cargo-llvm-cov at the version mise.toml pins, through mise's checksummed
       # registry.
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install_args: aqua:taiki-e/cargo-llvm-cov
           cache: true

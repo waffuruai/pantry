@@ -81,19 +81,38 @@ pub fn casks(
     Ok(out)
 }
 
-/// [(version, serving since epoch)] currently served on Chrome's stable channel.
+/// [(version, first served epoch)] for every release Chrome's stable
+/// channel has served, past ones included, so that the release that first
+/// superseded an install is in the list. A version served more than once
+/// (a staged rollout) keeps its earliest start; 0.0 when none is dated.
+///
+/// Example: `{"releases": [{"version": "142.0.1", "serving": {"startTime":
+/// "2026-10-02T00:00:00Z"}}, {"version": "142.0.1", "serving": {"startTime":
+/// "2026-10-01T00:00:00Z", "endTime": "..."}}]}` gives
+/// `[("142.0.1", <2026-10-01>)]`.
 pub fn chrome(cache: &Cache, net: &dyn Net, platform: &str, offline: bool) -> Result<Vec<(String, f64)>> {
     let fetch = || -> Result<Value> {
         let data = fetch::get_json(net, "chrome-releases", &url("chrome-releases").replace("{}", platform), &[])?
             .unwrap_or(Value::Null);
-        let rows: Vec<Value> = json::arr_at(&data, "releases")
-            .iter()
-            .map(|r| {
-                let start = r.get("serving").map(|s| str_at(s, "startTime")).unwrap_or("");
-                serde_json::json!([str_at(r, "version"), epoch(start)])
-            })
-            .filter(|r| r[0].as_str().is_some_and(|v| !v.is_empty()))
-            .collect();
+        // The feed's order (newest first), each version once.
+        let mut first: Vec<(String, f64)> = Vec::new();
+        let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for r in json::arr_at(&data, "releases") {
+            let (version, start) =
+                (str_at(r, "version"), epoch(r.get("serving").map(|s| str_at(s, "startTime")).unwrap_or("")));
+            if version.is_empty() {
+                continue;
+            }
+            match at.get(version) {
+                Some(&i) if start > 0.0 && (first[i].1 == 0.0 || start < first[i].1) => first[i].1 = start,
+                Some(_) => {}
+                None => {
+                    at.insert(version.to_string(), first.len());
+                    first.push((version.to_string(), start));
+                }
+            }
+        }
+        let rows: Vec<Value> = first.into_iter().map(|(v, t)| serde_json::json!([v, t])).collect();
         if rows.is_empty() {
             return Err(fetch::invalid("chrome-releases", "no releases"));
         }
@@ -160,6 +179,16 @@ pub fn firefox(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Firefox> {
 /// The version of `repo`'s latest GitHub release (its tag without a leading
 /// v), refreshed daily.
 pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<String> {
+    github_release(cache, net, repo, offline).map(|(v, _)| v)
+}
+
+/// `repo`'s latest GitHub release: its version (as [`github_latest`]) and
+/// when it was published (`published_at`, an epoch; 0.0 when GitHub gives
+/// none, or the cache holds only the version from before dates were kept).
+///
+/// Example: `{"tag_name": "v1.11.3", "published_at": "2026-08-28T10:00:00Z"}`
+/// gives `("1.11.3", <2026-08-28>)`.
+pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<(String, f64)> {
     let fetch = || -> Result<Value> {
         let headers = net::github_headers();
         let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -171,12 +200,13 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
         }
         let v =
             if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
-        Ok(Value::String(v.to_string()))
+        Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at"))}))
     };
-    Ok(fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?
-        .as_str()
-        .unwrap_or("")
-        .to_string())
+    let v = fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?;
+    Ok(match &v {
+        Value::String(s) => (s.clone(), 0.0),
+        o => (str_at(o, "version").to_string(), o.get("published").and_then(Value::as_f64).unwrap_or(0.0)),
+    })
 }
 
 /// One row of PostgreSQL's security table.
@@ -256,6 +286,11 @@ pub fn parse_postgres(page: &str) -> Vec<PgAdvisory> {
         });
     }
     out
+}
+
+/// Whether PostgreSQL's security page was ever read here (PostgreSQL was found).
+pub fn postgres_fetched(cache: &Cache) -> Result<bool> {
+    Ok(cache.run("postgres")?.is_some())
 }
 
 /// The PostgreSQL project's own security table (OSV has no PostgreSQL

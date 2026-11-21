@@ -3,12 +3,13 @@
 //! certificate authorities it trusts.
 //!
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
-//! `dotnet`, `apps`, `editors`, `harnesses`, `images`, `os_packages`,
-//! `cellar`, `programs` on Windows), what is judged of it (`components`,
-//! `app_updates`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
-//! `downloads`, `software_cves`), and the security
-//! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
-//! included). This file is the index: [`run`], the probes in order.
+//! `dotnet`, `apps`, `browsers` (Linux), `servers`, `editors`, `harnesses`,
+//! `images`, `os_packages`, `cellar`, `programs` on Windows), what is
+//! judged of it (`components`, `app_updates`, `exploited` over
+//! `kev_catalog`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
+//! `downloads`, `software_cves`), and the security settings (`settings`
+//! over `any/`, `macos/` and `linux/`, persistence included). This file is
+//! the index: [`run`], the probes in order.
 
 use crate::checks::Scan;
 use crate::component::Component;
@@ -24,6 +25,7 @@ pub mod any;
 pub mod app_updates;
 pub mod apps;
 pub mod brew_vulns;
+pub mod browsers;
 pub mod ca_trust;
 pub mod catalog;
 pub mod cellar;
@@ -32,14 +34,18 @@ pub mod components;
 pub mod dotnet;
 pub mod downloads;
 pub mod editors;
+pub mod erlang;
+pub mod exploited;
 pub mod harnesses;
 pub mod images;
+pub mod kev_catalog;
 pub mod linux;
 pub mod macos;
 pub mod os_packages;
 pub mod os_updates;
 pub mod packages;
 pub mod programs;
+pub mod servers;
 pub mod settings;
 pub mod software_cves;
 #[cfg(test)]
@@ -118,19 +124,30 @@ fn joined<T>(probe: std::thread::ScopedJoinHandle<'_, T>) -> T {
 
 pub fn inventory(scan: &mut Scan) -> Vec<Component> {
     std::thread::scope(|s| {
-        let docker = s.spawn(apps_mod::docker);
+        let docker = s.spawn(|| {
+            let mut found = apps_mod::docker();
+            found.extend(servers::servers());
+            found
+        });
         let mut found = inventory_local(scan);
-        scan.status("Asking Docker for its engine version");
+        scan.status("Asking Docker for its engine version and running servers");
         found.extend(joined(docker));
         scan.count("tools, runtimes and packages", found.len() as i64);
         found
     })
 }
 
-/// What the machine has installed, without Docker's engine.
+/// What the machine has installed, without Docker's engine and the servers
+/// in its containers.
 fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     scan.status("Finding installed tools, runtimes and package managers");
     let mut found = tools::tools();
+    scan.status("Reading Erlang/OTP release files");
+    let (otp, unread) = erlang::installs();
+    found.extend(otp);
+    for (erl, why) in unread {
+        scan.unchecked(&format!("Erlang/OTP at {erl}"), &why);
+    }
     // Bottles poured without the `brew` command (mise's brew: engine): read
     // from the Cellar, since `brew vulns` can't run and `tools` leaves
     // Cellar-owned binaries to it. With brew present, brew vulns covers them.

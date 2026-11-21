@@ -6,16 +6,18 @@
 //! are skipped, as are versions that aren't registry versions.
 
 use crate::error::{Error, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub mod bun;
 pub mod cargo;
 pub mod composer;
 pub mod conan;
+pub mod csproj;
 pub mod deno;
 pub mod gem;
 pub mod gomod;
 pub mod gradle;
+pub mod gradle_build;
 pub mod maven;
 pub mod mix;
 pub mod npm;
@@ -141,6 +143,8 @@ fn parser(name: &str) -> Option<Parser> {
         "composer.lock" => composer::parse,
         "pubspec.lock" => pubspec::parse,
         "mix.lock" => mix::parse,
+        "build.gradle" | "build.gradle.kts" => gradle_build::parse_script,
+        n if gradle_build::is_catalog(n) => gradle_build::parse_catalog,
         "gradle.lockfile" => gradle::parse,
         "pom.xml" => maven::parse,
         "packages.lock.json" => nuget::parse,
@@ -158,19 +162,49 @@ pub fn extract(path: &Path) -> Result<Option<Vec<Package>>> {
 }
 
 /// As [`extract`], letting a requirements file include any file under
-/// `root` (the repository it was found in), and nothing outside it.
+/// `root` (the repository it was found in), and nothing outside it. A
+/// .NET project's packages include those its `Directory.*.props` declare.
 pub fn extract_within(path: &Path, root: &Path) -> Result<Option<Vec<Package>>> {
+    Ok(extract_noting(path, root)?.map(|x| {
+        let mut all = x.packages;
+        all.extend(x.inherited.into_iter().map(|(_, p)| p));
+        dedupe(all)
+    }))
+}
+
+/// What [`extract_noting`] reads from one file.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Extracted {
+    /// The file's own packages, each once.
+    pub packages: Vec<Package>,
+    /// The dependencies the file names but pins no exact version for
+    /// (`name (why)`): the caller reports them as not checked.
+    pub unchecked: Vec<String>,
+    /// Packages declared in a file the project imports (a .NET
+    /// `Directory.Build.props`), with that file: shared by every project
+    /// below it, so reported once for that file.
+    pub inherited: Vec<(PathBuf, Package)>,
+}
+
+/// As [`extract_within`], keeping apart what it can't check and what an
+/// imported file declares. Only .NET project files have either today.
+pub fn extract_noting(path: &Path, root: &Path) -> Result<Option<Extracted>> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     // A lockfile that links out of the repo isn't the repo's to report: its
     // packages would go to OSV as if they were.
-    if parser(name).is_some() || requirements::is_requirements(name) {
+    if supported(name) {
         let (real, base) = (path.canonicalize()?, root.canonicalize()?);
         if !real.starts_with(&base) {
             return Err(Error::Invalid(format!("{} links outside {}; not read", path.display(), root.display())));
         }
     }
+    let mut out = Extracted::default();
     let found = if requirements::is_requirements(name) {
         requirements::parse_file(path, root)?
+    } else if csproj::is_project_file(name) {
+        let read = csproj::parse_file(path, root)?;
+        (out.unchecked, out.inherited) = (read.unchecked, read.inherited);
+        read.packages
     } else {
         let Some(parse) = parser(name) else { return Ok(None) };
         let text = crate::utils::files::read_capped(path, MAX_FILE)?;
@@ -179,7 +213,8 @@ pub fn extract_within(path: &Path, root: &Path) -> Result<Option<Vec<Package>>> 
         }
         parse(&text)?
     };
-    Ok(Some(dedupe(found.into_iter().filter(|p| !p.name.is_empty() && !p.version.is_empty()).collect())))
+    out.packages = dedupe(found.into_iter().filter(|p| !p.name.is_empty() && !p.version.is_empty()).collect());
+    Ok(Some(out))
 }
 
 /// Whether `text` has the structure every `name` its tool writes has (a
@@ -217,7 +252,7 @@ fn looks_like(name: &str, text: &str) -> bool {
 
 /// Whether [`extract`] reads this kind of lockfile.
 pub fn supported(name: &str) -> bool {
-    requirements::is_requirements(name) || parser(name).is_some()
+    requirements::is_requirements(name) || csproj::is_project_file(name) || parser(name).is_some()
 }
 
 /// The lines of a text, refusing any over [`MAX_LINE`].

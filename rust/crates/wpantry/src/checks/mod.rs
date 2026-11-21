@@ -168,6 +168,11 @@ pub fn is_malicious(rec: &Value) -> bool {
     osv::ids_of(rec).iter().any(|i| i.starts_with("MAL-"))
 }
 
+/// The `Component::extra` key naming what a component's OSV release tags
+/// put before its version (`OTP-` for Erlang/OTP's `OTP-27.3.3`), taken off
+/// the fix version an advisory reports.
+pub const TAG_PREFIX: &str = "tag_prefix";
+
 pub fn fill(cmd: &str, safe: &str) -> String {
     cmd.replace("{safe}", if safe.is_empty() { "latest" } else { safe })
 }
@@ -219,6 +224,20 @@ pub struct Options {
     pub sources: Option<PathBuf>,
 }
 
+impl Options {
+    /// Whether `--path` limits the scan to some folders: then it reads
+    /// files only there, and of the machine only its inventory.
+    pub fn scoped(&self) -> bool {
+        self.paths.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    /// Whether the scan reads Downloads, Desktop and Documents: a machine
+    /// scan, not limited by `--path`, without `--no-personal-files`.
+    pub fn personal_files(&self) -> bool {
+        self.machine && !self.no_personal_files && !self.scoped()
+    }
+}
+
 /// What a finished scan found.
 #[derive(Clone, Debug, Default)]
 pub struct Outcome {
@@ -251,6 +270,9 @@ pub struct Scan<'a> {
     pub unfixed: i64,
     pub unknown_licenses: i64,
     pub kev: HashSet<String>,
+    /// The KEV list's entries with their vendor and product, for naming the
+    /// exploited CVEs behind an outdated finding; empty without the list.
+    pub kev_entries: Vec<kev::Entry>,
     /// The files pass's findings ([`Scan::read_files`]).
     pub(crate) files: Option<files::Results>,
     /// The malware scan's rules, compiled before the files are read.
@@ -280,6 +302,7 @@ impl<'a> Scan<'a> {
             unfixed: 0,
             unknown_licenses: 0,
             kev: HashSet::new(),
+            kev_entries: Vec::new(),
             files: None,
             malware: None,
         }
@@ -360,7 +383,7 @@ impl<'a> Scan<'a> {
             for (_, dir) in supply_chain::suspect_code::installed_code() {
                 jobs.push(Job::new(Check::Suspects(suspects::Kind::Installed), &dir, suspects::DEPTH));
             }
-            if !self.opts.no_personal_files {
+            if self.opts.personal_files() {
                 for dir in machine::downloads::dirs() {
                     jobs.push(Job::new(Check::Documents, &dir, 1));
                 }
@@ -373,7 +396,8 @@ impl<'a> Scan<'a> {
                 &repos,
                 self.opts.machine,
                 self.opts.deep,
-                !self.opts.no_personal_files,
+                self.opts.personal_files(),
+                self.opts.scoped(),
             ));
         }
         jobs
@@ -465,13 +489,24 @@ impl<'a> Scan<'a> {
 
     // the scan --------------------------------------------------------------
 
+    /// CISA's KEV list: the ids that mark findings, and the entries that
+    /// name an outdated product's exploited CVEs. Unreachable with nothing
+    /// cached, both stay empty and the list is reported unchecked.
+    pub fn load_kev(&mut self) -> Result<()> {
+        self.status("Fetching CISA's known-exploited list");
+        let kev = kev::kev(&self.cache, self.net, self.opts.offline);
+        self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
+        if !self.kev.is_empty() {
+            self.kev_entries = kev::entries(&self.cache)?;
+        }
+        Ok(())
+    }
+
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
         crate::utils::walk::forget_walks();
         self.use_sources();
-        self.status("Fetching CISA's known-exploited list");
-        let kev = kev::kev(&self.cache, self.net, self.opts.offline);
-        self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
+        self.load_kev()?;
         self.status("Fetching EPSS's exploit predictions");
         let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
         self.guard("EPSS (exploit predictions)", epss, 0)?;
@@ -564,8 +599,10 @@ impl<'a> Scan<'a> {
             let safe = group
                 .iter()
                 .filter_map(|r| {
-                    let fixes: Vec<String> =
-                        asked.iter().flat_map(|(e, p, _)| osv::fixed_versions(r, e, p, newer)).collect();
+                    let fixes: Vec<String> = asked
+                        .iter()
+                        .flat_map(|(e, p, v)| osv::fixed_versions(r, e, p, newer.map(|m| (v.as_str(), m))))
+                        .collect();
                     versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b))
                 })
                 .max_by(|a, b| order.cmp(a, b));
@@ -607,6 +644,12 @@ impl<'a> Scan<'a> {
                 .map(|(r, e, p, v)| osv::affected_range(r, e, p, v, |a, b| order.cmp(a, b)))
                 .find(|s| !s.is_empty())
                 .unwrap_or_default();
+            // A release tag that isn't the version (`OTP-27.3.3`): the finding
+            // and the version manager's command want the version.
+            let safe = match c.extra.get(TAG_PREFIX) {
+                Some(p) => safe.strip_prefix(p.as_str()).map(str::to_string).unwrap_or(safe),
+                None => safe,
+            };
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
             self.add(Finding {
                 vuln_id: display_id(main),
@@ -643,7 +686,7 @@ impl<'a> Scan<'a> {
             });
         } else if !res.latest.is_empty() && !failing && !versions::current(&c.name, &c.version, &res.latest) {
             let (fix_cmd, fix_auto) = fix_with(c, &res.latest);
-            self.add(Finding {
+            let mut f = Finding {
                 vuln_id: "OUTDATED".into(),
                 status: "warn".into(),
                 fixed: res.latest.clone(),
@@ -651,7 +694,12 @@ impl<'a> Scan<'a> {
                 fix_auto,
                 note: format!("behind {}, the latest {product} {cycle} release", res.latest),
                 ..Finding::of(c)
-            });
+            };
+            // endoflife.date doesn't say when this version was superseded,
+            // only when its cycle came out.
+            let gap = machine::exploited::Gap { line_released: res.released, ..Default::default() };
+            machine::exploited::escalate(&mut f, c, &self.kev_entries, gap);
+            self.add(f);
         }
         Ok(())
     }

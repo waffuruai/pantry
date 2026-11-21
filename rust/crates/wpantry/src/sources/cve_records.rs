@@ -113,6 +113,27 @@ pub fn records(cache: &Cache, vendor: &str, product: &str) -> Result<Option<Reco
     Ok(Some(Records { records, complete: v["complete"].as_bool().unwrap_or(false) }))
 }
 
+/// What was asked of the index before: vendors, and (vendor, product) pairs.
+pub type Asked = (Vec<String>, Vec<(String, String)>);
+
+/// The vendors and (vendor, product) pairs whose answers are on record.
+pub fn on_record(cache: &Cache) -> Result<Asked> {
+    let mut stmt = cache.conn.prepare("SELECT key FROM meta WHERE substr(key, 1, 11) = 'cve_records' ORDER BY 1")?;
+    let keys: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let set: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+    // An answer is kept with its time: `<key>` beside `<key>_at`.
+    let answers = keys.iter().filter(|k| set.contains(format!("{k}_at").as_str()));
+    let (mut vendors, mut pairs) = (Vec::new(), Vec::new());
+    for k in answers {
+        if let Some(v) = k.strip_prefix(&products_key("")) {
+            vendors.push(v.to_string());
+        } else if let Some((v, p)) = k.strip_prefix("cve_records:").and_then(|r| r.split_once('\u{1f}')) {
+            pairs.push((v.to_string(), p.to_string()));
+        }
+    }
+    Ok((vendors, pairs))
+}
+
 /// Fetch the product lists of the `vendors` whose copy isn't fresh, side
 /// by side, and keep them; one that can't be fetched keeps its last copy.
 pub fn prefetch_products(cache: &Cache, net: &dyn Net, vendors: &[String], offline: bool) -> Result<()> {

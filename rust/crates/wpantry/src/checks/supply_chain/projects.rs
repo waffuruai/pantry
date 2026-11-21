@@ -70,6 +70,9 @@ fn yarn_berry(lock: &Path) -> bool {
 
 // The scanned repos -----------------------------------------------------------
 
+/// The count of Gradle declarations whose version only Gradle knows.
+pub const GRADLE_UNRESOLVED: &str = "Gradle declarations not checked (version decided by Gradle)";
+
 pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     // (repo root, lockfile): a requirements file may include others from its repo.
     let files: Vec<(&Path, PathBuf)> = repos
@@ -87,7 +90,17 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     for (root, f) in &files {
         scan.status(&format!("Reading {}", short(&f.to_string_lossy())));
         match lockfiles::extract_within(f, root).map_err(as_source) {
-            Ok(Some(pkgs)) => read.push((f.clone(), pkgs)),
+            Ok(Some(pkgs)) => {
+                // Declarations a build script leaves to Gradle are not checked, not
+                // clean: counted, and named in the log. Not an `unchecked` row: those
+                // say a source didn't answer, and stop the scan resolving exposures
+                // and verifying fixes, which a BOM-managed build would do every scan.
+                if let Some((n, why)) = lockfiles::gradle_build::unresolved_note(f) {
+                    scan.count(GRADLE_UNRESOLVED, n as i64);
+                    (scan.log)(&format!("  {}: {why}", short(&f.to_string_lossy())));
+                }
+                read.push((f.clone(), pkgs))
+            }
             Ok(None) => {
                 *unsupported.entry(f.file_name().unwrap_or_default().to_string_lossy().into_owned()).or_default() += 1
             }
@@ -133,7 +146,17 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
                 c.scope = p.scope.as_str().to_string();
             }
             c.direct = p.direct;
-            scan.advisories(&c, &[], None, "fail", Some(osv::group_by_alias(&recs)));
+            // A version a Gradle build file declares may not be the one Gradle
+            // resolves: a warning that says so, not a failure. A known-malicious
+            // package still fails, whatever its version.
+            let declared = lockfiles::gradle_build::declared(f);
+            let before = scan.findings.len();
+            scan.advisories(&c, &[], None, if declared { "warn" } else { "fail" }, Some(osv::group_by_alias(&recs)));
+            if declared {
+                for finding in scan.findings[before..].iter_mut().filter(|f| f.status != "fail") {
+                    finding.note = format!("{} ({})", finding.note, lockfiles::gradle_build::DECLARED);
+                }
+            }
         }
     }
     if scan.opts.licenses {

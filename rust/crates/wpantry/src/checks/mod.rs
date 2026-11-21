@@ -215,7 +215,9 @@ pub struct Options {
     pub ask: bool,
     /// Skip the malware scan (`--no-malware`).
     pub no_malware: bool,
-    /// The malware scan reads all of `~` with every system's rules (`--deep`).
+    /// `--deep`: every file of the computer this user can read, `~` first: the
+    /// malware scan with every system's rules, and the secret scan of files
+    /// as well as history.
     pub deep: bool,
     /// Never look up a flagged file's hash online (`--no-online-hash`).
     pub no_online_hash: bool,

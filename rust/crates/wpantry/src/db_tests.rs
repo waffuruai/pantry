@@ -65,7 +65,17 @@ fn older_caches_gain_the_added_columns() {
         .unwrap();
     assert_eq!(
         &cols[12..],
-        ["dep_scope", "dep_direct", "affected_range", "cvss", "cvss_version", "epss", "epss_percentile"]
+        [
+            "dep_scope",
+            "dep_direct",
+            "affected_range",
+            "cvss",
+            "cvss_version",
+            "epss",
+            "epss_percentile",
+            "epss_date",
+            "epss_model"
+        ]
     );
     let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
     assert_eq!(kept, 1);
@@ -141,7 +151,9 @@ fn schema_matches_the_contract() {
             "cvss",
             "cvss_version",
             "epss",
-            "epss_percentile"
+            "epss_percentile",
+            "epss_date",
+            "epss_model"
         ]
     );
 }

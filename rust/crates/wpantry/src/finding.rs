@@ -39,6 +39,11 @@ pub struct Finding {
     /// EPSS scores.
     pub epss: Option<f64>,
     pub epss_percentile: Option<f64>,
+    /// The EPSS copy the score came from: its score date and model version
+    /// (`v2026.06.15`), so a score that moved because the model changed can
+    /// be told from one that moved because the risk did; "" without a score.
+    pub epss_date: String,
+    pub epss_model: String,
 }
 
 impl Finding {
@@ -89,6 +94,8 @@ impl Finding {
             ("cvss_version", self.cvss_version.as_str().into()),
             ("epss", self.epss.map(J::Float).unwrap_or(J::Null)),
             ("epss_percentile", self.epss_percentile.map(J::Float).unwrap_or(J::Null)),
+            ("epss_date", self.epss_date.as_str().into()),
+            ("epss_model", self.epss_model.as_str().into()),
             ("note", self.note.as_str().into()),
             ("fix_cmd", self.fix_cmd.as_str().into()),
             ("fix_auto", self.fix_auto.into()),

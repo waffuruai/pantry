@@ -240,6 +240,7 @@ See [upgrade](install.md#upgrade).
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
                "vuln_id": "CVE-2021-25900", "status": "fail", "fixed": "1.6.1", "kev": true, "severity": "CRITICAL",
                "cvss": 9.8, "cvss_version": "3.1", "epss": 0.0213, "epss_percentile": 0.84,
+               "epss_date": "2026-11-05T12:03:04Z", "epss_model": "v2026.06.15",
                "note": "…", "fix_cmd": "…", "fix_auto": false}]
 }
 ```

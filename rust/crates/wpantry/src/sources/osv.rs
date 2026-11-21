@@ -675,6 +675,33 @@ pub fn candidates(cache: &Cache, repo: &str, installed: &str, offline: bool) -> 
 /// Release tags of an upstream repo, from `git ls-remote`, cached a week;
 /// none when they can't be listed.
 pub fn tags(cache: &Cache, repo: &str, offline: bool) -> Result<Vec<String>> {
+    match tags_memo(cache, repo, offline, &mut None) {
+        Ok(v) => Ok(v
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default()),
+        Err(e) if e.is_source() => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// The repos whose tags were listed before.
+pub fn tagged_repos(cache: &Cache) -> Result<Vec<String>> {
+    let mut stmt =
+        cache.conn.prepare("SELECT substr(source, 6) FROM runs WHERE substr(source, 1, 5) = 'tags:' ORDER BY 1")?;
+    Ok(stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+}
+
+/// List `repo`'s tags again when the copy is over a week old; `Offline`
+/// when they can't be (the last copy stays).
+pub fn refresh_tags(cache: &Cache, repo: &str) -> Result<()> {
+    let mut failed = None;
+    tags_memo(cache, repo, false, &mut failed)?;
+    failed.map_or(Ok(()), |why| Err(Error::Offline(why)))
+}
+
+/// The memo of `repo`'s tags; why a listing failed goes in `failed`.
+fn tags_memo(cache: &Cache, repo: &str, offline: bool, failed: &mut Option<String>) -> Result<Value> {
     let fetch = || -> Result<Value> {
         let out = crate::utils::process::exec(
             &["git".as_ref(), "ls-remote".as_ref(), "--tags".as_ref(), "--refs".as_ref(), repo.as_ref()],
@@ -695,16 +722,12 @@ pub fn tags(cache: &Cache, repo: &str, offline: bool) -> Result<Vec<String>> {
     let fetch = || {
         let r = fetch();
         fetch::note("osv-git-tags", &r);
+        if let Err(e) = &r {
+            *failed = Some(format!("{repo}: {e}"));
+        }
         r
     };
-    match fetch::memo(cache, "osv-git-tags", &format!("tags:{repo}"), fetch, "", false, offline) {
-        Ok(v) => Ok(v
-            .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default()),
-        Err(e) if e.is_source() => Ok(Vec::new()),
-        Err(e) => Err(e),
-    }
+    fetch::memo(cache, "osv-git-tags", &format!("tags:{repo}"), fetch, "", false, offline)
 }
 
 #[cfg(test)]

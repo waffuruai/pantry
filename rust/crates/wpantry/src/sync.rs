@@ -9,7 +9,8 @@
 //! - what was asked before: end-of-life dates for every product on record,
 //!   OSV for every package version, CIRCL's CVE records for every vendor and
 //!   product, the latest versions of the extensions last checked (Open VSX,
-//!   the Marketplace), and the CVE scores (OSV, CVE.org).
+//!   the Marketplace), upstream repos' release tags (`git ls-remote`), and
+//!   the CVE scores (OSV, CVE.org).
 //!
 //! A source turned off in `sources.toml` is skipped, and nothing that needs
 //! consent (breaches, hash lookups) is asked. A scheduled run does this,
@@ -209,7 +210,8 @@ fn malware(cache: &Cache, net: &dyn Net, refresh: bool, status: Status, out: &mu
 }
 
 /// What scans asked about before: CIRCL's CVE records, the latest versions
-/// of the extensions last checked, and the CVE scores.
+/// of the extensions last checked, upstream repos' release tags, and the
+/// CVE scores.
 fn asked(cache: &Cache, net: &dyn Net, status: Status, out: &mut Synced) -> Result<()> {
     let (vendors, pairs) = cve_records::on_record(cache)?;
     if active(cve_records::ID) && !(vendors.is_empty() && pairs.is_empty()) {
@@ -227,6 +229,19 @@ fn asked(cache: &Cache, net: &dyn Net, status: Status, out: &mut Synced) -> Resu
             let r = watched(net, |n| extensions::latest_extensions(cache, n, &ids, openvsx, false).map(|_| ()));
             note(name, r, out);
         }
+    }
+    let repos = osv::tagged_repos(cache)?;
+    if active("osv-git-tags") && !repos.is_empty() {
+        status(&format!("Listing the release tags of {} repos", repos.len()));
+        let mut missed = Vec::new();
+        for r in &repos {
+            match osv::refresh_tags(cache, r) {
+                Ok(()) => {}
+                Err(e) if e.is_source() => missed.push(e.to_string()),
+                Err(e) => return Err(e),
+            }
+        }
+        note("Git release tags", if missed.is_empty() { Ok(()) } else { Err(Error::Offline(missed.join("; "))) }, out);
     }
     let cves = cve_scores::on_record(cache)?;
     if (active("osv") || active("cve-org")) && !cves.is_empty() {

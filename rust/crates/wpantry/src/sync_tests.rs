@@ -258,3 +258,46 @@ fn a_source_a_scan_found_that_fails_is_named() {
     assert_eq!(crate::sources::releases::postgres(&c, &Fake::offline(), true).unwrap(), Vec::new());
     assert!(crate::sources::cve_records::records(&c, "acme", "server").unwrap().is_some());
 }
+
+#[test]
+fn a_sync_lists_the_tags_of_repos_asked_about_before() {
+    let (d, c) = cache();
+    let repo = d.path().join("upstream");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "a"]);
+    git(&["tag", "v1.2.3"]);
+    let url = repo.to_string_lossy().into_owned();
+    let gone = d.path().join("gone").to_string_lossy().into_owned();
+    let old = crate::utils::os::now() - 14.0 * 86_400.0;
+    for r in [&url, &gone] {
+        c.conn
+            .execute("INSERT INTO runs VALUES (?, '', ?, '[]')", rusqlite::params![format!("tags:{r}"), old])
+            .unwrap();
+    }
+    let got = run(&c, &Fake::new(feeds), false, &|_| {}).unwrap();
+    assert_eq!(osv::tags(&c, &url, true).unwrap(), ["v1.2.3"]);
+    let why = got.failed.iter().find(|(n, _)| n == "Git release tags").map(|(_, w)| w.as_str());
+    assert!(why.is_some_and(|w| w.contains(&gone) && !w.contains(&format!("{url}:"))), "{got:?}");
+    c.conn.execute("DELETE FROM runs WHERE source = ?", [format!("tags:{gone}")]).unwrap();
+    let got = run(&c, &Fake::new(feeds), false, &|_| {}).unwrap();
+    assert!(got.refreshed.iter().any(|n| n == "Git release tags"), "{got:?}");
+}

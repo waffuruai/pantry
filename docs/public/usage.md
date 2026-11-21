@@ -162,7 +162,7 @@ wpantry cache prune                                # drop what no scan used in 9
   - the feeds: CISA KEV, EPSS, the malicious-package index, Homebrew casks, Chrome, Firefox, VS Code's extension lists, the latest Pantry;
   - once a malware scan fetched them: YARA Forge's rules, signature-base's and Feodo Tracker's lists;
   - once PostgreSQL was found: its security page;
-  - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, and CVE scores (OSV, CVE.org).
+  - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, upstream repos' release tags, and CVE scores (OSV, CVE.org).
 - `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).
 - `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
 - A scheduled run never changes anything. Run `wpantry fix` yourself.
@@ -515,8 +515,8 @@ Options:
 Usage: wpantry sync [options]
 
 Refresh the cache: the feeds, and every source a scan used for what it found (end-of-life dates,
-OSV, CVE records, extension versions, CVE scores, the malware rules), so scan --offline has fresh
-answers.
+OSV, CVE records, extension versions, release tags, CVE scores, the malware rules), so scan
+--offline has fresh answers.
 
 Options:
   --refresh   ask every source again, even when its answer is fresh

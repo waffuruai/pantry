@@ -345,7 +345,7 @@ pub fn program() -> Cli {
         )
         .command(
             Cli::new("sync")
-                .description("Refresh the cache: the feeds, and every source a scan used for what it found (end-of-life dates, OSV, CVE records, extension versions, CVE scores, the malware rules), so scan --offline has fresh answers.")
+                .description("Refresh the cache: the feeds, and every source a scan used for what it found (end-of-life dates, OSV, CVE records, extension versions, release tags, CVE scores, the malware rules), so scan --offline has fresh answers.")
                 .summary("Refresh the cache for offline scans")
                 .option("--refresh", "ask every source again, even when its answer is fresh")
                 .option("--json", "what was refreshed, as JSON"),

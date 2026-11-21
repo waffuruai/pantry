@@ -57,7 +57,7 @@ they are the release's.
   smallvec 1.16.4: MIT OR Apache-2.0
   subtle 2.6.1: BSD-3-Clause
   untrusted 0.9.0: ISC
-  ureq 3.5.1: MIT OR Apache-2.0
+  ureq 3.5.2: MIT OR Apache-2.0
   ureq-proto 0.7.1: MIT OR Apache-2.0
   utf8-zero 0.8.1: MIT OR Apache-2.0
   wcli 0.1.2: MIT
@@ -1024,7 +1024,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 
 ==== MIT License (MIT)
-Used by: ureq 3.5.1
+Used by: ureq 3.5.2
 
 MIT License
 

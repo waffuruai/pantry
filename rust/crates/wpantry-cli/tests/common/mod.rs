@@ -210,6 +210,7 @@ impl Ty {
 }
 
 pub const FINDING: &[(&str, Ty)] = &[
+    ("id", Ty::Str),
     ("kind", Ty::Str),
     ("component", Ty::Str),
     ("version", Ty::Str),

@@ -108,6 +108,9 @@ pub const RUBY_DIRS: &[&str] = &[
     "~/.asdf/installs/ruby/*/bin",
     "~/.local/share/mise/installs/ruby/*/bin",
 ];
+/// Where version managers keep Erlang/OTP installs (kerl's are read from
+/// its list of installations). The `erlang` module reads them; nothing is run.
+pub const ERLANG_DIRS: &[&str] = &["~/.asdf/installs/erlang/*/bin", "~/.local/share/mise/installs/erlang/*/bin"];
 pub const GO_DIRS: &[&str] = &[
     "/usr/local/go/bin",
     "~/sdk/go*/bin",

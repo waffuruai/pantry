@@ -14,6 +14,7 @@ pub mod ecosystems;
 pub mod email;
 pub mod files;
 pub mod hidden;
+pub mod ignore;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
@@ -166,6 +167,11 @@ pub fn is_kev(rec: &Value, kev: &HashSet<String>) -> bool {
 pub fn is_malicious(rec: &Value) -> bool {
     osv::ids_of(rec).iter().any(|i| i.starts_with("MAL-"))
 }
+
+/// The `Component::extra` key naming what a component's OSV release tags
+/// put before its version (`OTP-` for Erlang/OTP's `OTP-27.3.3`), taken off
+/// the fix version an advisory reports.
+pub const TAG_PREFIX: &str = "tag_prefix";
 
 pub fn fill(cmd: &str, safe: &str) -> String {
     cmd.replace("{safe}", if safe.is_empty() { "latest" } else { safe })
@@ -500,6 +506,7 @@ impl<'a> Scan<'a> {
         if !self.opts.no_malware {
             crate::checks::malware::run(&mut self);
         }
+        crate::checks::ignore::apply(&mut self);
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);
         self.status("Saving the findings");
@@ -577,8 +584,10 @@ impl<'a> Scan<'a> {
             let safe = group
                 .iter()
                 .filter_map(|r| {
-                    let fixes: Vec<String> =
-                        asked.iter().flat_map(|(e, p, _)| osv::fixed_versions(r, e, p, newer)).collect();
+                    let fixes: Vec<String> = asked
+                        .iter()
+                        .flat_map(|(e, p, v)| osv::fixed_versions(r, e, p, newer.map(|m| (v.as_str(), m))))
+                        .collect();
                     versions::pick_safe_by(&qver, &fixes, |a, b| order.cmp(a, b))
                 })
                 .max_by(|a, b| order.cmp(a, b));
@@ -620,6 +629,12 @@ impl<'a> Scan<'a> {
                 .map(|(r, e, p, v)| osv::affected_range(r, e, p, v, |a, b| order.cmp(a, b)))
                 .find(|s| !s.is_empty())
                 .unwrap_or_default();
+            // A release tag that isn't the version (`OTP-27.3.3`): the finding
+            // and the version manager's command want the version.
+            let safe = match c.extra.get(TAG_PREFIX) {
+                Some(p) => safe.strip_prefix(p.as_str()).map(str::to_string).unwrap_or(safe),
+                None => safe,
+            };
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
             self.add(Finding {
                 vuln_id: display_id(main),

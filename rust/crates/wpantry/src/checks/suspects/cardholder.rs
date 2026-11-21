@@ -67,7 +67,9 @@ pub(super) fn scan(file: &str, text: &str, ctx: Context, out: &mut Vec<Suspect>)
     let is_test = test_path(file);
     let fields = has_card_field(text);
     let sends = SENDS.iter().any(|s| text.contains(s));
-    let scanned = if text.len() > MAX_SCAN { &text[..MAX_SCAN] } else { text };
+    // The first MAX_SCAN bytes, cut back to a character's start: a cut
+    // inside one (an accent, an emoji) would panic.
+    let scanned = &text[..text.floor_char_boundary(MAX_SCAN)];
 
     if let Some((digits, at)) = find_pan(scanned) {
         let test_number = TEST_PANS.contains(&digits.as_str());

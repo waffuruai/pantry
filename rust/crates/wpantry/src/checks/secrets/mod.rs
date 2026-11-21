@@ -51,8 +51,7 @@ pub struct Found {
     /// found in decoded text.
     pub tags: Vec<String>,
     pub confidence: Option<rules::Confidence>,
-    /// betterleaks' `path:rule:line` (gitleaks' too, so `.gitleaksignore`
-    /// entries keep working); a commit's adds `sha:` in front.
+    /// betterleaks' `path:rule:line`; a commit's adds `sha:` in front.
     pub fingerprint: String,
 }
 

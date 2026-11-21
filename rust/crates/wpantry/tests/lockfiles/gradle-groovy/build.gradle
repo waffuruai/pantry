@@ -1,0 +1,22 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.1.0'
+}
+
+ext {
+    nettyVersion = '4.1.100.Final'
+}
+
+dependencies {
+    implementation platform('org.springframework.boot:spring-boot-dependencies:3.1.0')
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.apache.logging.log4j:log4j-core:2.14.1'
+    implementation "io.netty:netty-handler:${nettyVersion}"
+    implementation('com.google.guava:guava:32.1.2-jre') {
+        exclude group: 'com.google.code.findbugs', module: 'jsr305'
+    }
+    implementation project(':core')
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+    testImplementation 'junit:junit:4.13.2'
+}

@@ -288,6 +288,11 @@ pub fn parse_postgres(page: &str) -> Vec<PgAdvisory> {
     out
 }
 
+/// Whether PostgreSQL's security page was ever read here (PostgreSQL was found).
+pub fn postgres_fetched(cache: &Cache) -> Result<bool> {
+    Ok(cache.run("postgres")?.is_some())
+}
+
 /// The PostgreSQL project's own security table (OSV has no PostgreSQL
 /// release data) for every supported major.
 pub fn postgres(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Vec<PgAdvisory>> {

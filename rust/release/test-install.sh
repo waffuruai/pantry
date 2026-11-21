@@ -31,7 +31,7 @@ command -v curl >/dev/null 2>&1 || { echo "skipped: curl is needed for the file:
 
 # The tools install.sh uses, and nothing else.
 mkdir "$tmp/path"
-for t in sh awk cat chmod curl head mkdir mktemp mv rm sed sha256sum shasum tail tr uname; do
+for t in sh awk cat chmod curl head ln mkdir mktemp mv rm sed sha256sum shasum tail tr uname; do
   p="$(command -v "$t" 2>/dev/null)" && ln -s "$p" "$tmp/path/$t"
 done
 
@@ -62,7 +62,44 @@ run || { cat "$tmp/out" >&2; fail "a good release should install"; }
 grep -q "checksum matches" "$tmp/out" || fail "it should say the checksum matched"
 grep -q "only the checksum was checked" "$tmp/out" || fail "without a verifier it should say only the checksum was checked"
 grep -q "Run: wpantry scan$" "$tmp/out" || fail "it should suggest wpantry scan, a command that exists"
+grep -q "runs .*, not this install" "$tmp/out" && fail "with no other wpantry on PATH it shouldn't warn about one"
 echo "✓ installs a good release, says when only the checksum was checked, and suggests wpantry scan"
+
+# An older wpantry earlier on PATH runs instead: say which, offer to point
+# it here, and never run it.
+old_wpantry() {
+  rm -rf "${tmp:?}/old" "${tmp:?}/mise"
+  mkdir -p "$tmp/old" "$tmp/mise/installs/pantry/0.4.0"
+  for d in "$tmp/old" "$tmp/mise/installs/pantry/0.4.0"; do
+    printf '#!/bin/sh\ntouch "%s/ran"\necho "wpantry 0.4.0 (rust, schema 1)"\n' "$d" > "$d/$binname"
+    chmod +x "$d/$binname"
+  done
+}
+old_wpantry
+run PATH="$tmp/old:$tmp/bin:$tmp/path" WPANTRY_REPLACE=0 || { cat "$tmp/out" >&2; fail "a shadowed install should still install"; }
+grep -q "wpantry runs $tmp/old/$binname, not this install" "$tmp/out" || { cat "$tmp/out" >&2; fail "it should name the wpantry that runs instead"; }
+grep -q "remove it, or put $tmp/bin first on PATH" "$tmp/out" || fail "declined, it should say how to fix it"
+grep -q "that one is mise's" "$tmp/out" && fail "a wpantry outside mise shouldn't get the mise hint"
+[ -L "$tmp/old/$binname" ] && fail "declined, the other wpantry stays"
+run PATH="$tmp/old:$tmp/bin:$tmp/path" || fail "with no terminal it should still install"
+[ -L "$tmp/old/$binname" ] && fail "with no terminal to ask, nothing is replaced"
+run PATH="$tmp/old:$tmp/bin:$tmp/path" WPANTRY_REPLACE=1 || { cat "$tmp/out" >&2; fail "replacing should install"; }
+[ -L "$tmp/old/$binname" ] && [ "$tmp/old/$binname" -ef "$tmp/bin/$binname" ] || { cat "$tmp/out" >&2; fail "accepted, the other wpantry should link to this install"; }
+grep -q "$tmp/old/$binname now runs this install" "$tmp/out" || fail "it should say it replaced it"
+[ ! -e "$tmp/old/ran" ] || fail "it should never run the other wpantry"
+old_wpantry
+run PATH="$tmp/mise/installs/pantry/0.4.0:$tmp/bin:$tmp/path" WPANTRY_REPLACE=0 || fail "a mise-shadowed install should still install"
+grep -q "that one is mise's: move it to this version (mise use -g packslip:github.com/waffuruai/pantry@9.9.9)" "$tmp/out" || { cat "$tmp/out" >&2; fail "a wpantry from mise should get the mise hint"; }
+printf '#!/bin/sh\necho "$*" > "%s/mise-args"\n' "$tmp" > "$tmp/path/mise"
+chmod +x "$tmp/path/mise"
+run PATH="$tmp/mise/installs/pantry/0.4.0:$tmp/bin:$tmp/path" WPANTRY_REPLACE=1 || { cat "$tmp/out" >&2; fail "moving mise should install"; }
+[ "$(cat "$tmp/mise-args")" = "use -g packslip:github.com/waffuruai/pantry@9.9.9" ] || fail "accepted, mise should be moved to this version"
+[ -L "$tmp/mise/installs/pantry/0.4.0/$binname" ] && fail "mise's own files are never touched"
+rm -f "$tmp/path/mise" "$tmp/mise-args"
+run PATH="$tmp/bin:$tmp/old:$tmp/path" || fail "an install first on PATH should install"
+grep -q "not this install" "$tmp/out" && { cat "$tmp/out" >&2; fail "an install first on PATH shouldn't warn"; }
+rm -rf "${tmp:?}/old" "${tmp:?}/mise"
+echo "✓ names an older wpantry earlier on PATH, offers to link it or move mise here, and never runs it"
 
 run WPANTRY_REQUIRE_SIGNATURE=1 && fail "WPANTRY_REQUIRE_SIGNATURE=1 with no verifier should fail"
 [ ! -e "$tmp/bin/$binname" ] || fail "nothing should be installed when the signature is required and can't be checked"

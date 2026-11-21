@@ -75,7 +75,7 @@ pub fn scope_of(opts: &Options) -> String {
 
 /// The key one exposure is tracked under across scans.
 pub fn key_of(f: &Finding) -> String {
-    format!("{}|{}|{}|{}", f.kind, f.component, f.location, f.vuln_id)
+    f.key()
 }
 
 /// Record a finished scan: its row, the exposures it saw (new ones
@@ -269,6 +269,20 @@ pub fn event(cache: &Cache, kind: &str, detail: &Value) -> Result<()> {
 }
 
 /// The latest scan's id, if any.
+/// The finding keys a fix has been tried for since scan `scan_id` finished.
+pub fn tried_since(cache: &Cache, scan_id: i64) -> Result<std::collections::HashSet<String>> {
+    let mut st =
+        cache.conn.prepare("SELECT targets FROM fixes WHERE at >= (SELECT finished_at FROM scans WHERE id = ?)")?;
+    let rows = st.query_map(params![scan_id], |r| r.get::<_, Option<String>>(0))?;
+    let mut out = std::collections::HashSet::new();
+    for t in rows {
+        if let Some(t) = t? {
+            out.extend(serde_json::from_str::<Vec<String>>(&t).unwrap_or_default());
+        }
+    }
+    Ok(out)
+}
+
 pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
     Ok(cache.conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get::<_, Option<i64>>(0))?)
 }

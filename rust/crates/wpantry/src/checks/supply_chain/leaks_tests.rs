@@ -139,7 +139,7 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(str_at(hit, "fingerprint"), format!("{}:cfg.env:github-pat:2", added.trim()));
     assert_eq!(ran["unchecked"], 0);
     let scanned = ran["new"].as_array().unwrap().len();
-    let (leaks, unchecked) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
+    let (leaks, unchecked, _) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
     assert_eq!((leaks.len(), unchecked, leaks[0].confidence.as_str()), (1, 0, "high"));
     // Cached: the next job isn't stale, and finish reads it without a run.
     let j = job(&s.cache, &repo, &rules, 2).unwrap();
@@ -154,17 +154,62 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(ran["new"].as_array().unwrap().len(), 1, "of {} blobs before, none read again", scanned);
     assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "the old hit stands");
     finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
-    // Listing its fingerprint in .gitleaksignore drops it, and changes what's cached under.
+    // A .gitleaksignore is gitleaks' business, not Pantry's: it changes nothing.
     testing::write(&repo, ".gitleaksignore", format!("{}:cfg.env:github-pat:2\n", added.trim()));
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    assert!(!stale(&j, false, false), "not part of what's cached under");
+    assert_eq!(run_job(&j, &scanner).unwrap()["hits"].as_array().unwrap().len(), 1);
+    // A .pantryignore skipping the file for secrets: it isn't read again,
+    // and editing the file changes what's cached under.
+    testing::write(&repo, ".pantryignore", "[secret]\ncfg.env\nfixtures/\n");
+    testing::write(&repo, "fixtures/t.env", format!("token = \"{}\"\n", token()));
+    assert!(git(&repo, &home, &["add", "fixtures"]) && git(&repo, &home, &["commit", "-q", "-m", "fixtures"]));
     let j = job(&s.cache, &repo, &rules, 2).unwrap();
     assert!(stale(&j, false, false));
     let ran = run_job(&j, &scanner).unwrap();
-    assert!(ran["hits"].as_array().unwrap().is_empty());
+    assert!(ran["hits"].as_array().unwrap().is_empty(), "{ran}");
+    assert!(ran["new"].as_array().unwrap().is_empty(), "the new fixture isn't read: {ran}");
+    assert_eq!(ran["skipped"], 2, "cfg.env and the fixture: {ran}");
+    let (_, _, skipped) = finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
+    assert_eq!(skipped, 2);
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    assert_eq!(finish(&s.cache, &j, None, false, false).unwrap().2, 2, "kept with the cached run");
+    // A rule-only section still reads the file (other rules may hit it).
+    testing::write(&repo, ".pantryignore", "fixtures/\n[secret aws-access-token]\ncfg.env\n");
+    let j = job(&s.cache, &repo, &rules, 2).unwrap();
+    let ran = run_job(&j, &scanner).unwrap();
+    assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "{ran}");
     // Other rules are another fingerprint: everything is read again.
     let other = Rules::new(Some("// none\n".into()));
     assert_ne!(other.fingerprint, rules.fingerprint);
     let j = job(&s.cache, &repo, &other, 2).unwrap();
     assert!(stale(&j, false, false));
+}
+
+#[test]
+fn ignoring_a_copy_doesnt_hide_the_original() {
+    let d = TempDir::new("secrets-copy").unwrap();
+    let (home, repo) = (d.path().join("home"), d.path().join("repo"));
+    std::fs::create_dir_all(&home).unwrap();
+    let text = format!("token = \"{}\"\n", token());
+    // The same blob at two paths; history lists it at the first, fixtures/.
+    testing::write(&repo, "fixtures/a.env", &text);
+    testing::write(&repo, "src/a.env", &text);
+    testing::write(&repo, ".pantryignore", "fixtures/\n");
+    for args in [&["init", "-q"][..], &["add", "."], &["commit", "-q", "-m", "add"]] {
+        if !git(&repo, &home, args) {
+            eprintln!("skipped: no git");
+            return;
+        }
+    }
+    let net = Fake::offline();
+    let s = testing::scan(&net, &d, Options::default());
+    let rules = Rules::new(None);
+    let j = job(&s.cache, &repo, &rules, 1).unwrap();
+    let ran = run_job(&j, &rules.scanner().unwrap()).unwrap();
+    let files: Vec<&str> = ran["hits"].as_array().unwrap().iter().map(|h| str_at(h, "file")).collect();
+    assert_eq!(files, ["src/a.env"], "{ran}");
+    assert_eq!(ran["skipped"], 0, "{ran}");
 }
 
 #[test]
@@ -228,10 +273,7 @@ fn secrets_from_a_scan_run_ahead() {
     );
     assert_eq!(
         aws[0].fix_cmd,
-        format!(
-            "If it's real: rotate it, then purge it from history. If not: add fp1 to {}/.gitleaksignore",
-            short(&root.to_string_lossy())
-        )
+        fix(&short(&root.to_string_lossy()), "x.env", &[("aws-access-token", 3, "0123456789ab")], false)
     );
     let generic = testing::by_id(&s, "generic-api-key");
     assert_eq!(
@@ -284,4 +326,54 @@ fn a_partial_clones_missing_files_are_not_checked_and_not_fetched() {
     assert_eq!(ran["unchecked"], 3, "the three files history holds, none fetched");
     let listed = run(&git_argv(&part, &["rev-list", "--objects", "--all", "--missing=print"]), Duration::from_secs(10));
     assert_eq!(listed.lines().filter(|l| l.starts_with('?')).count(), 3, "still missing: {listed}");
+}
+
+/// A secret's fix is a script: the line to look at, the history rewrite in
+/// a mirror clone, and the ignore entry; paths quoted, `~` left to expand,
+/// and never the secret itself.
+#[test]
+fn a_secrets_fix_is_the_commands_to_run() {
+    let one = fix("~/my repo", "config/app's.env", &[("aws-access-token", 3, "0123456789ab")], false);
+    let want = [
+        "# If it's real: rotate it first, then take it out of history.",
+        "# This rewrites history: warn everyone with a clone, and re-clone afterwards. Needs git-filter-repo 2.47+.",
+        "repo=~/'my repo'",
+        "",
+        "# 1. Show the line the secret is on",
+        r#"git -C "$repo" show '0123456789ab:config/app'"'"'s.env' | sed -n 3p"#,
+        "",
+        "# 2. Paste the secret: it isn't shown, or kept in your shell history",
+        "printf 'Secret: '; stty -echo; read -r SECRET; stty echo; echo",
+        r#"printf '%s==>REDACTED\n' "$SECRET" >> ~/.pantry-redact; unset SECRET"#,
+        "",
+        "# 3. Rewrite history in a fresh mirror clone, push it, and clean up",
+        r#"git clone --mirror "$(git -C "$repo" remote get-url origin)" ~/.pantry-rewrite.git"#,
+        "git -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact",
+        "git -C ~/.pantry-rewrite.git push --force --mirror origin",
+        "rm -rf ~/.pantry-redact ~/.pantry-rewrite.git",
+        "",
+        "# If it isn't a secret: leave the file out of this rule's findings",
+        r#"printf '\n[secret aws-access-token]\n%s\n' '/config/app'"'"'s.env' >> "$repo/.pantryignore""#,
+    ];
+    assert_eq!(one.lines().collect::<Vec<_>>(), want);
+    assert_eq!(fix_target(&one), Some(("~/my repo".to_string(), "config/app's.env".to_string())));
+    // The shell reads it: `sh -n` parses without running anything.
+    if let Ok(out) = std::process::Command::new("sh").args(["-n", "-c", &one]).output() {
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // Several hits: one line per commit, at most three.
+    let many = fix(
+        "~/r",
+        "a.txt",
+        &[("jwt", 1, "c1"), ("jwt", 9, "c1"), ("jwt", 2, "c2"), ("jwt", 3, "c3"), ("jwt", 4, "c4")],
+        true,
+    );
+    assert!(many.starts_with("# 5 hits in a.txt (generic rules: review). If any is real"), "{many}");
+    assert!(many.contains("# 2. Paste each secret: run these two lines once for each"), "{many}");
+    assert!(
+        many.contains("git -C \"$repo\" show c1:a.txt | sed -n '1p;9p'\n")
+            && many.contains("c3:a.txt")
+            && !many.contains("c4:a.txt"),
+        "{many}"
+    );
 }

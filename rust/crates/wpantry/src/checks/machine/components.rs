@@ -4,6 +4,7 @@
 
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, MISE_REPO};
+use crate::checks::machine::erlang;
 use crate::checks::machine::exploited::Gap;
 use crate::checks::{Scan, fill, fix_with};
 use crate::component::Component;
@@ -20,6 +21,13 @@ use std::collections::{BTreeMap, HashMap};
 pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, Vec<Value>>> {
     let items: Vec<Item> = found.iter().flat_map(|c| c.osv.iter().chain(&c.osv_also).cloned()).collect();
     let answers = scan.lookup(&items, "tools, runtimes and packages against OSV")?;
+    // OTP's tags say which installs and fixes OSV's lists leave out.
+    let otp_tags = if found.iter().any(|c| c.name == "erlang" && c.osv.is_some()) {
+        scan.status("Listing Erlang/OTP's release tags");
+        osv::tags(&scan.cache, &erlang::repo(), scan.opts.offline)?
+    } else {
+        Vec::new()
+    };
     // For upstream repos, ask OSV about the newer release tags too: the first
     // one it stops reporting an advisory for is the fix.
     let mut candidates: Vec<(Item, Vec<String>)> = Vec::new();
@@ -30,7 +38,11 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
             && !candidates.iter().any(|(k, _)| k == it)
         {
             scan.status(&format!("Listing {}'s release tags", it.1));
-            candidates.push((it.clone(), osv::candidates(&scan.cache, &it.1, &it.2, scan.opts.offline)?));
+            let mut ts = osv::candidates(&scan.cache, &it.1, &it.2, scan.opts.offline)?;
+            if c.name == "erlang" {
+                ts.retain(|t| erlang::side_branch(t, &otp_tags).is_none());
+            }
+            candidates.push((it.clone(), ts));
         }
     }
     let later_items: Vec<Item> =
@@ -70,6 +82,11 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
         }
         if c.name == "mise" {
             mise(scan, c)?;
+        }
+        if c.name == "erlang"
+            && let Some(why) = erlang::unlisted(c, c.osv.as_ref().and_then(|o| answers.get(o)), &otp_tags)
+        {
+            scan.unchecked(&format!("Erlang/OTP at {}", c.path), &why);
         }
         if let Some((_, repo)) = GITHUB_LATEST.iter().find(|(n, _)| *n == c.name) {
             latest(scan, c, repo, failing)?;

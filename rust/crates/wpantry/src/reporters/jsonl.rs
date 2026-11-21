@@ -176,7 +176,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     };
     let fix = fix(cache, &f.fix_cmd, resolved_scan(cache, &row.key)?)?;
     Ok(json!({
-        "schema": crate::SCHEMA,
+        "schema": crate::SCHEMA, "id": f.id(),
         "kind": f.kind, "component": f.component, "version": f.version, "location": f.location,
         "vuln_id": f.vuln_id, "status": f.status, "fixed": f.fixed, "kev": f.kev, "severity": f.severity,
         "cvss": f.cvss, "cvss_version": f.cvss_version, "epss": f.epss, "epss_percentile": f.epss_percentile,

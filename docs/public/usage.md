@@ -188,7 +188,10 @@ wpantry fix              # run the unattended fixes, then re-check
 ### One thing at a time
 
 ```bash
-wpantry fix list                            # the plan in batches, and Pantry's own fixes and whether each applies
+wpantry fix list                            # the plan in batches, the findings in fix order with their ids, and Pantry's own fixes
+wpantry fix next                            # the next finding to fix, and how (--json for agents)
+wpantry fix F-3fa9c01b2e --dry-run          # one finding, by its id: what its fix would run
+wpantry fix secret F-0c41d9a7b2             # a committed secret: check it, then take it out of git history, step by step
 wpantry fix GHSA-xxxx-yyyy-zzzz             # one advisory: its unattended fix, then the steps that need you
 wpantry fix ca-trust                        # distrust the leaked eMudhra roots in the system trust store
 wpantry fix extension-cooldown --hours 72   # editors wait before installing a new extension version
@@ -197,6 +200,8 @@ wpantry fix CVE-2026-98432                  # asks, then installs the stopgap (s
 wpantry fix CVE-2026-98432 --undo           # remove the stopgap once the kernel update is in
 ```
 
+- `fix next` gives the findings one at a time, in fix order. It skips what a fix was tried for since the scan, so an agent can loop on `wpantry fix next --json` until `"item": null`, then scan again. Each item says `how`: `wpantry` (run `fix <id>`), `you` (a command to run), or `terminal` (a secret for `fix secret`).
+- `fix secret ID` needs a terminal and git-filter-repo 2.47+. It shows the line, asks whether it's real, and adds the file to `.pantryignore` if it isn't. If it is and has been rotated, it takes the secret with echo off, rewrites history in a fresh mirror clone, checks it's gone, and asks before the force-push. The secret is never printed by Pantry, passed as an argument, or kept.
 - `fix ID` exits 1 when a step is left, a fix failed, nothing is known for the id, or a question went unanswered (no terminal and no `--yes`).
 - Every fix goes into the remediation log with who ran it (`wpantry report remediation`).
 - `wpantry fix` also runs `ca-trust` and `extension-cooldown` when the scan found what they fix, and the CVE-2026-98432 stopgap on a Linux host that needs it.
@@ -379,17 +384,22 @@ Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ### fix
 
 ```
-Usage: wpantry fix [options] [target]
+Usage: wpantry fix [options] [target] [id]
 
 Scan, run the fixes that can run unattended and the stopgaps wpantry has for what it found, then
 re-check.
 
 Arguments:
   target  all: a scan, the unattended fixes, every stopgap that applies, a re-check. list: what can
-          be fixed, from the latest scan; nothing runs. An advisory id (CVE-…, GHSA-…; an alias
-          works): its unattended fixes, wpantry's stopgap for it, the steps that need you. Or one of
-          wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots), extension-cooldown
-          (editors wait before installing a new extension version), cve-2026-98432 (default: all)
+          be fixed, from the latest scan, in fix order with each finding's id; nothing runs. next:
+          the first of those no fix has been tried for since the scan (for agents, with --json). A
+          finding id (F-…, from list or the JSON report): its fix. secret ID: take that committed
+          secret out of git history, a step at a time, at a terminal. An advisory id (CVE-…, GHSA-…;
+          an alias works): its unattended fixes, wpantry's stopgap for it, the steps that need you.
+          Or one of wpantry's own fixes: ca-trust (distrust the leaked eMudhra roots),
+          extension-cooldown (editors wait before installing a new extension version),
+          cve-2026-98432 (default: all)
+  id      with secret: the finding id (F-…) of a committed secret
 
 Options:
   --dry-run                 print what would run or be written; change nothing

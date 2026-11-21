@@ -32,6 +32,7 @@ pub mod components;
 pub mod dotnet;
 pub mod downloads;
 pub mod editors;
+pub mod erlang;
 pub mod harnesses;
 pub mod images;
 pub mod linux;
@@ -131,6 +132,12 @@ pub fn inventory(scan: &mut Scan) -> Vec<Component> {
 fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     scan.status("Finding installed tools, runtimes and package managers");
     let mut found = tools::tools();
+    scan.status("Reading Erlang/OTP release files");
+    let (otp, unread) = erlang::installs();
+    found.extend(otp);
+    for (erl, why) in unread {
+        scan.unchecked(&format!("Erlang/OTP at {erl}"), &why);
+    }
     // Bottles poured without the `brew` command (mise's brew: engine): read
     // from the Cellar, since `brew vulns` can't run and `tools` leaves
     // Cellar-owned binaries to it. With brew present, brew vulns covers them.

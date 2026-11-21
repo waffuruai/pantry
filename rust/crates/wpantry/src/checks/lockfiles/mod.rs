@@ -16,6 +16,7 @@ pub mod deno;
 pub mod gem;
 pub mod gomod;
 pub mod gradle;
+pub mod gradle_build;
 pub mod maven;
 pub mod mix;
 pub mod npm;
@@ -141,6 +142,8 @@ fn parser(name: &str) -> Option<Parser> {
         "composer.lock" => composer::parse,
         "pubspec.lock" => pubspec::parse,
         "mix.lock" => mix::parse,
+        "build.gradle" | "build.gradle.kts" => gradle_build::parse_script,
+        n if gradle_build::is_catalog(n) => gradle_build::parse_catalog,
         "gradle.lockfile" => gradle::parse,
         "pom.xml" => maven::parse,
         "packages.lock.json" => nuget::parse,

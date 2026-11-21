@@ -158,21 +158,77 @@ fn git_fix_is_the_tag_osv_stops_reporting() {
         ("v3.13.9".to_string(), vec!["OTHER".to_string()]),
     ]
     .into();
-    assert_eq!(fixed_versions(&r, "GIT", GIT, Some(&newer)), ["v3.12.15", "v3.13.9"]);
+    assert_eq!(fixed_versions(&r, "GIT", GIT, Some(("v3.12.13", &newer))), ["v3.12.15", "v3.13.9"]);
     let only: BTreeMap<_, _> = [("v3.12.14".to_string(), vec!["CVE-2026-1".to_string()])].into();
-    assert!(fixed_versions(&r, "GIT", GIT, Some(&only)).is_empty());
+    assert!(fixed_versions(&r, "GIT", GIT, Some(("v3.12.13", &only))).is_empty());
     let r =
         rec("PSF-1", json!([{"type": "GIT", "repo": GIT, "events": [{"introduced": "abc"}]}]), &["CVE-2026-2"], None);
     let aliased: BTreeMap<_, _> = [("v3.14.5".to_string(), vec!["CVE-2026-2".to_string()])].into();
-    assert!(fixed_versions(&r, "GIT", GIT, Some(&aliased)).is_empty(), "matches aliases");
+    assert!(fixed_versions(&r, "GIT", GIT, Some(("v3.12.13", &aliased))).is_empty(), "matches aliases");
 }
 
 #[test]
 fn candidates_from_cached_tags() {
     let (_d, c) = cache();
-    let tags = json!(["v3.12.12", "v3.12.13", "v3.12.14", "v3.12.15", "v3.13.0", "v3.13.9", "v3.14.0rc1", "v3.14.5"]);
+    let tags = json!([
+        "v3.12.12",
+        "v3.12.13",
+        "v3.12.14",
+        "v3.12.15",
+        "v3.13.0",
+        "v3.13.9",
+        "v3.14.0rc1",
+        "v3.14.5",
+        "v4.0.1",
+        "v4.0.2"
+    ]);
     c.put_run(&format!("tags:{GIT}"), "", &tags).unwrap();
-    assert_eq!(candidates(&c, GIT, "v3.12.13", true).unwrap(), ["v3.12.14", "v3.12.15", "v3.13.9", "v3.14.5"]);
+    // Its own line, every tag of the later lines of 3, the newest of 4.0.
+    assert_eq!(
+        candidates(&c, GIT, "v3.12.13", true).unwrap(),
+        ["v3.12.14", "v3.12.15", "v3.13.0", "v3.13.9", "v3.14.5", "v4.0.2"]
+    );
+}
+
+/// OTP patches a patch release with a fourth number: 26.2.5's own line
+/// goes on as 26.2.5.N, which the old shape-only match never asked about.
+#[test]
+fn candidates_take_deeper_patch_tags_of_the_line() {
+    let (_d, c) = cache();
+    const OTP: &str = "https://github.com/erlang/otp.git";
+    let tags =
+        json!(["OTP-26.2.4", "OTP-26.2.5", "OTP-26.2.5.1", "OTP-26.2.5.11", "OTP-27.0", "OTP-27.0.1", "OTP-27.3.3"]);
+    c.put_run(&format!("tags:{OTP}"), "", &tags).unwrap();
+    assert_eq!(
+        candidates(&c, OTP, "OTP-26.2.5", true).unwrap(),
+        ["OTP-26.2.5.1", "OTP-26.2.5.11", "OTP-27.0.1", "OTP-27.3.3"]
+    );
+    // From a four-part patch, the later three- and two-part releases too.
+    assert_eq!(
+        candidates(&c, OTP, "OTP-26.2.5.1", true).unwrap(),
+        ["OTP-26.2.5.11", "OTP-27.0", "OTP-27.0.1", "OTP-27.3.3"]
+    );
+}
+
+/// A tag OSV doesn't report a record for is no fix while the record lists a
+/// later affected tag on its line: OSV just doesn't list it.
+#[test]
+fn a_tag_osv_skips_inside_the_listed_tags_is_no_fix() {
+    const OTP: &str = "https://github.com/erlang/otp.git";
+    let mut r = rec(
+        "CVE-2025-32433",
+        json!([{"type": "GIT", "repo": "https://github.com/erlang/otp", "events": [{"introduced": "0"}]}]),
+        &[],
+        None,
+    );
+    r["affected"][0]["versions"] = json!(["OTP-27.0", "OTP-27.1", "OTP-27.3.2", "OTP-26.2.5.10", "OTP_R16B"]);
+    assert_eq!(listed_later(&r, OTP, "OTP-27.0", "OTP-27.0.1").as_deref(), Some("OTP-27.1"));
+    assert_eq!(listed_later(&r, OTP, "OTP-27.0", "OTP-27.3.3"), None);
+    // On 26.2's line nothing later is listed; 27's tags are another line.
+    assert_eq!(listed_later(&r, OTP, "OTP-26.2.5", "OTP-26.2.5.11"), None);
+    let newer: BTreeMap<String, Vec<String>> =
+        [("OTP-27.0.1".to_string(), vec![]), ("OTP-27.3.3".to_string(), vec!["OTHER".to_string()])].into();
+    assert_eq!(fixed_versions(&r, "GIT", OTP, Some(("OTP-27.0", &newer))), ["OTP-27.3.3"]);
 }
 
 #[test]

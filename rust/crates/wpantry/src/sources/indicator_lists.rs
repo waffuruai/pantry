@@ -21,6 +21,21 @@ use wpantry_yara::pattern::{Node, Syntax, parse_regex};
 const SIGNATURE_BASE_FILES: &[&str] = &["hash-iocs.txt", "filename-iocs.txt", "c2-iocs.txt"];
 pub(crate) const MAX_AGE: f64 = 86_400.0;
 
+/// Whether the lists were ever fetched here (a malware scan ran).
+pub fn fetched(cache: &Cache) -> crate::error::Result<bool> {
+    for name in SIGNATURE_BASE_FILES.iter().map(|n| format!("iocs:{n}")).chain(["iocs:feodo".to_string()]) {
+        if cache.get(&name)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The source a failure [`update`] returns is named after.
+pub fn source_of(label: &str) -> &'static str {
+    if label == "Feodo Tracker" { "feodo" } else { "signature-base" }
+}
+
 /// Fetch the lists into `dir` when older than a day (or `refresh`); each
 /// source that fails is returned with its error, the rest still update.
 pub fn update(cache: &Cache, net: &dyn Net, dir: &Path, refresh: bool) -> Vec<(&'static str, Error)> {

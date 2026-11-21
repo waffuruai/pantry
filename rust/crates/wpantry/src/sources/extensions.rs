@@ -8,6 +8,7 @@ use crate::sources::fetch;
 use crate::sources::file::url;
 use crate::utils::json::{self, str_at};
 use crate::utils::net::Net;
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 
 /// The lists VS Code itself downloads: malicious extension ids and
@@ -48,6 +49,27 @@ pub fn vscode_lists(cache: &Cache, net: &dyn Net, offline: bool) -> Result<Vscod
     Ok(VscodeLists { malicious, deprecated })
 }
 
+fn latest_key(openvsx: bool, ids: &[String]) -> String {
+    format!("{}{}", if openvsx { "openvsx:" } else { "marketplace:" }, ids.join(","))
+}
+
+/// The extension ids last asked of the marketplace, or Open VSX: the
+/// newest set on record, empty when none was.
+pub fn on_record(cache: &Cache, openvsx: bool) -> Result<Vec<String>> {
+    let prefix = latest_key(openvsx, &[]);
+    let newest: Option<String> = cache
+        .conn
+        .query_row(
+            "SELECT source FROM runs WHERE substr(source, 1, ?1) = ?2 ORDER BY ran_at DESC LIMIT 1",
+            rusqlite::params![prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(newest
+        .map(|k| k[prefix.len()..].split(',').filter(|i| !i.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default())
+}
+
 /// {id: latest version} from Microsoft's marketplace, or Open VSX (which
 /// Cursor, Windsurf and VSCodium install from). Unknown ids are left out.
 pub fn latest_extensions(
@@ -60,7 +82,7 @@ pub fn latest_extensions(
     let mut ids: Vec<String> = ids.to_vec();
     ids.sort();
     ids.dedup();
-    let key = format!("{}:{}", if openvsx { "openvsx" } else { "marketplace" }, ids.join(","));
+    let key = latest_key(openvsx, &ids);
     let fetch = || -> Result<Value> {
         let mut out = serde_json::Map::new();
         if openvsx {

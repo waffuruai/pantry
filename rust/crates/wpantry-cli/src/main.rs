@@ -444,6 +444,21 @@ fn cmd_report(show: &Show) -> Result<i32> {
 
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
+    // The user's tiers hold here as in a scan: a source turned off isn't fetched.
+    use wpantry::sources::file as sources;
+    let path = sources::user_file();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("wpantry: error: {}: {e}", path.display());
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if let Err(e) = sources::configure(text.as_deref(), false) {
+        eprintln!("wpantry: error: {e}");
+        return Ok(EXIT_USAGE);
+    }
     let net = wpantry::utils::net::Http::new();
     let progress = progress::Progress::start();
     let status = |m: &str| progress.set(m);

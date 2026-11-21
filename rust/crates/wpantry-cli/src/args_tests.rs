@@ -187,7 +187,7 @@ fn scan_and_fix() {
     let text = help(&["scan"]);
     assert!(text.starts_with("Usage: wpantry scan [options]\n") && text.contains("Exit codes:"), "{text}");
     let text = help(&["fix"]);
-    assert!(text.starts_with("Usage: wpantry fix [options] [target]\n") && text.contains("--dry-run"), "{text}");
+    assert!(text.starts_with("Usage: wpantry fix [options] [target] [id]\n") && text.contains("--dry-run"), "{text}");
 }
 
 #[test]
@@ -384,10 +384,18 @@ fn schedule_cache_and_update() {
 #[test]
 fn fix_one_thing() {
     let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| {
-        Parsed::Run(Command::Mitigate { target, dry_run, yes, no_input, undo, bundle: None, hours: 72 })
+        Parsed::Run(Command::Mitigate { target, dry_run, yes, no_input, undo, bundle: None, hours: 72, json: false })
     };
     assert_eq!(p(&["fix", "cve-2026-98432"]), one(Target::Id("CVE-2026-98432".into()), false, false, false, false));
     assert_eq!(p(&["fix", "list"]), one(Target::List, false, false, false, false));
+    assert_eq!(p(&["fix", "next"]), one(Target::Next, false, false, false, false));
+    assert_eq!(p(&["fix", "f-3fa9c01b2e"]), one(Target::Id("F-3FA9C01B2E".into()), false, false, false, false));
+    assert_eq!(
+        p(&["fix", "secret", "f-3fa9c01b2e", "--dry-run"]),
+        one(Target::Secret("F-3FA9C01B2E".into()), true, false, false, false)
+    );
+    let Parsed::Run(Command::Mitigate { json, .. }) = p(&["fix", "next", "--json"]) else { panic!() };
+    assert!(json);
     assert_eq!(
         p(&["fix", "--dry-run", "--yes", "--no-input", "GHSA-xxxx-yyyy-zzzz"]),
         one(Target::Id("GHSA-XXXX-YYYY-ZZZZ".into()), true, true, true, false)
@@ -408,9 +416,12 @@ fn fix_one_thing() {
     for (bad, msg) in [
         (
             &["fix", "kernel"][..],
-            "argument 'target' expects all, list, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got 'kernel'",
+            "argument 'target' expects all, list, next, secret ID, a finding id such as F-3fa9c01b2e, an advisory id such as CVE-2026-98432, or ca-trust or extension-cooldown, got 'kernel'",
         ),
         (&["fix", "CVE-2026-98432", "now"], "too many arguments for 'fix'"),
+        (&["fix", "secret"], "secret takes a finding id"),
+        (&["fix", "secret", "CVE-2026-1"], "argument 'id' expects a finding id"),
+        (&["fix", "secret", "F-3fa9c01b2e", "--undo"], "--undo takes one id"),
         (&["fix", "CVE-2026-98432", "--dry-run", "--undo"], "--dry-run and --undo can't be combined"),
         (&["fix", "list", "--undo"], "--undo takes one id"),
         (&["fix", "--undo"], "--undo takes one id"),

@@ -1722,8 +1722,11 @@ fn search_lists_hits_with_their_flags() {
                 "<1.2.1",
             ),
         );
-        conn.execute("INSERT INTO kev VALUES (?, ?, ?)", rusqlite::params!["CVE-2026-1", "2026-01-01", "zlib"])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO kev (cve, added, name, vendor, product) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["CVE-2026-1", "2026-01-01", "zlib", "zlib", "zlib"],
+        )
+        .unwrap();
     }
     let r = t.run(&["search", "zlib"]);
     assert_eq!(r.code, 0);

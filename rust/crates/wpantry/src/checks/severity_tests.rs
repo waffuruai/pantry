@@ -104,3 +104,12 @@ fn an_advisory_with_no_score_has_its_cve_asked_about() {
     enrich(&c, &crate::utils::net::Fake::offline(), true, &mut offline);
     assert_eq!((offline[0].severity.as_str(), offline[0].cvss), ("HIGH", None), "no score: wpantry's own rating");
 }
+
+/// An OUTDATED finding fails only when KEV lists exploited CVEs in its
+/// gap (`exploited`): that is HIGH, like a browser behind past its grace.
+#[test]
+fn a_failing_outdated_finding_is_high() {
+    assert_eq!(own(&finding("app", "OUTDATED", "fail", "")), "HIGH");
+    assert_eq!(own(&finding("app", "OUTDATED", "warn", "")), "LOW");
+    assert_eq!(own(&finding("app", "BROWSER", "fail", "")), own(&finding("runtime", "OUTDATED", "fail", "")));
+}

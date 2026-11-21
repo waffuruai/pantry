@@ -5,7 +5,8 @@
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
 //! `dotnet`, `apps`, `editors`, `harnesses`, `images`, `os_packages`,
 //! `cellar`, `programs` on Windows), what is judged of it (`components`,
-//! `app_updates`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
+//! `app_updates`, `exploited` over `kev_catalog`, `os_updates`, `brew_vulns`,
+//! `ca_trust`, `clipper`,
 //! `downloads`, `software_cves`), and the security
 //! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
 //! included). This file is the index: [`run`], the probes in order.
@@ -33,8 +34,10 @@ pub mod dotnet;
 pub mod downloads;
 pub mod editors;
 pub mod erlang;
+pub mod exploited;
 pub mod harnesses;
 pub mod images;
+pub mod kev_catalog;
 pub mod linux;
 pub mod macos;
 pub mod os_packages;

@@ -6,14 +6,14 @@ How we publish Pantry: the `wpantry-yara`, `wpantry` and `wpantry-cli` crates on
 
 A tag `vX.Y.Z` on `main`. Pushing it runs the release workflow:
 
-1. **check**: the tag equals `version` in `rust/Cargo.toml` and is on `main`; `cargo package --workspace --locked` builds both crates from their packaged sources.
-2. **build**, per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `universal-apple-darwin`): two checkouts at different paths, each built with [`rust/release/build.sh`](../../rust/release/build.sh) (`--locked`, the release profile, remapped paths, `SOURCE_DATE_EPOCH` from the commit). The two binaries must be byte-identical or the release stops. A smoke test runs each one.
+1. **check**: the tag equals `version` in `rust/Cargo.toml` and is on `main`; `cargo package --workspace --locked` builds every crate from its packaged sources.
+2. **build**, per target (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `universal-apple-darwin`, `x86_64-pc-windows-msvc`): two checkouts at different paths, each built with [`rust/release/build.sh`](../../rust/release/build.sh) (`--locked`, the release profile, remapped paths, `SOURCE_DATE_EPOCH` from the commit). The two binaries must be byte-identical or the release stops. A smoke test runs each one.
 3. **publish**, after a maintainer approves the `release` environment:
-   - It writes `SHA256SUMS`.
+   - It copies `THIRD-PARTY-NOTICES.txt` from `rust/crates/wpantry-cli/` (the notices every binary embeds, which CI keeps current: [dependencies.md](dependencies.md#third-party-notices)) and writes `SHA256SUMS` for the binaries and it.
    - It copies `install.sh` with the release's tag stamped in as its default version, and writes `install.sh.sha256` beside it for waffuru.ai's release receiver, which serves a verified, pinned copy at `https://waffuru.ai/pantry/install.sh`.
-   - It makes a GitHub build-provenance attestation for each binary and `install.sh`, and a cosign keyless bundle for each binary.
+   - It makes a GitHub build-provenance attestation for each binary, `install.sh` and `THIRD-PARTY-NOTICES.txt`, and a cosign keyless bundle for each binary.
    - It verifies all of that the way users will, then creates the GitHub release as a draft with generated notes. Releases in this repository are immutable once published, so nothing can be attached after that.
-   - It publishes `wpantry-yara`, `wpantry` and `wpantry-cli`, in that order, to crates.io through trusted publishing. [`wcli`](https://github.com/waffuruai/wcli), which `wpantry-cli` depends on, is published from its own repository first.
+   - It publishes `wpantry-yara`, `wpantry` and `wpantry-cli`, in that order, to crates.io through trusted publishing. It skips a crate crates.io doesn't have yet, with a warning (its first publish is by hand), and a version crates.io already has, so a rerun goes on from where it stopped. [`wcli`](https://github.com/waffuruai/wcli), which `wpantry-cli` depends on, is published from its own repository first.
 4. **packslip**: in a job that can't write the release, [packslip](https://packslip.dev) (`jdx/packslip`, pinned) signs a manifest of the three binaries: digests, platforms, and the command name `wpantry`. It links the publish job's attestations. mise's `packslip:` backend and `packslip verify` check releases against it.
 5. **release**: attaches the manifest to the draft as `packslip.sigstore.json`, checks the draft has every asset, and publishes it as the latest release. Then it dispatches the website's release receiver (`waffuruai/website` `release.yml`) with the `WEBSITE_DISPATCH_TOKEN` secret, so `https://waffuru.ai/pantry/install.sh` serves the new release within minutes. Without the secret, or if the dispatch fails, it warns; the next site deploy picks the release up. If a job before this one fails, the release stays a draft: fix the cause and rerun the failed jobs.
 
@@ -29,13 +29,13 @@ Nothing that signs or publishes holds a long-lived secret: attestations, cosign 
 
 ## One-time setup
 
-Done once per repository by an org owner; check it before the first release.
+Done once per repository by an org owner; check it before the first release. Steps 1 to 3 and 5 were set up on 2026-11-17.
 
-1. **Environment** `release` (Settings → Environments): required reviewers (at least one maintainer who isn't the person tagging), deployment branches and tags limited to `v*` tags.
-2. **Tag protection** (Settings → Rules → Rulesets): only maintainers can create `v*` tags; tags can't be updated or deleted.
-3. **Branch protection** on `main` and `dev`: the CI checks required, including `Rust (ubuntu-latest)`, `Rust (macos-latest)`, `Test (ubuntu-latest)`, `Test (macos-latest)` and `Rust supply chain`.
-4. **crates.io owners**: after the first publish, add the maintainers team: `cargo owner --add github:waffuruai:<team> wpantry wpantry-cli`.
-5. **Trusted publishing** (after the first publish, crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. Then set the repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `true`; until it is, the workflow skips the crates.io step.
+1. **Environment** `release` (Settings → Environments): the `owners` team as required reviewers, with "Prevent self-review" on, so the approver isn't the person who pushed the tag; deployments limited to `v*` tags.
+2. **Tag protection**: two org rulesets (org settings → Rules → Rulesets) cover every repository. "Release Tags: no moving or deleting" stops a `v*` tag from being moved, force-pushed or deleted. "Release Tags: owners create them" lets only the `owners` team create one. It leaves out `butter`, whose release workflow creates its tag, because GitHub Actions can't be a bypass actor on an org ruleset.
+3. **Required checks** on `main` and `dev`: the repository ruleset "Pantry CI" requires `Lint`, `Rust (ubuntu-latest)`, `Rust (macos-latest)`, `Rust (windows-latest)`, `Rust supply chain`, `Test (ubuntu-latest)` and `Test (macos-latest)`. Merge methods and pull requests come from the org's "Dev Branch" and "Main Branch" rulesets.
+4. **crates.io owners**: after the first publish, add the maintainers team: `cargo owner --add github:waffuruai:owners wpantry-yara wpantry wpantry-cli`.
+5. **Trusted publishing** (crates.io → each crate → Settings → Trusted Publishing): repository `waffuruai/pantry`, workflow `release.yml`, environment `release`. It's set for `wpantry-yara` and `wpantry`; `wpantry-cli` gets it after its first publish ([crates-io.md](crates-io.md)). The repository variable `CRATES_IO_TRUSTED_PUBLISHING` is `true`. When it isn't, the workflow skips the crates.io step.
 6. **Arm64 runners**: the build uses GitHub's `ubuntu-24.04-arm` runner; make sure the org can use it.
 7. **Website dispatch**: the repository secret `WEBSITE_DISPATCH_TOKEN`, a fine-grained token with Actions: write on `waffuruai/website`, as wrunner's release has. The website's own `GH_TOKEN` needs Contents: read on `waffuruai/pantry` while the repository is private.
 
@@ -74,18 +74,17 @@ git push origin vX.Y.Z
 
 The workflow starts. When **build** is green, the `release` environment asks for approval: the approver checks that the run is for the expected tag and commit, then approves.
 
-### The first release only
+### A crate's first release
 
-Trusted publishing can't be configured for a crate that doesn't exist yet, so `v0.1.0` publishes the crates by hand once the GitHub release is out. [crates-io.md](crates-io.md) has every step; in short:
+Trusted publishing can't be configured for a crate that doesn't exist yet. The workflow publishes the crates crates.io already has and warns about the rest; publish those by hand once the GitHub release is out. That's `wpantry-cli` at v0.5.0. [crates-io.md](crates-io.md) has every step; in short:
 
 ```bash
-git switch --detach v0.1.0
+git switch --detach v0.5.0
 cd rust
-cargo publish --locked -p wpantry              # with a crates.io token scoped to publish-new, wpantry*
-cargo publish --locked -p wpantry-cli
+cargo publish --locked -p wpantry-cli          # with a 1-day crates.io token: publish-new, crate wpantry-cli
 ```
 
-Revoke the token right after, then do steps 4 and 5 of the one-time setup.
+Revoke the token right after, then add the crate to steps 4 and 5 of the one-time setup.
 
 ## Verify the release
 

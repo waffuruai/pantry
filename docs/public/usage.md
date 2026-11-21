@@ -80,6 +80,7 @@ wpantry scan
 
 - A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
 - A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
+- `ignore` in the same folder, and a repo's `.pantryignore`, leave paths out of the findings, for every check or one ([ignore.md](ignore.md)). They are gitignore patterns, not TOML.
 - `secrets.yar` in the same folder adds secret rules of your own (`--secret-rules`): YARA, in pantry-rules' form (a `$secret` regex, an `id` and `category = "secret"` meta). They must compile beside the bundled ones.
 
 ## Reading the report
@@ -97,7 +98,7 @@ Project dependencies  1 fail
 
 Secrets  1 fail
     COMPONENT    ADVISORY          SEVERITY  FIX
-  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it, then purge it from history
+  ✗ app/.env     aws-access-token  HIGH      If it's real: rotate it first, then take it out of …
     line 3, commit 1a2b3c4d5e6f · AWS Access Key
 
 MCP servers  1 warn
@@ -157,7 +158,12 @@ wpantry schedule uninstall
 wpantry cache prune                                # drop what no scan used in 90 days, compact the file
 ```
 
-- `sync` refreshes the feeds, end-of-life dates and OSV's answers for every version scanned before, so a later `scan --offline` is current.
+- `sync` refreshes what the cache already knows, so a later `scan --offline` is current. It inventories nothing:
+  - the feeds: CISA KEV, EPSS, the malicious-package index, Homebrew casks, Chrome, Firefox, VS Code's extension lists, the latest Pantry;
+  - once a malware scan fetched them: YARA Forge's rules, signature-base's and Feodo Tracker's lists;
+  - once PostgreSQL was found: its security page;
+  - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, upstream repos' release tags, and CVE scores (OSV, CVE.org).
+- `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).
 - `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
 - A scheduled run never changes anything. Run `wpantry fix` yourself.
 - The cache is one SQLite file: `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds advisories for what's here, which versions were checked, every scan's findings, and the feeds; never a mirror of OSV.
@@ -303,6 +309,7 @@ Commands:
   version [options]          Print the version, implementation and JSON schema
   tools [options]            List the external tools wpantry uses
   skill                      Print the agent skill (SKILL.md)
+  licenses                   Print the third-party licences built into wpantry
   help [command]             Print a command's help
 
 Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
@@ -507,7 +514,8 @@ Options:
 ```
 Usage: wpantry sync [options]
 
-Refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan
+Refresh the cache: the feeds, and every source a scan used for what it found (end-of-life dates,
+OSV, CVE records, extension versions, release tags, CVE scores, the malware rules), so scan
 --offline has fresh answers.
 
 Options:
@@ -675,6 +683,19 @@ Options:
 Usage: wpantry skill [options]
 
 Print the agent skill (SKILL.md).
+
+Options:
+  -h, --help  print this help
+```
+
+### licenses
+
+```
+Usage: wpantry licenses [options]
+
+Print the licences and notices of the third-party code, data and fonts built into wpantry: every
+crate with its licence text, then the rest. Each release ships the same text as
+THIRD-PARTY-NOTICES.txt.
 
 Options:
   -h, --help  print this help

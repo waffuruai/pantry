@@ -1011,3 +1011,42 @@ fn the_tool_check_takes_the_train_date_from_the_end_of_life_copy() {
     assert_eq!(crate::sources::endoflife::released(&s.cache, "php", "5.6").unwrap(), None, "no date on the page");
     assert_eq!(crate::sources::endoflife::released(&s.cache, "nodejs", "24").unwrap(), None, "never fetched");
 }
+
+/// Eric's #230 item 2: a version is compared with a record only when both
+/// number their releases the same way.
+#[test]
+fn versions_are_compared_only_within_one_scheme() {
+    assert!(same_major("9", "10") && same_major("24", "24") && same_major("2026", "2025"));
+    assert!(!same_major("262", "2026"), "a build number against a year");
+    assert!(!same_major("2024", "5") && !same_major("262", "9"));
+    let releases = json!({"vendor": "JetBrains", "product": "IntelliJ IDEA", "defaultStatus": "unaffected",
+        "versions": [{"status": "affected", "version": "0", "lessThan": "2026.3"}]});
+    assert!(same_scheme(&parts("2026.2.1"), &releases));
+    assert!(!same_scheme(&parts("262.8665.42"), &releases));
+    // Nothing dotted to compare with: the judgement decides.
+    assert!(same_scheme(
+        &parts("262.1"),
+        &json!({"versions": [{"status": "affected", "version": "*", "lessThan": "*"}]})
+    ));
+    // Inclusive spans, spelled ranges and trains are read too.
+    assert!(same_scheme(&parts("8.4.2"), &mysql_entry()));
+    assert!(!same_scheme(&parts("2024.1"), &entry(json!([{"status": "affected", "version": "< 1.77.2"}]))));
+    assert!(same_scheme(&parts("24.10.3.0"), &circutor()));
+
+    let ide = |v: &str| Subject {
+        kind: "app".into(),
+        name: "IntelliJ IDEA".into(),
+        version: v.into(),
+        vendors: vec!["jetbrains".into()],
+        product: Some("IntelliJ IDEA".into()),
+        ..Default::default()
+    };
+    let recs = [record("CVE-2026-1", releases, Some(7.5))];
+    // The build number of a current IntelliJ: not comparable, not failed.
+    assert_eq!(assess(&ide("263.4567.12"), "jetbrains", &recs, &|_| false), (vec![], true));
+    // The same release as the records number it: judged.
+    let (found, unknown) = assess(&ide("2026.2.1"), "jetbrains", &recs, &|_| false);
+    assert!(!unknown);
+    assert_eq!((found[0].status.as_str(), found[0].fixed.as_str()), ("fail", "2026.3"));
+    assert_eq!(assess(&ide("2026.3"), "jetbrains", &recs, &|_| false), (vec![], false));
+}

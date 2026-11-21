@@ -105,31 +105,25 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
     (auto, manual, optional)
 }
 
-/// One step for every hit in a file: `component` is `repo/file`, and each
-/// finding's own fix names its fingerprint.
+/// One step for every hit in a file, in every version of it: the script
+/// [`leaks::fix`](crate::checks::supply_chain::leaks::fix) writes, for all
+/// of them. A finding whose fix doesn't name its repo keeps its own.
 fn secrets_fix(fs: &[&Finding]) -> String {
-    let file = fs[0].component.as_str();
-    let generic = fs.iter().all(|f| f.status != "fail");
-    let ignore = fs[0]
-        .fix_cmd
-        .rsplit_once(" to ")
-        .map(|(_, path)| path.to_string())
-        .unwrap_or_else(|| "its repo's .gitleaksignore".to_string());
-    let fps: Vec<&str> = fs
-        .iter()
-        .filter_map(|f| f.fix_cmd.strip_prefix("If it's real: rotate it, then purge it from history. If not: add "))
-        .filter_map(|rest| rest.split_once(" to ").map(|(fp, _)| fp))
-        .collect();
-    let listed = if fps.len() <= 3 {
-        fps.join(", ")
-    } else {
-        format!("the {} fingerprints (each hit's `fix_cmd` in `wpantry scan --json` names one)", fps.len())
+    use crate::checks::supply_chain::leaks;
+    let Some((repo, file)) = leaks::fix_target(&fs[0].fix_cmd) else { return fs[0].fix_cmd.clone() };
+    // `line N, commit C`
+    let at = |f: &Finding| {
+        let (line, commit) = f.location.strip_prefix("line ")?.split_once(", commit ")?;
+        Some((line.parse::<i64>().ok()?, commit.to_string()))
     };
-    format!(
-        "{} hits in {file}{}: if any is real, rotate it, then purge it from history; if none are, add {listed} to {ignore}",
-        fs.len(),
-        if generic { " (generic rules: review)" } else { "" }
-    )
+    let spots: Vec<(&str, i64, String)> =
+        fs.iter().filter_map(|f| at(f).map(|(line, commit)| (f.vuln_id.as_str(), line, commit))).collect();
+    let hits: Vec<(&str, i64, &str)> =
+        spots.iter().map(|(rule, line, commit)| (*rule, *line, commit.as_str())).collect();
+    if hits.is_empty() {
+        return fs[0].fix_cmd.clone();
+    }
+    leaks::fix(&repo, &file, &hits, fs.iter().all(|f| f.status != "fail"))
 }
 
 /// Whether a fix would update mise, which only a human bumps (ops pins

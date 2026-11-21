@@ -26,11 +26,11 @@ Every check, every source and exactly what is sent to each: [checks and sources]
 ## Install
 
 ```bash
-mise use -g packslip:github.com/waffuruai/pantry                                        # with mise
-curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # without
+curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # recommended
+mise use -g packslip:github.com/waffuruai/pantry                                        # with mise, once it is installed and activated
 ```
 
-Both verify the release before installing anything. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks only; the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
+Both verify the release before installing anything. New to mise? [Install](docs/public/install.md#install) shows how to set it up first. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks, and the installed programs Pantry's program table names against CVE records; the rest of the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
 
 ## Use
 
@@ -63,7 +63,7 @@ Only package names and versions go to OSV.dev, and the vendor and product names 
 ```bash
 mise bootstrap    # the pinned tools, then build wpantry
 mise run test     # every test, offline
-mise tasks ls     # the rest: build, lint, contract, coverage, scan
+mise tasks ls     # the rest: build, lint, contract, coverage, notices, scan
 ```
 
 The code is in [`rust/`](rust/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
@@ -96,4 +96,4 @@ Rust crates, pinned in [rust/Cargo.toml](rust/Cargo.toml) under their own permis
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). The licences and notices of everything third-party built into the binary travel with it: `wpantry licenses` prints them, and each release ships them as `THIRD-PARTY-NOTICES.txt`.

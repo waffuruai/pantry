@@ -9,7 +9,7 @@ Pantry runs with access to the whole home directory, so what goes into it is rev
 - **Age**: pin a release at least 72 hours old: long enough for a hijacked or broken release to be noticed and yanked, short enough that fixes arrive. The exception is a security fix, which goes in as soon as it's out (rustls 0.23.46 was one). Age is a wait, not a review: every bump is still audited (below).
 - **Toolchain**: `rust/rust-toolchain.toml` names an exact version.
 - **Features**: a feature of an allowed crate that pulls new crates in is a decision too, recorded below with the crates it adds.
-- **CI tools and actions**: cargo-deny and cargo-vet versions are pinned in `.github/workflows/ci.yml`; every action is pinned by commit SHA with its version in a comment, under the same 72-hour rule, and audited in `.github/actions-audits.toml`, which `mise run vet actions` checks in CI (below).
+- **CI tools and actions**: cargo-deny and cargo-vet versions are pinned in `.github/workflows/ci.yml`, cargo-about in `mise.toml`; every action is pinned by commit SHA with its version in a comment, under the same 72-hour rule, and audited in `.github/actions-audits.toml`, which `mise run vet actions` checks in CI (below).
 
 ## Decisions
 
@@ -34,9 +34,19 @@ cargo deny --locked check                       # advisories, licenses, sources,
 cargo vet --locked                              # fails until the new version is audited or exempted
 # 3. the tests
 cargo test --locked && cargo clippy --locked --all-targets -- -D warnings
+# 4. the notices the binary embeds (from the repository root), committed with the bump
+mise run notices
 ```
 
 A transitive bump (in `Cargo.lock` only) follows the same steps with `cargo update -p <crate> --precise`.
+
+## Third-party notices
+
+The crates' licences (MIT, Apache-2.0, BSD, ISC, Zlib, CDLA) and the notices of what Pantry vendors ask that their text travel with every copy of the binary. Releases are bare binaries, and install.sh, mise and Homebrew copy only the binary, so the notices are inside it: `wpantry licenses` prints `rust/crates/wpantry-cli/THIRD-PARTY-NOTICES.txt`, which `main.rs` embeds, and each release also ships it as an asset.
+
+`mise run notices` writes the file: [cargo-about](https://github.com/EmbarkStudios/cargo-about) (pinned in `mise.toml`) renders `rust/about.hbs` with every crate compiled into a release target and its licence text (`rust/about.toml`: build and dev dependencies left out, the licences `deny.toml` allows, MIT preferred where a crate offers a choice), from the packaged crates only (`--frozen`), so every machine writes the same bytes. Then it appends what isn't a crate: the secret rules' NOTICE (betterleaks, MIT), `cvss.NOTICE` (FIRST's calculator, BSD-2-Clause) and the report fonts' OFL licences. The Lint job runs `mise run notices --check` and fails when the committed file differs, so run it after any dependency bump, and add to the task any vendored code, data or font that comes with a licence of its own.
+
+cargo-about evaluates all the targets at once, so a crate that one target's dependency needs only on another (`schannel`, for `rustls-native-certs` on Windows) is listed too: a notice too many, never one too few. A `clarify` entry in `about.toml` (ring's, and ours) pins the licence files it names by SHA-256; when a bump changes one, cargo-about only warns and reads the crate as if it had no entry, so `mise run notices` fails on that warning until the entry is checked against the new files.
 
 ## Bumping an action
 

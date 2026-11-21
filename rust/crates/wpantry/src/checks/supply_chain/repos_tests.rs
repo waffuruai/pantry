@@ -162,3 +162,40 @@ fn lockfiles_skip_dependency_dirs() {
         ]
     );
 }
+
+/// A multi-module Gradle build locks each module, not the root: the
+/// lockfiles are read and the root catalog is not (it would repeat what
+/// they list, at versions Gradle may not resolve), nor a locked module's
+/// script. A build with no lockfile anywhere keeps its script and catalog.
+#[test]
+fn a_module_lockfile_covers_the_catalog() {
+    let tmp = TempDir::new("gradle-modules").unwrap();
+    let d = tmp.path();
+    for f in [
+        "multi/settings.gradle",
+        "multi/build.gradle",
+        "multi/gradle/libs.versions.toml",
+        "multi/app/build.gradle",
+        "multi/app/gradle.lockfile",
+        "multi/lib/build.gradle.kts",
+        "multi/lib/gradle.lockfile",
+        "single/build.gradle",
+        "single/gradle/libs.versions.toml",
+    ] {
+        let p = d.join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "").unwrap();
+    }
+    let got: Vec<String> =
+        lockfiles(d).iter().map(|p| p.strip_prefix(d).unwrap().display().to_string().replace('\\', "/")).collect();
+    assert_eq!(
+        got,
+        [
+            "multi/app/gradle.lockfile",
+            "multi/build.gradle",
+            "multi/lib/gradle.lockfile",
+            "single/build.gradle",
+            "single/gradle/libs.versions.toml"
+        ]
+    );
+}

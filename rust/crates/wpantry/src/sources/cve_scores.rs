@@ -101,6 +101,12 @@ fn from_cve_org(net: &dyn Net, cve: &str) -> Result<Option<Found>> {
     Ok(fetch::get_json(net, "cve-org", &url, &[])?.as_ref().and_then(of_cve_record))
 }
 
+/// The CVEs asked about before.
+pub fn on_record(cache: &Cache) -> Result<Vec<String>> {
+    let mut stmt = cache.conn.prepare("SELECT cve FROM cve_scores ORDER BY 1")?;
+    Ok(stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Ask about every CVE in `cves` the cache has no fresh answer for (at most
 /// [`MAX_PER_SCAN`]), OSV first, then CVE.org, and keep each answer.
 pub fn fill(cache: &Cache, net: &dyn Net, offline: bool, cves: &[String]) -> Result<()> {

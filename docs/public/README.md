@@ -9,5 +9,6 @@
 - [Suspicious code](suspect-code.md): the source-level checks and their policy file.
 - [Documents and images](documents.md): PDF, Office, RTF and image checks.
 - [Malware](malware.md): what the malware scan checks, its sources and limits, and how to add rules.
+- [Ignoring paths](ignore.md): `.pantryignore` and your own ignore file, by path, check and rule.
 
 The interface every implementation keeps: the [CLI contract](../../specs/cli-contract.md).

@@ -35,7 +35,9 @@ pub fn own(f: &Finding) -> &'static str {
         }
         // Behind a release with exploited CVEs in the gap ([`crate::checks::machine::exploited`]).
         ("OUTDATED", _) if fails => "HIGH",
-        ("OUTDATED" | "UNPINNED" | "MISSING" | "LICENSE" | "DEPRECATED" | "REPO-POLICY", _) => "LOW",
+        ("OUTDATED" | "UNPINNED" | "MISSING" | "LICENSE" | "DEPRECATED" | "REPO-POLICY" | "IGNORE-FILE", _) => "LOW",
+        // A repo's own file asking to skip a check that protects you from it.
+        ("IGNORE-PROTECTED", _) => "MEDIUM",
         ("INSTALL-SCRIPT" | "NPM-SCRIPTS", _) => {
             if fails {
                 "MEDIUM"

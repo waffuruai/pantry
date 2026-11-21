@@ -33,31 +33,36 @@ fn plan_dedupes_and_splits() {
 }
 
 /// Seventeen generic hits in one test-vector file are one decision in
-/// the plan, not seventeen steps.
+/// the plan, not seventeen steps: one script for all of them.
 #[test]
 fn secret_hits_in_one_file_are_one_step() {
+    use crate::checks::supply_chain::leaks;
     let hit = |n: i64| Finding {
         kind: "secret".into(),
         component: "repo/TestVectors/xts.txt".into(),
         location: format!("line {n}, commit abc"),
         vuln_id: "generic-api-key".into(),
         status: "warn".into(),
-        fix_cmd: format!(
-            "If it's real: rotate it, then purge it from history. If not: add abc:TestVectors/xts.txt:generic-api-key:{n} to ~/repo/.gitleaksignore"
-        ),
+        fix_cmd: leaks::fix("~/repo", "TestVectors/xts.txt", &[("generic-api-key", n, "abc")], true),
         ..Default::default()
     };
     let fs: Vec<Finding> = (1..=5).map(hit).collect();
     let (auto, manual, optional) = plan(&fs);
     assert!(auto.is_empty() && manual.is_empty());
     assert_eq!(optional.len(), 1, "{optional:?}");
-    assert!(optional[0].starts_with("5 hits in repo/TestVectors/xts.txt (generic rules: review): "), "{}", optional[0]);
-    assert!(optional[0].ends_with("to ~/repo/.gitleaksignore"), "{}", optional[0]);
-    assert!(optional[0].contains("the 5 fingerprints"), "{}", optional[0]);
-    let two: Vec<Finding> = (1..=2).map(hit).collect();
+    let step = &optional[0];
+    assert!(step.starts_with("# 5 hits in TestVectors/xts.txt (generic rules: review). If any is real"), "{step}");
+    assert!(step.contains("\ngit -C \"$repo\" show abc:TestVectors/xts.txt | sed -n '1p;2p;3p;4p;5p'\n"), "{step}");
+    assert!(
+        step.ends_with("printf '\\n[secret generic-api-key]\\n%s\\n' /TestVectors/xts.txt >> \"$repo/.pantryignore\""),
+        "{step}"
+    );
+    // Hits of two rules: the section for every secret rule.
+    let mut two: Vec<Finding> = (1..=2).map(hit).collect();
+    two[1].vuln_id = "jwt".into();
     let (_, _, optional) = plan(&two);
     assert!(
-        optional[0].contains("abc:TestVectors/xts.txt:generic-api-key:1, abc:TestVectors/xts.txt:generic-api-key:2"),
+        optional[0].ends_with("printf '\\n[secret]\\n%s\\n' /TestVectors/xts.txt >> \"$repo/.pantryignore\""),
         "{}",
         optional[0]
     );

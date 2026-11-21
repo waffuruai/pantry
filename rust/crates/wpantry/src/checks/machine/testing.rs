@@ -138,6 +138,7 @@ pub(crate) fn casks_body() -> String {
         {"token": "google-chrome", "version": "130.0.6723.117", "artifacts": [{"app": ["Google Chrome.app"]}]},
         {"token": "brave-browser", "version": "1.71.0", "artifacts": [{"app": ["Brave Browser.app"]}]},
         {"token": "arc", "version": "1.60.0", "artifacts": [{"app": ["Arc.app"]}]},
+        {"token": "adobe-acrobat-reader", "version": "25.001.20000", "artifacts": [{"app": ["Adobe Acrobat Reader.app"]}]},
         {"token": "firefox", "version": "latest", "artifacts": [{"app": ["Firefox.app"]}]}
     ])
     .to_string()

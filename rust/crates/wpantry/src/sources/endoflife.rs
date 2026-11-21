@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::sources::fetch;
 use crate::sources::file::source;
 use crate::sources::file::url;
-use crate::utils::dates::{parse_date, today};
+use crate::utils::dates::{epoch, parse_date, today};
 use crate::utils::net::Net;
 use rusqlite::params;
 use serde_json::Value;
@@ -18,6 +18,9 @@ pub struct Eol {
     /// The end-of-life date when it has passed ("True" for a bare `true`).
     pub ended: Option<String>,
     pub latest: String,
+    /// When the cycle's first release came out (its `releaseDate`, an
+    /// epoch), when the page gives one.
+    pub released: Option<f64>,
     /// Cycles still supported.
     pub supported: Vec<String>,
 }
@@ -31,7 +34,7 @@ pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: 
     }
     let mut stale: Vec<String> = Vec::new();
     for p in products {
-        if !stale.contains(p) && !cache.fresh(&format!("eol_at:{p}"), source("endoflife").refresh)? {
+        if !stale.contains(p) && stale_page(cache, p)? {
             stale.push(p.clone());
         }
     }
@@ -46,6 +49,18 @@ pub fn eol_prefetch(cache: &Cache, net: &dyn Net, products: &[String], offline: 
         }
     }
     Ok(())
+}
+
+/// Whether `product`'s stored page needs fetching: not fresh, or stored
+/// before release dates were kept (`released` NULL; a page without one
+/// stores "").
+fn stale_page(cache: &Cache, product: &str) -> Result<bool> {
+    let old: bool = cache.conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM eol WHERE product = ? AND released IS NULL)",
+        [product],
+        |r| r.get(0),
+    )?;
+    Ok(old || !cache.fresh(&format!("eol_at:{product}"), source("endoflife").refresh)?)
 }
 
 fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
@@ -67,7 +82,11 @@ fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
             Some(other) => other.to_string(),
         };
         let end = c.get("eol").cloned().unwrap_or(Value::Null).to_string();
-        cache.conn.execute("INSERT OR REPLACE INTO eol VALUES (?, ?, ?, ?)", params![product, cyc, end, latest])?;
+        let released = c.get("releaseDate").and_then(Value::as_str).unwrap_or("");
+        cache.conn.execute(
+            "INSERT OR REPLACE INTO eol (product, cycle, eol, latest, released) VALUES (?, ?, ?, ?, ?)",
+            params![product, cyc, end, latest, released],
+        )?;
     }
     cache.set(&released_key(product), &Value::Object(released).to_string())?;
     cache.touch(&format!("eol_at:{product}"))
@@ -89,36 +108,33 @@ pub fn released(cache: &Cache, product: &str, cycle: &str) -> Result<Option<Stri
 /// endoflife.date's view of `cycle` of `product`, or None when it doesn't
 /// know the cycle.
 pub fn eol(cache: &Cache, net: &dyn Net, product: &str, cycle: &str, offline: bool) -> Result<Option<Eol>> {
-    if !(offline || cache.fresh(&format!("eol_at:{product}"), source("endoflife").refresh)?) {
+    if !offline && stale_page(cache, product)? {
         match fetch::get_json(net, "endoflife", &url("endoflife").replace("{}", product), &[]) {
             Ok(data) => eol_store(cache, product, data.as_ref())?,
             Err(e) if e.is_source() => {}
             Err(e) => return Err(e),
         }
     }
-    let mut stmt = cache.conn.prepare("SELECT cycle, eol, latest FROM eol WHERE product = ?")?;
-    let rows: Vec<(String, String, String)> = stmt
-        .query_map([product], |r| {
-            Ok((
-                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-            ))
-        })?
+    let mut stmt = cache.conn.prepare("SELECT cycle, eol, latest, released FROM eol WHERE product = ?")?;
+    let text = |r: &rusqlite::Row, i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
+    let rows: Vec<(String, String, String, String)> = stmt
+        .query_map([product], |r| Ok((text(r, 0)?, text(r, 1)?, text(r, 2)?, text(r, 3)?)))?
         .collect::<rusqlite::Result<_>>()?;
     if rows.is_empty() {
         return Err(Error::Offline(format!("endoflife.date ({product}) unreachable and not cached")));
     }
     let end_of = |e: &str| serde_json::from_str::<Value>(e).unwrap_or(Value::Null);
-    let supported: Vec<String> = rows.iter().filter(|(_, e, _)| !past(&end_of(e))).map(|(c, _, _)| c.clone()).collect();
-    for (c, e, latest) in &rows {
+    let supported: Vec<String> =
+        rows.iter().filter(|(_, e, _, _)| !past(&end_of(e))).map(|(c, _, _, _)| c.clone()).collect();
+    for (c, e, latest, released) in &rows {
         if c == cycle {
             let end = end_of(e);
             let ended = past(&end).then(|| match &end {
                 Value::String(s) => s.clone(),
                 _ => "True".to_string(), // as Python prints it
             });
-            return Ok(Some(Eol { cycle: c.clone(), ended, latest: latest.clone(), supported }));
+            let released = Some(epoch(released)).filter(|t| *t > 0.0);
+            return Ok(Some(Eol { cycle: c.clone(), ended, latest: latest.clone(), released, supported }));
         }
     }
     Ok(None)

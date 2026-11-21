@@ -256,6 +256,9 @@ pub struct Scan<'a> {
     pub unfixed: i64,
     pub unknown_licenses: i64,
     pub kev: HashSet<String>,
+    /// The KEV list's entries with their vendor and product, for naming the
+    /// exploited CVEs behind an outdated finding; empty without the list.
+    pub kev_entries: Vec<kev::Entry>,
     /// The files pass's findings ([`Scan::read_files`]).
     pub(crate) files: Option<files::Results>,
     /// The malware scan's rules, compiled before the files are read.
@@ -285,6 +288,7 @@ impl<'a> Scan<'a> {
             unfixed: 0,
             unknown_licenses: 0,
             kev: HashSet::new(),
+            kev_entries: Vec::new(),
             files: None,
             malware: None,
         }
@@ -470,13 +474,24 @@ impl<'a> Scan<'a> {
 
     // the scan --------------------------------------------------------------
 
+    /// CISA's KEV list: the ids that mark findings, and the entries that
+    /// name an outdated product's exploited CVEs. Unreachable with nothing
+    /// cached, both stay empty and the list is reported unchecked.
+    pub fn load_kev(&mut self) -> Result<()> {
+        self.status("Fetching CISA's known-exploited list");
+        let kev = kev::kev(&self.cache, self.net, self.opts.offline);
+        self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
+        if !self.kev.is_empty() {
+            self.kev_entries = kev::entries(&self.cache)?;
+        }
+        Ok(())
+    }
+
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
         crate::utils::walk::forget_walks();
         self.use_sources();
-        self.status("Fetching CISA's known-exploited list");
-        let kev = kev::kev(&self.cache, self.net, self.opts.offline);
-        self.kev = self.guard("CISA KEV (exploited-in-the-wild marks)", kev, HashSet::new())?;
+        self.load_kev()?;
         self.status("Fetching EPSS's exploit predictions");
         let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
         self.guard("EPSS (exploit predictions)", epss, 0)?;
@@ -656,7 +671,7 @@ impl<'a> Scan<'a> {
             });
         } else if !res.latest.is_empty() && !failing && !versions::current(&c.name, &c.version, &res.latest) {
             let (fix_cmd, fix_auto) = fix_with(c, &res.latest);
-            self.add(Finding {
+            let mut f = Finding {
                 vuln_id: "OUTDATED".into(),
                 status: "warn".into(),
                 fixed: res.latest.clone(),
@@ -664,7 +679,12 @@ impl<'a> Scan<'a> {
                 fix_auto,
                 note: format!("behind {}, the latest {product} {cycle} release", res.latest),
                 ..Finding::of(c)
-            });
+            };
+            // endoflife.date doesn't say when this version was superseded,
+            // only when its cycle came out.
+            let gap = machine::exploited::Gap { line_released: res.released, ..Default::default() };
+            machine::exploited::escalate(&mut f, c, &self.kev_entries, gap);
+            self.add(f);
         }
         Ok(())
     }

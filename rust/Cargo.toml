@@ -18,7 +18,7 @@ rusqlite = { version = "=0.43.0", features = ["bundled"] }
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "platform-verifier"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # Our own, from https://github.com/waffuruai/wcli; pinned exactly like the workspace crates.
-wcli = { version = "=0.1.0" }
+wcli = { version = "=0.1.2" }
 wpantry = { path = "crates/wpantry", version = "=0.5.0" }
 wpantry-yara = { path = "crates/wpantry-yara", version = "=0.5.0" }
 

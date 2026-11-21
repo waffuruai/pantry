@@ -31,6 +31,7 @@ pub const LOCKFILES: &[&str] = &[
     "gradle.lockfile",
     "pom.xml",
     "packages.lock.json",
+    "packages.config",
     "conan.lock",
 ];
 /// ~/a/b/c/d/e/f/.git is the deepest repo found.
@@ -165,6 +166,7 @@ pub fn is_git(path: &Path) -> bool {
 
 fn is_lockfile(name: &str) -> bool {
     LOCKFILES.contains(&name)
+        || crate::checks::lockfiles::csproj::is_project_file(name)
         || (name.starts_with("requirements") && name.ends_with(".txt") && name.len() >= "requirements.txt".len())
 }
 

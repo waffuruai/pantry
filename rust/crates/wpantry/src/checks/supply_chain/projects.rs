@@ -36,6 +36,12 @@ pub fn project_fix(lock: &Path, eco: &str, name: &str, safe: &str) -> String {
         ("Pub", _) => format!("cd {d} && dart pub upgrade {}", quote(name)),
         ("Hex", _) => format!("cd {d} && mix deps.update {}", quote(name)),
         ("Maven", "gradle.lockfile") => format!("cd {d} && gradle dependencies --update-locks {}", quote(name)),
+        ("NuGet", f) if f == "packages.config" || lockfiles::csproj::is_context_file(f) => {
+            format!("Update {name} to {safe} in {}", command_path(lock))
+        }
+        ("NuGet", f) if lockfiles::csproj::is_project_file(f) => {
+            format!("cd {d} && dotnet add {} package {} --version {}", quote(f), quote(name), quote(safe))
+        }
         ("NuGet", _) => format!("cd {d} && dotnet add package {} --version {}", quote(name), quote(safe)),
         _ => format!("Update {name} to {safe} in {}", command_path(lock)),
     }
@@ -87,10 +93,19 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     }
     let mut read: Vec<(PathBuf, Vec<lockfiles::Package>)> = Vec::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
+    // A reference in a Directory.*.props is reported once, at that file,
+    // per (package, version), not once per project that imports it.
+    let mut shared: BTreeMap<PathBuf, Vec<lockfiles::Package>> = BTreeMap::new();
     for (root, f) in &files {
         scan.status(&format!("Reading {}", short(&f.to_string_lossy())));
-        match lockfiles::extract_within(f, root).map_err(as_source) {
-            Ok(Some(pkgs)) => {
+        match lockfiles::extract_noting(f, root).map_err(as_source) {
+            Ok(Some(x)) => {
+                if !x.unchecked.is_empty() {
+                    scan.unchecked(
+                        &format!("repo dependencies in {}", short(&f.to_string_lossy())),
+                        &format!("not exact or not resolved: {}", x.unchecked.join(", ")),
+                    );
+                }
                 // Declarations a build script leaves to Gradle are not checked, not
                 // clean: counted, and named in the log. Not an `unchecked` row: those
                 // say a source didn't answer, and stop the scan resolving exposures
@@ -99,7 +114,10 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
                     scan.count(GRADLE_UNRESOLVED, n as i64);
                     (scan.log)(&format!("  {}: {why}", short(&f.to_string_lossy())));
                 }
-                read.push((f.clone(), pkgs))
+                for (props, p) in x.inherited {
+                    shared.entry(props).or_default().push(p);
+                }
+                read.push((f.clone(), x.packages))
             }
             Ok(None) => {
                 *unsupported.entry(f.file_name().unwrap_or_default().to_string_lossy().into_owned()).or_default() += 1
@@ -110,6 +128,7 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
             Err(e) => return Err(e),
         }
     }
+    read.extend(shared.into_iter().map(|(props, pkgs)| (props, lockfiles::dedupe(pkgs))));
     typosquats(scan, &read);
     if !unsupported.is_empty() {
         let kinds: Vec<String> = unsupported.iter().map(|(k, n)| format!("{k} ({n})")).collect();

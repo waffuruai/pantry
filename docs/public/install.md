@@ -4,18 +4,7 @@ Pantry's command is `wpantry`. It reads your whole home directory, so run only a
 
 ## Install
 
-**With [mise](https://mise.jdx.dev)** (recommended):
-
-```bash
-mise use -g packslip:github.com/waffuruai/pantry
-wpantry version
-```
-
-- mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
-- It remembers the signer and refuses a later release signed by anyone else.
-- Pin a version with `packslip:github.com/waffuruai/pantry@0.5.0`, or put that line in a project's `mise.toml`.
-
-**With the install script** (no mise):
+**With the install script** (recommended):
 
 ```bash
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh
@@ -33,6 +22,24 @@ curl -fsSLO https://github.com/waffuruai/pantry/releases/download/v0.5.0/install
 less install.sh
 sh install.sh
 ```
+
+**With [mise](https://mise.jdx.dev)**, if you use it or want it to handle updates. New to mise? Install it and activate it in your shell first; [mise.run](https://mise.jdx.dev/installing-mise.html) adds the activation line to your shell's rc file:
+
+```bash
+curl -fsSL https://mise.run/zsh | sh     # zsh, the macOS default; on bash: https://mise.run/bash
+source ~/.zshrc                          # on bash: source ~/.bashrc
+```
+
+Then install Pantry:
+
+```bash
+mise use -g packslip:github.com/waffuruai/pantry
+wpantry version
+```
+
+- mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
+- It remembers the signer and refuses a later release signed by anyone else.
+- Pin a version with `packslip:github.com/waffuruai/pantry@0.5.0`, or put that line in a project's `mise.toml`.
 
 Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10). Windows: [#11](https://github.com/waffuruai/pantry/issues/11).
 

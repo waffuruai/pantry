@@ -60,8 +60,22 @@ impl Finding {
         if self.dep_scope.is_empty() { "unknown" } else { &self.dep_scope }
     }
 
+    /// What keeps a finding the same finding from scan to scan: its kind,
+    /// component, location and advisory or rule.
+    pub fn key(&self) -> String {
+        format!("{}|{}|{}|{}", self.kind, self.component, self.location, self.vuln_id)
+    }
+
+    /// A short handle for the finding, the same in every scan that sees it:
+    /// `F-` and ten hex digits of its key's SHA-256. `wpantry fix F-…`
+    /// takes it.
+    pub fn id(&self) -> String {
+        format!("F-{}", &crate::utils::sha256::hex(self.key().as_bytes())[..10])
+    }
+
     pub fn to_json(&self) -> J {
         obj([
+            ("id", self.id().into()),
             ("kind", self.kind.as_str().into()),
             ("component", self.component.as_str().into()),
             ("version", self.version.as_str().into()),

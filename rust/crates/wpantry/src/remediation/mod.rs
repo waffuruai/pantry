@@ -8,6 +8,8 @@
 pub mod ca_trust;
 pub mod editors;
 pub mod mitigate;
+pub mod queue;
+pub mod secret;
 
 use crate::checks::ecosystems::versions;
 use crate::finding::Finding;

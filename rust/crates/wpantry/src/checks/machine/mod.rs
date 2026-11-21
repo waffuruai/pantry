@@ -3,13 +3,13 @@
 //! certificate authorities it trusts.
 //!
 //! One file per behaviour: the inventory (`tools`, `catalog`, `packages`,
-//! `dotnet`, `apps`, `servers`, `editors`, `harnesses`, `images`,
-//! `os_packages`, `cellar`, `programs` on Windows), what is judged of it
-//! (`components`, `app_updates`, `exploited` over `kev_catalog`,
-//! `os_updates`, `brew_vulns`, `ca_trust`, `clipper`, `downloads`,
-//! `software_cves`), and the security
-//! settings (`settings` over `any/`, `macos/` and `linux/`, persistence
-//! included). This file is the index: [`run`], the probes in order.
+//! `dotnet`, `apps`, `browsers` (Linux), `servers`, `editors`, `harnesses`,
+//! `images`, `os_packages`, `cellar`, `programs` on Windows), what is
+//! judged of it (`components`, `app_updates`, `exploited` over
+//! `kev_catalog`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
+//! `downloads`, `software_cves`), and the security settings (`settings`
+//! over `any/`, `macos/` and `linux/`, persistence included). This file is
+//! the index: [`run`], the probes in order.
 
 use crate::checks::Scan;
 use crate::component::Component;
@@ -25,6 +25,7 @@ pub mod any;
 pub mod app_updates;
 pub mod apps;
 pub mod brew_vulns;
+pub mod browsers;
 pub mod ca_trust;
 pub mod catalog;
 pub mod cellar;

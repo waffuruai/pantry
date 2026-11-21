@@ -73,7 +73,10 @@ fn a_sync_refreshes_every_feed_and_names_what_failed() {
     let mut want =
         vec!["CISA KEV", "EPSS", "OpenSSF malicious packages", "Firefox releases", "VS Code extension lists", "OSV"];
     if cfg!(target_os = "macos") {
-        want.extend(["Homebrew casks", "Chrome releases"]);
+        want.push("Homebrew casks");
+    }
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        want.push("Chrome releases");
     }
     let mut refreshed = got.refreshed.clone();
     refreshed.sort();

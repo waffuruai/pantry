@@ -113,11 +113,14 @@ pub fn run(cache: &Cache, net: &dyn Net, refresh: bool, status: Status) -> Resul
             "Fetching the Homebrew cask catalog",
             Box::new(|| releases::casks(cache, net, false).map(|_| ())),
         ));
+    }
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        let platform = if cfg!(target_os = "macos") { "mac" } else { "linux" };
         feeds.push((
             "chrome-releases",
             "Chrome releases",
             "Fetching Chrome's release list",
-            Box::new(|| releases::chrome(cache, net, "mac", false).map(|_| ())),
+            Box::new(move || releases::chrome(cache, net, platform, false).map(|_| ())),
         ));
     }
     feeds.extend([

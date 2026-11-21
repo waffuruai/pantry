@@ -203,7 +203,8 @@ pub fn realpath(p: &str) -> String {
     std::fs::canonicalize(p).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string())
 }
 
-const SYSTEM_DIRS: &[&str] = &["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/libexec/", "/usr/lib/", "/System/"];
+const SYSTEM_DIRS: &[&str] =
+    &["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/libexec/", "/usr/lib/", "/usr/lib64/", "/System/"];
 const APPLE_DIRS: &[&str] = &["/Library/Developer/CommandLineTools/", "/Applications/Xcode"];
 
 /// Who vouches for this binary, or "" when we check it ourselves: brew

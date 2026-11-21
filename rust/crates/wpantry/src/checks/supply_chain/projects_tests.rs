@@ -289,3 +289,116 @@ fn a_props_reference_is_reported_once() {
     assert_eq!(log, [("2.0.10", props.as_str()), ("2.0.8", props.as_str())]);
     assert!(s.counts.contains(&("project dependencies".to_string(), 3)), "{:?}", s.counts);
 }
+
+/// OSV as it answers for Log4Shell (an advisory aliasing CVE-2021-44228,
+/// fixed in 2.15.0) and for jackson-databind 2.9.8 (one fixed in 2.9.9).
+#[cfg(unix)]
+fn jvm_osv(r: &crate::utils::net::Request) -> Result<crate::utils::net::Response> {
+    use crate::utils::net::Response;
+    use serde_json::{Value, json};
+    let advisories = [
+        ("org.apache.logging.log4j:log4j-core", "GHSA-jfh8-c2jp-5v3q", "CVE-2021-44228", "2.0-beta9", "2.15.0"),
+        ("com.fasterxml.jackson.core:jackson-databind", "GHSA-test-jackson", "CVE-2019-12086", "2.9.0", "2.9.9"),
+    ];
+    if r.url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+        return Ok(Response::not_found());
+    }
+    if r.url.ends_with("/v1/querybatch") {
+        let body: Value = serde_json::from_slice(r.body.as_ref().unwrap()).unwrap();
+        let results: Vec<Value> = body["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                match advisories.iter().find(|a| q["package"]["name"] == a.0 && q["package"]["ecosystem"] == "Maven") {
+                    Some(a) => json!({"vulns": [{"id": a.1, "modified": "2026-01-01T00:00:00Z"}]}),
+                    None => json!({}),
+                }
+            })
+            .collect();
+        return Ok(Response::ok(json!({"results": results}).to_string()));
+    }
+    let id = r.url.strip_prefix("https://api.osv.dev/v1/vulns/").unwrap_or_else(|| panic!("unexpected {}", r.url));
+    let a = advisories.iter().find(|a| a.1 == id).unwrap_or_else(|| panic!("unexpected {id}"));
+    let rec = json!({
+        "id": a.1, "aliases": [a.2], "modified": "2026-01-01T00:00:00Z", "summary": format!("{} is vulnerable", a.0),
+        "database_specific": {"severity": "CRITICAL"},
+        "affected": [{"package": {"ecosystem": "Maven", "name": a.0},
+                      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": a.3}, {"fixed": a.4}]}]}]
+    });
+    Ok(Response::ok(rec.to_string()))
+}
+
+/// A Gradle build without a lockfile: a log4j-core 2.14.1 literal warns
+/// on CVE-2021-44228 marked exploited, a catalog's jackson-databind 2.9.8
+/// warns, each noting the version is declared, not resolved (a BOM can
+/// raise it); the interpolated `"org.x:y:$ver"` is counted not checked
+/// without an `unchecked` row (which would stop history resolving
+/// anything); a module with a `gradle.lockfile` is read from the lockfile
+/// alone, and the same log4j-core locked there still fails.
+#[cfg(unix)]
+#[test]
+fn gradle_builds_without_a_lockfile_are_read() {
+    let d = TempDir::new("projects-gradle").unwrap();
+    let net = crate::utils::net::Fake::new(jvm_osv);
+    let logged = std::cell::RefCell::new(Vec::<String>::new());
+    let log = |m: &str| logged.borrow_mut().push(m.to_string());
+    let mut s = testing::scan(&net, &d, Options::default());
+    s.kev = ["CVE-2021-44228".to_string()].into();
+    let (name, root) = testing::repo(&d, "jvm");
+    testing::write(
+        &root,
+        "build.gradle",
+        "plugins { id 'java' }\ndependencies {\n    implementation 'org.apache.logging.log4j:log4j-core:2.14.1'\n    implementation \"org.x:y:$ver\"\n}\n",
+    );
+    testing::write(
+        &root,
+        "kts/build.gradle.kts",
+        "plugins { java }\ndependencies { implementation(libs.jackson.databind) }\n",
+    );
+    testing::write(
+        &root,
+        "kts/gradle/libs.versions.toml",
+        "[versions]\njackson = \"2.9.8\"\n\n[libraries]\njackson-databind = { module = \"com.fasterxml.jackson.core:jackson-databind\", version.ref = \"jackson\" }\n",
+    );
+    testing::write(&root, "locked/build.gradle", "dependencies { implementation \"org.z:z:$v\" }\n");
+    testing::write(
+        &root,
+        "locked/gradle.lockfile",
+        "org.apache.logging.log4j:log4j-core:2.14.1=compileClasspath,runtimeClasspath\nempty=\n",
+    );
+    s.log = &log;
+    projects(&mut s, &[(name, root.clone())]).unwrap();
+    assert!(s.counts.contains(&("project dependencies".to_string(), 3)), "{:?}", s.counts);
+    let log4shell = testing::by_id(&s, "CVE-2021-44228");
+    assert_eq!(log4shell.len(), 2, "{:?}", s.findings);
+    let locked = log4shell.iter().find(|f| f.location.ends_with("gradle.lockfile")).unwrap();
+    assert_eq!((locked.status.as_str(), locked.kev), ("fail", true), "a locked version is resolved");
+    assert!(!locked.note.contains("declared"), "{}", locked.note);
+    let f = log4shell.iter().find(|f| f.location.ends_with("build.gradle")).unwrap();
+    assert_eq!(
+        (f.component.as_str(), f.version.as_str(), f.status.as_str(), f.fixed.as_str(), f.kev),
+        ("org.apache.logging.log4j:log4j-core", "2.14.1", "warn", "2.15.0", true)
+    );
+    assert!(f.note.ends_with(&format!("({})", lockfiles::gradle_build::DECLARED)), "{}", f.note);
+    assert_eq!(f.dep_direct, Some(true));
+    assert_eq!(f.location, root.join("build.gradle").to_string_lossy());
+    assert_eq!(
+        f.fix_cmd,
+        format!("Update org.apache.logging.log4j:log4j-core to 2.15.0 in {}", root.join("build.gradle").display())
+    );
+    let jackson = testing::by_id(&s, "CVE-2019-12086");
+    assert_eq!(jackson.len(), 1, "{:?}", s.findings);
+    assert_eq!((jackson[0].version.as_str(), jackson[0].status.as_str(), jackson[0].kev), ("2.9.8", "warn", false));
+    assert!(jackson[0].note.contains("not resolved"), "{}", jackson[0].note);
+    assert_eq!(jackson[0].location, root.join("kts/gradle/libs.versions.toml").to_string_lossy());
+    // The variable is not checked, and only where no lockfile covers it:
+    // counted and logged, not an `unchecked` row.
+    assert!(testing::unchecked(&s).is_empty(), "{:?}", testing::unchecked(&s));
+    assert!(s.counts.contains(&(GRADLE_UNRESOLVED.to_string(), 1)), "{:?}", s.counts);
+    let logged = logged.borrow();
+    let line = logged.iter().find(|l| l.contains("not checked")).unwrap();
+    assert!(line.contains("build.gradle: 1 not checked"), "{line}");
+    assert!(line.contains("implementation \"org.x:y:$ver\" (version from a variable)"), "{line}");
+    assert_eq!(logged.iter().filter(|l| l.contains("not checked")).count(), 1, "{logged:?}");
+}

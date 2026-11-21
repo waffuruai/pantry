@@ -82,7 +82,7 @@ fn findings(t: &mut String, v: &View, r: &Report) {
                 view::cvss_text(row.cvss.as_ref()),
                 view::epss_text(row.epss),
                 cell(&cut(&row.top().note, 140)),
-                code(&row.fix)
+                if row.fix.contains('\n') { cell(view::fix_summary(&row.fix)) } else { code(&row.fix) }
             ));
         }
     }
@@ -94,9 +94,19 @@ fn findings(t: &mut String, v: &View, r: &Report) {
     }
     if !v.batches.is_empty() {
         t.push_str("\n## Update plan\n\n| Mode | Command | Runs as | Clears |\n|---|---|---|---|\n");
+        let mut scripts = Vec::new();
         for b in &v.batches {
             let who = if b.sudo { "root (sudo)" } else { "you" };
-            t.push_str(&format!("| {} | {} | {who} | {} |\n", b.mode, code(&b.cmd), b.findings));
+            let cmd = if b.cmd.contains('\n') {
+                scripts.push(&b.cmd);
+                format!("{} (script {} below)", cell(view::fix_summary(&b.cmd)), scripts.len())
+            } else {
+                code(&b.cmd)
+            };
+            t.push_str(&format!("| {} | {cmd} | {who} | {} |\n", b.mode, b.findings));
+        }
+        for (i, s) in scripts.iter().enumerate() {
+            t.push_str(&format!("\nScript {}:\n\n```sh\n{}\n```\n", i + 1, s.replace("```", "'''")));
         }
     }
     let mut notes = Vec::new();

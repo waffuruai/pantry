@@ -162,6 +162,13 @@ fn gradle_lockfile() {
 }
 
 #[test]
+fn gradle_build_scripts_and_catalog() {
+    golden("gradle-groovy");
+    golden("gradle-kts");
+    golden("gradle-catalog");
+}
+
+#[test]
 fn pom_xml() {
     golden("maven");
 }

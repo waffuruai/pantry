@@ -172,15 +172,27 @@ fn is_lockfile(name: &str) -> bool {
 
 /// Every lockfile under root, sorted. Where a directory has both, npm reads
 /// `npm-shrinkwrap.json` and ignores `package-lock.json`, so only the
-/// shrinkwrap counts.
+/// shrinkwrap counts. Gradle build scripts and `gradle/*.versions.toml`
+/// catalogs count where no `gradle.lockfile` covers them: beside a
+/// script, or anywhere in a catalog's project
+/// ([`gradle_build::scanned`](crate::checks::lockfiles::gradle_build::scanned)).
 pub fn lockfiles(root: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = walk(root, 5)
+    let dirs = walk(root, 5);
+    // Gradle build files only where no gradle.lockfile says more.
+    let locked: Vec<PathBuf> =
+        dirs.iter().filter(|(_, files)| files.iter().any(|f| f == "gradle.lockfile")).map(|(d, _)| d.clone()).collect();
+    let mut out: Vec<PathBuf> = dirs
         .into_iter()
         .flat_map(|(d, files)| {
             let shrinkwrap = files.iter().any(|f| f == "npm-shrinkwrap.json");
+            let gradle: Vec<String> = files
+                .iter()
+                .filter(|f| crate::checks::lockfiles::gradle_build::scanned(&d, f, &locked))
+                .cloned()
+                .collect();
             files
                 .into_iter()
-                .filter(move |f| is_lockfile(f) && !(shrinkwrap && f == "package-lock.json"))
+                .filter(move |f| (is_lockfile(f) && !(shrinkwrap && f == "package-lock.json")) || gradle.contains(f))
                 .map(move |f| d.join(f))
         })
         .collect();

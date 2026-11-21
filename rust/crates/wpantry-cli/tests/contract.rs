@@ -104,7 +104,7 @@ fn html_bundle(path: &Path) -> Value {
     serde_json::from_str(json).unwrap()
 }
 
-// version, tools, skill -------------------------------------------------
+// version, tools, skill, licenses ---------------------------------------
 
 #[test]
 fn version() {
@@ -208,6 +208,49 @@ fn skill() {
     let r = t.run(&["skill"]);
     assert_eq!(r.code, 0);
     assert!(r.out.starts_with(&format!("---\nname: {}\n", name())));
+}
+
+#[test]
+fn licenses() {
+    let t = Ctx::new();
+    let r = t.run(&["licenses"]);
+    assert_eq!((r.code, r.err.as_str()), (0, ""));
+    assert!(r.out.starts_with("Third-party notices for wpantry\n"), "{}", &r.out[..200]);
+    // The workspace's own pins, and what ureq and rustls bring.
+    for krate in ["serde_json", "rusqlite", "libsqlite3-sys", "ureq", "rustls", "ring", "webpki-roots", "wcli"] {
+        assert!(r.out.contains(&format!("\n  {krate} ")), "{krate} is listed");
+    }
+    // What isn't a crate follows as its source ships it (mise run notices appends it).
+    let wpantry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wpantry");
+    for file in [
+        "assets/secrets/NOTICE",
+        "src/utils/cvss.NOTICE",
+        "assets/report/fonts/LICENSE-Geist-OFL.txt",
+        "assets/report/fonts/LICENSE-InstrumentSerif-OFL.txt",
+    ] {
+        assert!(r.out.contains(read(&wpantry.join(file)).trim_end()), "{file} is in the notices");
+    }
+}
+
+#[test]
+fn licenses_stops_quietly_when_the_reader_does() {
+    // `wpantry licenses | head`: the reader closes the pipe before the
+    // notices (larger than a pipe's buffer) are all written.
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(BIN)
+        .arg("licenses")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut head = [0u8; 31];
+    child.stdout.take().unwrap().read_exact(&mut head).unwrap();
+    assert_eq!(&head, b"Third-party notices for wpantry");
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 // exit codes ------------------------------------------------------------
@@ -650,6 +693,23 @@ fn sync_offline_reports_unreachable_sources() {
     assert_eq!(r.code, 1, "{}", r.err);
     assert!(r.out.contains("unreachable"));
     assert!(r.out.contains(&format!("{} unreachable", arr(&data["failed"]).len())), "{}", r.out);
+}
+
+#[test]
+fn sync_skips_what_sources_toml_turns_off() {
+    let t = Ctx::new();
+    let dir = t.home.join(".config/wpantry");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("sources.toml"), "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n").unwrap();
+    let data = t.run_env(&["sync", "--json"], UNREACHABLE).json();
+    let named: Vec<String> = arr(&data["failed"]).iter().map(|f| f["source"].as_str().unwrap().to_string()).collect();
+    assert!(named.iter().any(|n| n == "EPSS"), "{data}");
+    assert!(!named.iter().any(|n| n == "CISA KEV"), "turned off, so not asked: {data}");
+    std::fs::write(dir.join("sources.toml"), "[[source]]\nid = \"cisa-kev\"\nurl = \"https://example.com/\"\n")
+        .unwrap();
+    let r = t.run_env(&["sync"], UNREACHABLE);
+    assert_eq!(r.code, 2, "a sources file that can't be used stops the sync: {}", r.err);
+    assert!(r.err.contains("sources file"), "{}", r.err);
 }
 
 /// The release memo is a day old at most; a check that may use the

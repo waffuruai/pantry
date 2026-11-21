@@ -4,18 +4,7 @@ Pantry's command is `wpantry`. It reads your whole home directory, so run only a
 
 ## Install
 
-**With [mise](https://mise.jdx.dev)** (recommended):
-
-```bash
-mise use -g packslip:github.com/waffuruai/pantry
-wpantry version
-```
-
-- mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
-- It remembers the signer and refuses a later release signed by anyone else.
-- Pin a version with `packslip:github.com/waffuruai/pantry@0.5.0`, or put that line in a project's `mise.toml`.
-
-**With the install script** (no mise):
+**With the install script** (recommended):
 
 ```bash
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh
@@ -34,6 +23,24 @@ less install.sh
 sh install.sh
 ```
 
+**With [mise](https://mise.jdx.dev)**, if you use it or want it to handle updates. New to mise? Install it and activate it in your shell first; [mise.run](https://mise.jdx.dev/installing-mise.html) adds the activation line to your shell's rc file:
+
+```bash
+curl -fsSL https://mise.run/zsh | sh     # zsh, the macOS default; on bash: https://mise.run/bash
+source ~/.zshrc                          # on bash: source ~/.bashrc
+```
+
+Then install Pantry:
+
+```bash
+mise use -g packslip:github.com/waffuruai/pantry
+wpantry version
+```
+
+- mise verifies the release's signed [packslip](https://packslip.dev) against this repository's release workflow, and the binary's digest against the packslip.
+- It remembers the signer and refuses a later release signed by anyone else.
+- Pin a version with `packslip:github.com/waffuruai/pantry@0.5.0`, or put that line in a project's `mise.toml`.
+
 Homebrew: [#10](https://github.com/waffuruai/pantry/issues/10). Windows: [#11](https://github.com/waffuruai/pantry/issues/11).
 
 Pantry needs nothing else. Some checks use `git` and `openssl`; `wpantry tools` lists which are missing, and a missing one is reported, never skipped silently.
@@ -48,13 +55,14 @@ Every release ships:
 | `wpantry-aarch64-unknown-linux-musl` | Linux arm64, static |
 | `wpantry-universal-apple-darwin` | macOS, Apple silicon and Intel |
 | `wpantry-x86_64-pc-windows-msvc.exe` | Windows x86-64: repo checks only (see [Windows](#windows)) |
-| `SHA256SUMS` | SHA-256 of each binary |
+| `THIRD-PARTY-NOTICES.txt` | The licences and notices of the third-party crates, data and fonts built into every binary; `wpantry licenses` prints the same text |
+| `SHA256SUMS` | SHA-256 of each binary and of `THIRD-PARTY-NOTICES.txt` |
 | `packslip.sigstore.json` | The signed packslip: every binary's digest, platform and command name |
 | `<binary>.sigstore.json` | A cosign keyless signature bundle for that binary |
 | `install.sh` | The install script above |
 | `install.sh.sha256` | SHA-256 of `install.sh` |
 
-Each binary and `install.sh` also has a GitHub artifact attestation: a signed record that this repository's release workflow built it from the tagged commit. Releases: <https://github.com/waffuruai/pantry/releases>.
+Each binary, `install.sh` and `THIRD-PARTY-NOTICES.txt` also has a GitHub artifact attestation: a signed record that this repository's release workflow built it from the tagged commit. Releases: <https://github.com/waffuruai/pantry/releases>.
 
 ### Download
 
@@ -144,7 +152,7 @@ echo "<sha256 from SHA256SUMS>  $ASSET" | shasum -a 256 -c - && install -m 0755 
 
 ## Windows
 
-From 0.5.0 each release ships `wpantry-x86_64-pc-windows-msvc.exe`, built, attested and signed like the others and listed in `SHA256SUMS` and the packslip. It runs the repo checks (`wpantry scan --no-machine --path C:\code\app`), `search`, `report` and the rest; a machine scan says "not checked" for the machine itself, because winget, Scoop, Chocolatey, installed apps, Windows Update and the certificate store aren't read yet ([#11](https://github.com/waffuruai/pantry/issues/11)). There is no Windows arm64 build.
+From 0.5.0 each release ships `wpantry-x86_64-pc-windows-msvc.exe`, built, attested and signed like the others and listed in `SHA256SUMS` and the packslip. It runs the repo checks (`wpantry scan --no-machine --path C:\code\app`), `search`, `report` and the rest; a machine scan reads the installed programs (the registry's Uninstall keys, read with `reg query`) and checks the ones in Pantry's program table against CVE records (no other program is sent anywhere), and says "not checked" for the rest of the machine, because winget, Scoop, Chocolatey, Windows Update and the certificate store aren't read yet ([#11](https://github.com/waffuruai/pantry/issues/11)). There is no Windows arm64 build.
 
 From Git Bash (MSYS and Cygwin too), `install.sh` selects that asset and installs it as `wpantry.exe` in `~/.local/bin`, or the directory given with `--dir`. It checks `SHA256SUMS` and then packslip, `gh`, or cosign, the same as on Linux and macOS. cmd and PowerShell do not run the script. From those, download `wpantry-x86_64-pc-windows-msvc.exe`, verify it with `gh attestation verify wpantry-x86_64-pc-windows-msvc.exe --repo waffuruai/pantry` (or `cosign verify-blob` with its `.sigstore.json` bundle, as above), and put it on PATH as `wpantry.exe`. mise runs on Windows too: `mise use -g packslip:github.com/waffuruai/pantry` installs and verifies it the same way. The cache lives in `%LOCALAPPDATA%\wpantry\wpantry.db`.
 

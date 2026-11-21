@@ -72,3 +72,20 @@ fn non_cards_and_unread_contexts() {
     assert!(scan_text("src/pay.rs", &format!("let n = \"{PAN}\";"), Kind::Repo).is_empty(), "native is not read");
     assert!(scan_text("notes.md", &format!("card {PAN}"), Kind::Repo).is_empty(), "prose is not read here");
 }
+
+#[test]
+fn a_long_file_is_cut_at_a_character_not_inside_one() {
+    // A two-byte character straddling the scan limit, and a number past it.
+    let mut text = "a".repeat(MAX_SCAN - 1);
+    text.push('é');
+    text.push_str(&format!(" card {PAN}"));
+    let mut out = Vec::new();
+    scan("data/export.json", &text, Context::Data, &mut out);
+    assert!(out.is_empty(), "the number is past the limit: {out:?}");
+    // A number within the limit is still found.
+    let mut text = format!("card {PAN} ");
+    text.push_str(&"é".repeat(MAX_SCAN));
+    let mut out = Vec::new();
+    scan("data/export.json", &text, Context::Data, &mut out);
+    assert_eq!(out.len(), 1, "{out:?}");
+}

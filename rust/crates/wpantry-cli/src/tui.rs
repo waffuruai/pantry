@@ -104,13 +104,29 @@ fn cells(area: &Area, row: &Row) -> [String; COLS] {
             p
         };
         let adv = format!("{}, {}", plural(pkgs.len(), "package"), plural(row.findings.len(), "advisory"));
-        return [row.name.clone(), String::new(), adv, row.severity.to_string(), cvss, epss, row.fix.clone()];
+        return [
+            row.name.clone(),
+            String::new(),
+            adv,
+            row.severity.to_string(),
+            cvss,
+            epss,
+            view::fix_summary(&row.fix).to_string(),
+        ];
     }
     let mut adv = row.ids.first().map(|i| i.to_string()).unwrap_or_default();
     if row.ids.len() > 1 {
         adv.push_str(&format!(" +{}", row.ids.len() - 1));
     }
-    [row.name.clone(), row.version.to_string(), adv, row.severity.to_string(), cvss, epss, row.fix.clone()]
+    [
+        row.name.clone(),
+        row.version.to_string(),
+        adv,
+        row.severity.to_string(),
+        cvss,
+        epss,
+        view::fix_summary(&row.fix).to_string(),
+    ]
 }
 
 /// The column widths for an area's rows in `width` characters: each column
@@ -278,9 +294,15 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
                 line.push((Role::Hot, "sudo ".into()));
             }
             let cmd = b.cmd.strip_prefix("sudo ").unwrap_or(&b.cmd);
-            line.push((Role::Command, fit(&clean(cmd), width.saturating_sub(30))));
+            line.push((Role::Command, fit(&clean(view::fix_summary(cmd)), width.saturating_sub(30))));
             line.push((Role::Dim, format!("  clears {}", plural(b.findings, "finding"))));
             out.push(line);
+            // A script's lines in full, under its summary: cut, they wouldn't run.
+            if cmd.contains('\n') {
+                for l in cmd.lines().skip(1) {
+                    out.push(vec![(Role::Plain, " ".repeat(13)), (Role::Command, clean(l))]);
+                }
+            }
         }
     }
     out.push(Vec::new());

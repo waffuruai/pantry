@@ -95,9 +95,10 @@ pub fn is_bundle(kind: &str) -> bool {
 
 /// One package at one version is one row whatever lockfiles lock it:
 /// the same advisory in 300 lockfiles is one thing to know, with 300
-/// places to fix it.
+/// places to fix it. One file holding secrets is one row too, whatever
+/// lines and versions (commits) of it hold them.
 pub fn spans_places(kind: &str) -> bool {
-    kind == "project"
+    kind == "project" || kind == "secret"
 }
 
 /// Severity labels from worst to least.
@@ -311,6 +312,16 @@ impl View<'_> {
 
     pub fn rows(&self) -> usize {
         self.areas.iter().map(|a| a.rows.len()).sum()
+    }
+}
+
+/// A fix in one line: a script (a secret's, several lines) by its opening
+/// comment, a command as itself. A report table shows this; the plan shows
+/// the whole script.
+pub fn fix_summary(fix: &str) -> &str {
+    match fix.split_once('\n') {
+        Some((first, _)) => first.trim_start_matches('#').trim(),
+        None => fix,
     }
 }
 

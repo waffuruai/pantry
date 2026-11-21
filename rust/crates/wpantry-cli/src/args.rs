@@ -195,6 +195,8 @@ pub enum Command {
         hours: u32,
     },
     Skill,
+    /// `licenses`: the third-party notices built into the binary.
+    Licenses,
     /// `rules`: the YARA rule sources and what compiled (`--update` fetches);
     /// `rules gen SAMPLE...` writes a rule; `rules goodware` rebuilds the goodware database.
     Rules {
@@ -343,7 +345,7 @@ pub fn program() -> Cli {
         )
         .command(
             Cli::new("sync")
-                .description("Refresh the cache: the feeds, end-of-life dates and OSV answers for what was scanned before, so scan --offline has fresh answers.")
+                .description("Refresh the cache: the feeds, and every source a scan used for what it found (end-of-life dates, OSV, CVE records, extension versions, release tags, CVE scores, the malware rules), so scan --offline has fresh answers.")
                 .summary("Refresh the cache for offline scans")
                 .option("--refresh", "ask every source again, even when its answer is fresh")
                 .option("--json", "what was refreshed, as JSON"),
@@ -421,6 +423,11 @@ pub fn program() -> Cli {
         .command(Cli::new("version").description("Print the version, implementation and JSON schema.").option("--json", "as JSON"))
         .command(Cli::new("tools").description("List the external tools wpantry uses.").option("--json", "as JSON"))
         .command(Cli::new("skill").description("Print the agent skill (SKILL.md)."))
+        .command(
+            Cli::new("licenses")
+                .description("Print the licences and notices of the third-party code, data and fonts built into wpantry: every crate with its licence text, then the rest. Each release ships the same text as THIRD-PARTY-NOTICES.txt.")
+                .summary("Print the third-party licences built into wpantry"),
+        )
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -621,6 +628,7 @@ fn command(m: &Matches) -> Result<Command, Exit> {
         ["version"] => Command::Version { json: flag("json") },
         ["tools"] => Command::Tools { json: flag("json") },
         ["skill"] => Command::Skill,
+        ["licenses"] => Command::Licenses,
         other => unreachable!("every command is matched: {other:?}"),
     })
 }

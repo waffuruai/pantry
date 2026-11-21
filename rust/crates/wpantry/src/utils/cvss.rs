@@ -5,7 +5,9 @@
 //! contributors: the lookup table, the maximal vectors and the severity
 //! distances are theirs). And the specification's words for a score.
 //!
-//! The CVSS 4.0 tables and scoring are used under this licence:
+//! The CVSS 4.0 tables and scoring are used under this licence (also in
+//! `cvss.NOTICE` beside this file, which the binary's third-party notices
+//! carry):
 //!
 //! > Copyright (c) 2023 FIRST.ORG, Inc., Red Hat, and contributors
 //! >

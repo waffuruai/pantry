@@ -33,6 +33,10 @@ const EXIT_UPDATE_AVAILABLE: i32 = 10;
 /// `watch`: a fix has landed for something that had none.
 const EXIT_AVAILABLE: i32 = 10;
 
+/// What `licenses` prints: the crates compiled in and their licence texts,
+/// then the notices of the data and fonts. `mise run notices` writes it.
+const NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES.txt");
+
 /// A line of text on stdout, never coloured (search results, the skill),
 /// with terminal escapes from scanned content dropped.
 fn say(line: &str) {
@@ -440,6 +444,21 @@ fn cmd_report(show: &Show) -> Result<i32> {
 
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
+    // The user's tiers hold here as in a scan: a source turned off isn't fetched.
+    use wpantry::sources::file as sources;
+    let path = sources::user_file();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("wpantry: error: {}: {e}", path.display());
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if let Err(e) = sources::configure(text.as_deref(), false) {
+        eprintln!("wpantry: error: {e}");
+        return Ok(EXIT_USAGE);
+    }
     let net = wpantry::utils::net::Http::new();
     let progress = progress::Progress::start();
     let status = |m: &str| progress.set(m);
@@ -779,7 +798,15 @@ fn cmd_fix_list() -> Result<i32> {
             _ => "optional",
         };
         let cmd = if b.sudo { b.cmd.strip_prefix("sudo ").unwrap_or(&b.cmd) } else { &b.cmd };
-        show(&format!("  {mode:<10} {}{cmd}  (clears {})", if b.sudo { "[sudo] " } else { "" }, b.findings));
+        show(&format!(
+            "  {mode:<10} {}{}  (clears {})",
+            if b.sudo { "[sudo] " } else { "" },
+            wpantry::reporters::view::fix_summary(cmd),
+            b.findings
+        ));
+        for l in cmd.lines().skip(1) {
+            show(&format!("             {l}"));
+        }
     }
     show("");
     show("Fixes wpantry makes itself (wpantry fix NAME; wpantry fix runs the ones that apply):");
@@ -1009,11 +1036,14 @@ fn cmd_rules_gen(
     Ok(EXIT_OK)
 }
 
-fn cmd_skill() -> Result<i32> {
+/// `skill` and `licenses`: a bundled text on stdout, as is. A reader that
+/// stops early (`wpantry licenses | head`) ends it quietly, as with `cat`.
+fn cmd_print(text: &str) -> Result<i32> {
     let mut out = std::io::stdout().lock();
-    out.write_all(wpantry::SKILL.as_bytes())?;
-    out.flush()?;
-    Ok(EXIT_OK)
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e.into()),
+        _ => Ok(EXIT_OK),
+    }
 }
 
 fn dispatch(cmd: Command) -> Result<i32> {
@@ -1027,7 +1057,8 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Watch { json, offline } => cmd_watch(json, offline),
         Command::Version { json } => cmd_version(json),
         Command::Tools { json } => cmd_tools(json),
-        Command::Skill => cmd_skill(),
+        Command::Skill => cmd_print(wpantry::SKILL),
+        Command::Licenses => cmd_print(NOTICES),
         Command::Sources { json, file } => cmd_sources(json, file),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),

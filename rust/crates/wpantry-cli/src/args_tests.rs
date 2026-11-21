@@ -200,7 +200,7 @@ fn every_command_has_help() {
     }
     for cmd in [
         "scan", "fix", "report", "search", "watch", "sync", "schedule", "rules", "sources", "breach", "cache",
-        "update", "version", "tools", "skill",
+        "update", "version", "tools", "skill", "licenses",
     ] {
         let text = help(&[cmd]);
         assert!(top.contains(&format!("\n  {cmd}")), "{cmd} is listed");
@@ -282,6 +282,20 @@ fn search_breach_and_sync() {
     assert_eq!(p(&["version", "--json"]), Parsed::Run(Command::Version { json: true }));
     assert_eq!(p(&["skill"]), Parsed::Run(Command::Skill));
     assert_eq!(p(&["watch", "--offline", "--json"]), Parsed::Run(Command::Watch { json: true, offline: true }));
+}
+
+#[test]
+fn licenses_takes_no_options_or_arguments() {
+    assert_eq!(p(&["licenses"]), Parsed::Run(Command::Licenses));
+    for (bad, msg) in [
+        (&["licenses", "--json"][..], "unknown option '--json'"),
+        (&["licenses", "ring"], "too many arguments for 'licenses'"),
+        (&["license"], "unknown command 'license'"),
+    ] {
+        assert!(usage(bad).contains(msg), "{bad:?}: {}", usage(bad));
+    }
+    let text = help(&["licenses"]);
+    assert!(text.contains("THIRD-PARTY-NOTICES.txt"), "{text}");
 }
 
 #[test]

@@ -23,6 +23,7 @@
 
 pub mod decode;
 pub mod expr;
+pub mod files;
 pub mod fragments;
 pub mod readable;
 pub mod rules;

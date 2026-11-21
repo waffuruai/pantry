@@ -277,6 +277,9 @@ pub struct Scan<'a> {
     pub(crate) files: Option<files::Results>,
     /// The malware scan's rules, compiled before the files are read.
     pub(crate) malware: Option<malware::Prepared>,
+    /// The secrets the history scan found, by file, rule and line: the
+    /// deep scan of files doesn't report them again.
+    pub(crate) history_secrets: HashSet<(PathBuf, String, usize)>,
 }
 
 impl<'a> Scan<'a> {
@@ -305,6 +308,7 @@ impl<'a> Scan<'a> {
             kev_entries: Vec::new(),
             files: None,
             malware: None,
+            history_secrets: HashSet::new(),
         }
     }
 
@@ -361,8 +365,11 @@ impl<'a> Scan<'a> {
             }
             self.status("Reading files");
             let jobs = self.file_jobs();
-            let rules = self.malware.as_ref().map(|m| m.loaded.clone());
-            self.files = Some(files::pass::run_cached(&jobs, Some(&self.cache), rules));
+            let engines = files::pass::Engines {
+                yara: self.malware.as_ref().map(|m| m.loaded.clone()),
+                secrets: self.secret_engine(),
+            };
+            self.files = Some(files::pass::run_with(&jobs, Some(&self.cache), &engines));
         }
         self.files.as_ref().expect("the files pass just ran")
     }
@@ -400,7 +407,33 @@ impl<'a> Scan<'a> {
                 self.opts.scoped(),
             ));
         }
+        jobs.extend(self.secret_file_jobs());
         jobs
+    }
+
+    /// `--deep`'s secret scan of files: all of the computer this user can
+    /// read, `~` first; with `--path` or `--no-machine`, each folder in scope.
+    pub(crate) fn secret_file_jobs(&self) -> Vec<files::Job> {
+        use files::{Check, Job};
+        if !self.opts.deep {
+            return Vec::new();
+        }
+        if self.opts.machine && self.opts.personal_files() && !self.opts.scoped() {
+            files::roots::deep(&self.home).into_iter().map(|r| Job::new(Check::Secrets, &r.path, r.depth)).collect()
+        } else {
+            self.repos.iter().map(|(_, r)| Job::new(Check::Secrets, r, files::roots::DEPTH)).collect()
+        }
+    }
+
+    /// The secret scanner for files, with the user's rules: only `--deep` reads files.
+    fn secret_engine(&self) -> Option<std::sync::Arc<crate::checks::secrets::files::Engine>> {
+        if !self.opts.deep {
+            return None;
+        }
+        let extra = self.opts.policy.secret_rules().ok().flatten();
+        let rules = supply_chain::leaks::Rules::new(extra);
+        let scanner = rules.scanner().ok()?;
+        Some(std::sync::Arc::new(crate::checks::secrets::files::Engine { scanner, fingerprint: rules.fingerprint }))
     }
 
     /// Report each step, directory and file as the scan reaches it (the
@@ -520,6 +553,9 @@ impl<'a> Scan<'a> {
         supply_chain::run(&mut self, &found)?;
         if !self.opts.no_malware {
             crate::checks::malware::run(&mut self);
+        }
+        if self.opts.deep {
+            crate::checks::secrets::files::report(&mut self);
         }
         crate::checks::ignore::apply(&mut self);
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");

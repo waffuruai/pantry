@@ -570,7 +570,7 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
               "new": new.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()}))
 }
 
-fn confidence(c: Option<rules::Confidence>) -> &'static str {
+pub(crate) fn confidence(c: Option<rules::Confidence>) -> &'static str {
     match c {
         Some(rules::Confidence::High) | None => "high",
         Some(rules::Confidence::Medium) => "medium",
@@ -703,6 +703,7 @@ pub(crate) fn secrets(
             );
         }
         for f in found {
+            scan.history_secrets.insert((root.join(&f.file), f.rule.clone(), f.line.max(0) as usize));
             let sure = f.confidence == "high";
             let decoded = f.tags.iter().find_map(|t| t.strip_prefix("decoded:")).map(|k| format!(" ({k}-encoded)"));
             scan.add(Finding {

@@ -43,6 +43,12 @@ criteria = "safe-to-deploy"
 delta = "3.5.0 -> 3.5.1"
 notes = "Read the source diff. The Cookie header now carries only each cookie's name and value, '; '-separated (cookies feature, which wpantry does not enable). On macOS a set_read_timeout rejected with InvalidInput after the peer closes is tolerated and the cached timeout left unchanged, so the response can still be read; other errors and other platforms still fail. The ureq-proto bump to 0.7.1 and a doc comment on BodyWithConfig::limit; the rest is tests. No change to TLS, the rustls connector or the platform verifier path; no new dependencies, build script or unsafe; no process, env or filesystem access added."
 
+[[audits.ureq]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "3.5.1 -> 3.5.2"
+notes = "Read the source diff. The body limit now wraps the reader after content and charset decoding, so it counts the bytes returned to the caller rather than the bytes on the wire; wpantry enables neither gzip, brotli nor charset, so for it the count is unchanged. A body exactly at the limit is now accepted: at the limit one byte is probed from the inner reader and the error is raised only if it returns data, and the error is sticky after that. NetworkDown on connect now falls through to the next resolved address like NetworkUnreachable. The rest is docs, the changelog and tests. No change to TLS, the rustls connector or the platform verifier path; no new dependencies, build script or unsafe; no process, env or filesystem access added."
+
 [[audits.ureq-proto]]
 who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"

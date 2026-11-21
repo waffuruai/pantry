@@ -33,8 +33,12 @@ fn deep_scan<'a>(net: &'a Fake, db: &Path, deep: bool, history: &[(PathBuf, &str
 }
 
 fn secrets(s: &Scan) -> Vec<(String, String)> {
-    let mut v: Vec<(String, String)> =
-        s.findings.iter().filter(|f| f.kind == "secret").map(|f| (f.component.clone(), f.location.clone())).collect();
+    let mut v: Vec<(String, String)> = s
+        .findings
+        .iter()
+        .filter(|f| f.kind == "secret")
+        .map(|f| (f.component.replace('\\', "/"), f.location.clone()))
+        .collect();
     v.sort();
     v
 }
@@ -66,7 +70,8 @@ fn deep_reads_every_file_once_and_names_what_it_cant_read() {
     let db = d.path().join("w.db");
     let history = [(committed.clone(), "github-pat", 1)];
     let s = deep_scan(&net, &db, true, &history);
-    let short = |p: &Path| crate::utils::files::short(&p.to_string_lossy());
+    // One separator, so Windows' paths compare.
+    let short = |p: &Path| crate::utils::files::short(&p.to_string_lossy()).replace('\\', "/");
     let want: Vec<(String, String)> = {
         let mut w: Vec<(String, String)> = files[..3].iter().map(|f| (short(f), "line 1".to_string())).collect();
         w.sort();

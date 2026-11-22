@@ -16,6 +16,8 @@ fn program(name: &str, version: &str, publisher: &str) -> Subject {
         product: None,
         released: None,
         support_end: None,
+        nvd: false,
+        system: String::new(),
     }
 }
 
@@ -1145,4 +1147,33 @@ fn support_end_reads_the_end_of_life_copy() {
     assert_eq!(end("25").as_deref(), Some(""), "no end yet");
     assert_eq!(end("8").as_deref(), Some("1970-01-01"), "ended, day not named");
     assert_eq!(end("99"), None);
+}
+
+#[test]
+fn nvds_entries_count_only_for_subjects_that_ask_and_only_on_their_system() {
+    let nvd = |platforms: Value| {
+        json!({"vendor": "circutor", "product": "powerstudio_scada_wave", "nvd": true, "defaultStatus": "unaffected",
+               "platforms": platforms, "versions": [{"version": "0", "lessThan": "25.0", "status": "affected"}]})
+    };
+    let ids = |x: &Subject, e: Value| -> Vec<String> {
+        assess(x, "circutor", &[record("CVE-2026-9", e, None)], &|_| false).0.into_iter().map(|f| f.vuln_id).collect()
+    };
+    let mut x = program("PowerStudio SCADA Wave", "24.10.3.0", "CIRCUTOR, SA");
+    assert!(ids(&x, nvd(json!([]))).is_empty(), "a program that doesn't ask for NVD's entries");
+    x.nvd = true;
+    assert_eq!(ids(&x, nvd(json!([]))), ["CVE-2026-9"]);
+    x.system = "windows".into();
+    assert_eq!(ids(&x, nvd(json!(["windows", "linux"]))), ["CVE-2026-9"]);
+    assert!(ids(&x, nvd(json!(["macos"]))).is_empty(), "another system's");
+    // The publisher's platforms are read the same way; architectures limit nothing.
+    let cna = |platforms: Value| {
+        let mut e = circutor();
+        e["platforms"] = platforms;
+        e
+    };
+    assert_eq!(ids(&x, cna(json!(["Windows 11", "x64"]))), ["CVE-2026-9"]);
+    assert_eq!(ids(&x, cna(json!(["64 bit"]))), ["CVE-2026-9"]);
+    assert!(ids(&x, cna(json!(["Mac OS X", "Linux"]))).is_empty());
+    assert!(ids(&x, cna(json!(["Android"]))).is_empty(), "a phone's");
+    assert!(ids(&x, cna(json!(["iOS", "iPadOS"]))).is_empty());
 }

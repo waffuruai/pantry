@@ -53,7 +53,8 @@ fn a_record_is_trimmed_to_what_is_judged() {
     assert_eq!(t["cvss_version"], "4.0");
     assert_eq!(t["affected"][0]["product"], "PowerStudio SCADA Wave");
     assert_eq!(t["affected"][0]["versions"][0]["lessThan"], "24.11.17.0");
-    assert!(t["affected"][0].get("platforms").is_none());
+    // The systems it names, for a check that knows the install's.
+    assert_eq!(t["affected"][0]["platforms"], json!(["Windows", "64 bit"]));
     // The day it was published, when it says; "" otherwise.
     assert_eq!(t["published"], "");
     let mut dated = circutor_record();
@@ -172,4 +173,72 @@ fn an_internal_error_passes_through() {
     let (_d, c) = cache();
     let net = Fake::new(|_| Err(Error::Io(std::io::Error::other("disk"))));
     assert!(prefetch_products(&c, &net, &["v".into()], false).is_err());
+}
+
+#[test]
+fn an_nvd_record_is_one_entry_per_vulnerable_application_cpe() {
+    let rec = json!({"cve": {
+    "id": "CVE-2026-0002", "published": "2026-02-01T10:00:00", "vulnStatus": "Analyzed",
+    "descriptions": [{"lang": "es", "value": "otra"}, {"lang": "en", "value": "An issue"}],
+    "metrics": {"cvssMetricV31": [
+        {"type": "Secondary", "cvssData": {"version": "3.1", "baseScore": 5.0}},
+        {"type": "Primary", "cvssData": {"version": "3.1", "baseScore": 8.8}}]},
+    "configurations": [
+        {"operator": "AND", "nodes": [
+            {"operator": "OR", "cpeMatch": [
+                {"vulnerable": true, "criteria": "cpe:2.3:a:ex:app:*:*:*:*:*:*:*:*",
+                 "versionStartExcluding": "1.0", "versionEndIncluding": "1.4"}]},
+            {"operator": "OR", "cpeMatch": [
+                {"vulnerable": false, "criteria": "cpe:2.3:o:apple:macos:-:*:*:*:*:*:*:*"},
+                {"vulnerable": false, "criteria": "cpe:2.3:o:linux:linux_kernel:-:*:*:*:*:*:*:*"}]}]},
+        {"nodes": [{"operator": "OR", "cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:a:ex:app:2.0:*:*:*:*:*:*:*"},
+            {"vulnerable": true, "criteria": "cpe:2.3:a:ex:app:2.1:beta1:*:*:*:*:*:*"},
+            {"vulnerable": true, "criteria": "cpe:2.3:a:ex:app:*:*:*:*:*:iphone_os:*:*", "versionEndExcluding": "9"},
+            {"vulnerable": true, "criteria": "cpe:2.3:a:ex:app:*:*:*:*:*:windows:*:*", "versionStartIncluding": "3.0", "versionEndExcluding": "3.2"},
+            {"vulnerable": true, "criteria": "cpe:2.3:o:ex:firmware:*:*:*:*:*:*:*:*"},
+            {"vulnerable": true, "criteria": "cpe:2.3:a:ex:app:*:*:*:*:*:*:*:*"},
+            {"vulnerable": false, "criteria": "cpe:2.3:a:ex:other:*:*:*:*:*:*:*:*"}]}]}
+    ]}});
+    let got = trim_nvd(&rec).unwrap();
+    assert_eq!(
+        (got["id"].as_str(), got["title"].as_str(), got["published"].as_str()),
+        (Some("CVE-2026-0002"), Some("An issue"), Some("2026-02-01"))
+    );
+    assert_eq!(got["score"], 8.8, "NVD's own score first");
+    let entry = |versions: Value, platforms: Value| json!({"vendor": "ex", "product": "app", "versions": versions, "defaultStatus": "unaffected", "platforms": platforms, "nvd": true});
+    assert_eq!(
+        got["affected"],
+        json!([
+            entry(
+                json!([{"version": "1.0", "status": "unaffected"}, {"version": "1.0", "lessThanOrEqual": "1.4", "status": "affected"}]),
+                json!(["macos", "linux"])
+            ),
+            entry(json!([{"version": "2.0", "status": "affected"}]), json!([])),
+            entry(json!([{"version": "3.0", "lessThan": "3.2", "status": "affected"}]), json!(["windows"])),
+        ]),
+        "pre-releases, phones, firmware, every version and what isn't vulnerable are left out"
+    );
+    assert!(trim_nvd(&json!({"id": "CVE-1", "vulnStatus": "Rejected"})).is_none());
+}
+
+#[test]
+fn the_cve_lists_and_nvds_copies_of_one_cve_are_one_record() {
+    let mut out = Vec::new();
+    merge(
+        &mut out,
+        json!({"id": "CVE-1", "title": "t", "published": "", "score": null, "cvss_version": null, "affected": [{"vendor": "a"}]}),
+    );
+    merge(
+        &mut out,
+        json!({"id": "CVE-2", "title": "u", "published": "", "score": null, "cvss_version": null, "affected": []}),
+    );
+    merge(
+        &mut out,
+        json!({"id": "CVE-1", "title": "nvd", "published": "2026-01-02", "score": 7.0, "cvss_version": "3.1", "affected": [{"vendor": "b", "nvd": true}]}),
+    );
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0]["title"], "t", "the publisher's title kept");
+    assert_eq!((out[0]["score"].clone(), out[0]["published"].clone()), (json!(7.0), json!("2026-01-02")));
+    assert_eq!(out[0]["affected"], json!([{"vendor": "a"}, {"vendor": "b", "nvd": true}]));
 }

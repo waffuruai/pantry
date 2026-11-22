@@ -52,6 +52,11 @@ impl Os {
     }
 }
 
+/// `name` as the category [`classify`] would give, when it is one.
+pub fn category(name: &str) -> Option<&'static str> {
+    CATEGORIES.iter().find(|c| **c == name).copied()
+}
+
 /// The categories, most specific first: when a rule's words name several,
 /// the earliest wins (`MAL_XMR_Miner` is a miner, not just malware).
 pub const CATEGORIES: &[&str] = &[

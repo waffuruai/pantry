@@ -64,7 +64,7 @@ pub fn unreached(what: &str) -> String {
     format!("{what} (unreachable, not cached)")
 }
 
-pub fn unjudged(what: &str) -> String {
+pub fn unjudged_label(what: &str) -> String {
     format!("{what} (versions not comparable)")
 }
 
@@ -125,6 +125,9 @@ pub struct Subject {
     /// When the installed version's release train was first released
     /// (endoflife.date's `releaseDate` for its cycle), when known.
     pub released: Option<String>,
+    /// When support for that train ends or ended
+    /// ([`crate::sources::endoflife::support_end`]), when known.
+    pub support_end: Option<String>,
 }
 
 impl Subject {
@@ -626,18 +629,26 @@ fn first_unaffected_above(versions: &[Value], bound: &str) -> String {
 }
 
 /// What the records say about one subject, asked for under `vendor`: its
-/// findings, and whether any record for it couldn't be judged.
-pub fn assess(x: &Subject, vendor: &str, records: &[Record], kev: &dyn Fn(&str) -> bool) -> (Vec<Finding>, bool) {
+/// findings, and why the records that couldn't be judged couldn't be
+/// (None when every one was).
+pub fn assess(
+    x: &Subject,
+    vendor: &str,
+    records: &[Record],
+    kev: &dyn Fn(&str) -> bool,
+) -> (Vec<Finding>, Option<String>) {
     let vkey = vendor_key(vendor);
     let pkey = product_key(x.product_name(), &vkey, &x.version);
     let trains = TRAINS.contains(&(vkey.as_str(), pkey.as_str()));
     let installed = if trains { java_parts(&x.version) } else { dotted(&x.version, false) };
     let Some(installed) = installed else {
         // Records exist for it, but its version can't be compared.
-        return (Vec::new(), !records.is_empty());
+        let why = format!("{:?} can't be read as a version to compare with its records", x.version);
+        return (Vec::new(), (!records.is_empty()).then_some(why));
     };
     let mut out: Vec<Finding> = Vec::new();
-    let mut unjudged = false;
+    // What made records unjudgeable, each with their ids.
+    let mut unjudged: Vec<(String, Vec<String>)> = Vec::new();
     let mut seen = BTreeSet::new();
     for r in records {
         let entries: Vec<&Value> = r
@@ -650,23 +661,38 @@ pub fn assess(x: &Subject, vendor: &str, records: &[Record], kev: &dyn Fn(&str) 
         let later = |e: &Value| {
             x.released.as_deref().is_some_and(|day| before(&r.published, day)) && unlisted_later_train(&installed, e)
         };
-        let verdicts: Vec<Verdict> = entries
+        let verdicts: Vec<(Verdict, String)> = entries
             .iter()
             .map(|e| {
                 // Numbered another way than the record (a build number
                 // against release numbers): the ranges can't place it.
                 if !trains && !same_scheme(&installed, e) {
-                    return Verdict::Unknown;
+                    let like = example_bound(e).map(|b| format!(" (like `{b}`)")).unwrap_or_default();
+                    return (Verdict::Unknown, format!("number versions another way than {}{like}", x.version));
                 }
-                match if trains { judge_trains(&installed, e) } else { judge(&installed, e) } {
-                    Verdict::Unknown if !trains && later(e) => Verdict::Unaffected,
-                    v => v,
+                if trains {
+                    return match judge_trains(&installed, e) {
+                        Verdict::Unknown => unlisted_train(x, &installed, e, &r.published),
+                        v => (v, String::new()),
+                    };
+                }
+                match judge(&installed, e) {
+                    Verdict::Unknown if later(e) => (Verdict::Unaffected, String::new()),
+                    Verdict::Unknown => (Verdict::Unknown, unjudged_why(&installed, e)),
+                    v => (v, String::new()),
                 }
             })
             .collect();
-        let Some(Verdict::Affected { range, fixed }) = verdicts.iter().find(|v| matches!(v, Verdict::Affected { .. }))
+        let Some((Verdict::Affected { range, fixed }, _)) =
+            verdicts.iter().find(|(v, _)| matches!(v, Verdict::Affected { .. }))
         else {
-            unjudged |= verdicts.contains(&Verdict::Unknown);
+            for (_, why) in verdicts.iter().filter(|(v, _)| *v == Verdict::Unknown) {
+                match unjudged.iter_mut().find(|(w, _)| w == why) {
+                    Some((_, ids)) if ids.contains(&r.id) => {}
+                    Some((_, ids)) => ids.push(r.id.clone()),
+                    None => unjudged.push((why.clone(), vec![r.id.clone()])),
+                }
+            }
             continue;
         };
         if !seen.insert(r.id.clone()) {
@@ -700,7 +726,112 @@ pub fn assess(x: &Subject, vendor: &str, records: &[Record], kev: &dyn Fn(&str) 
             ..Default::default()
         });
     }
-    (out, unjudged)
+    let why: Vec<String> = unjudged
+        .iter()
+        .map(|(why, ids)| {
+            // The verb agrees with the ids: "CVE-1 names", "CVE-1 and 2 more name".
+            let (verb, rest) = why.split_once(' ').unwrap_or((why, ""));
+            let verb = if ids.len() == 1 { format!("{verb}s") } else { verb.to_string() };
+            let shown = match ids.len() {
+                1 => ids[0].clone(),
+                2 => format!("{} and {}", ids[0], ids[1]),
+                n => format!("{} and {} more", ids[0], n - 1),
+            };
+            format!("{shown} {verb} {rest}")
+        })
+        .collect();
+    (out, (!why.is_empty()).then(|| why.join("; ")))
+}
+
+/// Why [`judge`] couldn't place `installed` by `entry`, as a predicate of
+/// the records: a version it couldn't read, or no range for the installed
+/// line while versions not listed count as affected.
+fn unjudged_why(installed: &[String], entry: &Value) -> String {
+    let unreadable = crate::utils::json::arr_at(entry, "versions")
+        .iter()
+        .flat_map(|v| spelled(v).unwrap_or_else(|| vec![v.clone()]))
+        .any(|v| {
+            let raw = s(&v, "version");
+            let bound = [s(&v, "lessThan"), s(&v, "lessThanOrEqual")].into_iter().find(|b| !b.is_empty());
+            let prior = [" and prior", " and earlier"].iter().any(|w| raw.ends_with(w));
+            match bound {
+                _ if prior => false,
+                None => inclusive_span(raw).is_none() && dotted(raw, false).is_none(),
+                Some(b) => {
+                    (!matches!(raw, "" | "0" | "*") && dotted(raw, true).is_none())
+                        || (b != "*" && dotted(b, false).is_none())
+                }
+            }
+        });
+    if unreadable {
+        return "write some versions in a form Pantry can't read".into();
+    }
+    let line = installed.iter().take(2).cloned().collect::<Vec<_>>().join(".");
+    format!("list no range for the {line} line (versions not listed count as affected)")
+}
+
+/// A train a record doesn't list (or lists in a form not read). Oracle
+/// lists the supported versions a flaw affects, so a train it supported
+/// on the day the record was published and left out isn't affected;
+/// otherwise it can't be judged, and the reason says why, as a predicate
+/// of the records ("name the 8 and 11 trains but not 26, …").
+fn unlisted_train(x: &Subject, installed: &[String], entry: &Value, published: &str) -> (Verdict, String) {
+    let mine = &installed[0];
+    let listed = listed_trains(entry);
+    if listed.contains(mine) {
+        return (Verdict::Unknown, format!("list the {mine} train in a form Pantry can't compare"));
+    }
+    let names = match listed.as_slice() {
+        [] => format!("name no train, so not {mine}"),
+        [one] => format!("name the {one} train but not {mine}"),
+        [rest @ .., last] => format!("name the {} and {last} trains but not {mine}", rest.join(", ")),
+    };
+    match (x.released.as_deref(), x.support_end.as_deref()) {
+        (Some(out), Some(end)) if !before(published, out) && (end.is_empty() || before(published, end)) => {
+            (Verdict::Unaffected, String::new())
+        }
+        (Some(out), _) if before(published, out) => {
+            (Verdict::Unknown, format!("{names}, which came out after publication"))
+        }
+        (Some(_), Some(_)) => (Verdict::Unknown, format!("{names}, which was out of support at publication")),
+        _ => (
+            Verdict::Unknown,
+            format!(
+                "{names}, and Pantry has no release and support dates for {mine} to tell whether that means unaffected"
+            ),
+        ),
+    }
+}
+
+/// The trains an entry names as affected (each one's first number), in
+/// order; the Performance Pack's aren't plain trains.
+fn listed_trains(entry: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for v in crate::utils::json::arr_at(entry, "versions") {
+        let raw = s(v, "version");
+        let shown =
+            raw.rsplit_once(':').filter(|(p, _)| p.chars().any(char::is_alphabetic)).map_or(raw, |(_, b)| b.trim());
+        if s(v, "status") != "affected" || shown.contains("perf") {
+            continue;
+        }
+        if let Some(p) = java_parts(shown).and_then(|p| p.first().cloned())
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out.sort_by(|a, b| num_cmp(a, b));
+    out
+}
+
+/// A bound or version an entry names, to show how its versions are written.
+fn example_bound(entry: &Value) -> Option<String> {
+    crate::utils::json::arr_at(entry, "versions").iter().find_map(|v| {
+        [s(v, "lessThan"), s(v, "lessThanOrEqual"), s(v, "version")]
+            .into_iter()
+            .find(|b| !matches!(*b, "" | "0" | "*"))
+            .map(str::to_string)
+    })
 }
 
 /// The index's product names of `vendor` that are the subject's product.
@@ -732,6 +863,7 @@ pub fn tool_subjects(found: &[Component], osv_answered: &dyn Fn(&Component) -> b
                 vendors: vendors_for(vendor),
                 product: Some(product.to_string()),
                 released: None,
+                support_end: None,
             })
         })
         .collect()
@@ -753,6 +885,7 @@ pub fn tools(scan: &mut Scan, found: &[Component], osv: &HashMap<Item, Vec<Value
         let cycle = found.iter().find(|c| c.name == x.name && c.version == x.version && c.path == x.location);
         if let Some((product, cycle)) = cycle.and_then(|c| c.eol.as_ref()) {
             x.released = crate::sources::endoflife::released(&scan.cache, product, cycle)?;
+            x.support_end = crate::sources::endoflife::support_end(&scan.cache, product, cycle)?;
         }
     }
     check(scan, &subjects, TOOLS_WHAT)
@@ -800,7 +933,8 @@ pub fn check(scan: &mut Scan, subjects: &[Subject], what: &str) -> Result<()> {
         scan.status(&format!("Fetching CVE records for {} installed products", pairs.len()));
     }
     cve_records::prefetch_records(&scan.cache, scan.net, &pairs, offline)?;
-    let mut unjudged_names: BTreeSet<String> = BTreeSet::new();
+    // Each install's reasons its records couldn't be judged.
+    let mut unjudged: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
     let mut partial_names: BTreeSet<String> = BTreeSet::new();
     let kev = scan.kev.clone();
     let mut found: Vec<Finding> = Vec::new();
@@ -821,9 +955,12 @@ pub fn check(scan: &mut Scan, subjects: &[Subject], what: &str) -> Result<()> {
             }
         }
         for (vendor, recs) in by_vendor.iter().filter(|(_, r)| !r.is_empty()) {
-            let (findings, unknown) = assess(p, vendor, recs, &|id| kev.contains(id));
-            if unknown {
-                unjudged_names.insert(p.name.clone());
+            let (findings, why) = assess(p, vendor, recs, &|id| kev.contains(id));
+            if let Some(why) = why {
+                let mine = unjudged.entry(format!("{} {}", p.name, p.version)).or_default();
+                if !mine.contains(&why) {
+                    mine.push(why);
+                }
             }
             for f in findings {
                 // One finding per install and CVE: a second install at
@@ -845,9 +982,26 @@ pub fn check(scan: &mut Scan, subjects: &[Subject], what: &str) -> Result<()> {
     for f in found {
         scan.add(f);
     }
-    for (set, label) in
-        [(&unreached_names, unreached(what)), (&unjudged_names, unjudged(what)), (&partial_names, partial(what))]
-    {
+    if !unjudged.is_empty() {
+        // Installs with the same reasons share a line.
+        let mut by_why: Vec<(String, Vec<String>)> = Vec::new();
+        for (who, why) in &unjudged {
+            let why = why.join("; ");
+            match by_why.iter_mut().find(|(w, _)| *w == why) {
+                Some((_, whos)) => whos.push(who.clone()),
+                None => by_why.push((why, vec![who.clone()])),
+            }
+        }
+        let shown: Vec<String> = by_why
+            .iter()
+            .map(|(why, whos)| {
+                let more = if whos.len() > 3 { format!(" and {} more", whos.len() - 3) } else { String::new() };
+                format!("{}{more}: {why}.", whos[..whos.len().min(3)].join(", "))
+            })
+            .collect();
+        scan.unchecked(&unjudged_label(what), &shown.join(" "));
+    }
+    for (set, label) in [(&unreached_names, unreached(what)), (&partial_names, partial(what))] {
         if !set.is_empty() {
             let shown: Vec<&str> = set.iter().take(4).map(String::as_str).collect();
             let more = if set.len() > 4 { format!(" and {} more", set.len() - 4) } else { String::new() };

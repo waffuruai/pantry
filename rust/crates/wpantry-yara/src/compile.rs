@@ -282,7 +282,27 @@ impl Compiler {
     /// Rules that fail are recorded in [`Rules::rejected`], and parsing picks
     /// up again at the next rule.
     pub fn add_source(&mut self, namespace: &str, src: &str, syntax: Syntax) -> usize {
-        let (file, errors) = parser::parse_recovering(src, syntax);
+        self.add(namespace, src, syntax, None)
+    }
+
+    /// [`add_source`](Self::add_source), also returning the file as `os`'s
+    /// scans read it ([`split_by_os`]): the classifying is done once here,
+    /// so a compile from source makes the split for nothing.
+    pub fn add_source_split(&mut self, namespace: &str, src: &str, syntax: Syntax, os: Os) -> (usize, String) {
+        let mut split = String::new();
+        let added = self.add(namespace, src, syntax, Some((os, &mut split)));
+        (added, split)
+    }
+
+    fn add(&mut self, namespace: &str, src: &str, syntax: Syntax, split: Option<(Os, &mut String)>) -> usize {
+        let (file, errors, items) = parser::parse_items(src, syntax);
+        let mut oses: Vec<Option<Os>> = vec![None; items.len()];
+        let rule_item: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, it))| matches!(it, parser::Item::Rule(_)))
+            .map(|(i, _)| i)
+            .collect();
         for (rule, error) in errors {
             self.reject(namespace, rule, error);
         }
@@ -293,10 +313,10 @@ impl Compiler {
             }
         }
         let mut added = 0;
-        for rule in file.rules {
+        for (k, rule) in file.rules.into_iter().enumerate() {
             let name = rule.name.clone();
-            let used: Vec<String> = file.imports.iter().filter(|m| uses(&rule.condition, m)).cloned().collect();
-            let class = classify::classify(&rule.name, &rule.tags, &rule.meta, &used, file_need(&rule.condition));
+            let class = class_of(&file.imports, &rule);
+            oses[rule_item[k]] = Some(class.0);
             if self.filter.as_ref().is_some_and(|keep| !keep(class.0, class.1)) {
                 self.skipped += 1;
                 continue;
@@ -305,6 +325,9 @@ impl Compiler {
                 Ok(()) => added += 1,
                 Err(error) => self.reject(namespace, name, error),
             }
+        }
+        if let Some((os, out)) = split {
+            *out = split_text(src, &items, &oses, os);
         }
         added
     }
@@ -1286,6 +1309,62 @@ fn arith(op: BinOp, a: &Value, b: &Value) -> Value {
             }
         }
     })
+}
+
+/// A rules file as each system's scan reads it: for Windows, Linux and
+/// macOS, the file with every rule that is only another system's replaced
+/// by the lines it took, so what is left reads, compiles and reports lines
+/// exactly as the whole file does under that system's filter
+/// ([`Compiler::set_filter`]). Imports, rules for any system, and text that
+/// doesn't parse (it is rejected the same way) are kept.
+pub fn split_by_os(src: &str, syntax: Syntax) -> [(Os, String); 3] {
+    let (file, _, items) = parser::parse_items(src, syntax);
+    let oses: Vec<Option<Os>> = items
+        .iter()
+        .map(|(_, item)| match item {
+            parser::Item::Rule(i) => Some(class_of(&file.imports, &file.rules[*i]).0),
+            _ => None,
+        })
+        .collect();
+    [Os::Windows, Os::Linux, Os::MacOS].map(|os| (os, split_text(src, &items, &oses, os)))
+}
+
+/// Bump when the system a rule is classed as can change for the same text
+/// (classify, parsing, the file types a condition needs): a split kept
+/// beside its rules file is named by this and the file's text, so an
+/// older one is never read. `the_split_rules_are_versioned` pins what it
+/// covers.
+pub const SPLIT_VERSION: u32 = 1;
+
+/// A rule's system, category and score.
+fn class_of(imports: &[String], rule: &Rule) -> (Os, &'static str, i64) {
+    let used: Vec<String> = imports.iter().filter(|m| uses(&rule.condition, m)).cloned().collect();
+    classify::classify(&rule.name, &rule.tags, &rule.meta, &used, file_need(&rule.condition))
+}
+
+/// `src` with the rules classed (`oses`) as only another system's than
+/// `target` replaced by their newlines. Should a span not fall on whole
+/// characters (error recovery steps a byte at a time), the whole file: it
+/// compiles the same under the filter.
+fn split_text(src: &str, items: &[parser::Span], oses: &[Option<Os>], target: Os) -> String {
+    if !items.iter().all(|(r, _)| src.is_char_boundary(r.start) && src.is_char_boundary(r.end)) {
+        return src.to_string();
+    }
+    let mut out = String::with_capacity(src.len() / 2);
+    out.push_str(&src[..items.first().map_or(src.len(), |(r, _)| r.start)]);
+    for ((range, _), os) in items.iter().zip(oses) {
+        let text = &src[range.clone()];
+        match os {
+            Some(os) if *os != target && *os != Os::Any => {
+                out.extend(std::iter::repeat_n('\n', text.bytes().filter(|b| *b == b'\n').count()));
+            }
+            _ => out.push_str(text),
+        }
+    }
+    if let Some((last, _)) = items.last() {
+        out.push_str(&src[last.end..]);
+    }
+    out
 }
 
 /// The kind of file a condition requires, from the terms it `and`s together:

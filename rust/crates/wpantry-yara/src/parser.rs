@@ -60,33 +60,72 @@ pub const BASE64_STANDARD: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq
 /// Parse a whole file, failing at the first error.
 #[cfg(test)]
 pub fn parse(src: &str, syntax: Syntax) -> Result<SourceFile, Error> {
-    let (file, mut errors) = parse_recovering(src, syntax);
+    let (file, mut errors, _) = parse_items(src, syntax);
     match errors.is_empty() {
         true => Ok(file),
         false => Err(errors.swap_remove(0).1),
     }
 }
 
+/// The bytes of a rules file one import or rule spans, and which.
+pub type Span = (std::ops::Range<usize>, Item);
+
+/// What one stretch of a rules file holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Item {
+    Import,
+    /// The rule at this index of [`SourceFile::rules`].
+    Rule(usize),
+    /// A rule (or text) that didn't parse.
+    Failed,
+}
+
 /// Parse a whole file, skipping a rule that doesn't parse and carrying on at
-/// the next one; each skipped rule is returned with its name (when it got that
-/// far) and the error.
-pub fn parse_recovering(src: &str, syntax: Syntax) -> (SourceFile, Vec<(String, Error)>) {
+/// the next one; each skipped rule is returned with its name (when it got
+/// that far) and the error, and each import and rule with the bytes it spans.
+/// The ranges cover the whole file in order: each runs from the end of the
+/// one before it (taking the comments in front of it) to the end of its own
+/// text, and the last ends where the file does.
+pub fn parse_items(src: &str, syntax: Syntax) -> (SourceFile, Vec<(String, Error)>, Vec<Span>) {
     let mut p = Parser { lx: Lexer::new(src), syntax, anon: 0, rule_name: String::new() };
     let mut file = SourceFile::default();
     let mut errors = Vec::new();
+    let mut items: Vec<Span> = Vec::new();
     loop {
+        let start = p.lx.mark();
+        if let Some(last) = items.last_mut() {
+            last.0.end = start;
+        }
         p.rule_name.clear();
+        // Numbered within a rule, so a rule reads the same in any file.
+        p.anon = 0;
         let step = match p.lx.peek() {
-            Ok(Tok::Eof) => return (file, errors),
-            Ok(Tok::Ident(w)) if w == "import" => p.import().map(|m| file.imports.push(m)),
+            Ok(Tok::Eof) => {
+                if let Some(last) = items.last_mut() {
+                    last.0.end = src.len();
+                }
+                return (file, errors, items);
+            }
+            Ok(Tok::Ident(w)) if w == "import" => p.import().map(|m| {
+                file.imports.push(m);
+                Item::Import
+            }),
             Ok(Tok::Ident(w)) if w == "include" => Err(p.lx.err("include is not supported")),
-            Ok(_) => p.rule().map(|r| file.rules.push(r)),
+            Ok(_) => p.rule().map(|r| {
+                file.rules.push(r);
+                Item::Rule(file.rules.len() - 1)
+            }),
             Err(e) => Err(e),
         };
-        if let Err(e) = step {
-            errors.push((p.rule_name.clone(), e));
-            p.recover();
-        }
+        let item = match step {
+            Ok(item) => item,
+            Err(e) => {
+                errors.push((p.rule_name.clone(), e));
+                p.recover();
+                Item::Failed
+            }
+        };
+        items.push((start..start, item));
     }
 }
 

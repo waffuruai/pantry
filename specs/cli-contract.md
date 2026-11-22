@@ -103,6 +103,7 @@ macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 0.5.0): the
 | `WPANTRY_DB` | Cache file. Default `$XDG_CACHE_HOME/wpantry/wpantry.db`, else `~/.cache/wpantry/wpantry.db`. The malicious-packages clone sits beside it. |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned instead of XposedOrNot |
 | `GITHUB_TOKEN` | Sent to the GitHub API (latest-release lookups, such as mise's) to lift the anonymous rate limit |
+| `WORDFENCE_API_KEY` | Sent to Wordfence Intelligence (`Authorization: Bearer`) to download its v3 production feed, at most daily; WordPress core, plugins and themes in the repos are checked against it (kind `wordpress`). Unset, each site is one `unchecked` finding (`WordPress core, plugins and themes in <site> (<n>)`) whose note says how to get a free key. Added 2026-11-22 |
 | `WPANTRY_NO_UPDATE_CHECK` | Set to anything: `scan` never mentions a newer wpantry release |
 | `WPANTRY_ALLOW_SLEEP` | `1` (anything but empty or `0`): as `--allow-sleep` |
 | `WPANTRY_TIMINGS` | Set to anything: every scan step is printed to stderr with the seconds since the scan began (for finding slow steps; not under `--json`) |
@@ -156,7 +157,7 @@ The optional HTML presentation bundle preserves the scan envelope unchanged. It 
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | string | `F-` and ten hex digits of the SHA-256 of `kind|component|location|vuln_id`: the same finding has the same id in every scan. `wpantry fix <id>` and `fix secret <id>` take it. Added 2026-11-21 |
-| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `repo-hook`, `hidden-text`, `secret`, `license`, `install-script`, `config`, `account`, `posture`, `unchecked`, `suspect-code`, `document`, `clipper`, `persistence`, `malware` (open set) |
+| `kind` | string | `runtime`, `compiler`, `manager`, `pkgmgr`, `tool`, `datastore`, `harness`, `package`, `app`, `browser`, `extension`, `brew`, `os`, `project`, `image`, `bundled`, `mcp`, `repo-hook`, `hidden-text`, `secret`, `license`, `install-script`, `config`, `account`, `posture`, `unchecked`, `suspect-code`, `document`, `clipper`, `persistence`, `malware`, `wordpress` (open set; `wordpress` added 2026-11-22: WordPress core, a plugin or a theme against Wordfence Intelligence, `component` its slug or `wordpress`, `vuln_id` the record's CVE, else its Wordfence UUID, `note` ending with the record's link) |
 | `component` | string | What it is about (`openssl`, `vite`, `~/code/app/.env`) |
 | `version` | string | Installed or locked version; `""` when none |
 | `location` | string | Path, lockfile, image or source; `""` when none |
@@ -209,6 +210,7 @@ One file per machine. Both implementations MUST read and write the same schema, 
 | `events` | `id` INTEGER PK, `at` REAL, `kind` TEXT (`scan`, `fix`, `clipper`, …), `detail` TEXT (JSON) |
 | `hash_verdict` | `sha256`, `source` TEXT (PK together), `verdict` TEXT (`malware`, `good`, `unknown`), `family` TEXT, `checked_at` REAL: online answers about flagged files, reused for a day. Added 2026-11-04 |
 | `malware_files` | `path` TEXT PK, `dev`, `ino`, `size` INTEGER, `mtime` REAL, `rules` TEXT (the rule set's digest), `hits` TEXT (JSON: `[namespace, rule, category, description]` per hit), `scanned_at` REAL: the malware scan's result per file, reused while the file's identity and the rule set are unchanged. Added 2026-11-04 |
+| `wordfence` | `id`, `type`, `slug` TEXT (PK together: a Wordfence record's UUID, `core`/`plugin`/`theme`, the slug), `title`, `cve` TEXT, `score` REAL, `vector`, `rating`, `ranges` TEXT (JSON: `[from, from_inclusive, to, to_inclusive]` per range, `*` unbounded), `patched` TEXT (JSON list), `remediation` TEXT: the feed as last read, replaced whole on each refresh. Added 2026-11-22 |
 | `vulns_fts` | FTS5 over `id`, `aliases`, `summary`, `details`, `packages`, `tokenize='porter'` |
 
 `runs.result` JSON is internal to each source and not part of the contract.

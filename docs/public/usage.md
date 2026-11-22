@@ -264,6 +264,7 @@ See [upgrade](install.md#upgrade).
 - The id of a CVE that applies and has no CVSS score goes to OSV.dev, then CVE.org.
 - The vendor and product names of the runtimes and datastores Pantry looks up CVE records for (Oracle's Java SE and MySQL Server) go to CIRCL's Vulnerability-Lookup. Versions aren't sent: the records are compared here.
 - Feeds are downloaded whole.
+- With `WORDFENCE_API_KEY` set, the key goes to Wordfence to download its whole WordPress feed; nothing about your sites is sent.
 - The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
 
 Source by source: [what is sent](checks-and-sources.md#sources). Every request names `wpantry` in its User-Agent and times out after 30 seconds.
@@ -275,6 +276,7 @@ Source by source: [what is sent](checks-and-sources.md#sources). Every request n
 | `WPANTRY_DB` | The cache file |
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
+| `WORDFENCE_API_KEY` | Check WordPress core, plugins and themes against Wordfence Intelligence. The key is free from a [wordfence.com](https://www.wordfence.com) account and is yours alone: Wordfence's terms forbid sharing it. Without it, each WordPress site is reported "not checked" |
 | `WPANTRY_TIMINGS` | Print each scan step's elapsed time on stderr |
 | `WPANTRY_ALLOW_SLEEP` | `1`: let the Mac idle-sleep during a scan, as `--allow-sleep` does |
 | `NO_COLOR` | Turn colour off. Colour is only ever used on a terminal |

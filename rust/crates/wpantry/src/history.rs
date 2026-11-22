@@ -169,7 +169,11 @@ pub fn record_scan_totals(
             ],
         )?;
         cache.conn.execute(
-            "UPDATE exposures SET cvss = ?, cvss_version = ?, epss = ?, epss_percentile = ? WHERE key = ?",
+            // The first score is kept as well as the latest: how long a
+            // likely-to-be-exploited exposure stayed open.
+            "UPDATE exposures SET cvss = ?1, cvss_version = ?2, epss = ?3, epss_percentile = ?4, \
+             first_epss_percentile = CASE WHEN first_epss IS NULL THEN ?4 ELSE first_epss_percentile END, \
+             first_epss = COALESCE(first_epss, ?3) WHERE key = ?5",
             params![f.cvss, f.cvss_version, f.epss, f.epss_percentile, key],
         )?;
     }
@@ -327,6 +331,9 @@ pub struct Exposure {
     pub cvss_version: String,
     pub epss: Option<f64>,
     pub epss_percentile: Option<f64>,
+    /// The first EPSS score and percentile seen for it (None until it had one).
+    pub first_epss: Option<f64>,
+    pub first_epss_percentile: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -373,7 +380,8 @@ pub struct ScanRow {
 pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, severity, kev, fixed, note, first_at, last_at, resolved_at, \
-         dep_scope, dep_direct, affected_range, fix_cmd, cvss, cvss_version, epss, epss_percentile \
+         dep_scope, dep_direct, affected_range, fix_cmd, cvss, cvss_version, epss, epss_percentile, \
+         first_epss, first_epss_percentile \
          FROM exposures WHERE last_at >= ? OR resolved_at >= ? OR resolved_at IS NULL \
          ORDER BY resolved_at IS NOT NULL, first_at",
     )?;
@@ -404,6 +412,8 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
             cvss_version: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
             epss: r.get(19)?,
             epss_percentile: r.get(20)?,
+            first_epss: r.get(21)?,
+            first_epss_percentile: r.get(22)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

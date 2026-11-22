@@ -73,11 +73,41 @@ pub fn prewalk(roots: &[PathBuf]) {
 /// Drop the memoised listings: a new scan may see changed files.
 pub fn forget_walks() {
     WALKS.lock().expect("lock").clear();
+    UNREADABLE.lock().expect("lock").clear();
+    crate::checks::files::roots::forget();
+}
+
+/// The folders under each root its walk couldn't list: this user may not
+/// read them (on macOS, a terminal without Full Disk Access). Never a
+/// folder that went away while it was walked.
+static UNREADABLE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Note that `dir`, under `root`, couldn't be listed.
+pub fn note_unreadable(root: &Path, dir: &Path) {
+    let mut u = UNREADABLE.lock().expect("lock");
+    let dirs = u.entry(root.to_path_buf()).or_default();
+    if !dirs.iter().any(|d| d == dir) {
+        dirs.push(dir.to_path_buf());
+    }
+}
+
+/// The folders under `root` this scan's walks couldn't list, in walk order.
+pub fn unreadable(root: &Path) -> Vec<PathBuf> {
+    UNREADABLE.lock().expect("lock").get(root).cloned().unwrap_or_default()
 }
 
 fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, usize, Vec<String>)> {
-    fn visit(d: &Path, level: usize, depth: usize, out: &mut Vec<(PathBuf, usize, Vec<String>)>) {
-        let Ok(rd) = std::fs::read_dir(d) else { return };
+    fn visit(root: &Path, d: &Path, level: usize, depth: usize, out: &mut Vec<(PathBuf, usize, Vec<String>)>) {
+        let rd = match std::fs::read_dir(d) {
+            Ok(rd) => rd,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    note_unreadable(root, d);
+                }
+                return;
+            }
+        };
         let (mut dirs, mut files) = (Vec::new(), Vec::new());
         for e in rd.filter_map(|e| e.ok()) {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -95,10 +125,10 @@ fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, usize, Vec<String>)
         dirs.sort();
         out.push((d.to_path_buf(), level, files));
         for sub in dirs {
-            visit(&sub, level + 1, depth, out);
+            visit(root, &sub, level + 1, depth, out);
         }
     }
     let mut out = Vec::new();
-    visit(root, 0, depth, &mut out);
+    visit(root, root, 0, depth, &mut out);
     out
 }

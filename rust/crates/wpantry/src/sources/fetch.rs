@@ -52,6 +52,11 @@ pub fn record(id: &str, outcome: std::result::Result<u64, String>) {
     }
 }
 
+/// What went wrong with `id`'s last attempt in this process, if it failed.
+pub fn last_error(id: &str) -> Option<String> {
+    SEEN.lock().expect("lock").get(id).map(|s| s.error.clone()).filter(|e| !e.is_empty())
+}
+
 /// A source's reader refused what came (a parse error): the last good copy
 /// stays, and `wpantry sources` says why.
 pub fn rejected(id: &str, why: &str) {
@@ -141,12 +146,37 @@ pub fn file(cache: &Cache, net: &dyn Net, id: &str, key: &str, offline: bool) ->
     file_of(cache, net, &in_effect(id), key, offline)
 }
 
+/// [`file`], sending `headers` with the request (a user's own key, as
+/// `Authorization`; it never follows a redirect off the source's host).
+pub fn file_with_headers(
+    cache: &Cache,
+    net: &dyn Net,
+    id: &str,
+    key: &str,
+    offline: bool,
+    headers: &[(&str, &str)],
+) -> Result<Option<Vec<u8>>> {
+    on(id)?;
+    file_of_with(cache, net, &in_effect(id), key, offline, headers)
+}
+
 pub(crate) fn file_of(cache: &Cache, net: &dyn Net, s: &Source, key: &str, offline: bool) -> Result<Option<Vec<u8>>> {
+    file_of_with(cache, net, s, key, offline, &[])
+}
+
+fn file_of_with(
+    cache: &Cache,
+    net: &dyn Net,
+    s: &Source,
+    key: &str,
+    offline: bool,
+    headers: &[(&str, &str)],
+) -> Result<Option<Vec<u8>>> {
     if offline || cache.fresh(&format!("{key}_at"), s.refresh)? {
         return Ok(None);
     }
     let etag = cache.get(&format!("{key}_etag"))?;
-    let resp = match net::request_capped(net, &s.url, None, &[], etag.as_deref(), s.max_bytes) {
+    let resp = match net::request_capped(net, &s.url, None, headers, etag.as_deref(), s.max_bytes) {
         Ok(r) => r,
         Err(e) if e.is_source() => {
             record(&s.id, Err(e.to_string()));

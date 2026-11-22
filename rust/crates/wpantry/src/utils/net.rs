@@ -53,6 +53,8 @@ pub const HOSTS: &[&str] = &[
     // CVE records by vendor and product, for installed programs OSV doesn't cover.
     "vulnerability.circl.lu",
     "mb-api.abuse.ch",
+    // WordPress core, plugin and theme advisories, with the user's own key.
+    "www.wordfence.com",
 ];
 
 /// Redirects followed per request; every hop must be in [`HOSTS`] too.

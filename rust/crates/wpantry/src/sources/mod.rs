@@ -27,3 +27,4 @@ pub mod releases;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod user;
+pub mod wordfence;

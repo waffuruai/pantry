@@ -31,6 +31,7 @@ pub mod catalog;
 pub mod cellar;
 pub mod clipper;
 pub mod components;
+pub mod desktop_apps;
 pub mod dotnet;
 pub mod downloads;
 pub mod editors;
@@ -85,6 +86,7 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         let found = inventory(scan);
         let osv = components::components(scan, &found)?;
         software_cves::tools(scan, &found, &osv)?;
+        desktop_apps::check(scan, &settings::real_runner)?;
         app_updates::apps(scan)?;
         os_updates::os_updates(scan, joined(updates))?;
         brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;

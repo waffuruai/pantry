@@ -308,3 +308,100 @@ fn a_sync_lists_the_tags_of_repos_asked_about_before() {
     let got = run(&c, &Fake::new(feeds), false, &|_| {}).unwrap();
     assert!(got.refreshed.iter().any(|n| n == "Git release tags"), "{got:?}");
 }
+
+/// Elastic's repo as GitHub zips it: two rules files, and others that
+/// aren't its YARA rules.
+fn elastic(r: &Request) -> Result<Response> {
+    if r.url == crate::sources::file::url(crate::checks::malware::yara::ELASTIC) {
+        let zip = crate::utils::archive::zip::stored(&[
+            (
+                "elastic-protections-artifacts-abc/yara/rules/Windows_Trojan_A.yar",
+                b"rule elastic_a { condition: false }",
+            ),
+            ("elastic-protections-artifacts-abc/yara/rules/Linux_Miner_B.yar", b"rule elastic_b { condition: false }"),
+            ("elastic-protections-artifacts-abc/yara/README.md", b"rule not_a_rule { condition: false }"),
+            ("elastic-protections-artifacts-abc/behavior/rules/x.yar", b"rule not_yara_rules { condition: false }"),
+        ]);
+        return Ok(Response::ok(zip));
+    }
+    feeds(r)
+}
+
+/// Turned on, Elastic's rules are fetched by a sync into the rules
+/// directory, replacing a copy put there by hand, and refreshed when due;
+/// turned off, the copy fetched is removed. A rules file put there by hand
+/// is named.
+#[test]
+fn a_sync_keeps_elastics_rules_current_once_turned_on() {
+    use crate::checks::malware::yara;
+    let (_d, c) = cache();
+    let rules = yara::rules_dir(&c);
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(rules.join("elastic.yar"), "rule by_hand { condition: false }").unwrap();
+    std::fs::write(rules.join("mine.yar"), "rule mine { condition: false }").unwrap();
+    // Off (the default): not asked, and the hand-added copy is named, not touched.
+    let net = Fake::new(elastic);
+    let got = run(&c, &net, false, &|_| {}).unwrap();
+    assert!(!net.requests().iter().any(|r| r.url.contains("elastic")), "off: never asked");
+    assert_eq!(got.hand_added, [rules.join("elastic.yar"), rules.join("mine.yar")]);
+    assert!(std::fs::read_to_string(rules.join("elastic.yar")).unwrap().contains("by_hand"));
+    // On: fetched, the yara/rules files only, in name order.
+    crate::sources::file::set_test_on(&[yara::ELASTIC]);
+    let got = run(&c, &Fake::new(elastic), false, &|_| {}).unwrap();
+    assert!(got.refreshed.iter().any(|n| n == "Elastic's YARA rules"), "{got:?}");
+    let text = std::fs::read_to_string(rules.join("elastic.yar")).unwrap();
+    assert!(text.find("elastic_b").unwrap() < text.find("elastic_a").unwrap(), "{text}");
+    assert!(!text.contains("by_hand") && !text.contains("not_a_rule") && !text.contains("not_yara_rules"), "{text}");
+    assert_eq!(got.hand_added, [rules.join("mine.yar")], "ours now");
+    // Fresh: not asked again; a refresh asks.
+    let again = Fake::new(elastic);
+    run(&c, &again, false, &|_| {}).unwrap();
+    assert!(!again.requests().iter().any(|r| r.url.contains("elastic")));
+    let forced = Fake::new(elastic);
+    run(&c, &forced, true, &|_| {}).unwrap();
+    assert!(forced.requests().iter().any(|r| r.url.contains("elastic")));
+    // Down: named, the copy kept.
+    let down = Fake::new(|r| {
+        if r.url.contains("elastic") {
+            return Err(Error::Offline("down".into()));
+        }
+        feeds(r)
+    });
+    let got = run(&c, &down, true, &|_| {}).unwrap();
+    assert!(got.failed.iter().any(|(n, _)| n == "Elastic's YARA rules"), "{got:?}");
+    assert!(rules.join("elastic.yar").is_file());
+    // Off again: the copy fetched is gone.
+    crate::sources::file::set_test_on(&[]);
+    run(&c, &Fake::new(elastic), false, &|_| {}).unwrap();
+    assert!(!rules.join("elastic.yar").exists());
+}
+
+/// The YARA rules of the user's sources file, said yes to, are fetched by
+/// a sync as by a scan; one never said yes to is named, not fetched.
+#[test]
+fn a_sync_refreshes_the_rules_of_your_sources_file() {
+    use crate::sources::file::parse;
+    let (_d, c) = cache();
+    let mut declared = parse(
+        "[[source]]\nid = \"team\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://api.github.com/team.yar\"\n\n\
+         [[source]]\nid = \"stranger\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example/x.yar\"\n",
+    )
+    .unwrap();
+    for s in &mut declared {
+        s.max_bytes = 1 << 20;
+    }
+    let net = Fake::new(|r| {
+        if r.url.ends_with(".yar") {
+            return Ok(Response::ok("rule team_rule { condition: false }"));
+        }
+        feeds(r)
+    });
+    let mut out = Synced::default();
+    yours_of(&c, &net, &declared, &|_| true, &|_| {}, &mut out);
+    let rules = crate::checks::malware::yara::rules_dir(&c);
+    assert!(std::fs::read_to_string(rules.join("user-team.yar")).unwrap().contains("team_rule"));
+    assert!(out.refreshed.iter().any(|n| n.contains("team")), "{out:?}");
+    assert!(out.failed.iter().any(|(n, why)| n.contains("stranger") && why.contains("needs your yes")), "{out:?}");
+    assert!(!rules.join("user-stranger.yar").exists());
+    assert!(!net.requests().iter().any(|r| r.url.contains("example")), "never asked without a yes");
+}

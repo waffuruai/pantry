@@ -5,6 +5,9 @@
 //!   catalog, browser versions, VS Code's extension lists, the latest wpantry;
 //! - once a malware scan has fetched them, YARA Forge's rules and the
 //!   signature-base and Feodo Tracker indicator lists;
+//! - Elastic's rules, once turned on, and the rules and lists of your
+//!   sources file you said yes to (a rules file put in the rules directory
+//!   by hand is named: nothing can update it);
 //! - once PostgreSQL was found, its security page;
 //! - what was asked before: end-of-life dates for every product on record,
 //!   OSV for every package version, CIRCL's CVE records for every vendor and
@@ -38,6 +41,8 @@ pub struct Synced {
     pub failed: Vec<(String, String)>,
     /// Package versions re-asked of OSV.
     pub packages: usize,
+    /// Rules files put in the rules directory by hand: not kept up to date.
+    pub hand_added: Vec<std::path::PathBuf>,
 }
 
 fn note(name: &str, r: Result<()>, out: &mut Synced) {
@@ -196,6 +201,15 @@ fn malware(cache: &Cache, net: &dyn Net, refresh: bool, status: Status, out: &mu
         .into_iter()
         .filter(|(id, _)| active(id))
         .collect();
+    if active(yara::ELASTIC) {
+        status("Fetching Elastic's YARA rules");
+    }
+    match yara::update_elastic(cache, net, refresh) {
+        Ok(None) => {}
+        r => note("Elastic's YARA rules", r.map(|_| ()), out),
+    }
+    yours(cache, net, status, out);
+    out.hand_added = yara::hand_added(cache);
     if !lists.is_empty() && indicator_lists::fetched(cache)? {
         status("Fetching the indicator lists");
         let dir = yara::rules_dir(cache).join("iocs");
@@ -210,6 +224,54 @@ fn malware(cache: &Cache, net: &dyn Net, refresh: bool, status: Status, out: &mu
         }
     }
     Ok(())
+}
+
+/// The rules and lists of the user's sources file in use that they said
+/// yes to (none is asked here): fetched as a scan fetches them.
+fn yours(cache: &Cache, net: &dyn Net, status: Status, out: &mut Synced) {
+    let effective = crate::sources::file::effective();
+    let declared: Vec<crate::sources::file::Source> =
+        effective.sources.iter().filter(|s| effective.user.contains(&s.id)).cloned().collect();
+    yours_of(cache, net, &declared, &active, status, out);
+}
+
+/// [`yours`], for the user's sources `declared`, those `on` says are used.
+fn yours_of(
+    cache: &Cache,
+    net: &dyn Net,
+    declared: &[crate::sources::file::Source],
+    on: &dyn Fn(&str) -> bool,
+    status: Status,
+    out: &mut Synced,
+) {
+    use crate::sources::{file, user};
+    let mut mine = Vec::new();
+    for s in declared.iter().filter(|s| on(&s.id)) {
+        match user::consent(cache, None, s) {
+            Ok(Ok(())) => {
+                if let Some(h) = s.host() {
+                    crate::utils::net::allow(&h);
+                }
+                mine.push(s.clone());
+            }
+            Ok(Err(why)) => out.failed.push((format!("the source {} (your sources file)", s.id), why)),
+            Err(e) => out.failed.push((format!("the source {} (your sources file)", s.id), e.to_string())),
+        }
+    }
+    let files: Vec<&file::Source> = mine.iter().filter(|s| user::is_file(s)).collect();
+    if files.is_empty() {
+        return;
+    }
+    status("Fetching the rules and lists of your sources file");
+    let dir = yara::rules_dir(cache);
+    let failed = user::fetch_files(cache, net, &dir, &mine, declared, false);
+    for s in files {
+        let name = format!("the source {} (your sources file)", s.id);
+        match failed.iter().find(|(id, _)| *id == s.id) {
+            Some((_, why)) => out.failed.push((name, why.clone())),
+            None => out.refreshed.push(name),
+        }
+    }
 }
 
 /// What scans asked about before: CIRCL's CVE records, the latest versions

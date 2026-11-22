@@ -6,6 +6,7 @@ use crate::checks::documents::{self, Doc};
 use crate::checks::hidden::{self, Hidden};
 use crate::checks::malware::targets::{self, Scope};
 use crate::checks::malware::yara::Loaded;
+use crate::checks::secrets::files::{self as secret_files, Engine};
 use crate::checks::supply_chain::mptcp::{self, Exposure};
 use crate::checks::suspects::{self, Kind, Suspect};
 use crate::db::Cache;
@@ -27,6 +28,8 @@ pub enum Check {
     Malware(Scope),
     /// The prebuilt binaries a repo's npm dependencies ship.
     Blobs,
+    /// Secrets in every file (`--deep`), not only git history.
+    Secrets,
 }
 
 /// One check over one root, `depth` levels down.
@@ -53,6 +56,26 @@ pub enum Found {
     /// The files the scan counts, each as it was read.
     Malware(Vec<(PathBuf, targets::Scanned)>),
     Blobs(Vec<Suspect>),
+    Secrets(secret_files::Found),
+}
+
+/// What the pass's checks run with: the malware scan's rules, and the
+/// secret scanner (`--deep`).
+#[derive(Clone, Default)]
+pub struct Engines {
+    pub yara: Option<Arc<Loaded>>,
+    pub secrets: Option<Arc<Engine>>,
+}
+
+impl Engines {
+    /// What each check's kept results are tied to: the malware rules' hash
+    /// and the secret rules' fingerprint.
+    pub fn salts(&self) -> super::cache::Salts {
+        super::cache::Salts {
+            malware: self.yara.as_ref().map(|r| r.hash.clone()).unwrap_or_default(),
+            secrets: self.secrets.as_ref().map(|e| e.fingerprint.clone()).unwrap_or_default(),
+        }
+    }
 }
 
 /// What a check reads of one root, and what it knows without reading.
@@ -63,6 +86,7 @@ enum Plan {
     Documents(documents::Plan),
     Malware(targets::Plan),
     Blobs(suspects::blobs::Plan),
+    Secrets(secret_files::Plan),
 }
 
 impl Plan {
@@ -74,6 +98,7 @@ impl Plan {
             Plan::Documents(p) => &p.reads,
             Plan::Malware(p) => &p.reads,
             Plan::Blobs(p) => &p.reads,
+            Plan::Secrets(p) => &p.reads,
         }
     }
 }
@@ -87,9 +112,10 @@ pub(crate) enum Out {
     Documents(Vec<Doc>),
     Malware(targets::Scanned),
     Blob(Option<String>),
+    Secrets(Vec<secret_files::Secret>),
 }
 
-fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats) -> Plan {
+fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats, engines: &Engines) -> Plan {
     match job.check {
         Check::Hidden => Plan::Hidden(hidden::plan(&job.root, walk, stat)),
         Check::Suspects(kind) => Plan::Suspects(suspects::plan(&job.root, kind, walk, stat)),
@@ -97,10 +123,12 @@ fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats) -> Plan 
         Check::Documents => Plan::Documents(documents::plan(&job.root, walk, stat)),
         Check::Malware(scope) => Plan::Malware(targets::plan(scope, &job.root, walk, stat)),
         Check::Blobs => Plan::Blobs(suspects::blobs::plan(&job.root)),
+        Check::Secrets => Plan::Secrets(secret_files::plan(engines.secrets.as_deref(), &job.root, walk, stat)),
     }
 }
 
-fn file(job: &Job, rules: Option<&Loaded>, read: &Read, c: &Contents) -> Out {
+fn file(job: &Job, engines: &Engines, read: &Read, c: &Contents) -> Out {
+    let rules = engines.yara.as_deref();
     match job.check {
         Check::Hidden => Out::Hidden(hidden::file(read, c)),
         Check::Suspects(kind) => Out::Suspects(suspects::file(kind, read, c)),
@@ -108,6 +136,7 @@ fn file(job: &Job, rules: Option<&Loaded>, read: &Read, c: &Contents) -> Out {
         Check::Documents => Out::Documents(documents::file(read, c)),
         Check::Malware(scope) => Out::Malware(targets::file(scope, rules, read, c)),
         Check::Blobs => Out::Blob(suspects::blobs::file(read, c)),
+        Check::Secrets => Out::Secrets(secret_files::file(engines.secrets.as_deref(), read, c)),
     }
 }
 
@@ -124,6 +153,7 @@ fn finish(job: &Job, plan: &Plan, outs: &[Option<Out>]) -> Found {
         Plan::Documents(p) => Found::Documents(documents::finish(p, &of!(Documents))),
         Plan::Malware(p) => Found::Malware(targets::finish(p, &of!(Malware))),
         Plan::Blobs(p) => Found::Blobs(suspects::blobs::finish(p, &of!(Blob))),
+        Plan::Secrets(p) => Found::Secrets(secret_files::finish(p, &of!(Secrets))),
     }
 }
 
@@ -131,8 +161,10 @@ fn finish(job: &Job, plan: &Plan, outs: &[Option<Out>]) -> Found {
 #[derive(Default)]
 pub struct Results {
     found: HashMap<Job, Found>,
-    /// The malware scan's rules, for a job run on demand.
-    rules: Option<Arc<Loaded>>,
+    /// What the checks ran with, for a job run on demand.
+    engines: Engines,
+    /// The folders under each root its walk couldn't list.
+    unreadable: HashMap<PathBuf, Vec<PathBuf>>,
 }
 
 impl Results {
@@ -140,10 +172,9 @@ impl Results {
     pub fn get(&self, job: &Job) -> Found {
         match self.found.get(job) {
             Some(f) => f.clone(),
-            None => run_cached(std::slice::from_ref(job), None, self.rules.clone())
-                .found
-                .remove(job)
-                .expect("the job just run"),
+            None => {
+                run_with(std::slice::from_ref(job), None, &self.engines).found.remove(job).expect("the job just run")
+            }
         }
     }
 
@@ -183,6 +214,19 @@ impl Results {
         }
     }
 
+    /// The folders under `root` the pass's walk couldn't list.
+    pub fn unreadable(&self, root: &Path) -> Vec<PathBuf> {
+        self.unreadable.get(root).cloned().unwrap_or_default()
+    }
+
+    /// A secrets job's files with secrets in them, and those too big to read.
+    pub fn secrets(&self, job: &Job) -> secret_files::Found {
+        match self.get(job) {
+            Found::Secrets(v) => v,
+            _ => unreachable!("a secrets job finds secrets"),
+        }
+    }
+
     /// A malware job's files, each as it was read.
     pub fn malware(&self, job: &Job) -> Vec<(PathBuf, targets::Scanned)> {
         match self.get(job) {
@@ -204,7 +248,12 @@ pub fn run(jobs: &[Job]) -> Results {
 /// file that hasn't changed since a check last read it isn't read again),
 /// and the malware scan's `rules`.
 pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>>) -> Results {
-    let salt = rules.as_ref().map(|r| r.hash.clone()).unwrap_or_default();
+    run_with(jobs, cache, &Engines { yara: rules, secrets: None })
+}
+
+/// [`run_cached`], with every engine the checks use.
+pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Results {
+    let salts = engines.salts();
     let started = crate::utils::os::now();
     let mut uniq: Vec<Job> = Vec::new();
     for j in jobs {
@@ -214,6 +263,8 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
     }
     let jobs = uniq;
     let walks: Vec<Walk> = jobs.iter().map(|j| crate::utils::walk::walk(&j.root, j.depth)).collect();
+    let unreadable: HashMap<PathBuf, Vec<PathBuf>> =
+        jobs.iter().map(|j| (j.root.clone(), crate::utils::walk::unreadable(&j.root))).collect();
     // One view per file, from each root's deepest walk (the others are
     // that walk cut short).
     let mut deepest: HashMap<&Path, usize> = HashMap::new();
@@ -250,7 +301,7 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
         // Side by side: a plan stats nothing new, but names every file, and
         // the dependency check lists node_modules.
         let items: Vec<(&Job, &Walk)> = jobs.iter().zip(&walks).collect();
-        parallel::par_map(&items, parallel::cores(), |(j, w)| plan(j, w, &stat))
+        parallel::par_map(&items, parallel::cores(), |(j, w)| plan(j, w, &stat, engines))
     };
     // Each read's view, found once.
     let mut users: Vec<Vec<(usize, usize)>> = vec![Vec::new(); views.len()];
@@ -271,7 +322,7 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
     drop(index);
     let mut outs: Vec<Vec<Option<Out>>> = plans.iter().map(|p| p.reads().iter().map(|_| None).collect()).collect();
     let stat_of = |j: usize, r: usize| views[view_of[j][r]].stat();
-    let mut store = cache.map(|c| super::cache::Store::load(c, &jobs, &salt));
+    let mut store = cache.map(|c| super::cache::Store::load(c, &jobs, &salts));
     let mut hits: HashMap<&Path, usize> = HashMap::new();
     if let Some(s) = &store {
         for (j, p) in plans.iter().enumerate() {
@@ -299,7 +350,7 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
                 let whole = read.cap > 0 && (read.when == When::Always || program);
                 let c =
                     Contents { bytes: bytes.as_deref().filter(|b| whole && b.len() as u64 <= read.cap), head: &head };
-                (j, r, file(&jobs[j], rules.as_deref(), read, &c))
+                (j, r, file(&jobs[j], engines, read, &c))
             })
             .collect()
     });
@@ -335,7 +386,7 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
         jobs.iter().zip(&plans).zip(&outs).map(|((j, p), o)| (j, p, o)).collect();
     // Finishing a hidden-text job runs git for the commit messages.
     let found = parallel::par_map(&items, parallel::PROBES, |(j, p, o)| finish(j, p, o));
-    Results { found: jobs.into_iter().zip(found).collect(), rules }
+    Results { found: jobs.into_iter().zip(found).collect(), engines: engines.clone(), unreadable }
 }
 
 #[cfg(test)]

@@ -256,7 +256,7 @@ pub fn product_key(name: &str, vendor: &str, version: &str) -> String {
 
 /// A dotted number (`24.11.17.0`, `v2.4`) as its parts; None for anything
 /// else. A trailing `.x` (`17.x`) is dropped when `wild` allows it.
-fn dotted(v: &str, wild: bool) -> Option<Vec<String>> {
+pub(crate) fn dotted(v: &str, wild: bool) -> Option<Vec<String>> {
     let mut v = v.trim();
     v = v.strip_prefix(['v', 'V']).unwrap_or(v);
     if wild {
@@ -269,7 +269,7 @@ fn dotted(v: &str, wild: bool) -> Option<Vec<String>> {
 }
 
 /// Two dotted numbers compared part by part, a missing part 0.
-fn cmp_parts(a: &[String], b: &[String]) -> Ordering {
+pub(crate) fn cmp_parts(a: &[String], b: &[String]) -> Ordering {
     for i in 0..a.len().max(b.len()) {
         let x = a.get(i).map(String::as_str).unwrap_or("0");
         let y = b.get(i).map(String::as_str).unwrap_or("0");

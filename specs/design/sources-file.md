@@ -86,6 +86,8 @@ Every source wpantry reads today, as entries:
 | `cisa-kev` | kev | kev | default |
 | `endoflife` | eol | endoflife | default |
 | `cve-records` | advisories | vulnerability-lookup | default |
+| `homebrew-advisories` | advisories | vulnerability-lookup-osv | default |
+| `homebrew-formulae` | releases | homebrew-formula | default |
 | `homebrew-casks`, `chrome-releases`, `firefox-releases`, `postgresql-security`, `arch-security` | releases | one each | default |
 | `fedora-advisories` and the other distro feeds in `distros.rs` | advisories | one each | default |
 | `deps-dev` | licenses | deps-dev-api | default with `--licenses` |
@@ -101,7 +103,7 @@ Every source wpantry reads today, as entries:
 | `maltrail` | hosts | maltrail | deep |
 | `yaraify`, `circl-hashlookup` | hash-lookup | one each | default, after consent |
 | `malwarebazaar` | hash-lookup | malwarebazaar | with the user's `ABUSECH_AUTH_KEY` |
-| `elastic-protections` | yara | yara | off (ELv2: `wpantry rules --enable elastic`) |
+| `elastic` | yara | github-zip | off (ELv2: turned on with `tier = "default"` in the sources file) |
 
 ## Indicators
 

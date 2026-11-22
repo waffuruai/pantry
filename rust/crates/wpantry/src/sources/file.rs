@@ -308,12 +308,28 @@ pub fn find(id: &str) -> Option<Source> {
 
 /// Whether a source is used this run: its tier is default, or deep with `--deep`.
 pub fn active(id: &str) -> bool {
+    #[cfg(test)]
+    if TEST_ON.with(|on| on.borrow().iter().any(|x| x == id)) {
+        return true;
+    }
     let e = effective();
     e.sources.iter().find(|s| s.id == id).is_some_and(|s| match s.tier {
         Tier::Default => true,
         Tier::Deep => e.deep,
         Tier::Off => false,
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ON: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Turn the sources `ids` on for this test's thread only (the sources in
+/// effect are the process's, shared by every test); empty turns them back.
+#[cfg(test)]
+pub fn set_test_on(ids: &[&str]) {
+    TEST_ON.with(|on| *on.borrow_mut() = ids.iter().map(|s| s.to_string()).collect());
 }
 
 /// The sources wpantry ships with.

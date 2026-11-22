@@ -71,8 +71,31 @@ impl ByteSet {
         out
     }
 
+    /// The bytes in the set, lowest first: one step per byte present,
+    /// not one per byte value.
     pub fn iter(&self) -> impl Iterator<Item = u8> + '_ {
-        (0..=255u8).filter(|b| self.contains(*b))
+        self.0.iter().enumerate().flat_map(|(i, w)| {
+            let mut w = *w;
+            std::iter::from_fn(move || {
+                let bit = (w != 0).then(|| w.trailing_zeros())?;
+                w &= w - 1;
+                Some((i as u32 * 64 + bit) as u8)
+            })
+        })
+    }
+
+    /// The set as four 64-bit words, bytes 0–63 first.
+    pub fn words(&self) -> [u64; 4] {
+        self.0
+    }
+
+    pub fn from_words(w: [u64; 4]) -> Self {
+        ByteSet(w)
+    }
+
+    /// The lowest byte in the set.
+    pub fn first(&self) -> Option<u8> {
+        self.0.iter().enumerate().find(|(_, w)| **w != 0).map(|(i, w)| (i as u32 * 64 + w.trailing_zeros()) as u8)
     }
 
     /// The bytes `b` with `b & mask == value & mask`: a hex nibble wildcard.
@@ -118,9 +141,51 @@ pub enum Node {
     /// Capture group `n` (from 1): only [`parse_regex_groups`] makes them,
     /// so rules' strings never hold one.
     Group(u32, Box<Node>),
+    /// Bytes in a row, in the order they are matched: only [`Node::compact`]
+    /// makes them, once a pattern is final, so nothing that builds or reads
+    /// patterns before then sees one.
+    Lit(Box<[u8]>),
 }
 
 impl Node {
+    /// The pattern as it is kept for scanning: each run of two or more
+    /// single bytes in a sequence one [`Node::Lit`], and every sequence and
+    /// alternation shrunk to its length. A position of a pattern costs a
+    /// whole node (40 bytes) otherwise, and rule sets hold millions.
+    pub fn compact(&mut self) {
+        match self {
+            Node::Seq(items) => {
+                let mut out: Vec<Node> = Vec::with_capacity(items.len());
+                let mut run: Vec<u8> = Vec::new();
+                let flush = |run: &mut Vec<u8>, out: &mut Vec<Node>| match run.len() {
+                    0 => {}
+                    1 => out.push(Node::Set(ByteSet::one(run[0]))),
+                    _ => out.push(Node::Lit(std::mem::take(run).into_boxed_slice())),
+                };
+                for mut n in std::mem::take(items) {
+                    match &n {
+                        Node::Set(set) if set.len() == 1 => run.push(set.first().expect("one byte")),
+                        _ => {
+                            flush(&mut run, &mut out);
+                            run.clear();
+                            n.compact();
+                            out.push(n);
+                        }
+                    }
+                }
+                flush(&mut run, &mut out);
+                out.shrink_to_fit();
+                *items = out;
+            }
+            Node::Alt(v) => {
+                v.shrink_to_fit();
+                v.iter_mut().for_each(Node::compact);
+            }
+            Node::Repeat { node, .. } | Node::Group(_, node) => node.compact(),
+            Node::Set(_) | Node::Assert(_) | Node::Lit(_) => {}
+        }
+    }
+
     /// Nested sequences flattened into one, so the top level of a pattern is
     /// the list of its positions (atoms are chosen from it).
     pub fn flatten(self) -> Node {
@@ -153,6 +218,7 @@ impl Node {
                 Node::Repeat { node: Box::new(node.reversed()), min: *min, max: *max, greedy: *greedy }
             }
             Node::Group(n, inner) => Node::Group(*n, Box::new(inner.reversed())),
+            Node::Lit(bytes) => Node::Lit(bytes.iter().rev().copied().collect()),
             Node::Set(_) | Node::Assert(_) => self.clone(),
         }
     }
@@ -167,6 +233,7 @@ impl Node {
                 Node::Repeat { node: Box::new(node.widened()), min: *min, max: *max, greedy: *greedy }
             }
             Node::Group(n, inner) => Node::Group(*n, Box::new(inner.widened())),
+            Node::Lit(bytes) => Node::Lit(bytes.iter().flat_map(|b| [*b, 0]).collect()),
             Node::Assert(_) => self.clone(),
         }
     }
@@ -181,6 +248,7 @@ impl Node {
                 Node::Repeat { node: Box::new(node.case_folded()), min: *min, max: *max, greedy: *greedy }
             }
             Node::Group(n, inner) => Node::Group(*n, Box::new(inner.case_folded())),
+            Node::Lit(bytes) => Node::Seq(bytes.iter().map(|b| Node::Set(ByteSet::one(*b).case_fold())).collect()),
             Node::Assert(_) => self.clone(),
         }
     }

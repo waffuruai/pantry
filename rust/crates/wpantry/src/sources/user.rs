@@ -49,6 +49,11 @@ pub fn consent(
     Ok(if yes { Ok(()) } else { Err("you said no to it".into()) })
 }
 
+/// Whether `s` is fetched to a file (rules or a list), not asked per item.
+pub fn is_file(s: &Source) -> bool {
+    place(Path::new(""), s).is_some()
+}
+
 /// Where a user source of a file kind is kept: YARA rules in the rules
 /// directory, lists in the indicator directory beside signature-base's.
 fn place(rules: &Path, s: &Source) -> Option<std::path::PathBuf> {

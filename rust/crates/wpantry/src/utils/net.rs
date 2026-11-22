@@ -42,6 +42,8 @@ pub const HOSTS: &[&str] = &[
     // GitHub serves release assets (YARA rule bundles) from these, by redirect.
     "release-assets.githubusercontent.com",
     "objects.githubusercontent.com",
+    // Elastic's YARA rules, when turned on: GitHub serves a repo's zip from here.
+    "codeload.github.com",
     // EPSS's daily scores, for every CVE.
     "epss.empiricalsecurity.com",
     "cveawg.mitre.org",

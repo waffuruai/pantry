@@ -170,6 +170,24 @@ pub fn cvss_text(c: Option<&(f64, String)>) -> String {
     c.map(|(v, _)| format!("{v:.1}")).unwrap_or_default()
 }
 
+/// The report's EPSS credit, as FIRST asks of products that use its
+/// scores: whose scores, and the copy's date and model. None when no
+/// finding has one.
+pub fn epss_credit(findings: &[Finding]) -> Option<String> {
+    // Every score comes from the one kept copy: any finding that names it.
+    let mut scored = findings.iter().filter(|f| f.epss.is_some());
+    let f = scored.clone().find(|f| !f.epss_date.is_empty()).or_else(|| scored.next())?;
+    let date = f.epss_date.get(..10).unwrap_or(&f.epss_date);
+    let mut t = String::from("EPSS scores by FIRST (first.org/epss)");
+    if !date.is_empty() {
+        t.push_str(&format!(", {date}"));
+    }
+    if !f.epss_model.is_empty() {
+        t.push_str(&format!(", model {}", f.epss_model));
+    }
+    Some(t)
+}
+
 /// An EPSS score as reports show it: the probability as a percentage,
 /// `12.3%`; "" without one.
 pub fn epss_text(e: Option<(f64, f64)>) -> String {

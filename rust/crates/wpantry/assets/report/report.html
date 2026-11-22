@@ -285,6 +285,8 @@ td .badge{vertical-align:baseline}
 /* footer */
 .foot{margin-top:56px;padding:22px 0 40px;border-top:1px solid var(--off);color:var(--muted);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 18px}
 .foot b{color:var(--ink);font-weight:500}
+.credit{margin:40px 0 0;color:var(--muted);font-size:13px}
+.credit a{color:inherit}
 .foot .legal{flex-basis:100%;margin:8px 0 0;font:12px/1.6 var(--mono)}
 
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);padding:8px 14px;border-radius:8px;background:var(--ink);color:var(--bg);font-size:13px;opacity:0;transition:opacity .15s;pointer-events:none;z-index:30}
@@ -464,7 +466,7 @@ function normalize(raw, meta){
     return {n:i+1, kind:kind, component:f.component||'', version:f.version||'', location:f.location||'',
       vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?'unchecked':(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
-      cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile),
+      cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile), epss_date:f.epss_date||'', epss_model:f.epss_model||'',
       dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
       key:String(i)};
   });
@@ -518,14 +520,14 @@ function parseCSV(text){
   if(!rows.length)return null;
   var h=rows[0].map(function(s){return s.trim()});
   var required=['id','aliases','url','component','kind','affected_version','safe_version','severity','kev','status','location'];
-  var optional=['cvss','cvss_version','epss','epss_percentile'];
+  var optional=['cvss','cvss_version','epss','epss_percentile','epss_date'];
   if(new Set(h).size!==h.length || !required.every(function(k){return h.indexOf(k)>=0}) || !h.every(function(k){return required.indexOf(k)>=0||optional.indexOf(k)>=0}) || rows.slice(1).some(function(r){return r.length!==h.length}))throw new Error('csv');
   return rows.slice(1).map(function(r){var o=Object.create(null);h.forEach(function(k,j){o[k]=r[j]==null?'':r[j]});return o;});
 }
 function csvToReport(list){
   return {schema:1, impl:'', version:'', unfixed:0, unknown_licenses:0, checked:{}, findings:list.map(function(o){return {kind:o.kind, component:o.component, version:o.affected_version,
     location:o.location, vuln_id:o.id, status:o.status, fixed:o.safe_version, kev:o.kev==='1'||o.kev==='true', severity:o.severity,
-    cvss:o.cvss?Number(o.cvss):null, cvss_version:o.cvss_version||'', epss:o.epss?Number(o.epss):null, epss_percentile:o.epss_percentile?Number(o.epss_percentile):null,
+    cvss:o.cvss?Number(o.cvss):null, cvss_version:o.cvss_version||'', epss:o.epss?Number(o.epss):null, epss_percentile:o.epss_percentile?Number(o.epss_percentile):null, epss_date:o.epss_date||'',
     note:'', fix_cmd:'', fix_auto:false};})};
 }
 
@@ -942,12 +944,22 @@ function jumpHTML(r){
   if(historyHTML(r))items.push(['history','History','']);
   return '<nav class="jump" aria-label="Sections">'+items.map(function(x,i){return '<a href="#'+x[0]+'"><b>'+(i+1)+'</b>'+esc(x[1])+(x[2]?'<span class="c">'+esc(x[2])+'</span>':'')+'</a>'}).join('')+'</nav>';
 }
+// FIRST asks products that use EPSS to credit it: whose scores, the copy's date and model.
+function epssCreditHTML(r){
+  var scored=(r.findings||[]).filter(function(x){return x.epss!=null});
+  if(!scored.length)return '';
+  var f=scored.filter(function(x){return x.epss_date})[0]||scored[0];
+  var t='EPSS scores by <a href="https://www.first.org/epss/" target="_blank" rel="noopener noreferrer">FIRST</a>';
+  if(f.epss_date)t+=', '+esc(String(f.epss_date).slice(0,10));
+  if(f.epss_model)t+=', model '+esc(f.epss_model);
+  return '<p class="credit">'+t+'</p>';
+}
 // On screen only: a printed report is evidence, not an advert.
 function fleetHTML(print){
   return print?'':'<aside class="fleet"><p><b>Looking after a fleet of computers, or running a business?</b> We can make keeping them all patched and checked easier.</p><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">Check out our other tools →</a></aside>';
 }
 function pageHTML(r,print){
-  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+
+  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+epssCreditHTML(r)+
     '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span><p class="legal">wpantry and this report are provided \u201cas is\u201d, without warranty of any kind, express or implied. Waffuru AI, Inc. is not liable for any damage, data loss, downtime or other loss arising from running wpantry, from acting on this report, or from giving this prompt or its commands to an AI agent or any other tool. You are responsible for reviewing and approving every change made to your systems.</p></footer>';
 }
 function render(){

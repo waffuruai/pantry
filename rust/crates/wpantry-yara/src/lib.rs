@@ -22,6 +22,7 @@
 
 mod ast;
 pub mod atoms;
+pub mod bundle;
 pub mod classify;
 pub mod compile;
 pub mod generate;
@@ -39,6 +40,24 @@ pub use compile::{Compiler, Rejected, Rules};
 pub use pattern::Syntax;
 pub use scan::{Hit, ScanOptions, ScanResult};
 pub use value::Value;
+
+/// Each rule's `key` meta in `src`, when it is a string, read the way
+/// fetched rules are (relaxed); `None` when any rule doesn't parse, so a
+/// caller never mistakes a file for less than it holds.
+pub fn rule_meta(src: &str, key: &str) -> Option<Vec<Option<String>>> {
+    let (file, errors, _) = parser::parse_items(src, Syntax::Relaxed);
+    errors.is_empty().then(|| {
+        file.rules
+            .into_iter()
+            .map(|r| {
+                r.meta.into_iter().find(|(k, _)| k == key).and_then(|(_, m)| match m {
+                    ast::Meta::Str(s) => Some(String::from_utf8_lossy(&s).into_owned()),
+                    _ => None,
+                })
+            })
+            .collect()
+    })
+}
 
 /// Why a rules file or rule didn't compile.
 #[derive(Clone, Debug, PartialEq, Eq)]

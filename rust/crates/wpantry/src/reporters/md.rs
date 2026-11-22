@@ -126,6 +126,13 @@ fn findings(t: &mut String, v: &View, r: &Report) {
             t.push_str(&format!("- {n}\n"));
         }
     }
+    let notices = crate::sources::wordfence::notices(&r.outcome.findings);
+    if !notices.is_empty() {
+        t.push_str("\n## Notices\n");
+        for n in notices {
+            t.push_str(&format!("\n{}\n", cell(&n)));
+        }
+    }
 }
 
 fn history(t: &mut String, h: &History, part: Part) {

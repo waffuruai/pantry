@@ -16,7 +16,7 @@ const ctx={document,window:{addEventListener(type,fn){events['window:'+type]=fn}
 function load(bundle){
   elements['pantry-bundle']=undefined; el('pantry-bundle').textContent=JSON.stringify(bundle);
   el('waffuru-mark').src='data:image/png;base64,AAAA';
-  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,state};";
+  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,wordfenceLink,state};";
   vm.runInNewContext(viewer.replace(/\nrender\(\);\n\}\)\(\);\s*$/, '\nrender();'+hook+'\n})();'),ctx);
   assert(ctx.viewerTest,'the test hook replaced the final render() call');
 }
@@ -74,6 +74,7 @@ const every=[
   finding('license','left-pad','LICENSE','warn',{fix_cmd:'Allow WTFPL in licenses.txt or replace left-pad'}),
   finding('config','~/.npmrc','NPM-SCRIPTS','warn',{fix_cmd:'npm config set ignore-scripts true'}),
   finding('account','me@example.com','BREACH','warn',{fix_cmd:'Change the password used at the breached site'}),
+  finding('wordpress','akismet','61c39f5f-3b17-4e4d-824e-241159a73400','warn',{severity:'LOW',fixed:'5.3.2',fix_cmd:'wp plugin update akismet --path=/Users/me/w/site',note:'XSS (Wordfence: https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400)'}),
   finding('unchecked','CISA KEV','UNCHECKED','warn',{note:'offline and not cached <b>x</b>',location:'',version:''}),
   finding('unchecked','repo dependencies against OSV','UNCHECKED','warn',{note:'offline and not cached',location:'',version:''}),
 ];
@@ -152,6 +153,8 @@ for(const id of ['UNPINNED','UNCHECKED','EOL','OUTDATED','INSTALL-SCRIPT','LICEN
 assert(ctx.viewerTest.isAdvisory(every[4]));
 every.forEach((f,i)=>click({open:String(i)}));
 assert(!main().includes('https://osv.dev/vulnerability/'),'every id here is a CVE or a rule');
+assert(main().includes('<a href="https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400"'),'a Wordfence record links Wordfence');
+assert.equal(main().split('wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400" target').length,2,'once');
 every.forEach((f,i)=>click({open:String(i)}));
 
 // 3 PATCHING: unattended commands, what the history says was patched, what has no fix.
@@ -193,6 +196,9 @@ assert(callout().includes('Copy agent prompt') && callout().includes('Preview pr
 assert(callout().includes('Read the report before you hand it over.') && !callout().includes('Waffuru AI, Inc. is not liable'),'the caution stays, the disclaimer moves');
 const foot=()=>main().split('<footer class="foot">')[1];
 assert(foot().indexOf('a fresh scan is.')<foot().indexOf('Waffuru AI, Inc. is not liable'),'the disclaimer closes the footer, after the scan notice');
+assert(foot().includes('Defiant Inc.') && foot().includes('wordfence-intelligence-terms-and-conditions'),'a Wordfence finding brings Defiant\u2019s notice');
+assert.equal(ctx.viewerTest.wordfenceLink(every.find(f=>f.kind==='wordpress')),'https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400');
+assert.equal(ctx.viewerTest.wordfenceLink(every[0]),'');
 assert(callout().includes('class="btn primary" type="button" data-agent-prompt="1"'),'copying is the primary, gold action');
 click({preview:'1'});
 assert(callout().includes('<pre>Patch what a Pantry security scan found') && callout().includes('`wpantry fix next --json`'),'the preview is the guide');

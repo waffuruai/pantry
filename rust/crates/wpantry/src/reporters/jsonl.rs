@@ -152,7 +152,9 @@ fn resolved_scan(cache: &Cache, key: &str) -> Result<Option<i64>> {
 fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let f = &row.finding;
     let rec = record(cache, &f.vuln_id)?;
+    let wordfence = crate::sources::wordfence::link_in(&f.note).filter(|_| f.kind == crate::sources::wordfence::KIND);
     let (aliases, url) = match &rec {
+        _ if wordfence.is_some() => (Vec::new(), wordfence.unwrap_or_default().to_string()),
         Some(r) => {
             let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);

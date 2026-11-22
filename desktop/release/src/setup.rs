@@ -7,7 +7,7 @@
 //!
 //! The payload is zlib over one record per ZIP member, in the ZIP's order:
 //! u16 path length, u32 body length, u8 executable (little endian), then
-//! the path and the body. desktop/src/bin/wpantry-setup.rs reads it.
+//! the path and the body. desktop/src/bin/wpantry-setup reads it.
 
 use crate::archive::{Entries, read_zip, write_tar_gz, write_zip};
 use crate::package::{ICON, MACOS, Value, is_windows, plist};

@@ -57,7 +57,7 @@ fn foreign_folder(path: &Path) -> io::Error {
 ///
 /// The payload is zlib over a run of records: `u16` path length, `u32` body
 /// length (both little endian), one executable flag byte, the UTF-8 path,
-/// then the body. `desktop/release/setup.py payload` writes it. Every path
+/// then the body. `wpantry-release setup payload` writes it. Every path
 /// must be relative and made only of normal components, so no entry can
 /// land outside `stage`.
 fn unpack(payload: &[u8], stage: &Path, limit: usize) -> io::Result<()> {

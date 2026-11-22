@@ -28,9 +28,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, python: python3, ext: "" }
-          - { os: macos-latest, python: python3, ext: "" }
-          - { os: windows-latest, python: python, ext: .exe }
+          - { os: ubuntu-latest, ext: "" }
+          - { os: macos-latest, ext: "" }
+          - { os: windows-latest, ext: .exe }
     defaults:
       run:
         shell: bash
@@ -44,11 +44,12 @@ jobs:
       - name: Build the scanner and desktop
         run: |
           (cd rust && cargo build --locked -p wpantry-cli)
-          (cd desktop && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo build --locked && cargo test --locked)
+          (cd desktop && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo build --locked && cargo test --locked --lib --bins && cargo test --locked --doc)
           (cd desktop/release && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked)
 
       - name: Desktop end-to-end tests
-        run: ${{ matrix.python }} desktop/tests/e2e.py desktop/target/debug/wpantry-desktop${{ matrix.ext }} rust/target/debug/wpantry${{ matrix.ext }}
+        working-directory: desktop
+        run: PANTRY_E2E_SCANNER="../rust/target/debug/wpantry${{ matrix.ext }}" cargo test --locked --test e2e
 
       - name: Docs name only real wpantry commands and flags
         run: cd rust && cargo test --locked -p wpantry-cli --test docs_flags
@@ -72,7 +73,8 @@ jobs:
 
       - name: Open a native window under Xvfb
         if: runner.os == 'Linux'
-        run: xvfb-run -a python3 desktop/tests/native_smoke.py desktop/target/debug/wpantry-desktop rust/target/debug/wpantry
+        working-directory: desktop
+        run: PANTRY_E2E_SCANNER=../rust/target/debug/wpantry xvfb-run -a cargo test --locked --test native_smoke -- --ignored
 
   # What the Rust job doesn't cover: install.sh (rust/release/).
   test:

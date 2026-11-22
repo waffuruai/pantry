@@ -25,7 +25,7 @@ impl Drop for Scratch {
     }
 }
 
-/// Encode records the way `desktop/release/setup.py payload` does.
+/// Encode records the way `wpantry-release setup payload` does.
 pub(super) fn raw(entries: &[(&str, &[u8], bool)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (path, body, executable) in entries {

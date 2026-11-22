@@ -21,11 +21,10 @@ The app uses `--scanner`, else the scanner beside its executable (inside `Pantry
 ```sh
 (cd desktop && cargo test --locked)
 (cd desktop/release && cargo test --locked)
-python3 desktop/tests/e2e.py desktop/target/debug/wpantry-desktop rust/target/debug/wpantry
-xvfb-run -a python3 desktop/tests/native_smoke.py desktop/target/debug/wpantry-desktop rust/target/debug/wpantry
+(cd desktop && xvfb-run -a cargo test --locked --test native_smoke -- --ignored)
 ```
 
-The end-to-end suite runs headless against stand-in scanners on all three systems; it also takes `--bundle ZIP`, `--setup INSTALLER` and `--screens DIR`. The smoke test opens a real window under Xvfb on Linux.
+`cargo test` includes the end-to-end suite (`tests/e2e`): headless, on all three systems, against the built scanner (`PANTRY_E2E_SCANNER`, default `rust/target/debug/wpantry`) and the `wpantry-standin` stand-ins, which never ship. Its ignored tests `bundle`, `setup` and `screens` check a built download (`PANTRY_E2E_BUNDLE=ZIP cargo test --test e2e -- --ignored --exact bundle`; likewise `PANTRY_E2E_SETUP`, `PANTRY_E2E_SCREENS`). The smoke test opens a real window under Xvfb on Linux.
 
 Headless driving uses `--automation`: one JSON object per line on stdin, one `{"ok": ..., "result"|"error": ...}` per line on stdout. Ops: `wait`, `tree`, `click`, `set_value`, `key`, `scroll_into_view`, `resize`, `screenshot`, `state`, `cancel`, `set_time_limit` and `dispatch` (the typed action dispatcher in `src/app`). Every interactive control has an AccessKit author ID, and the suite fails on a missing or duplicate one.
 

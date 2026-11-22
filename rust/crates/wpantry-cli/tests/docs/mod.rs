@@ -34,7 +34,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Flags of the other Pantry programs that docs mention on their own:
-/// Pantry Setup (desktop/src/bin/wpantry-setup.rs), the desktop app
+/// Pantry Setup (desktop/src/bin/wpantry-setup), the desktop app
 /// (`wpantry-desktop --help`) and the install scripts.
 pub const OTHER_PROGRAM_FLAGS: &[&str] = &[
     "--install-only",

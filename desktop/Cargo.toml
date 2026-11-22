@@ -12,6 +12,22 @@ miniz_oxide = "=0.9.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 
+# Tests only: the end-to-end suite (tests/e2e) seeds the scanner's SQLite
+# cache, at the version rust/ pins. Release builds and cargo-about's notices
+# leave dev-dependencies out.
+[dev-dependencies]
+rusqlite = { version = "=0.43.0", features = ["bundled"] }
+
+# The stand-in scanner the end-to-end suite drives (tests/standin). Never
+# shipped: rust/release/build.sh builds only the binary it names, and
+# wpantry-release package packs only the files it is given.
+[[bin]]
+name = "wpantry-standin"
+path = "tests/standin/standin.rs"
+test = false
+doc = false
+bench = false
+
 [lints.rust]
 unsafe_code = "forbid"
 

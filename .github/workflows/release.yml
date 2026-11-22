@@ -92,12 +92,11 @@ jobs:
           - { os: macos-latest, target: universal-apple-darwin, rust: "aarch64-apple-darwin x86_64-apple-darwin", setup_ext: .zip }
           # Windows (#11): repo checks only; the asset keeps its .exe so it runs
           # when downloaded. Git Bash runs build.sh.
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, rust: x86_64-pc-windows-msvc, ext: .exe, setup_ext: .exe, python: python }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, rust: x86_64-pc-windows-msvc, ext: .exe, setup_ext: .exe }
     env:
       TARGET: ${{ matrix.target }}
       RUST_TARGETS: ${{ matrix.rust }}
       ASSET: wpantry-${{ matrix.target }}${{ matrix.ext }}
-      DESKTOP_PYTHON: ${{ matrix.python || 'python3' }}
       # The release packager (desktop/release), built from each checkout.
       PACK_ONE: one/desktop/release/target/release/wpantry-release
       PACK_TWO: two/elsewhere/desktop/release/target/release/wpantry-release
@@ -165,7 +164,8 @@ jobs:
           cmp "dist/$DESKTOP_ASSET" second-desktop.zip || { echo "::error::the two desktop bundles differ"; exit 1; }
 
       - name: Test the packaged desktop and its scanner
-        run: '"$DESKTOP_PYTHON" one/desktop/tests/e2e.py --bundle "dist/$DESKTOP_ASSET"'
+        working-directory: one/desktop
+        run: PANTRY_E2E_BUNDLE="../../dist/$DESKTOP_ASSET" cargo test --locked --test e2e -- --ignored --exact bundle
 
       - name: Build, compare and test Pantry Setup
         run: |
@@ -183,7 +183,7 @@ jobs:
           "$PACK_ONE" setup bundle "$DESKTOP_TARGET" "setup-one${{ matrix.ext }}" setup-payload.zlib "dist/$SETUP_ASSET"
           "$PACK_TWO" setup bundle "$DESKTOP_TARGET" "setup-two${{ matrix.ext }}" setup-payload.zlib "second-$SETUP_ASSET"
           cmp "dist/$SETUP_ASSET" "second-$SETUP_ASSET"
-          "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --setup "dist/$SETUP_ASSET"
+          (cd one/desktop && PANTRY_E2E_SETUP="../../dist/$SETUP_ASSET" cargo test --locked --test e2e -- --ignored --exact setup)
 
       # Signing runs after the byte-for-byte compares above, which cover the
       # unsigned builds. Ad-hoc signatures carry no certificate or timestamp,
@@ -269,8 +269,8 @@ jobs:
       - name: Test the signed packages
         if: runner.os == 'macOS' || env.HAS_WINDOWS_CERT == 'true'
         run: |
-          "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --bundle "dist/$DESKTOP_ASSET"
-          "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --setup "dist/$SETUP_ASSET"
+          (cd one/desktop && PANTRY_E2E_BUNDLE="../../dist/$DESKTOP_ASSET" cargo test --locked --test e2e -- --ignored --exact bundle)
+          (cd one/desktop && PANTRY_E2E_SETUP="../../dist/$SETUP_ASSET" cargo test --locked --test e2e -- --ignored --exact setup)
 
       - name: Smoke test
         if: matrix.target != 'aarch64-unknown-linux-musl' || runner.arch == 'ARM64'

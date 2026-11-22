@@ -105,6 +105,10 @@ impl<'d> Matcher<'d> {
                 Some(b) if set.contains(b) => k(self.step(pos, 1)),
                 _ => false,
             },
+            Node::Lit(bytes) => match self.lit(bytes, pos) {
+                Some(end) => k(end),
+                None => false,
+            },
             Node::Seq(items) => self.seq(items, pos, k),
             Node::Alt(branches) => branches.iter().any(|b| self.m(b, pos, k)),
             Node::Assert(a) => self.assert(*a, pos) && k(pos),
@@ -134,14 +138,19 @@ impl<'d> Matcher<'d> {
         // only recurse at the first position that can branch.
         let mut p = pos;
         let mut i = 0;
-        while let Some(Node::Set(set)) = items.get(i) {
-            match self.byte(p) {
-                Some(b) if set.contains(b) => {
-                    p = self.step(p, 1);
-                    i += 1;
-                }
-                _ => return false,
+        loop {
+            match items.get(i) {
+                Some(Node::Set(set)) => match self.byte(p) {
+                    Some(b) if set.contains(b) => p = self.step(p, 1),
+                    _ => return false,
+                },
+                Some(Node::Lit(bytes)) => match self.lit(bytes, p) {
+                    Some(end) => p = end,
+                    None => return false,
+                },
+                _ => break,
             }
+            i += 1;
         }
         match items[i..].split_first() {
             None => k(p),
@@ -150,6 +159,19 @@ impl<'d> Matcher<'d> {
     }
 
     /// A repeat of one byte set: measure the run, then try its lengths.
+    /// Where `bytes` end when they are next from `pos`, in the direction
+    /// this matcher walks.
+    fn lit(&self, bytes: &[u8], pos: usize) -> Option<usize> {
+        let mut p = pos;
+        for b in bytes {
+            if self.byte(p) != Some(*b) {
+                return None;
+            }
+            p = self.step(p, 1);
+        }
+        Some(p)
+    }
+
     fn run(
         &self,
         set: &ByteSet,

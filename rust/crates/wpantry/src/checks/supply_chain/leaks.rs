@@ -570,7 +570,7 @@ pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
               "new": new.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()}))
 }
 
-fn confidence(c: Option<rules::Confidence>) -> &'static str {
+pub(crate) fn confidence(c: Option<rules::Confidence>) -> &'static str {
     match c {
         Some(rules::Confidence::High) | None => "high",
         Some(rules::Confidence::Medium) => "medium",
@@ -702,6 +702,11 @@ pub(crate) fn secrets(
                 &format!("secrets in {} files of {name}'s history", unread.total()),
                 &unread_note(&unread, &short(&root.to_string_lossy()), scan.opts.deep),
             );
+        }
+        // What history holds, so `--deep`'s read of the files doesn't
+        // report it again.
+        for f in &found {
+            scan.history_secrets.insert((root.join(&f.file), f.rule.clone(), f.line.max(0) as usize));
         }
         let skipper = crate::checks::ignore::Skipper::new(root);
         let skip = |kind: &str, id: &str, rel: &str| skipper.skips(kind, id, rel);

@@ -26,7 +26,10 @@ wpantry help                                       # every command (wpantry help
 By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
 - `--path DIR` checks only the repos and files at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks. Nothing else of yours is read: not Downloads, Desktop, Documents or the temp directories. The machine inventory still runs, unless `--no-machine`.
-- `--deep` reads everything in scope, and is slower: the malware scan reads every file (all of `~`, or each `--path`) with every system's rules, and the secret scan reads history files up to 256 MB with no time limit. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
+- `--deep` reads everything in scope, and is slower: every file of the computer this user can read, `~` first (or each `--path`), for malware with every system's rules and for secrets, plus history files up to 256 MB with no time limit. Hours on a first run; after that only what changed is read.
+  - **What it reads:** on macOS the data volume's folders and each local volume under `/Volumes`, never the read-only system volume; on Linux `/`, less `/proc`, `/sys`, `/dev`, `/run` and network or pseudo mounts. Network shares are never read.
+  - **Secrets in files:** an uncommitted `.env`, `~/.aws/credentials`, a key under `/opt`. A secret already found in history isn't reported twice.
+  - **Not checked:** folders this user can't read, by place (on macOS, give your terminal Full Disk Access), and files over 10 MB for secrets. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
 - `--no-machine` skips the machine: repo checks only.
 
 What a run couldn't check is reported "not checked", never clean.
@@ -240,6 +243,7 @@ See [upgrade](install.md#upgrade).
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
                "vuln_id": "CVE-2021-25900", "status": "fail", "fixed": "1.6.1", "kev": true, "severity": "CRITICAL",
                "cvss": 9.8, "cvss_version": "3.1", "epss": 0.0213, "epss_percentile": 0.84,
+               "epss_date": "2026-11-05T12:03:04Z", "epss_model": "v2026.06.15",
                "note": "…", "fix_cmd": "…", "fix_auto": false}]
 }
 ```
@@ -365,9 +369,10 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
-                            --path) with every system's rules; the secret scan, history files up to
-                            256 MB with no time limit
+  --deep                    read everything in scope (slower): every file of the computer this user
+                            can read, ~ first (or each --path), for malware with every system's
+                            rules and for secrets; git history's files up to 256 MB with no time
+                            limit
   --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
                             passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
@@ -443,9 +448,10 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
-                            --path) with every system's rules; the secret scan, history files up to
-                            256 MB with no time limit
+  --deep                    read everything in scope (slower): every file of the computer this user
+                            can read, ~ first (or each --path), for malware with every system's
+                            rules and for secrets; git history's files up to 256 MB with no time
+                            limit
   --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
                             passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or

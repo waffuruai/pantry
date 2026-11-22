@@ -253,3 +253,133 @@ fn rules_are_classified_and_filtered() {
     assert_eq!(rules.rules().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["HKTL_Lnx_Tool", "Generic_Script"]);
     assert_eq!(rules.stats().skipped, 1);
 }
+
+/// What a compile kept, rejected and finds, to compare two compiles by.
+fn compiled(src: &str, os: crate::Os, data: &[&[u8]]) -> (Vec<String>, Vec<String>, Vec<Vec<String>>) {
+    let mut c = Compiler::new();
+    c.set_filter(move |o, _| o == os || o == crate::Os::Any);
+    c.add_source("t", src, Syntax::Relaxed);
+    let rules = c.build();
+    let kept = rules.rules().iter().map(|r| format!("{}:{}:{:?}", r.namespace, r.name, r.os)).collect();
+    let rejected = rules.rejected.iter().map(|r| format!("{}:{}", r.rule, r.error)).collect();
+    let hits = data
+        .iter()
+        .map(|d| {
+            rules
+                .scan(d, &ScanOptions::default())
+                .matches
+                .into_iter()
+                .map(|h| format!("{} {:?}", h.rule, h.strings))
+                .collect()
+        })
+        .collect();
+    (kept, rejected, hits)
+}
+
+#[test]
+fn a_split_file_compiles_as_the_whole_file_does_on_its_system() {
+    let src = "import \"pe\"\n\
+        // Windows only\n\
+        rule Win_A { strings: $ = \"evil\" condition: uint16(0) == 0x5A4D and all of them }\n\
+        rule Linux_Miner { strings: $ = \"xmrig\" condition: uint32(0) == 0x464C457F and any of them }\n\
+        /* every system */\n\
+        rule Script_B { strings: $ = \"evil\" $ = \"curl\" condition: any of them }\n\
+        rule Broken { condition: nope( }\n\
+        rule MacOS_C { strings: $ = \"osascript\" condition: $ and not Linux_Miner }\n\
+        rule Uses_B { condition: Script_B and Win_A }  rule PE_D { condition: pe.is_pe }\n\
+        private rule Any_E { strings: $a = \"curl\" condition: $a }\n\
+        rule Line_F { condition: Any_E and @Any_E_missing }\n";
+    let data: [&[u8]; 3] = [b"MZ..evil..curl", b"\x7fELF xmrig evil", b"osascript curl"];
+    for (os, part) in crate::compile::split_by_os(src, Syntax::Relaxed) {
+        assert_eq!(part.lines().count(), src.lines().count(), "{os:?}: lines kept");
+        assert_eq!(Compiler::new().add_source_split("t", src, Syntax::Relaxed, os).1, part, "{os:?}");
+        assert_eq!(compiled(&part, os, &data), compiled(src, os, &data), "{os:?}");
+        let other = match os {
+            crate::Os::Linux => "Win_A",
+            _ => "Linux_Miner",
+        };
+        assert!(!part.contains(&format!("rule {other}")), "{os:?} keeps {other}");
+        assert!(part.contains("rule Broken") && part.contains("rule Script_B"), "{os:?}");
+    }
+}
+
+#[test]
+fn a_file_with_no_rules_or_with_stray_characters_splits_to_itself() {
+    for src in [
+        "",
+        "// nothing\n",
+        "import \"pe\"\n/* x */",
+        "rule a { condition: true } é ü rule Win_b { condition: uint16(0) == 0x5A4D } ✓",
+    ] {
+        for (_, part) in crate::compile::split_by_os(src, Syntax::Relaxed) {
+            assert_eq!(part, src);
+        }
+    }
+}
+
+/// On real rules (`RULES_DIR`): each system's split compiles to what the
+/// whole files do under its filter, and how long each takes.
+/// `cargo test --release -p wpantry-yara real_rules_split -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn real_rules_split() {
+    let dir = std::env::var("RULES_DIR").expect("RULES_DIR");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "yar"))
+        .collect();
+    files.sort();
+    let srcs: Vec<(String, String)> = files
+        .iter()
+        .map(|f| (f.file_stem().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(f).unwrap()))
+        .collect();
+    let t = std::time::Instant::now();
+    let splits: Vec<_> = srcs.iter().map(|(_, s)| crate::compile::split_by_os(s, Syntax::Relaxed)).collect();
+    println!("split: {:?}", t.elapsed());
+    for (k, os) in [crate::Os::Windows, crate::Os::Linux, crate::Os::MacOS].into_iter().enumerate() {
+        let compile = |texts: &mut dyn Iterator<Item = (&str, &str)>| {
+            let mut c = Compiler::new();
+            c.set_filter(move |o, _| o == os || o == crate::Os::Any);
+            for (ns, src) in texts {
+                c.add_source(ns, src, Syntax::Relaxed);
+            }
+            c.build()
+        };
+        let t = std::time::Instant::now();
+        let whole = compile(&mut srcs.iter().map(|(n, s)| (n.as_str(), s.as_str())));
+        let tw = t.elapsed();
+        let t = std::time::Instant::now();
+        let part = compile(&mut srcs.iter().zip(&splits).map(|((n, _), sp)| (n.as_str(), sp[k].1.as_str())));
+        println!("{os:?}: whole {tw:?}, split {:?}, {} rules", t.elapsed(), part.rules().len());
+        let names =
+            |r: &crate::Rules| r.rules().iter().map(|r| (r.namespace.clone(), r.name.clone())).collect::<Vec<_>>();
+        assert_eq!(names(&part), names(&whole));
+        assert_eq!(
+            crate::compile::Stats { skipped: 0, ..part.stats() },
+            crate::compile::Stats { skipped: 0, ..whole.stats() }
+        );
+        let rej = |r: &crate::Rules| r.rejected.iter().map(|r| format!("{} {}", r.rule, r.error)).collect::<Vec<_>>();
+        assert_eq!(rej(&part), rej(&whole));
+    }
+}
+
+/// The code a rule's system depends on, pinned with
+/// [`SPLIT_VERSION`](crate::compile::SPLIT_VERSION): when this fails, the
+/// classing or parsing changed, so bump `SPLIT_VERSION` (kept splits are
+/// then made again) and put the new hash here.
+#[test]
+fn the_split_rules_are_versioned() {
+    let compile = include_str!("compile.rs");
+    let from = compile.find("/// A rule's system, category and score.").unwrap();
+    let uses = compile.find("\nfn uses(").unwrap();
+    let to = uses + compile[uses..].find("\n}\n").unwrap();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for text in [include_str!("classify.rs"), include_str!("parser.rs"), include_str!("lexer.rs"), &compile[from..to]] {
+        for b in text.bytes() {
+            h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    assert_eq!((crate::compile::SPLIT_VERSION, format!("{h:016x}")), (1, "ca4ab6dec8d41c25".to_string()));
+}

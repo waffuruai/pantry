@@ -171,3 +171,20 @@ fn a_personal_folder_exclusion_cannot_resolve_full_scan_exposures() {
     assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
     c.close().unwrap();
 }
+
+#[test]
+fn an_exposure_keeps_its_first_epss_score_as_the_latest_moves() {
+    let d = crate::utils::temp::TempDir::new("history").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
+    let scored = |e: Option<f64>, p: Option<f64>| Finding { epss: e, epss_percentile: p, ..finding("CVE-1", "fail") };
+    record_scan(&c, 1.0, &[scored(None, None)], &[], &opts).unwrap();
+    let first = |c: &Cache| {
+        let e = exposures(c, 0.0).unwrap().remove(0);
+        (e.first_epss, e.first_epss_percentile, e.epss)
+    };
+    assert_eq!(first(&c), (None, None, None), "not scored yet");
+    record_scan(&c, 2.0, &[scored(Some(0.02), Some(0.6))], &[], &opts).unwrap();
+    record_scan(&c, 3.0, &[scored(Some(0.4), Some(0.99))], &[], &opts).unwrap();
+    assert_eq!(first(&c), (Some(0.02), Some(0.6), Some(0.4)), "the first score stays; the latest moves");
+}

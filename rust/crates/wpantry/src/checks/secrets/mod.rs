@@ -24,6 +24,7 @@
 
 pub mod decode;
 pub mod expr;
+pub mod files;
 pub mod fragments;
 pub mod noise;
 pub mod readable;

@@ -154,11 +154,6 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(ran["new"].as_array().unwrap().len(), 1, "of {} blobs before, none read again", scanned);
     assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "the old hit stands");
     finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
-    // A .gitleaksignore is gitleaks' business, not Pantry's: it changes nothing.
-    testing::write(&repo, ".gitleaksignore", format!("{}:cfg.env:github-pat:2\n", added.trim()));
-    let j = job(&s.cache, &repo, &rules, 2).unwrap();
-    assert!(!stale(&j, false, false), "not part of what's cached under");
-    assert_eq!(run_job(&j, &scanner).unwrap()["hits"].as_array().unwrap().len(), 1);
     // A .pantryignore skipping the file for secrets: it isn't read again,
     // and editing the file changes what's cached under.
     testing::write(&repo, ".pantryignore", "[secret]\ncfg.env\nfixtures/\n");

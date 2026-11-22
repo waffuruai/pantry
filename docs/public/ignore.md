@@ -65,7 +65,6 @@ printf '\n[secret github-pat]\n%s\n' /config/legacy.py >> ~/code/app/.pantryigno
 ```
 
 - A path every secret rule skips (lines before any section, `[*]` or `[secret]`) isn't read from the history at all. A `[secret id]` entry still reads the file, since other rules may match it.
-- `.gitleaksignore` isn't read: list the path, or the path under `[secret <rule>]`, in `.pantryignore` instead. (gitleaks, which some pre-commit hooks run, still reads its own file.)
 - Editing `.pantryignore` doesn't rescan the history: the files' results are cached, and only the ones it no longer skips are read.
 
 ## Problems in the file

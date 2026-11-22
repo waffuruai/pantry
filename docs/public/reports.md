@@ -18,7 +18,7 @@ Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; 
 
 | Log | Answers | Rows |
 |---|---|---|
-| Exposure (`report exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`), same columns in every format: first seen, resolved (date, or open), severity, component, version, advisory, CVSS, EPSS, KEV, status, fix version, days exposed, last seen, kind, location |
+| Exposure (`report exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`), same columns in every format: first seen, resolved (date, or open), severity, component, version, advisory, CVSS, EPSS, KEV, status, fix version, days exposed, last seen, kind, location, and EPSS when first seen |
 | Remediation (`report remediation`) | What was done about it | One per fix `wpantry fix` ran (all, or one with `fix ID`): when, who (user and host), the command, whether it exited 0, the exposures it addressed, and the scan that verified it |
 | Audit (`report audit`) | That the checks happened | One per scan (when, host, user, Pantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
 

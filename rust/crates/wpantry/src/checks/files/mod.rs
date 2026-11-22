@@ -9,6 +9,7 @@
 
 pub mod cache;
 pub mod pass;
+pub mod roots;
 pub mod view;
 
 pub use crate::checks::malware::targets::Scope;

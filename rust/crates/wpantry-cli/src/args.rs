@@ -103,7 +103,8 @@ pub struct Check {
     pub hooks_policy: Option<PathBuf>,
     /// `--no-malware`: skip the YARA malware scan.
     pub no_malware: bool,
-    /// `--deep`: the malware scan reads all of `~` with every system's rules.
+    /// `--deep`: every file of the computer, for malware with every system's
+    /// rules and for secrets, as well as git history.
     pub deep: bool,
     /// `--no-personal-files`: leave Downloads, Desktop and Documents out of
     /// the document and malware passes (not with `--deep`).
@@ -280,7 +281,7 @@ fn scan_opts() -> Vec<Opt> {
             "--no-malware",
             "skip the malware scan (YARA rules over Downloads, Desktop, temp, login items and repo programs)",
         ),
-        Opt::new("--deep", "read everything in scope (slower): the malware scan, all of ~ (or each --path) with every system's rules; the secret scan, history files up to 256 MB with no time limit"),
+        Opt::new("--deep", "read everything in scope (slower): every file of the computer this user can read, ~ first (or each --path), for malware with every system's rules and for secrets; git history's files up to 256 MB with no time limit"),
         Opt::new(
             "--no-personal-files",
             "leave Downloads, Desktop and Documents out of the document and malware passes, reported as not checked (for unattended runs)",

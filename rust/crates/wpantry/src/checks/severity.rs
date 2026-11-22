@@ -183,6 +183,7 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
                     .max_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
         }
     }
+    let (epss_date, epss_model) = crate::sources::epss::edition(cache).unwrap_or_default();
     for s in known.values_mut().filter(|s| s.0.is_empty()) {
         s.0 = s.1.as_ref().map(|sc| cvss::label(sc.value).to_string()).unwrap_or_default();
     }
@@ -195,6 +196,8 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
             if let Some((e, p)) = epss {
                 f.epss = Some(e);
                 f.epss_percentile = Some(p);
+                f.epss_date = epss_date.clone();
+                f.epss_model = epss_model.clone();
             }
             if cvss::word(&f.severity).is_empty() {
                 f.severity = label;

@@ -1606,8 +1606,20 @@ fn search_export_and_breach_read_the_cache() {
     let row = &rows[0];
     let mut want = finding_keys();
     want.extend(
-        ["schema", "aliases", "url", "record", "first_seen", "last_seen", "resolved_at", "days_exposed", "fix"]
-            .map(String::from),
+        [
+            "schema",
+            "aliases",
+            "url",
+            "record",
+            "first_seen",
+            "last_seen",
+            "resolved_at",
+            "days_exposed",
+            "first_epss",
+            "first_epss_percentile",
+            "fix",
+        ]
+        .map(String::from),
     );
     assert_eq!(keys(row), want);
     assert_eq!(
@@ -1653,7 +1665,8 @@ fn search_export_and_breach_read_the_cache() {
             "cvss",
             "cvss_version",
             "epss",
-            "epss_percentile"
+            "epss_percentile",
+            "epss_date"
         ]
     );
     assert_eq!(
@@ -1670,6 +1683,7 @@ fn search_export_and_breach_read_the_cache() {
             "1",
             "fail",
             "/w/pnpm-lock.yaml",
+            "",
             "",
             "",
             "",
@@ -1807,6 +1821,7 @@ fn export_csv_quotes_fields_and_links_bare_cves() {
             "",
             "",
             "",
+            "",
             ""
         ]
     );
@@ -1850,12 +1865,14 @@ fn report_lists_exposures_fixes_and_scans() {
             text("3.1"),
             Sql::Real(0.12),
             Sql::Real(0.9),
+            Sql::Real(0.05),
+            Sql::Real(0.7),
         ]);
         row
     };
     {
         let conn = t.conn();
-        let sql = insert_sql("INSERT", "exposures", 26);
+        let sql = insert_sql("INSERT", "exposures", 28);
         conn.execute(&sql, rusqlite::params_from_iter(exposure("k1", "CVE-2026-1", false))).unwrap();
         conn.execute(&sql, rusqlite::params_from_iter(exposure("k2", "CVE-2026-2", true))).unwrap();
         let sql = "INSERT INTO fixes (id, scan_id, at, command, mode, ok, verified_scan, targets, user, host) \
@@ -1935,12 +1952,13 @@ fn report_lists_exposures_fixes_and_scans() {
             "days_exposed",
             "last_seen",
             "kind",
-            "location"
+            "location",
+            "first_epss"
         ]
     );
     assert_eq!(rows[1][1..6], ["open", "HIGH", "vite", "8.0.0", "CVE-2026-1"]);
     assert_eq!(rows[1][6..12], ["7.5 (v3.1)", "12.0%", "yes", "fail", "8.0.1", "5"]);
-    assert_eq!(rows[1][13..], ["project", "/w/pnpm-lock.yaml"]);
+    assert_eq!(rows[1][13..], ["project", "/w/pnpm-lock.yaml", "5.0%"], "the EPSS score when first seen");
     assert_ne!(rows[2][1], "open", "resolved: its date");
     let f = t.tmp.join("r.json");
     let r = t.run(&["report", "exposure", "--json", "-o", s(&f)]);

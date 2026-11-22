@@ -147,6 +147,9 @@ pub fn subject(p: &Program) -> Option<Subject> {
         vendors: vendors_for(vendor),
         product: Some(product.to_string()),
         released: None,
+        support_end: None,
+        nvd: false,
+        system: "windows".into(),
     })
 }
 

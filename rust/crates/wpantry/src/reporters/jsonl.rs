@@ -49,6 +49,8 @@ fn from_exposure(e: &Exposure) -> Row {
         cvss_version: e.cvss_version.clone(),
         epss: e.epss,
         epss_percentile: e.epss_percentile,
+        epss_date: String::new(),
+        epss_model: String::new(),
     };
     from_finding(f)
 }
@@ -57,7 +59,8 @@ fn from_exposure(e: &Exposure) -> Row {
 pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
-         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile FROM findings",
+         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model \
+         FROM findings",
     )?;
     let rows = stmt.query_map([], |r| {
         let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -81,6 +84,8 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
             cvss_version: s(16)?,
             epss: r.get(17)?,
             epss_percentile: r.get(18)?,
+            epss_date: s(19)?,
+            epss_model: s(20)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -107,16 +112,26 @@ fn record(cache: &Cache, vuln_id: &str) -> Result<Option<Value>> {
 }
 
 /// The exposure row for a finding's key, if scans have been recorded.
-fn exposure(cache: &Cache, key: &str) -> Result<Option<(f64, f64, Option<f64>)>> {
+/// An exposure's first seen, last seen and resolved times, and its first
+/// EPSS score and percentile.
+type Life = (f64, f64, Option<f64>, Option<f64>, Option<f64>);
+
+fn exposure(cache: &Cache, key: &str) -> Result<Option<Life>> {
     Ok(cache
         .conn
-        .query_row("SELECT first_at, last_at, resolved_at FROM exposures WHERE key = ?", [key], |r| {
-            Ok((
-                r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
-                r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-                r.get::<_, Option<f64>>(2)?,
-            ))
-        })
+        .query_row(
+            "SELECT first_at, last_at, resolved_at, first_epss, first_epss_percentile FROM exposures WHERE key = ?",
+            [key],
+            |r| {
+                Ok((
+                    r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
+                    r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                    r.get::<_, Option<f64>>(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                ))
+            },
+        )
         .optional()?)
 }
 
@@ -152,7 +167,9 @@ fn resolved_scan(cache: &Cache, key: &str) -> Result<Option<i64>> {
 fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let f = &row.finding;
     let rec = record(cache, &f.vuln_id)?;
+    let wordfence = crate::sources::wordfence::link_in(&f.note).filter(|_| f.kind == crate::sources::wordfence::KIND);
     let (aliases, url) = match &rec {
+        _ if wordfence.is_some() => (Vec::new(), wordfence.unwrap_or_default().to_string()),
         Some(r) => {
             let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
@@ -166,7 +183,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let life = exposure(cache, &row.key)?;
     let now = crate::utils::os::now();
     let (first_seen, last_seen, resolved_at, days) = match life {
-        Some((first, last, resolved)) => (
+        Some((first, last, resolved, ..)) => (
             Some(history::stamp(first)),
             Some(history::stamp(last)),
             resolved.map(history::stamp),
@@ -174,16 +191,19 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         ),
         None => (None, None, None, None),
     };
+    let (first_epss, first_epss_percentile) = life.map(|l| (l.3, l.4)).unwrap_or_default();
     let fix = fix(cache, &f.fix_cmd, resolved_scan(cache, &row.key)?)?;
     Ok(json!({
         "schema": crate::SCHEMA, "id": f.id(),
         "kind": f.kind, "component": f.component, "version": f.version, "location": f.location,
         "vuln_id": f.vuln_id, "status": f.status, "fixed": f.fixed, "kev": f.kev, "severity": f.severity,
         "cvss": f.cvss, "cvss_version": f.cvss_version, "epss": f.epss, "epss_percentile": f.epss_percentile,
+        "epss_date": f.epss_date, "epss_model": f.epss_model,
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
         "aliases": aliases, "url": url, "record": rec,
         "first_seen": first_seen, "last_seen": last_seen, "resolved_at": resolved_at, "days_exposed": days,
+        "first_epss": first_epss, "first_epss_percentile": first_epss_percentile,
         "fix": fix,
     }))
 }

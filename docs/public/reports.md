@@ -8,7 +8,7 @@
 | `wpantry report all` | The logs with the findings |
 | `wpantry report summary` | One page over all of them |
 
-In the terminal, Markdown and HTML reports, a dependency at one version is one row across every lockfile that locks it (`and 8 more`), and a file holding secrets is one row across every line and version of it; JSON and CSV keep a finding per lockfile and per version.
+In the terminal, Markdown and HTML reports, a dependency at one version is one row across every lockfile that locks it (`and 8 more`), and a file holding secrets is one row across every rule that matched it; JSON and CSV keep a finding per lockfile. A secret rule's hits in one file, over every version of it, are one finding in every format, and so are a generic rule's hits in a repo's tests.
 
 Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; the report is a file you keep or hand to an auditor, a CSO or an insurer.
 
@@ -18,7 +18,7 @@ Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; 
 
 | Log | Answers | Rows |
 |---|---|---|
-| Exposure (`report exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`), same columns in every format: first seen, resolved (date, or open), severity, component, version, advisory, CVSS, EPSS, KEV, status, fix version, days exposed, last seen, kind, location |
+| Exposure (`report exposure`) | What applied to this machine or these repos, from the scan that first saw it to the scan that no longer did, and for how long | One per finding (`kind`, `component`, `location`, `vuln_id`), same columns in every format: first seen, resolved (date, or open), severity, component, version, advisory, CVSS, EPSS, KEV, status, fix version, days exposed, last seen, kind, location, and EPSS when first seen |
 | Remediation (`report remediation`) | What was done about it | One per fix `wpantry fix` ran (all, or one with `fix ID`): when, who (user and host), the command, whether it exited 0, the exposures it addressed, and the scan that verified it |
 | Audit (`report audit`) | That the checks happened | One per scan (when, host, user, Pantry version, scope, counts, fails, warns) and one per event (`scan`, `fix`) |
 

@@ -52,6 +52,11 @@ pub fn record(id: &str, outcome: std::result::Result<u64, String>) {
     }
 }
 
+/// What went wrong with `id`'s last attempt in this process, if it failed.
+pub fn last_error(id: &str) -> Option<String> {
+    SEEN.lock().expect("lock").get(id).map(|s| s.error.clone()).filter(|e| !e.is_empty())
+}
+
 /// A source's reader refused what came (a parse error): the last good copy
 /// stays, and `wpantry sources` says why.
 pub fn rejected(id: &str, why: &str) {
@@ -92,7 +97,7 @@ fn in_effect(id: &str) -> Source {
 /// `Offline` when `id` isn't used this run (its tier is `off`, or `deep`
 /// without `--deep`): nothing is asked, and what needs it is unchecked.
 pub fn on(id: &str) -> Result<()> {
-    if file::active(id) { Ok(()) } else { Err(Error::Offline(format!("{id} is turned off (sources.toml tier)"))) }
+    if file::active(id) { Ok(()) } else { Err(Error::Failed(format!("{id} is turned off (sources.toml tier)"))) }
 }
 
 /// [`net::request`] for source `id`: its cap, its outcome kept.
@@ -141,12 +146,37 @@ pub fn file(cache: &Cache, net: &dyn Net, id: &str, key: &str, offline: bool) ->
     file_of(cache, net, &in_effect(id), key, offline)
 }
 
+/// [`file`], sending `headers` with the request (a user's own key, as
+/// `Authorization`; it never follows a redirect off the source's host).
+pub fn file_with_headers(
+    cache: &Cache,
+    net: &dyn Net,
+    id: &str,
+    key: &str,
+    offline: bool,
+    headers: &[(&str, &str)],
+) -> Result<Option<Vec<u8>>> {
+    on(id)?;
+    file_of_with(cache, net, &in_effect(id), key, offline, headers)
+}
+
 pub(crate) fn file_of(cache: &Cache, net: &dyn Net, s: &Source, key: &str, offline: bool) -> Result<Option<Vec<u8>>> {
+    file_of_with(cache, net, s, key, offline, &[])
+}
+
+fn file_of_with(
+    cache: &Cache,
+    net: &dyn Net,
+    s: &Source,
+    key: &str,
+    offline: bool,
+    headers: &[(&str, &str)],
+) -> Result<Option<Vec<u8>>> {
     if offline || cache.fresh(&format!("{key}_at"), s.refresh)? {
         return Ok(None);
     }
     let etag = cache.get(&format!("{key}_etag"))?;
-    let resp = match net::request_capped(net, &s.url, None, &[], etag.as_deref(), s.max_bytes) {
+    let resp = match net::request_capped(net, &s.url, None, headers, etag.as_deref(), s.max_bytes) {
         Ok(r) => r,
         Err(e) if e.is_source() => {
             record(&s.id, Err(e.to_string()));
@@ -182,6 +212,43 @@ pub fn memo(
 ) -> Result<Value> {
     on(id)?;
     cache.memo(key, compute, in_effect(id).refresh, fingerprint, refresh, offline)
+}
+
+/// For a source asked one answer per key (a vendor, a formula): `get` for
+/// every (cache key, argument) whose copy is older than source `id`'s
+/// refresh, at most `width` at once. Each answer is stored under its key,
+/// its time under `<key>_at`; one that failed as a source leaves the key
+/// as it was, so the last copy stays in use.
+pub fn prefetch(
+    cache: &Cache,
+    id: &str,
+    keys: &[(String, String)],
+    width: usize,
+    offline: bool,
+    get: impl Fn(&str) -> Result<Value> + Sync,
+) -> Result<()> {
+    if offline || on(id).is_err() {
+        return Ok(());
+    }
+    let refresh = in_effect(id).refresh;
+    let mut stale: Vec<&(String, String)> = Vec::new();
+    for k in keys {
+        if !stale.iter().any(|s| s.0 == k.0) && !cache.fresh(&format!("{}_at", k.0), refresh)? {
+            stale.push(k);
+        }
+    }
+    let fetched = crate::utils::parallel::par_map(&stale, width, |(_, arg)| get(arg));
+    for ((key, _), r) in stale.iter().zip(fetched) {
+        match r {
+            Ok(v) => {
+                cache.set(key, &v.to_string())?;
+                cache.touch(&format!("{key}_at"))?;
+            }
+            Err(e) if e.is_source() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    cache.commit()
 }
 
 /// Write this process's outcomes for the sources the file declares into the

@@ -31,6 +31,7 @@ pub const KIND_ORDER: &[&str] = &[
     "browser",
     "extension",
     "project",
+    "wordpress",
     "image",
     "bundled",
     "mcp",
@@ -49,6 +50,7 @@ pub const KIND_ORDER: &[&str] = &[
 pub fn label(kind: &str) -> String {
     let known = match kind {
         "project" => "Project dependencies",
+        "wordpress" => "WordPress core, plugins and themes",
         "mcp" => "MCP servers",
         "unchecked" => "Not checked",
         "secret" => "Committed secrets",
@@ -168,6 +170,24 @@ pub struct Row<'a> {
 /// or a tooltip), "" without one.
 pub fn cvss_text(c: Option<&(f64, String)>) -> String {
     c.map(|(v, _)| format!("{v:.1}")).unwrap_or_default()
+}
+
+/// The report's EPSS credit, as FIRST asks of products that use its
+/// scores: whose scores, and the copy's date and model. None when no
+/// finding has one.
+pub fn epss_credit(findings: &[Finding]) -> Option<String> {
+    // Every score comes from the one kept copy: any finding that names it.
+    let mut scored = findings.iter().filter(|f| f.epss.is_some());
+    let f = scored.clone().find(|f| !f.epss_date.is_empty()).or_else(|| scored.next())?;
+    let date = f.epss_date.get(..10).unwrap_or(&f.epss_date);
+    let mut t = String::from("EPSS scores by FIRST (first.org/epss)");
+    if !date.is_empty() {
+        t.push_str(&format!(", {date}"));
+    }
+    if !f.epss_model.is_empty() {
+        t.push_str(&format!(", model {}", f.epss_model));
+    }
+    Some(t)
 }
 
 /// An EPSS score as reports show it: the probability as a percentage,

@@ -76,6 +76,13 @@ arg "<corpus>" help="A directory, or volume:NAME for a Docker volume"
 '''
 run = 'scripts/yara-diff.sh "${usage_rules}" "${usage_corpus}"'
 
+[tasks.yara-bench]
+description = "Time and peak memory of loading a rules directory (default Pantry's): compiled from source, then read back from its compiled bundle"
+usage = '''
+arg "[rules]" help="A directory of .yar files (default ~/.cache/wpantry/rules)"
+'''
+run = 'scripts/yara-bench.sh ${usage_rules:-}'
+
 [tasks.vet]
 description = "Dependency audits; `all` (the default) is the actions record check (scripts/vet_actions.py) and cargo vet with cargo deny in rust/"
 usage = '''

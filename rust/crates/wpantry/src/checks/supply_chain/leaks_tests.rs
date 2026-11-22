@@ -154,11 +154,6 @@ fn history_is_scanned_by_blob_and_cached_until_the_refs_move() {
     assert_eq!(ran["new"].as_array().unwrap().len(), 1, "of {} blobs before, none read again", scanned);
     assert_eq!(ran["hits"].as_array().unwrap().len(), 1, "the old hit stands");
     finish(&s.cache, &j, Some(Ok(ran)), false, false).unwrap();
-    // A .gitleaksignore is gitleaks' business, not Pantry's: it changes nothing.
-    testing::write(&repo, ".gitleaksignore", format!("{}:cfg.env:github-pat:2\n", added.trim()));
-    let j = job(&s.cache, &repo, &rules, 2).unwrap();
-    assert!(!stale(&j, false, false), "not part of what's cached under");
-    assert_eq!(run_job(&j, &scanner).unwrap()["hits"].as_array().unwrap().len(), 1);
     // A .pantryignore skipping the file for secrets: it isn't read again,
     // and editing the file changes what's cached under.
     testing::write(&repo, ".pantryignore", "[secret]\ncfg.env\nfixtures/\n");
@@ -365,11 +360,18 @@ fn the_unread_note_gives_the_command_that_reads_them() {
     let u = Unread { late: 2, too_big: 1, missing: 3 };
     assert_eq!(
         unread_note(&u, "~/my repo", false),
-        "2 not reached in this scan's time, 1 over 10 MB, 3 missing from this partial clone. \
-         Scan this repo on its own, with files up to 256 MB and no time limit: `wpantry scan --path ~/'my repo' --no-machine --deep`. \
-         Download them with `git -C ~/'my repo' backfill` (git 2.49+), then scan again"
+        (
+            "2 not reached in this scan's time, 1 over 10 MB, 3 missing from this partial clone. \
+             Download them (git 2.49+), then scan again. \
+             Scan this repo on its own, with files up to 256 MB and no time limit"
+                .to_string(),
+            "git -C ~/'my repo' backfill\nwpantry scan --path ~/'my repo' --no-machine --deep".to_string()
+        )
     );
-    assert_eq!(unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true), "1 over 256 MB");
+    assert_eq!(
+        unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true),
+        ("1 over 256 MB".into(), "".into())
+    );
     // A result cached before the reasons were kept counts them as late.
     assert_eq!(Unread::read(&json!({"unchecked": 4})), Unread { late: 4, ..Unread::default() });
 }
@@ -422,4 +424,159 @@ fn a_secrets_fix_is_the_commands_to_run() {
             && !many.contains("c4:a.txt"),
         "{many}"
     );
+}
+
+fn leak(rule: &str, file: &str, line: i64, commit: &str, confidence: &str) -> Leak {
+    Leak {
+        rule: rule.into(),
+        file: file.into(),
+        line,
+        commit: commit.into(),
+        fingerprint: format!("{commit}:{file}:{rule}:{line}"),
+        description: "Generic".into(),
+        confidence: confidence.into(),
+        tags: Vec::new(),
+    }
+}
+
+#[test]
+fn one_rule_in_one_file_is_one_finding_whatever_versions_repeat_it() {
+    // A config file's password in 8 versions (found newest first: c0 is the
+    // newest), at line 4 in the oldest four and line 3 since, and a key beside it.
+    let mut found: Vec<Leak> =
+        (0..8).map(|v| leak("generic-password", "cfg.yml", 3 + v / 4, &format!("c{v}"), "low")).collect();
+    found.insert(2, leak("generic-api-key", "cfg.yml", 9, "c0", "low"));
+    found.push(leak("generic-password", "cfg.yml", 4, "c7", "medium"));
+    found.push(leak("aws-access-token", "x.env", 1, "c3", "high"));
+    let groups = by_file_and_rule(&found);
+    let sizes: Vec<(&str, &str, usize)> =
+        groups.iter().map(|g| (g[0].file.as_str(), g[0].rule.as_str(), g.len())).collect();
+    assert_eq!(
+        sizes,
+        [("cfg.yml", "generic-password", 9), ("cfg.yml", "generic-api-key", 1), ("x.env", "aws-access-token", 1)]
+    );
+    let f = finding("app", "~/app", &groups[0]);
+    assert_eq!(f.component, "app/cfg.yml");
+    assert_eq!(f.status, "warn");
+    // The medium hit speaks for the group; the repeated place counts once.
+    assert_eq!(f.note, "Generic (review: medium confidence rule); 8 hits in 8 versions of the file");
+    // Oldest first, so a newer commit doesn't move the location (or the id).
+    assert_eq!(
+        f.location,
+        "line 4, commit c7; line 4, commit c6; line 4, commit c5; line 4, commit c4; line 3, commit c3"
+    );
+    assert_eq!(places(&f.location).len(), PLACES);
+    assert_eq!(places(&f.location)[4], (3, "c3".to_string()));
+    let mut newer = vec![leak("generic-password", "cfg.yml", 3, "n", "low")];
+    newer.extend(groups[0].iter().map(|l| (*l).clone()));
+    let refs: Vec<&Leak> = newer.iter().collect();
+    assert_eq!(finding("app", "~/app", &refs).location, f.location);
+    assert!(f.fix_cmd.starts_with("# 8 hits in cfg.yml (generic rules: review)."), "{}", f.fix_cmd);
+    // One hit reads as before.
+    let aws = finding("app", "~/app", &groups[2]);
+    assert_eq!(
+        (aws.location.as_str(), aws.status.as_str(), aws.note.as_str()),
+        ("line 1, commit c3", "fail", "Generic")
+    );
+    assert_eq!(places("line 1, commit c3"), [(1, "c3".to_string())]);
+    assert!(places("").is_empty());
+}
+
+#[test]
+fn generic_hits_in_tests_are_one_finding_per_rule_naming_every_place() {
+    let found = vec![
+        leak("generic-password", "spec/a_spec.rb", 9, "c2", "low"),
+        leak("generic-password", "spec/a_spec.rb", 3, "c1", "low"),
+        leak("generic-password", "tests/b_test.py", 4, "c1", "medium"),
+        leak("generic-api-key", "tests/b_test.py", 5, "c1", "low"),
+        leak("github-pat", "tests/b_test.py", 6, "c1", "high"),
+        leak("generic-password", "src/db.rb", 2, "c1", "low"),
+    ];
+    let none = |_: &str, _: &str, _: &str| None;
+    let (fs, counts) = findings("~/r", "~/r", &found, false, &none);
+    assert!(counts.is_empty());
+    let got: Vec<(&str, &str, &str, &str)> = fs
+        .iter()
+        .map(|(f, _)| (f.component.as_str(), f.location.as_str(), f.vuln_id.as_str(), f.status.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("~/r/tests/b_test.py", "line 6, commit c1", "github-pat", "fail"),
+            ("~/r/src/db.rb", "line 2, commit c1", "generic-password", "warn"),
+            ("~/r", TESTS, "generic-password", "warn"),
+            ("~/r", TESTS, "generic-api-key", "warn"),
+        ],
+        "a provider's token in a test is its own finding"
+    );
+    let tests = &fs[2].0;
+    assert_eq!(
+        tests.note,
+        "Generic (in tests; review: medium confidence rule); 3 lines in 2 files: spec/a_spec.rb (lines 3, 9); tests/b_test.py (line 4)"
+    );
+    for show in ["show c1:spec/a_spec.rb | sed -n 3p", "show c2:spec/a_spec.rb | sed -n 9p", "show c1:tests/b_test.py"]
+    {
+        assert!(tests.fix_cmd.contains(show), "{show}: {}", tests.fix_cmd);
+    }
+    assert!(tests.fix_cmd.contains("printf '%s\\n' /spec/a_spec.rb /tests/b_test.py >>"), "{}", tests.fix_cmd);
+    // A new hit in a test leaves the finding's id as it was.
+    let mut more = found.clone();
+    more.insert(0, leak("generic-password", "tests/c_test.py", 1, "c3", "low"));
+    let (again, _) = findings("~/r", "~/r", &more, false, &none);
+    assert_eq!(again[2].0.id(), tests.id());
+    // An ignore file's entry for one test file leaves its hits out.
+    let skip = |_: &str, rule: &str, file: &str| {
+        (rule == "generic-password" && file == "spec/a_spec.rb").then_some("findings skipped by a repo's .pantryignore")
+    };
+    let (fs, counts) = findings("~/r", "~/r", &found, false, &skip);
+    assert_eq!(counts, [("findings skipped by a repo's .pantryignore", 1)]);
+    assert!(fs[2].0.note.ends_with("1 line in 1 file: tests/b_test.py (line 4)"), "{}", fs[2].0.note);
+}
+
+#[test]
+fn vendored_generic_hits_only_with_deep_and_env_files_fail() {
+    let found = vec![
+        leak("generic-password", "vendor/rails/base.rb", 3, "c1", "low"),
+        leak("github-pat", "vendor/rails/base.rb", 4, "c1", "high"),
+        leak("generic-password", "backend/.env", 2, "c1", "low"),
+        leak("generic-password", "tests/.env", 2, "c1", "low"),
+        leak("generic-password", "backend/.env.example", 2, "c1", "low"),
+    ];
+    let none = |_: &str, _: &str, _: &str| None;
+    let (fs, counts) = findings("~/r", "~/r", &found, false, &none);
+    assert_eq!(counts, [(VENDORED, 1)]);
+    let got: Vec<(&str, &str)> = fs.iter().map(|(f, _)| (f.component.as_str(), f.status.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            ("~/r/vendor/rails/base.rb", "fail"),
+            ("~/r/backend/.env", "fail"),
+            ("~/r/tests/.env", "fail"),
+            ("~/r/backend/.env.example", "warn"),
+        ]
+    );
+    assert!(fs[1].0.note.ends_with("(in a committed env or credential file)"), "{}", fs[1].0.note);
+    assert!(!fs[1].0.fix_cmd.contains("review"), "{}", fs[1].0.fix_cmd);
+    let (fs, counts) = findings("~/r", "~/r", &found, true, &none);
+    assert!(counts.is_empty());
+    assert_eq!(fs.len(), 5, "--deep reports vendored code");
+}
+
+#[test]
+fn clones_of_one_repo_share_their_findings() {
+    let found = vec![leak("generic-password", "src/db.rb", 2, "c1", "low")];
+    let forked = vec![
+        leak("generic-password", "src/db.rb", 2, "c1", "low"),
+        leak("generic-password", "src/db.rb", 2, "c9", "low"),
+    ];
+    let none = |_: &str, _: &str, _: &str| None;
+    let mut made = Vec::new();
+    for (name, found) in [("~/a/r", &found), ("~/b/r", &found), ("~/c/r", &forked)] {
+        made.extend(findings(name, name, found, false, &none).0.into_iter().map(|(f, k)| (f, k, name.to_string())));
+    }
+    let fs = merge_clones(made);
+    let got: Vec<&str> = fs.iter().map(|f| f.component.as_str()).collect();
+    assert_eq!(got, ["~/a/r/src/db.rb", "~/c/r/src/db.rb"], "a fork with another version is its own");
+    assert!(fs[0].note.ends_with("; also in 1 other clone: ~/b/r"), "{}", fs[0].note);
+    assert!(!fs[1].note.contains("also in"));
 }

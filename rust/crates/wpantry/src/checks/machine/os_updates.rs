@@ -118,11 +118,11 @@ fn os_packages_from(
             return Ok(());
         }
         Err(e @ (Error::Missing(_) | Error::Io(_))) => {
-            scan.unchecked(&format!("OS packages ({pretty})"), &e.to_string());
+            scan.missed(&format!("OS packages ({pretty})"), &e);
             return Ok(());
         }
         Err(e) if e.is_source() => {
-            scan.unchecked(&format!("OS packages ({pretty})"), &e.to_string());
+            scan.missed(&format!("OS packages ({pretty})"), &e);
             return Ok(());
         }
         Err(e) => return Err(e),

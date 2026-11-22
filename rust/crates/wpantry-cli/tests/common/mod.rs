@@ -147,6 +147,7 @@ pub fn git_repo(path: &Path, worktree: bool) -> PathBuf {
         std::fs::write(path.join(".git"), "gitdir: /elsewhere\n").unwrap();
     } else {
         std::fs::create_dir(path.join(".git")).unwrap();
+        std::fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     }
     path.to_path_buf()
 }
@@ -230,6 +231,8 @@ pub const FINDING: &[(&str, Ty)] = &[
     ("cvss_version", Ty::Str),
     ("epss", Ty::NumOrNull),
     ("epss_percentile", Ty::NumOrNull),
+    ("epss_date", Ty::Str),
+    ("epss_model", Ty::Str),
 ];
 
 pub const SCOPES: &[&str] = &["runtime", "dev", "optional", "unknown"];
@@ -365,6 +368,8 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "cvss_version",
             "epss",
             "epss_percentile",
+            "epss_date",
+            "epss_model",
         ],
     ),
     ("kev", &["cve", "added", "name", "vendor", "product"]),

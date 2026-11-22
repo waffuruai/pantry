@@ -8,7 +8,8 @@
 //! One file per behaviour: `projects` (lockfiles against OSV), `typosquat`,
 //! `licenses`, `leaks` (secrets in history), `hooks`, `suspect_code`, `hidden_text`,
 //! `documents` (and ClamAV), `install_scripts`, `mptcp`, `images`,
-//! `extensions` (and what they bundle), `mcp` and `malicious` (the sweep);
+//! `extensions` (and what they bundle), `mcp`, `wordpress` (sites against
+//! Wordfence Intelligence) and `malicious` (the sweep);
 //! `repos` finds the repos. This file is the index: [`run`], in order.
 
 use crate::checks::Scan;
@@ -44,6 +45,7 @@ pub mod suspect_code;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod typosquat;
+pub mod wordpress;
 
 /// How the report names the policy files (their paths vary; the flag doesn't).
 pub const LICENSES: &str = "the licenses allowlist (--licenses)";
@@ -81,6 +83,7 @@ pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -
             })
         });
         projects::projects(scan, &repos)?;
+        wordpress::wordpress(scan, &repos)?;
         if !todo.is_empty() {
             scan.status(&format!("Scanning {} repos' git history for secrets", todo.len()));
         }

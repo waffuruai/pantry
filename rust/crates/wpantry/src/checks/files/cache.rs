@@ -13,6 +13,7 @@ use crate::checks::documents::Doc;
 use crate::checks::hidden::Hidden;
 use crate::checks::malware::targets::{Scanned, Scope};
 use crate::checks::malware::yara::Hit;
+use crate::checks::secrets::files::Secret;
 use crate::checks::supply_chain::mptcp::Facts;
 use crate::checks::suspects::{FileResult, Kind, Suspect};
 use crate::db::{Cache, DAY};
@@ -42,6 +43,7 @@ fn name(check: Check) -> &'static str {
         Check::Malware(Scope::All) => "malware:all",
         Check::Malware(Scope::File) => "malware:file",
         Check::Blobs => "blobs",
+        Check::Secrets => "secrets",
     }
 }
 
@@ -84,6 +86,14 @@ fn sources(check: Check) -> Vec<&'static str> {
             include_str!("../../utils/archive/zip.rs"),
             include_str!("../../utils/archive/deflate.rs"),
         ],
+        Check::Secrets => vec![
+            include_str!("../secrets/files.rs"),
+            include_str!("../secrets/mod.rs"),
+            include_str!("../secrets/decode.rs"),
+            include_str!("../secrets/fragments.rs"),
+            include_str!("../secrets/expr.rs"),
+            include_str!("../secrets/rules.rs"),
+        ],
         Check::Malware(_) => vec![
             include_str!("../malware/targets.rs"),
             include_str!("../malware/yara.rs"),
@@ -93,11 +103,30 @@ fn sources(check: Check) -> Vec<&'static str> {
     }
 }
 
+/// What the rules a check runs give its kept results: the malware rules'
+/// hash, and the secret rules' fingerprint.
+#[derive(Clone, Debug, Default)]
+pub struct Salts {
+    pub malware: String,
+    pub secrets: String,
+}
+
+impl Salts {
+    /// The salt of `check`'s version.
+    pub fn of(&self, check: Check) -> &str {
+        match check {
+            Check::Malware(_) => &self.malware,
+            Check::Secrets => &self.secrets,
+            _ => "",
+        }
+    }
+}
+
 /// The check's version: wpantry's, a hash of its source and the pass's,
-/// and `salt` (the malware rules' hash).
+/// and `salt` (the rules it runs: the malware scan's, or the secret scan's).
 pub fn version(check: Check, salt: &str) -> String {
     let base = base_version(check);
-    if matches!(check, Check::Malware(_)) { format!("{base}:{salt}") } else { base }
+    if matches!(check, Check::Malware(_) | Check::Secrets) { format!("{base}:{salt}") } else { base }
 }
 
 fn base_version(check: Check) -> String {
@@ -216,8 +245,8 @@ fn place(root: &Path, path: &Path) -> (String, String) {
 
 /// The records of the roots a pass reads, and what it found this time.
 pub(super) struct Store {
-    /// The malware rules' hash, part of the malware scan's version.
-    salt: String,
+    /// The rules' hashes, part of the malware and secret scans' versions.
+    salts: Salts,
     old: HashMap<PathBuf, (String, Record)>,
     new: HashMap<PathBuf, Record>,
     /// The checks each root ran this time.
@@ -228,7 +257,7 @@ pub(super) struct Store {
 
 impl Store {
     /// The records of `jobs`' roots.
-    pub fn load(cache: &Cache, jobs: &[Job], salt: &str) -> Store {
+    pub fn load(cache: &Cache, jobs: &[Job], salts: &Salts) -> Store {
         let mut old = HashMap::new();
         let mut ran: HashMap<PathBuf, HashSet<String>> = HashMap::new();
         for job in jobs {
@@ -248,7 +277,7 @@ impl Store {
             let record = Record::parse(&text);
             old.insert(job.root.clone(), (text, record));
         }
-        Store { salt: salt.to_string(), old, new: HashMap::new(), ran, unchanged: HashSet::new() }
+        Store { salts: salts.clone(), old, new: HashMap::new(), ran, unchanged: HashSet::new() }
     }
 
     /// How many results `root`'s record holds for the checks it ran this
@@ -274,7 +303,7 @@ impl Store {
     pub fn get(&self, job: &Job, read: &Read, stat: &Stat) -> Option<Out> {
         let (_, record) = self.old.get(&job.root)?;
         let check = name(job.check);
-        if record.versions.get(check)? != &version(job.check, &self.salt) {
+        if record.versions.get(check)? != &version(job.check, self.salts.of(job.check)) {
             return None;
         }
         let (dir, file) = place(&job.root, &read.path);
@@ -292,6 +321,7 @@ impl Store {
             (Check::Documents, "[]") => return Some(Out::Documents(Vec::new())),
             (Check::Mptcp, "null") => return Some(Out::Mptcp(None)),
             (Check::Blobs, "null") => return Some(Out::Blob(None)),
+            (Check::Secrets, "[]") => return Some(Out::Secrets(Vec::new())),
             _ => {}
         }
         from_json(job.check, &serde_json::from_str(result).ok()?, &read.path)
@@ -301,7 +331,7 @@ impl Store {
     pub fn put(&mut self, job: &Job, read: &Read, stat: &Stat, out: &Out) {
         let check = name(job.check);
         let record = self.new.entry(job.root.clone()).or_default();
-        record.versions.insert(check.into(), version(job.check, &self.salt));
+        record.versions.insert(check.into(), version(job.check, self.salts.of(job.check)));
         let (dir, file) = place(&job.root, &read.path);
         let entry = record.files.entry(dir).or_default().entry(file).or_default();
         let print = fingerprint(stat);
@@ -456,6 +486,9 @@ fn to_json(out: &Out) -> Value {
             "listen": found_json(&f.listen),
         }),
         Out::Documents(v) => Value::Array(v.iter().map(doc_json).collect()),
+        Out::Secrets(v) => {
+            Value::Array(v.iter().map(|s| json!([s.rule, s.description, s.line, s.confidence, s.decoded])).collect())
+        }
         // Nearly every file: the bare `target`, nothing found.
         Out::Blob(why) => json!(why),
         Out::Malware(s) if s.hits.is_empty() && s.seen.is_none() => Value::Bool(s.target),
@@ -510,6 +543,20 @@ fn from_json(check: Check, v: &Value, path: &std::path::Path) -> Option<Out> {
         })),
         Check::Documents => Out::Documents(v.as_array()?.iter().map(doc_of).collect()),
         Check::Blobs => Out::Blob(v.as_str().map(str::to_string)),
+        Check::Secrets => Out::Secrets(
+            v.as_array()?
+                .iter()
+                .map(|s| {
+                    Some(Secret {
+                        rule: s.get(0)?.as_str()?.into(),
+                        description: s.get(1)?.as_str()?.into(),
+                        line: s.get(2)?.as_u64()? as usize,
+                        confidence: s.get(3)?.as_str()?.into(),
+                        decoded: s.get(4).and_then(Value::as_str).map(String::from),
+                    })
+                })
+                .collect::<Option<_>>()?,
+        ),
         Check::Malware(_) if v.is_boolean() => {
             Out::Malware(Scanned { target: v.as_bool()?, hits: Vec::new(), seen: None })
         }

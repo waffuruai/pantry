@@ -46,11 +46,13 @@ pub struct Lexer<'a> {
     pos: usize,
     line: usize,
     peeked: Option<(Tok, usize)>,
+    /// Where lexing the peeked token began, before the trivia in front of it.
+    peeked_from: usize,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
-        Lexer { src: src.as_bytes(), pos: 0, line: 1, peeked: None }
+        Lexer { src: src.as_bytes(), pos: 0, line: 1, peeked: None, peeked_from: 0 }
     }
 
     /// The line the next token starts on.
@@ -61,12 +63,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// The offset the next token's lexing starts from: just after the last
+    /// token taken, so the spaces and comments in front of it come after.
+    pub fn mark(&self) -> usize {
+        if self.peeked.is_some() { self.peeked_from } else { self.pos }
+    }
+
     pub fn peek(&mut self) -> Result<&Tok, Error> {
         Ok(&self.peek_with_line()?.0)
     }
 
     fn peek_with_line(&mut self) -> Result<&(Tok, usize), Error> {
         if self.peeked.is_none() {
+            self.peeked_from = self.pos;
             let tok = self.lex()?;
             self.peeked = Some(tok);
         }

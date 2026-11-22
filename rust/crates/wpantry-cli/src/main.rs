@@ -445,19 +445,8 @@ fn cmd_report(show: &Show) -> Result<i32> {
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     // The user's tiers hold here as in a scan: a source turned off isn't fetched.
-    use wpantry::sources::file as sources;
-    let path = sources::user_file();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            eprintln!("wpantry: error: {}: {e}", path.display());
-            return Ok(EXIT_USAGE);
-        }
-    };
-    if let Err(e) = sources::configure(text.as_deref(), false) {
-        eprintln!("wpantry: error: {e}");
-        return Ok(EXIT_USAGE);
+    if let Some(code) = use_sources_file(None) {
+        return Ok(code);
     }
     let net = wpantry::utils::net::Http::new();
     let progress = progress::Progress::start();
@@ -481,6 +470,8 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
                 ),
             ),
             ("packages", J::Int(synced.packages as i64)),
+            ("hand_added", J::Arr(synced.hand_added.iter().map(|p| p.to_string_lossy().as_ref().into()).collect())),
+            ("replaced", J::Arr(synced.replaced.iter().map(|p| p.to_string_lossy().as_ref().into()).collect())),
         ])
         .dumps_indent(1));
     } else {
@@ -489,6 +480,23 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
         }
         for (name, why) in &synced.failed {
             show(&format!("  ⚠ {name} - {why}"));
+        }
+        for f in &synced.replaced {
+            show(&format!(
+                "  ✓ replaced {}, your copy of Elastic's rules: the elastic source keeps them current",
+                f.display()
+            ));
+        }
+        for f in &synced.hand_added {
+            show(&format!(
+                "  · {} was added by hand, so sync can't update it: {}",
+                f.display(),
+                if wpantry::checks::malware::yara::is_elastic_copy(f) {
+                    "turn on the elastic source and sync replaces it (docs/public/malware.md#adding-elastics-rules)"
+                } else {
+                    "add where it comes from to your sources file, as a yara source"
+                }
+            ));
         }
         show(&format!(
             "{} {} sources refreshed, {} package versions re-asked of OSV{}",
@@ -983,6 +991,16 @@ fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
         );
         return Ok(EXIT_FAIL);
     };
+    if f.kind == "secret" && f.location == wpantry::checks::supply_chain::leaks::TESTS {
+        cache.close()?;
+        eprintln!(
+            "{}",
+            Style::stderr().red(&format!(
+                "✗ wpantry: {id} is one rule's hits in many test files: follow its fix script, which shows each line"
+            ))
+        );
+        return Ok(EXIT_USAGE);
+    }
     let Some(target) = secret::target(f, &findings) else {
         cache.close()?;
         eprintln!(
@@ -1027,15 +1045,26 @@ fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
 /// `--update` fetches YARA Forge's package first.
 fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     use wpantry::checks::malware;
+    if let Some(code) = use_sources_file(None) {
+        return Ok(code);
+    }
     let cache = Cache::open(None)?;
     let mut failed = None;
     if update {
         let net = wpantry::utils::net::Http::new();
         let progress = progress::Progress::start();
         progress.set("Fetching YARA Forge's rules");
+        let mut why = Vec::new();
         if let Err(e) = malware::yara::update(&cache, &net, true) {
-            failed = Some(e.to_string());
+            why.push(format!("YARA Forge: {e}"));
         }
+        if wpantry::sources::file::active(malware::yara::ELASTIC) {
+            progress.set("Fetching Elastic's rules");
+        }
+        if let Err(e) = malware::yara::update_elastic(&cache, &net, true) {
+            why.push(format!("Elastic: {e}"));
+        }
+        failed = (!why.is_empty()).then(|| why.join("; "));
         progress.finish();
     }
     let dir = malware::yara::rules_dir(&cache);
@@ -1077,21 +1106,31 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
 }
 
-/// `sources`: every outside source and what its fetches came to.
-fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+/// Use the sources file (`file`, else `~/.config/wpantry/sources.toml` when
+/// there is one) for this run; the exit code when it can't be used.
+fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
     use wpantry::sources::file as sources;
-    let path = file.clone().unwrap_or_else(sources::user_file);
+    let path = file.map(std::path::Path::to_path_buf).unwrap_or_else(sources::user_file);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => Some(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && file.is_none() => None,
         Err(e) => {
             eprintln!("wpantry: error: {}: {e}", path.display());
-            return Ok(EXIT_USAGE);
+            return Some(EXIT_USAGE);
         }
     };
     if let Err(e) = sources::configure(text.as_deref(), false) {
         eprintln!("wpantry: error: {e}");
-        return Ok(EXIT_USAGE);
+        return Some(EXIT_USAGE);
+    }
+    None
+}
+
+/// `sources`: every outside source and what its fetches came to.
+fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+    use wpantry::sources::file as sources;
+    if let Some(code) = use_sources_file(file.as_deref()) {
+        return Ok(code);
     }
     let user = sources::effective().user.clone();
     let cache = Cache::open(None)?;

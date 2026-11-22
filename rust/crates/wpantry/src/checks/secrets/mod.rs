@@ -18,12 +18,15 @@
 //!   to five levels, and scanned again ([`decode`]).
 //!
 //! What Pantry does differently: a file that sniffs as binary is skipped (see
-//! [`fragments::binary`]), and secrets never leave memory: findings carry the
-//! rule, the place and a fingerprint.
+//! [`fragments::binary`]), the generic rules don't read translations, built
+//! bundles, docs or commented-out examples ([`noise`]), and secrets never
+//! leave memory: findings carry the rule, the place and a fingerprint.
 
 pub mod decode;
 pub mod expr;
+pub mod files;
 pub mod fragments;
+pub mod noise;
 pub mod readable;
 pub mod rules;
 
@@ -88,13 +91,15 @@ pub struct Scanner {
     order: Vec<usize>,
     /// Decoding passes after the first (betterleaks' `--max-decode-depth`).
     pub max_decode_depth: usize,
+    /// The generic rules skip the files [`noise`] names (off: as betterleaks).
+    pub skip_noise: bool,
 }
 
 impl Scanner {
     pub fn new(rules: RuleSet) -> Scanner {
         let mut order: Vec<usize> = (0..rules.rules.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(rules.rules[i].specificity));
-        Scanner { rules, order, max_decode_depth: decode::MAX_DEPTH }
+        Scanner { rules, order, max_decode_depth: decode::MAX_DEPTH, skip_noise: true }
     }
 
     /// Whether betterleaks' prefilter skips `path` without reading it.
@@ -193,7 +198,7 @@ impl Scanner {
         let mut out: Vec<Hit> = Vec::new();
         for &i in &self.order {
             let rule = &self.rules.rules[i];
-            if rule.private {
+            if rule.private || (self.skip_noise && noise::skips(&rule.id, path)) {
                 continue;
             }
             let candidates: &[(usize, usize)] = match loose.iter().find(|(r, _)| *r == i) {
@@ -282,6 +287,13 @@ impl Scanner {
                 continue;
             }
             let line = if pass.depth == 0 { line } else { pass.decoder.line(start, end) };
+            if self.skip_noise
+                && rule.id.starts_with("generic-")
+                && noise::secret_file(path).is_none()
+                && noise::commented_example(line, &hit.secret)
+            {
+                continue;
+            }
             let ctx = Ctx { secret: &hit.secret, matched: trimmed, line, path: path.as_bytes() };
             let (skip, confidence) = self.skipped(rule, &ctx, pass.text, start, raw_end);
             if skip {

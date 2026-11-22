@@ -4,7 +4,7 @@ What a scan leaves out, and why it works the way it does. The format and its exa
 
 ## Why
 
-From 0.5.0, Pantry scans git history as files (each blob once), not as diffs. Every version of a file that holds a secret is its own finding, at the commit that added that version. A `.gitleaksignore` fingerprint (`commit:path:rule:line`) covers one of them, so a fixture edited over many commits needed many lines. Other checks had no way to skip a path at all: a vendored lockfile's advisories, a sample document, a licence in an example project.
+From 0.5.0, Pantry scans git history as files (each blob once), not as diffs. Every version of a file that holds a secret is its own finding, at the commit that added that version. A fingerprint (`commit:path:rule:line`) covered one of them, so a fixture edited over many commits needed many lines. Other checks had no way to skip a path at all: a vendored lockfile's advisories, a sample document, a licence in an example project.
 
 ## Decisions
 
@@ -18,9 +18,8 @@ From 0.5.0, Pantry scans git history as files (each blob once), not as diffs. Ev
 | Your own file, `~/.config/wpantry/ignore`, with absolute or `~/` paths | You may skip anything on your own machine: research samples, quarantines |
 | Filtered once, at the end of the scan, on the paths a finding names (`component`, `location`) | Every check honours it without code of its own. A path is matched in the innermost repo that holds it, so a nested repo's files follow its own file, not its parent's |
 | The secret history scan doesn't read a path its check skips entirely | `vendor/` and fixtures cost nothing. A `[secret id]` entry still reads the file, since other rules may match |
-| Each version stays its own finding; reports group a file's versions into one row | The cache and history keep exact records (`kind\|component\|location\|vuln_id`); a reader sees one thing to decide |
+| A rule's hits in every version of a file are one finding | A reader sees one thing to decide. The cache keeps each hit; the finding names the first five places, oldest first, so its id doesn't move |
 | Skipped findings are counted, never dropped silently | `checked` gains "findings skipped by a repo's .pantryignore", "findings skipped by your ignore file" and, for the history files not read, "files in git history skipped by a repo's .pantryignore" |
-| `.gitleaksignore` isn't read | `.pantryignore` replaces it: a fingerprint covers one version of one line, a path covers the file. gitleaks, which the org pre-commit hook runs, still reads its own file |
 | `.pantryignore`'s contents are part of the secret job's cache key | A cached run must not hide or keep hits the file now says otherwise about. Blob results stay cached, so a change rereads only what it unskips |
 
 ## Not done

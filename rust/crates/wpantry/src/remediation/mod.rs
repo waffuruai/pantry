@@ -61,8 +61,9 @@ pub fn steps(findings: &[Finding]) -> Vec<Step> {
     let mut groups: Vec<(Component, Vec<usize>)> = Vec::new();
     for (i, f) in findings.iter().enumerate() {
         // Every hit in one file is one decision (rotate, or allow the file),
-        // not one step per line.
-        let location = if f.kind == "secret" { "" } else { f.location.as_str() };
+        // not one step per line; each rule's test hits are one of their own.
+        let tests = f.location == crate::checks::supply_chain::leaks::TESTS;
+        let location = if f.kind == "secret" && !tests { "" } else { f.location.as_str() };
         let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), location);
         match groups.iter_mut().find(|(key, _)| *key == k) {
             Some((_, v)) => v.push(i),
@@ -113,13 +114,10 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
 fn secrets_fix(fs: &[&Finding]) -> String {
     use crate::checks::supply_chain::leaks;
     let Some((repo, file)) = leaks::fix_target(&fs[0].fix_cmd) else { return fs[0].fix_cmd.clone() };
-    // `line N, commit C`
-    let at = |f: &Finding| {
-        let (line, commit) = f.location.strip_prefix("line ")?.split_once(", commit ")?;
-        Some((line.parse::<i64>().ok()?, commit.to_string()))
-    };
-    let spots: Vec<(&str, i64, String)> =
-        fs.iter().filter_map(|f| at(f).map(|(line, commit)| (f.vuln_id.as_str(), line, commit))).collect();
+    let spots: Vec<(&str, i64, String)> = fs
+        .iter()
+        .flat_map(|f| leaks::places(&f.location).into_iter().map(|(line, commit)| (f.vuln_id.as_str(), line, commit)))
+        .collect();
     let hits: Vec<(&str, i64, &str)> =
         spots.iter().map(|(rule, line, commit)| (*rule, *line, commit.as_str())).collect();
     if hits.is_empty() {

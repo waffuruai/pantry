@@ -6,7 +6,7 @@
 //! `dotnet`, `apps`, `browsers` (Linux), `servers`, `editors`, `harnesses`,
 //! `images`, `os_packages`, `cellar`, `programs` on Windows), what is
 //! judged of it (`components`, `app_updates`, `exploited` over
-//! `kev_catalog`, `os_updates`, `brew_vulns`, `ca_trust`, `clipper`,
+//! `kev_catalog`, `os_updates`, `brew_vulns`, `brew_cves`, `ca_trust`, `clipper`,
 //! `downloads`, `software_cves`), and the security settings (`settings`
 //! over `any/`, `macos/` and `linux/`, persistence included). This file is
 //! the index: [`run`], the probes in order.
@@ -24,6 +24,7 @@ use settings::posture;
 pub mod any;
 pub mod app_updates;
 pub mod apps;
+pub mod brew_cves;
 pub mod brew_vulns;
 pub mod browsers;
 pub mod ca_trust;
@@ -31,6 +32,7 @@ pub mod catalog;
 pub mod cellar;
 pub mod clipper;
 pub mod components;
+pub mod desktop_apps;
 pub mod dotnet;
 pub mod downloads;
 pub mod editors;
@@ -85,9 +87,13 @@ pub fn run(scan: &mut Scan) -> Result<Vec<Component>> {
         let found = inventory(scan);
         let osv = components::components(scan, &found)?;
         software_cves::tools(scan, &found, &osv)?;
+        desktop_apps::check(scan, &settings::real_runner)?;
         app_updates::apps(scan)?;
         os_updates::os_updates(scan, joined(updates))?;
         brew(scan, brew_job.as_ref(), brew_ran.map(joined))?;
+        // After brew vulns and the inventory's OSV answers, so a CVE they
+        // reported for a formula isn't repeated.
+        brew_cves::run(scan)?;
         downloads::downloads(scan);
         ca_trust::ca_trust(scan, joined(trust));
         if !scan.opts.no_posture {

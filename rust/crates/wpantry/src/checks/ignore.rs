@@ -434,6 +434,37 @@ fn note(file: &str, line: usize, id: &str, status: &str, note: String, fix: Stri
     }
 }
 
+/// A repo's ignore file and yours, for findings made of many files' hits
+/// (a repo's test passwords), which [`apply`] can't match by one path: each
+/// hit is checked before they are grouped.
+pub(crate) struct Skipper {
+    root: PathBuf,
+    repo: Option<Ignore>,
+    user: Option<Ignore>,
+}
+
+impl Skipper {
+    pub(crate) fn new(root: &Path) -> Skipper {
+        Skipper::with(root, &user_file())
+    }
+
+    pub(crate) fn with(root: &Path, user_path: &Path) -> Skipper {
+        let repo = Ignore::load(&root.join(FILE)).and_then(|r| r.ok());
+        let user = read(user_path).and_then(|r| r.ok()).map(|t| Ignore::parse_user(&t, &home()));
+        Skipper { root: root.to_path_buf(), repo, user }
+    }
+
+    /// The count a hit of `kind` and `id` in `rel` (a path in the repo) is
+    /// left out under, if an ignore file skips it.
+    pub(crate) fn skips(&self, kind: &str, id: &str, rel: &str) -> Option<&'static str> {
+        if self.repo.as_ref().is_some_and(|ig| ig.skips(kind, id, rel)) {
+            return Some("findings skipped by a repo's .pantryignore");
+        }
+        let abs = joined(&self.root.join(rel));
+        self.user.as_ref().is_some_and(|u| u.skips(kind, id, &abs)).then_some("findings skipped by your ignore file")
+    }
+}
+
 /// The scan's findings, less what the ignore files skip; then what those
 /// files ask that can't be done, and how much each left out.
 pub(crate) fn apply(scan: &mut Scan) {

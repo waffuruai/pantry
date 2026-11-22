@@ -127,6 +127,8 @@ h3{font-size:22px;line-height:1.2}
 .gap .badge{grid-row:span 2;align-self:start;margin-top:3px}
 .gap b{font-weight:500}
 .gap .why{grid-column:2;color:var(--muted);font-size:14px}
+.gap .fix{grid-column:2;margin-top:6px}
+code .w{display:inline-block;max-width:100%;overflow-wrap:anywhere}
 .ok-line{margin-top:18px;color:var(--soft);font-size:14px}
 .kv{display:grid;grid-template-columns:minmax(130px,auto) minmax(0,1fr);gap:7px 18px;font-size:14px;margin:0}
 .kv dt{color:var(--muted)}
@@ -196,7 +198,7 @@ button.rhead:hover{background:var(--bg)}
 .advs li .rng{font:12px var(--mono);color:var(--muted)}
 .fix{display:flex;align-items:flex-start;gap:10px;margin-top:14px;padding:10px 12px;border:1px solid var(--off);border-radius:8px;background:var(--card)}
 .fix .who{flex:none;font:11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding-top:4px;width:84px}
-.fix code{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55}
+.fix code{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:break-word;font-size:13px;line-height:1.55}
 /* a fix that is a script: shell colours from the palette */
 code.sh{color:var(--soft);line-height:1.7}
 code.sh .c{color:var(--muted);font-style:italic}
@@ -250,7 +252,7 @@ h3.fold button[aria-expanded="true"] .chev{transform:rotate(180deg)}
 .steps li::before{content:counter(step);font:400 28px/1 var(--serif);color:var(--gold);text-align:right;padding-top:2px}
 .steps li.opt::before{color:var(--muted)}
 .step-cmd{display:flex;align-items:flex-start;gap:10px}
-.step-cmd code{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.55}
+.step-cmd code{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:break-word;font-size:14px;line-height:1.55}
 .step-for{margin-top:8px;color:var(--muted);font-size:13px}
 .step-for .mono{color:var(--soft)}
 .sub{margin:26px 0 0;font:500 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
@@ -283,6 +285,8 @@ td .badge{vertical-align:baseline}
 /* footer */
 .foot{margin-top:56px;padding:22px 0 40px;border-top:1px solid var(--off);color:var(--muted);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 18px}
 .foot b{color:var(--ink);font-weight:500}
+.credit{margin:40px 0 0;color:var(--muted);font-size:13px}
+.credit a{color:inherit}
 .foot .legal{flex-basis:100%;margin:8px 0 0;font:12px/1.6 var(--mono)}
 
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);padding:8px 14px;border-radius:8px;background:var(--ink);color:var(--bg);font-size:13px;opacity:0;transition:opacity .15s;pointer-events:none;z-index:30}
@@ -371,10 +375,10 @@ var state = {run:0, q:'', show:{fail:true,warn:true}, kevOnly:false, open:{}, pa
 
 /* ---------- vocabulary ---------- */
 var MARKERS = Object.create(null);
-['UNPINNED','UNCHECKED','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA','REPO-POLICY','IGNORE-FILE','IGNORE-PROTECTED'].forEach(function(id){MARKERS[id]=1});
+['UNPINNED','UNCHECKED','UNREACHABLE','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA','REPO-POLICY','IGNORE-FILE','IGNORE-PROTECTED'].forEach(function(id){MARKERS[id]=1});
 // Kinds whose ids are the scanner's own rules, never public advisories.
 var RULE_KINDS = ['secret','repo-hook','posture','persistence','hidden-text','suspect-code','document','clipper'];
-var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'Not checked', secret:'Committed secrets', runtime:'Runtimes',
+var KIND_LABEL = {project:'Project dependencies', wordpress:'WordPress core, plugins and themes', mcp:'MCP servers', unchecked:'Not checked', secret:'Committed secrets', runtime:'Runtimes',
   os:'Operating system', compiler:'Compilers', manager:'Version managers', pkgmgr:'Package managers', tool:'Tools', datastore:'Datastores',
   harness:'Agent harnesses', package:'Global packages', brew:'Homebrew', app:'Apps', browser:'Browsers', extension:'Editor extensions',
   image:'Container images', bundled:'Bundled packages', 'repo-hook':'Repo hooks', posture:'Security settings', 'hidden-text':'Hidden text',
@@ -382,7 +386,7 @@ var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'
   license:'Licenses', config:'Configuration', account:'Accounts'};
 // The order every report shares (reporters/view.rs): what acts on its own, what is on the machine, what the repos lock, what the harnesses run, then the rest.
 var KIND_ORDER = ['clipper','malware','posture','persistence','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
-  'project','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
+  'project','wordpress','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
 var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, MEDIUM:3, LOW:4};
 
 function $(id){return document.getElementById(id)}
@@ -409,12 +413,22 @@ function advLinks(id){
     else if(/^GHSA-/.test(x))u='https://github.com/advisories/'+encodeURIComponent(x);
     else if(/^RUSTSEC-/.test(x))u='https://rustsec.org/advisories/'+encodeURIComponent(x)+'.html';
     else if(/^GO-/.test(x))u='https://pkg.go.dev/vuln/'+encodeURIComponent(x);
+    else if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x))u='https://www.wordfence.com/threat-intel/vulnerabilities/id/'+encodeURIComponent(x); // a Wordfence record without a CVE
     else u='https://osv.dev/vulnerability/'+encodeURIComponent(x);
     out.push({id:x,url:u});
   }
   add(id);
   var info=advInfo[id]; if(info&&info.aliases)info.aliases.forEach(add);
   return out;
+}
+// A Wordfence finding links its record, as the feed's licence asks (sources/wordfence.rs).
+var WORDFENCE_LINK=/https:\/\/www\.wordfence\.com\/threat-intel\/vulnerabilities\/id\/[0-9a-fA-F-]+/;
+function wordfenceLink(f){var m=f.kind==='wordpress'&&typeof f.note==='string'?f.note.match(WORDFENCE_LINK):null;return m?m[0]:''}
+// The notices the bundle carries for Wordfence's data; a file opened without them gets Defiant's line and licence link.
+function noticesHTML(r){
+  var list=r.original&&Array.isArray(bundle.notices)?bundle.notices.filter(function(n){return typeof n==='string'}):[];
+  if(!list.length&&r.findings.some(function(f){return wordfenceLink(f)}))list=['WordPress vulnerability data: Wordfence Intelligence. Copyright 2012-'+new Date().getUTCFullYear()+' Defiant Inc. License: https://www.wordfence.com/wordfence-intelligence-terms-and-conditions/'];
+  return list.map(function(n){return '<p class="legal">'+esc(n)+'</p>'}).join('');
 }
 
 /* ---------- the order fixes go in (SKILL.md): fails before warnings; then
@@ -462,7 +476,7 @@ function normalize(raw, meta){
     return {n:i+1, kind:kind, component:f.component||'', version:f.version||'', location:f.location||'',
       vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?'unchecked':(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
-      cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile),
+      cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile), epss_date:f.epss_date||'', epss_model:f.epss_model||'',
       dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
       key:String(i)};
   });
@@ -516,14 +530,14 @@ function parseCSV(text){
   if(!rows.length)return null;
   var h=rows[0].map(function(s){return s.trim()});
   var required=['id','aliases','url','component','kind','affected_version','safe_version','severity','kev','status','location'];
-  var optional=['cvss','cvss_version','epss','epss_percentile'];
+  var optional=['cvss','cvss_version','epss','epss_percentile','epss_date'];
   if(new Set(h).size!==h.length || !required.every(function(k){return h.indexOf(k)>=0}) || !h.every(function(k){return required.indexOf(k)>=0||optional.indexOf(k)>=0}) || rows.slice(1).some(function(r){return r.length!==h.length}))throw new Error('csv');
   return rows.slice(1).map(function(r){var o=Object.create(null);h.forEach(function(k,j){o[k]=r[j]==null?'':r[j]});return o;});
 }
 function csvToReport(list){
   return {schema:1, impl:'', version:'', unfixed:0, unknown_licenses:0, checked:{}, findings:list.map(function(o){return {kind:o.kind, component:o.component, version:o.affected_version,
     location:o.location, vuln_id:o.id, status:o.status, fixed:o.safe_version, kev:o.kev==='1'||o.kev==='true', severity:o.severity,
-    cvss:o.cvss?Number(o.cvss):null, cvss_version:o.cvss_version||'', epss:o.epss?Number(o.epss):null, epss_percentile:o.epss_percentile?Number(o.epss_percentile):null,
+    cvss:o.cvss?Number(o.cvss):null, cvss_version:o.cvss_version||'', epss:o.epss?Number(o.epss):null, epss_percentile:o.epss_percentile?Number(o.epss_percentile):null, epss_date:o.epss_date||'',
     note:'', fix_cmd:'', fix_auto:false};})};
 }
 
@@ -611,7 +625,7 @@ function celebrationHTML(){
   var note=bundle.phase==='after updates'?'The recheck found no findings or recorded coverage gaps in the checked scope.':'No findings or recorded coverage gaps in the checked scope.';
   return '<section class="all-clear" aria-label="Scan complete, no findings"><div class="clear-mark" aria-hidden="true">'+mark+'<span class="clear-check">✓</span></div>'+
     '<div><div class="eyebrow">Pantry by Waffuru</div><h2>All clear. Nicely <em>done.</em></h2><p>'+note+' Keep scanning as your code and dependencies change.</p>'+
-    '<div class="clear-counts"><span>0 findings</span><span>0 unchecked sources</span></div></div></section>';
+    '<div class="clear-counts"><span>0 findings</span><span>0 not checked</span></div></div></section>';
 }
 function verdictHTML(r){
   if(canCelebrate(r))return celebrationHTML();
@@ -622,7 +636,7 @@ function verdictHTML(r){
     d=plural(fails,'failing finding')+' across '+plural(c.components,'component')+', '+plural(c.warn,'warning')+(c.kev?', '+plural(c.kev,'known exploit'):'')+'. Results cover only what was checked.';
   } else if(c.unchecked){
     t='Nothing with a released fix found in what could be checked';
-    d=plural(c.warn,'warning')+'. '+plural(c.unchecked,'source')+' could not be checked, so this is not a clean result.';
+    d=plural(c.warn,'warning')+'. '+plural(c.unchecked,'thing')+' could not be checked, so this is not a clean result.';
   } else if(c.warn||r.unfixed||r.unknown_licenses||r.partial){
     t='Nothing with a released fix applies';
     d=plural(c.warn,'warning')+' to read below. Results cover only what was checked.';
@@ -630,7 +644,7 @@ function verdictHTML(r){
     t='No findings in this report';
     d='Results cover only what was checked; see what was scanned below.';
   }
-  if(c.unchecked) x.push(plural(c.unchecked,'source')+' not checked: coverage is incomplete.');
+  if(c.unchecked) x.push(plural(c.unchecked,'thing')+' not checked: coverage is incomplete.');
   if(r.unfixed) x.push(plural(r.unfixed,'applicable advisory','applicable advisories')+' have no released fix.');
   if(r.unknown_licenses) x.push(plural(r.unknown_licenses,'dependency','dependencies')+' have an unknown license.');
   if(r.partial) x.push('CSV does not include coverage counts or explanations.');
@@ -647,8 +661,9 @@ function scannedHTML(r,print){
     '<div class="empty"><b>No inventory counts recorded</b>'+(r.partial?'CSV exports leave them out.':'This report does not say what was inventoried.')+'</div>';
   var gaps=r.findings.filter(function(f){return f.state==='unchecked'});
   if(gaps.length){
-    out+='<h3 style="margin-top:28px">'+esc(plural(gaps.length,'source'))+' could not be checked</h3><p class="intro">Nothing in this report speaks for these. Re-run with network, or treat what they cover as unverified: a gap is not a clean result.</p><div class="gaps">';
-    out+=gaps.map(function(f){return '<div class="gap">'+badge('gap','Not checked')+'<b>'+esc(f.component)+'</b><span class="why">'+ticks(f.note||'')+'</span></div>'}).join('')+'</div>';
+    var away=gaps.filter(function(f){return f.vuln_id==='UNREACHABLE'}).length;
+    out+='<h3 style="margin-top:28px">'+esc(plural(gaps.length,'thing'))+' could not be checked</h3><p class="intro">Nothing in this report speaks for these: treat what they cover as unverified, since a gap is not a clean result. Each says why, and gives the command that checks it when there is one.'+(away?' '+esc(plural(away,'source'))+' could not be reached: re-run when online.':'')+'</p><div class="gaps">';
+    out+=gaps.map(function(f){return '<div class="gap">'+badge('gap',f.vuln_id==='UNREACHABLE'?'Unreachable':'Not checked')+'<b>'+esc(f.component)+'</b><span class="why">'+ticks(f.note||'')+'</span>'+(f.fix_cmd?'<div class="fix">'+fixCode(f.fix_cmd)+copyBtn(f.fix_cmd,print)+'</div>':'')+'</div>'}).join('')+'</div>';
   } else if(!r.partial){
     out+='<p class="ok-line">Every source answered: no coverage gaps were recorded for this scan.</p>';
   } else out+='<p class="ok-line">A CSV export does not record coverage gaps; it cannot establish complete coverage.</p>';
@@ -696,6 +711,8 @@ function detailHTML(row,print){
   if(top.note)out+='<p class="why">'+ticks(top.note)+'</p>';
   out+='<ul class="advs">'+row.fs.map(function(f){
     var links=isAdvisory(f)?advLinks(f.vuln_id):[];
+    var wf=wordfenceLink(f);
+    if(wf&&!links.some(function(l){return l.url===wf}))links=links.concat([{id:'Wordfence',url:wf}]);
     var id=links.length?links.map(function(l){return '<a href="'+esc(l.url)+'" target="_blank" rel="noopener noreferrer">'+esc(l.id)+'</a>'}).join(' '):esc(f.vuln_id||'—');
     var bits='<span class="id">'+id+'</span>'+(f.kev?badge('kev','KEV'):'')+sevBadge(f.severity)+(f.status!==row.state?stateBadge(f.state):'');
     if(isBundle(f.kind))bits+='<span class="mono" style="font-size:13px">'+esc(f.component.split(' › ').slice(1).join(' › '))+(f.version?' '+esc(f.version):'')+(f.fixed?' → '+esc(f.fixed):'')+'</span>';
@@ -729,7 +746,7 @@ function riskHTML(r,print){
   var out='<section class="sec" id="risk">'+label(2,'At risk')+'<h2>What <em>applies</em> here</h2>';
   out+='<p class="intro">One row per component, grouped by area. Areas and rows are in the order the fixes should go: a repo that runs code on open, malicious packages, committed secrets, known exploited, end of life, then severity.</p>';
   if(!areas.length){
-    out+='<div class="empty"><b>Nothing failed or warned in what was checked</b>'+(c.unchecked?'Sources not checked are listed under Scanned; what they cover is unverified.':'See Scanned for what that covers.')+'</div>';
+    out+='<div class="empty"><b>Nothing failed or warned in what was checked</b>'+(c.unchecked?'What could not be checked is listed under Scanned; what it covers is unverified.':'See Scanned for what that covers.')+'</div>';
     return out+'</section>';
   }
   if(!print){
@@ -761,7 +778,7 @@ function riskHTML(r,print){
 
 /* 3 PATCHING */
 function col(lbl,big,small,body){return '<div class="col"><div class="col-h">'+'<div class="lbl">'+esc(lbl)+'</div><div class="big">'+esc(fmt(big))+(small?'<small>'+esc(small)+'</small>':'')+'</div></div><div class="col-b">'+body+'</div></div>'}
-function stepLine(s,print){return '<li><div class="l1"><code>'+esc(s.cmd)+'</code>'+copyBtn(s.cmd,print)+'</div><div class="l2">'+esc(s.findings.map(describe).slice(0,3).join('; '))+(s.findings.length>3?' and '+(s.findings.length-3)+' more':'')+'</div></li>'}
+function stepLine(s,print){return '<li><div class="l1">'+fixCode(s.cmd)+copyBtn(s.cmd,print)+'</div><div class="l2">'+esc(s.findings.map(describe).slice(0,3).join('; '))+(s.findings.length>3?' and '+(s.findings.length-3)+' more':'')+'</div></li>'}
 function patchingHTML(r,print){
   var auto=stepsOf(r,'auto'), h=r.history;
   var out='<section class="sec" id="patching">'+label(3,'Patching')+'<h2>What can be <em>patched</em></h2>';
@@ -830,7 +847,8 @@ function rescanCmd(sc){
 // A fix as code: a script (several lines) with shell colours, anything
 // else as plain text. Every piece is escaped.
 function fixCode(cmd){
-  if(String(cmd).indexOf('\n')<0)return '<code>'+esc(cmd)+'</code>';
+  // A word of a command breaks only when it is wider than the line: never at a flag's hyphen.
+  if(String(cmd).indexOf('\n')<0)return '<code>'+String(cmd).split(/(\s+)/).map(function(w){return /^\s*$/.test(w)?esc(w):'<span class="w">'+esc(w)+'</span>'}).join('')+'</code>';
   var re=/(#.*$)|('[^']*'?)|("\$\([^)]*\)"|"(?:\\.|[^"\\])*"?)|(\$\([^)]*\)?|\$\{?\w+\}?)|(&&|\|\||>>|[;|>])|(\s+)|([^\s;|&>'"$]+|[&$])/g;
   return '<code class="sh">'+String(cmd).split('\n').map(function(line){
     if(/^\s*#/.test(line))return '<span class="c">'+esc(line)+'</span>';
@@ -856,7 +874,7 @@ function agentPrompt(r){
   var lines=[
     'Patch what a Pantry security scan found, one finding at a time, using wpantry itself.',
     '',
-    'The scan: '+meta.join(', ')+'. It covered '+(what||'a scope this report does not record: ask me which folders, and whether it included the computer itself')+'. It found '+plural(c.fail,'fail')+' and '+plural(c.warn,'warning')+(c.unchecked?', and '+plural(c.unchecked,'source')+' could not be checked':'')+'.'
+    'The scan: '+meta.join(', ')+'. It covered '+(what||'a scope this report does not record: ask me which folders, and whether it included the computer itself')+'. It found '+plural(c.fail,'fail')+' and '+plural(c.warn,'warning')+(c.unchecked?', and '+plural(c.unchecked,'thing')+' could not be checked':'')+'.'
   ];
   if(r.partial)lines.push('This came from a CSV export, which leaves out the suggested fixes: ask me for the JSON report, or run the scan below first.');
   lines.push('',
@@ -868,7 +886,7 @@ function agentPrompt(r){
     '   - `you`: confirm it still applies (the version installed or locked now; `wpantry search <vuln_id>`), then make the smallest change that reaches the fixed version, the manifest and its lockfile together, on a branch, one commit per fix. Run the project’s build and tests; if they fail and one more try doesn’t fix it, revert that change, note why, and go on.',
     '   - `terminal`: a committed secret. Don’t handle it, print it or copy it: ask me to run `wpantry fix secret <id>` at my terminal. It asks whether it’s real, waits until it’s rotated, takes the secret with echo off, and asks before it rewrites history.',
     '4. Then `wpantry fix next --json` again: it skips what a fix was tried for. `"item": null` means nothing is left.',
-    '5. Sources not checked: run the command each one’s note gives (for example a deep scan of one repo), or tell me what stays unverified.',
+    '5. What could not be checked: run the command each one gives (for example a deep scan of one repo), or tell me what stays unverified.',
     '6. Finish with a fresh scan of the same scope'+(rescan?': `'+rescan+'`':'')+'. Report what is fixed (the new scan no longer lists it), what is left and why, and what was not checked.',
     '',
     'Guardrails',
@@ -938,13 +956,23 @@ function jumpHTML(r){
   if(historyHTML(r))items.push(['history','History','']);
   return '<nav class="jump" aria-label="Sections">'+items.map(function(x,i){return '<a href="#'+x[0]+'"><b>'+(i+1)+'</b>'+esc(x[1])+(x[2]?'<span class="c">'+esc(x[2])+'</span>':'')+'</a>'}).join('')+'</nav>';
 }
+// FIRST asks products that use EPSS to credit it: whose scores, the copy's date and model.
+function epssCreditHTML(r){
+  var scored=(r.findings||[]).filter(function(x){return x.epss!=null});
+  if(!scored.length)return '';
+  var f=scored.filter(function(x){return x.epss_date})[0]||scored[0];
+  var t='EPSS scores by <a href="https://www.first.org/epss/" target="_blank" rel="noopener noreferrer">FIRST</a>';
+  if(f.epss_date)t+=', '+esc(String(f.epss_date).slice(0,10));
+  if(f.epss_model)t+=', model '+esc(f.epss_model);
+  return '<p class="credit">'+t+'</p>';
+}
 // On screen only: a printed report is evidence, not an advert.
 function fleetHTML(print){
   return print?'':'<aside class="fleet"><p><b>Looking after a fleet of computers, or running a business?</b> We can make keeping them all patched and checked easier.</p><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">Check out our other tools →</a></aside>';
 }
 function pageHTML(r,print){
-  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+
-    '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span><p class="legal">wpantry and this report are provided \u201cas is\u201d, without warranty of any kind, express or implied. Waffuru AI, Inc. is not liable for any damage, data loss, downtime or other loss arising from running wpantry, from acting on this report, or from giving this prompt or its commands to an AI agent or any other tool. You are responsible for reviewing and approving every change made to your systems.</p></footer>';
+  return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+epssCreditHTML(r)+
+    '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span><p class="legal">wpantry and this report are provided \u201cas is\u201d, without warranty of any kind, express or implied. Waffuru AI, Inc. is not liable for any damage, data loss, downtime or other loss arising from running wpantry, from acting on this report, or from giving this prompt or its commands to an AI agent or any other tool. You are responsible for reviewing and approving every change made to your systems.</p>'+noticesHTML(r)+'</footer>';
 }
 function render(){
   var r=cur(), main=$('main');

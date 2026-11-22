@@ -1,5 +1,47 @@
 use super::*;
 
+/// Wordfence's licence: every format links each record, and the notices
+/// go with its findings.
+#[test]
+fn wordfence_findings_link_their_record_and_carry_the_notices() {
+    use crate::sources::wordfence::{DEFIANT_LICENSE, MITRE_LICENSE, record_url};
+    let d = crate::utils::temp::TempDir::new("report").unwrap();
+    let cache = Cache::open(Some(&d.path().join("c.db"))).unwrap();
+    let link = record_url("61c39f5f-3b17-4e4d-824e-241159a73400");
+    let finding = crate::finding::Finding {
+        kind: "wordpress".into(),
+        component: "akismet".into(),
+        version: "5.3.1".into(),
+        location: "/w/site/wp-content/plugins/akismet".into(),
+        vuln_id: "CVE-2026-1001".into(),
+        status: "fail".into(),
+        fixed: "5.3.2".into(),
+        note: format!("Akismet <= 5.3.1 - XSS (Wordfence: {link})"),
+        fix_cmd: "wp plugin update akismet --path=/w/site".into(),
+        ..Default::default()
+    };
+    let opts = crate::checks::Options::default();
+    cache.replace_findings(std::slice::from_ref(&finding)).unwrap();
+    history::record_scan_totals(&cache, 1.0, std::slice::from_ref(&finding), &[], (0, 0), &opts).unwrap();
+    let r = latest(&cache, None).unwrap().unwrap();
+    let csv = render(&cache, &r, Format::Csv).unwrap();
+    assert!(csv.lines().nth(1).unwrap().starts_with(&format!("CVE-2026-1001,,{link},akismet,wordpress,")), "{csv}");
+    let jsonl = render(&cache, &r, Format::Jsonl).unwrap();
+    assert!(jsonl.contains(&format!("\"url\":\"{link}\"")), "{jsonl}");
+    let md = render(&cache, &r, Format::Md).unwrap();
+    assert!(md.contains("## WordPress core, plugins and themes (1 fail, 0 warn)"), "{md}");
+    assert!(md.contains("## Notices") && md.contains("Defiant Inc.") && md.contains(DEFIANT_LICENSE), "{md}");
+    assert!(md.contains(MITRE_LICENSE), "the CVE id: MITRE's notice too");
+    let html = render(&cache, &r, Format::Html).unwrap();
+    assert!(html.contains("Copyright 2012-") && html.contains("\"notices\""), "the bundle carries the notices");
+    // Without a Wordfence finding there is nothing to credit.
+    let other = crate::finding::Finding { kind: "project".into(), note: "x".into(), ..finding.clone() };
+    cache.replace_findings(std::slice::from_ref(&other)).unwrap();
+    history::record_scan_totals(&cache, 2.0, std::slice::from_ref(&other), &[], (0, 0), &opts).unwrap();
+    let r = latest(&cache, None).unwrap().unwrap();
+    assert!(!render(&cache, &r, Format::Md).unwrap().contains("## Notices"));
+}
+
 #[test]
 fn staging_preserves_previous_report_and_cleans_up() {
     let dir = std::env::temp_dir().join(format!("pantry-html-test-{}", std::process::id()));

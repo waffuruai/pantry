@@ -16,7 +16,7 @@ const ctx={document,window:{addEventListener(type,fn){events['window:'+type]=fn}
 function load(bundle){
   elements['pantry-bundle']=undefined; el('pantry-bundle').textContent=JSON.stringify(bundle);
   el('waffuru-mark').src='data:image/png;base64,AAAA';
-  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,state};";
+  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,wordfenceLink,state};";
   vm.runInNewContext(viewer.replace(/\nrender\(\);\n\}\)\(\);\s*$/, '\nrender();'+hook+'\n})();'),ctx);
   assert(ctx.viewerTest,'the test hook replaced the final render() call');
 }
@@ -41,6 +41,8 @@ assert.equal(wellFormed('<div><p>x</div>'),'</div> closes p at 9');
 assert.equal(wellFormed('<div><br><img src=x>ok</div>'),null);
 
 /* ---------- a scan of every kind, one finding per priority bucket ---------- */
+// A one-line command as the viewer marks it up: each word kept whole.
+function codeOf(cmd){return '<code>'+cmd.split(/(\s+)/).map(w=>/^\s*$/.test(w)?esc(w):'<span class="w">'+esc(w)+'</span>').join('')+'</code>'}
 function finding(kind,component,vuln_id,status,extra){
   return Object.assign({kind,component,version:'1.0',location:'/Users/me/w/'+component,vuln_id,status,fixed:'',kev:false,severity:'',note:'why '+component,fix_cmd:'',fix_auto:false,dep_scope:'unknown',dep_direct:null,affected_range:''},extra||{});
 }
@@ -49,7 +51,7 @@ const every=[
   finding('clipper','ClipGrab','CLIPPER-PERSISTENCE','fail',{fix_cmd:"Don't send funds from this machine; remove ClipGrab"}),
   finding('extension','evil.helper','MALICIOUS','fail',{severity:'MALICIOUS',kev:true,fix_cmd:'code --uninstall-extension evil.helper',fix_auto:true}),
   finding('secret','repo-b/.env','aws-access-token','fail',{fix_cmd:'# If it\'s real: rotate it first, then take it out of history.\ngit -C ~/w/repo-b show abc:.env | sed -n 3p\ngit -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact\nprintf \'\\\\n[secret aws-access-token]\\\\n%s\\\\n\' /.env >> ~/w/repo-b/.pantryignore'}),
-  finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock',cvss:9.8,cvss_version:'3.1',epss:0.0213,epss_percentile:0.84}),
+  finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock',cvss:9.8,cvss_version:'3.1',epss:0.0213,epss_percentile:0.84,epss_date:'2026-11-05T12:03:04Z',epss_model:'v2026.06.15'}),
   finding('project','smallvec','CVE-2019-15551','fail',{severity:'HIGH',fixed:'1.0.0',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,location:'/Users/me/w/app/Cargo.lock'}),
   finding('runtime','python','EOL','fail',{version:'3.8',fixed:'3.13',fix_cmd:'mise install python@3.13'}),
   finding('brew','openssl@3','CVE-2026-1','fail',{severity:'HIGH',fixed:'3.5.2',fix_cmd:'brew upgrade openssl@3',fix_auto:true}),
@@ -74,8 +76,9 @@ const every=[
   finding('license','left-pad','LICENSE','warn',{fix_cmd:'Allow WTFPL in licenses.txt or replace left-pad'}),
   finding('config','~/.npmrc','NPM-SCRIPTS','warn',{fix_cmd:'npm config set ignore-scripts true'}),
   finding('account','me@example.com','BREACH','warn',{fix_cmd:'Change the password used at the breached site'}),
-  finding('unchecked','CISA KEV','UNCHECKED','warn',{note:'offline and not cached <b>x</b>',location:'',version:''}),
-  finding('unchecked','repo dependencies against OSV','UNCHECKED','warn',{note:'offline and not cached',location:'',version:''}),
+  finding('wordpress','akismet','61c39f5f-3b17-4e4d-824e-241159a73400','warn',{severity:'LOW',fixed:'5.3.2',fix_cmd:'wp plugin update akismet --path=/Users/me/w/site',note:'XSS (Wordfence: https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400)'}),
+  finding('unchecked','CISA KEV','UNREACHABLE','warn',{note:'offline and not cached <b>x</b>',location:'',version:''}),
+  finding('unchecked','repo dependencies against OSV','UNCHECKED','warn',{note:'3 over 10 MB',fix_cmd:'wpantry scan --path ~/r --no-machine --deep',location:'',version:''}),
 ];
 function planOf(findings){ // the shape src/reporters/html.rs writes: one step per command, fails first
   const by=new Map(); findings.forEach((f,i)=>{if(!f.fix_cmd||f.kind==='unchecked')return; if(!by.has(f.fix_cmd))by.set(f.fix_cmd,{command:f.fix_cmd,mode:f.fix_auto?'auto':(f.status==='fail'?'manual':'optional'),findings:[]}); by.get(f.fix_cmd).findings.push(i)});
@@ -93,13 +96,17 @@ const bundle={scan_id:42,runs:[{title:'Security scan',file:'wpantry scan',report
 load(bundle);
 const page=main();
 assert.equal(wellFormed(page),null,'screen page');
+assert(page.includes('EPSS scores by <a href="https://www.first.org/epss/" target="_blank" rel="noopener noreferrer">FIRST</a>, 2026-11-05, model v2026.06.15'),'the EPSS credit, with the copy');
 
 // 1 SCANNED: the counts by area, and every unchecked source as a gap, never under an area.
 const scanned=section('scanned');
 for(const k of Object.keys(report.checked))assert(scanned.includes('<div class="v">'+report.checked[k]+'</div><div class="k">'+esc(k)+'</div>'),k);
-assert(scanned.includes('2 sources could not be checked'));
+assert(scanned.includes('2 things could not be checked'));
+assert(scanned.includes('1 source could not be reached: re-run when online.'),'only the unreachable one is put down to the network');
+assert(scanned.includes('<span class="why">3 over 10 MB</span><div class="fix">'+codeOf('wpantry scan --path ~/r --no-machine --deep')+'<button class="copy" type="button" data-copy="wpantry scan --path ~/r --no-machine --deep">Copy</button></div>'),'a gap\'s command, whole and copyable');
 for(const f of every.filter(f=>f.kind==='unchecked')){
-  assert(scanned.includes('<div class="gap"><span class="badge gap">Not checked</span><b>'+esc(f.component)+'</b>'),f.component);
+  const badge=f.vuln_id==='UNREACHABLE'?'Unreachable':'Not checked';
+  assert(scanned.includes('<div class="gap"><span class="badge gap">'+badge+'</span><b>'+esc(f.component)+'</b>'),f.component);
   for(const [kind,markup] of areas())assert(!markup.includes(esc(f.component)),kind+' lists a gap as a finding');
 }
 assert(!/every source answered|no coverage gaps were recorded/i.test(scanned),'gaps are never reported as clean');
@@ -141,23 +148,25 @@ const opened=areas().find(x=>x[0]==='project')[1];
 assert(opened.includes('CVE-2019-15551') && opened.includes('href="https://www.cve.org/CVERecord?id=CVE-2021-25900"'));
 assert(opened.includes('CVSS 9.8 (v3.1)') && opened.includes('EPSS 2.1% (84th pct)'),'scores beside the advisory');
 assert(opened.includes('affected &gt;=1.6.0, &lt;1.6.1') && opened.includes('<dt>Dependency scope</dt><dd>runtime</dd>') && opened.includes('Direct'));
-assert(opened.includes('<span class="who">by hand</span><code>cd /Users/me/w/app &amp;&amp; cargo update -p smallvec --precise 1.6.1</code>'));
+assert(opened.includes('<span class="who">by hand</span>'+codeOf('cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1')+''));
 click({open:String(smallvec)});
 // rule kinds and markers never get an advisory link
 for(const [kind,vuln_id] of [['repo-hook','RUNS-REPO-FILE'],['posture','POSTURE-FIREWALL'],['hidden-text','HIDDEN-PROMPT'],['suspect-code','SUSPECT-TYPOSQUAT'],['document','MALWARE'],['clipper','CLIPPER-EXTENSION'],['secret','generic-api-key']]){
   assert(!ctx.viewerTest.isAdvisory({...every[0],kind,vuln_id}));
   assert(!ctx.viewerTest.isAdvisory({...every[0],kind,vuln_id:'FUTURE-RULE'}));
 }
-for(const id of ['UNPINNED','UNCHECKED','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA'])assert(!ctx.viewerTest.isAdvisory({...every[4],vuln_id:id}));
+for(const id of ['UNPINNED','UNCHECKED','UNREACHABLE','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA'])assert(!ctx.viewerTest.isAdvisory({...every[4],vuln_id:id}));
 assert(ctx.viewerTest.isAdvisory(every[4]));
 every.forEach((f,i)=>click({open:String(i)}));
 assert(!main().includes('https://osv.dev/vulnerability/'),'every id here is a CVE or a rule');
+assert(main().includes('<a href="https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400"'),'a Wordfence record links Wordfence');
+assert.equal(main().split('wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400" target').length,2,'once');
 every.forEach((f,i)=>click({open:String(i)}));
 
 // 3 PATCHING: unattended commands, what the history says was patched, what has no fix.
 const patching=section('patching');
 const autoCmds=[...new Set(every.filter(f=>f.fix_auto).map(f=>f.fix_cmd))];
-for(const c of autoCmds)assert(patching.split('Patched')[0].includes('<code>'+esc(c)+'</code>'),'runs for you: '+c);
+for(const c of autoCmds)assert(patching.split('Patched')[0].includes(codeOf(c)),'runs for you: '+c);
 assert(patching.includes('<div class="big">'+autoCmds.length+'<small>commands</small></div>'));
 assert(patching.includes('<span class="badge ok">Verified</span><code>brew upgrade curl</code>') && patching.includes('verified by scan #4'));
 assert(patching.includes('1 other fix ran: 1 failed, 0 not yet verified'));
@@ -170,17 +179,17 @@ assert(patching.includes('1 more applicable advisory has no released fix'));
 assert(patching.includes('wpantry watch'));
 
 // 4 BY HAND: every non-auto fix_cmd as a numbered step, failures before warnings, none of the unattended ones.
-const manualCmds=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto).map(f=>f.fix_cmd))];
-const failSteps=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd))].length;
+const manualCmds=[...new Set(every.filter(f=>f.kind!=='unchecked'&&f.fix_cmd&&!f.fix_auto).map(f=>f.fix_cmd))];
+const failSteps=[...new Set(every.filter(f=>f.kind!=='unchecked'&&f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd))].length;
 assert(section('manual').includes('1\u201310 of '+(manualCmds.length-failSteps)+' steps') && !section('manual').includes('of '+failSteps+' steps'),'ten steps a page by default; a list that fits is not paged');
 click({size:'manual',n:'100'}); // one page, for the checks below
 const manual=section('manual');
 // a script is highlighted, so it is compared as text
 const text=h=>h.replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
-for(const c of manualCmds)assert(c.includes('\n')?text(manual).includes(c):manual.includes('<code>'+esc(c)+'</code>'),'by hand: '+c);
+for(const c of manualCmds)assert(c.includes('\n')?text(manual).includes(c):manual.includes(codeOf(c)),'by hand: '+c);
 assert(manual.includes('<code class="sh"><span class="c"># If it&#39;s real: rotate it first') && manual.includes('<span class="k">git</span> <span class="f">-C</span>'),'a script is highlighted');
 assert(!manual.includes('<code class="sh">sudo fdesetup'),'one line is not a script');
-for(const c of autoCmds)assert(!manual.includes('<code>'+esc(c)+'</code>'),'not by hand: '+c);
+for(const c of autoCmds)assert(!manual.includes(codeOf(c)),'not by hand: '+c);
 assert.equal((manual.match(/<li class="opt">|<li>/g)||[]).length,manualCmds.length);
 const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth doing')[1];
 assert(needs.includes('sudo fdesetup enable') && text(needs).includes('git -C ~/w/repo-b show abc:.env | sed -n 3p\ngit -C ~/.pantry-rewrite.git filter-repo') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
@@ -193,6 +202,9 @@ assert(callout().includes('Copy agent prompt') && callout().includes('Preview pr
 assert(callout().includes('Read the report before you hand it over.') && !callout().includes('Waffuru AI, Inc. is not liable'),'the caution stays, the disclaimer moves');
 const foot=()=>main().split('<footer class="foot">')[1];
 assert(foot().indexOf('a fresh scan is.')<foot().indexOf('Waffuru AI, Inc. is not liable'),'the disclaimer closes the footer, after the scan notice');
+assert(foot().includes('Defiant Inc.') && foot().includes('wordfence-intelligence-terms-and-conditions'),'a Wordfence finding brings Defiant\u2019s notice');
+assert.equal(ctx.viewerTest.wordfenceLink(every.find(f=>f.kind==='wordpress')),'https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400');
+assert.equal(ctx.viewerTest.wordfenceLink(every[0]),'');
 assert(callout().includes('class="btn primary" type="button" data-agent-prompt="1"'),'copying is the primary, gold action');
 click({preview:'1'});
 assert(callout().includes('<pre>Patch what a Pantry security scan found') && callout().includes('`wpantry fix next --json`'),'the preview is the guide');
@@ -211,7 +223,7 @@ load(bundle);
 // hero and navigation
 assert(page.includes('<b>erics-mac</b> · eric') && page.includes('scan #42') && page.includes('wpantry 0.2.0') && page.includes('What this machine is <em>exposed</em> to'));
 assert(page.includes('things to update') && page.includes('Results cover only what was checked'));
-assert(page.includes('2 sources not checked: coverage is incomplete.'));
+assert(page.includes('2 things not checked: coverage is incomplete.'));
 assert(page.includes('href="#risk"') && page.includes('href="#manual"') && page.includes('href="#history"'));
 
 // escaping: hostile text stays text
@@ -252,7 +264,7 @@ assert(printed.includes('CVE-2019-15551'),'print opens every row');
 assert(!printed.includes('<button') && !printed.includes('Copy agent prompt') && !printed.includes('class="jump"'));
 assert(!printed.includes('class="fleet"'),'print leaves the callout out');
 assert(printed.includes('Waffuru AI, Inc. is not liable') && printed.includes('Read the report before you hand it over.'),'print keeps the caution and the notice');
-assert(printed.includes('Not checked') && printed.includes('CISA KEV') && printed.includes('sudo fdesetup enable') && printed.includes('Exposure log'));
+assert(printed.includes('Not checked') && printed.includes('CISA KEV') && text(printed).includes('sudo fdesetup enable') && printed.includes('Exposure log'));
 assert.equal(main(),screenBefore,'print leaves the screen alone');
 events['window:afterprint']();
 assert.equal(elements['print-report'].innerHTML,'');

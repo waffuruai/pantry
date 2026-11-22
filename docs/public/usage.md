@@ -26,7 +26,10 @@ wpantry help                                       # every command (wpantry help
 By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
 - `--path DIR` checks only the repos and files at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks. Nothing else of yours is read: not Downloads, Desktop, Documents or the temp directories. The machine inventory still runs, unless `--no-machine`.
-- `--deep` reads everything in scope, and is slower: the malware scan reads every file (all of `~`, or each `--path`) with every system's rules, and the secret scan reads history files up to 256 MB with no time limit. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
+- `--deep` reads everything in scope, and is slower: every file of the computer this user can read, `~` first (or each `--path`), for malware with every system's rules and for secrets, plus history files up to 256 MB with no time limit. Hours on a first run; after that only what changed is read.
+  - **What it reads:** on macOS the data volume's folders and each local volume under `/Volumes`, never the read-only system volume; on Linux `/`, less `/proc`, `/sys`, `/dev`, `/run` and network or pseudo mounts. Network shares are never read.
+  - **Secrets in files:** an uncommitted `.env`, `~/.aws/credentials`, a key under `/opt`. A secret already found in history isn't reported twice.
+  - **Not checked:** folders this user can't read, by place (on macOS, give your terminal Full Disk Access), and files over 10 MB for secrets. When a repo's history couldn't all be read, its "not checked" row gives the command to copy: `wpantry scan --path <repo> --no-machine --deep`.
 - `--no-machine` skips the machine: repo checks only.
 
 What a run couldn't check is reported "not checked", never clean.
@@ -162,6 +165,7 @@ wpantry cache prune                                # drop what no scan used in 9
 - `sync` refreshes what the cache already knows, so a later `scan --offline` is current. It inventories nothing:
   - the feeds: CISA KEV, EPSS, the malicious-package index, Homebrew casks, Chrome, Firefox, VS Code's extension lists, the latest Pantry;
   - once a malware scan fetched them: YARA Forge's rules, signature-base's and Feodo Tracker's lists;
+  - Elastic's rules, once turned on ([malware.md](malware.md#adding-elastics-rules)), replacing a copy you added by hand; and the rules and lists of your sources file you said yes to; a rules file put in the rules directory by hand is named, since nothing can update it;
   - once PostgreSQL was found: its security page;
   - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, upstream repos' release tags, and CVE scores (OSV, CVE.org).
 - `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).
@@ -240,6 +244,7 @@ See [upgrade](install.md#upgrade).
  "findings": [{"kind": "project", "component": "smallvec", "version": "1.6.0", "location": "/home/me/code/app/Cargo.lock",
                "vuln_id": "CVE-2021-25900", "status": "fail", "fixed": "1.6.1", "kev": true, "severity": "CRITICAL",
                "cvss": 9.8, "cvss_version": "3.1", "epss": 0.0213, "epss_percentile": 0.84,
+               "epss_date": "2026-11-05T12:03:04Z", "epss_model": "v2026.06.15",
                "note": "…", "fix_cmd": "…", "fix_auto": false}]
 }
 ```
@@ -264,6 +269,7 @@ See [upgrade](install.md#upgrade).
 - The id of a CVE that applies and has no CVSS score goes to OSV.dev, then CVE.org.
 - The vendor and product names of the runtimes and datastores Pantry looks up CVE records for (Oracle's Java SE and MySQL Server) go to CIRCL's Vulnerability-Lookup. Versions aren't sent: the records are compared here.
 - Feeds are downloaded whole.
+- With `WORDFENCE_API_KEY` set, the key goes to Wordfence to download its whole WordPress feed; nothing about your sites is sent.
 - The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
 
 Source by source: [what is sent](checks-and-sources.md#sources). Every request names `wpantry` in its User-Agent and times out after 30 seconds.
@@ -275,6 +281,7 @@ Source by source: [what is sent](checks-and-sources.md#sources). Every request n
 | `WPANTRY_DB` | The cache file |
 | `GITHUB_TOKEN` | Lifts GitHub's anonymous rate limit for latest-release lookups |
 | `HIBP_API_KEY` | The breach check uses Have I Been Pwned |
+| `WORDFENCE_API_KEY` | Check WordPress core, plugins and themes against Wordfence Intelligence. The key is free from a [wordfence.com](https://www.wordfence.com) account and is yours alone: Wordfence's terms forbid sharing it. Without it, each WordPress site is reported "not checked" |
 | `WPANTRY_TIMINGS` | Print each scan step's elapsed time on stderr |
 | `WPANTRY_ALLOW_SLEEP` | `1`: let the Mac idle-sleep during a scan, as `--allow-sleep` does |
 | `NO_COLOR` | Turn colour off. Colour is only ever used on a terminal |
@@ -365,9 +372,10 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
-                            --path) with every system's rules; the secret scan, history files up to
-                            256 MB with no time limit
+  --deep                    read everything in scope (slower): every file of the computer this user
+                            can read, ~ first (or each --path), for malware with every system's
+                            rules and for secrets; git history's files up to 256 MB with no time
+                            limit
   --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
                             passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
@@ -443,9 +451,10 @@ Options:
                             ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
-  --deep                    read everything in scope (slower): the malware scan, all of ~ (or each
-                            --path) with every system's rules; the secret scan, history files up to
-                            256 MB with no time limit
+  --deep                    read everything in scope (slower): every file of the computer this user
+                            can read, ~ first (or each --path), for malware with every system's
+                            rules and for secrets; git history's files up to 256 MB with no time
+                            limit
   --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
                             passes, reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or

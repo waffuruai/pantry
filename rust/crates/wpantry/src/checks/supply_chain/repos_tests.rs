@@ -9,6 +9,7 @@ fn git_repo(path: &Path, worktree: bool) -> PathBuf {
         std::fs::write(path.join(".git"), "gitdir: /elsewhere\n").unwrap();
     } else {
         std::fs::create_dir(path.join(".git")).unwrap();
+        std::fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     }
     path.to_path_buf()
 }
@@ -25,6 +26,8 @@ fn default_scope_walks_home_and_prunes_caches() {
     ];
     git_repo(&h.join("code/app/vendored/inner"), false);
     git_repo(&h.join("code/app-feature"), true);
+    // A downloaded template's empty .git: not a repo.
+    std::fs::create_dir_all(h.join("Downloads/template/.git")).unwrap();
     for pruned in [
         "Library/x",
         ".Trash/x",

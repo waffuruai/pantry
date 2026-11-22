@@ -450,7 +450,7 @@ pub(crate) fn fetch_records(net: &dyn Net, ids: &[Want], status: Status) -> Resu
     Ok(out)
 }
 
-fn norm_repo(url: &str) -> String {
+pub(crate) fn norm_repo(url: &str) -> String {
     let u = url.to_lowercase();
     let u = u.strip_suffix('/').unwrap_or(&u);
     u.strip_suffix(".git").unwrap_or(u).to_string()

@@ -66,6 +66,41 @@ max_bytes = 16777216
 sends = "product"
 
 [[source]]
+id = "wordfence"
+kind = "advisories"
+format = "wordfence-v3"
+url = "https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production"
+tier = "default"
+refresh = "1d"
+license = "Wordfence Intelligence terms (free, commercial use included; each finding links its record and reproduces Defiant's copyright and licence)"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
+id = "homebrew-formulae"
+kind = "releases"
+format = "homebrew-formula"
+url = "https://formulae.brew.sh/api/formula/{}.json"
+tier = "default"
+refresh = "7d"
+license = "BSD-2-Clause"
+redistribute = true
+max_bytes = 4194304
+sends = "formula"
+
+[[source]]
+id = "homebrew-advisories"
+kind = "advisories"
+format = "vulnerability-lookup-osv"
+url = "https://vulnerability.circl.lu/api/vulnerability/?source=osv_homebrew&product={}"
+tier = "default"
+refresh = "1d"
+license = "CC0-1.0 (Homebrew advisory database; mirror by CIRCL)"
+redistribute = true
+max_bytes = 16777216
+sends = "formula"
+
+[[source]]
 id = "cisa-kev"
 kind = "kev"
 format = "kev"
@@ -272,6 +307,18 @@ redirects = ["release-assets.githubusercontent.com", "objects.githubusercontent.
 tier = "default"
 refresh = "1d"
 license = "mixed (per rule; some sources unlicensed)"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
+id = "elastic"
+kind = "yara"
+format = "github-zip"
+url = "https://api.github.com/repos/elastic/protections-artifacts/zipball/main"
+redirects = ["codeload.github.com"]
+tier = "off"
+refresh = "1d"
+license = "Elastic License 2.0"
 redistribute = false
 max_bytes = 134217728
 

@@ -70,6 +70,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "cvss_version", "TEXT"),
     ("exposures", "epss", "REAL"),
     ("exposures", "epss_percentile", "REAL"),
+    ("findings", "epss_date", "TEXT"),
+    ("findings", "epss_model", "TEXT"),
+    ("exposures", "first_epss", "REAL"),
+    ("exposures", "first_epss_percentile", "REAL"),
     ("fixes", "host", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("kev", "product", "TEXT"),
@@ -154,6 +158,7 @@ impl Cache {
         conn.execute_batch(crate::sources::cve_scores::SCHEMA)?;
         conn.execute_batch(crate::checks::malware::rulegen::SCHEMA)?;
         conn.execute_batch(crate::sources::hash_lookups::VERDICT_SCHEMA)?;
+        conn.execute_batch(crate::sources::wordfence::SCHEMA)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
              CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
@@ -462,8 +467,9 @@ impl Cache {
         self.conn.execute("DELETE FROM findings", [])?;
         let mut stmt = self.conn.prepare(
             "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
-             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, \
+             epss_date, epss_model) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )?;
         for f in findings {
             stmt.execute(params![
@@ -485,7 +491,9 @@ impl Cache {
                 f.cvss,
                 f.cvss_version,
                 f.epss,
-                f.epss_percentile
+                f.epss_percentile,
+                f.epss_date,
+                f.epss_model
             ])?;
         }
         Ok(())

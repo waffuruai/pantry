@@ -151,7 +151,7 @@ fn recovery_skips_a_bad_rule() {
             rule good2 { strings: $h = { 4D } condition: $h }
             rule ` { }
             rule good3 { condition: false }"#;
-    let (file, errors) = parse_recovering(src, Syntax::Strict);
+    let (file, errors, _) = parse_items(src, Syntax::Strict);
     assert_eq!(file.rules.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["good1", "good2", "good3"]);
     assert_eq!(errors.len(), 2);
     assert_eq!(errors[0].0, "bad");
@@ -166,4 +166,21 @@ fn condition_errors() {
         let src = format!("rule r {{ strings: $a = \"x\" condition: {bad} }}");
         assert!(parse(&src, Syntax::Strict).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn each_import_and_rule_spans_its_own_text_and_the_comments_before_it() {
+    let src = "import \"pe\"\n// a\nrule a { condition: true }  rule b { condition: nope( }\n/* c */ rule c { condition: true }\n// end\n";
+    let (file, errors, items) = parse_items(src, Syntax::Relaxed);
+    assert_eq!((file.rules.len(), errors.len()), (2, 1));
+    let texts: Vec<(&str, Item)> = items.iter().map(|(r, i)| (&src[r.clone()], *i)).collect();
+    assert_eq!(
+        texts,
+        vec![
+            ("import \"pe\"", Item::Import),
+            ("\n// a\nrule a { condition: true }", Item::Rule(0)),
+            ("  rule b { condition: nope( }", Item::Failed),
+            ("\n/* c */ rule c { condition: true }\n// end\n", Item::Rule(1)),
+        ]
+    );
 }

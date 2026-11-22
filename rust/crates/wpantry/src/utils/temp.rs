@@ -7,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A directory removed (with its contents) when dropped.
 pub struct TempDir {
-    root: PathBuf,
     path: PathBuf,
 }
 
@@ -32,25 +31,7 @@ impl TempDir {
             builder.mode(0o700);
         }
         builder.create(&dir)?;
-        Ok(TempDir { root: dir.clone(), path: dir })
-    }
-
-    /// A temporary directory whose [`TempDir::path`] is four levels below its
-    /// root, out of reach of a machine scan: that scan walks the system temp
-    /// directories two levels deep (`malware::targets::SHALLOW`), and a test
-    /// running one alongside would open this test's files. For tests that
-    /// count opens (`files::view::opens`).
-    ///
-    /// ```ignore
-    /// let d = TempDir::out_of_scan_reach("pass").unwrap();
-    /// std::fs::write(d.path().join("a.sh"), "#!/bin/sh\n").unwrap();
-    /// ```
-    #[cfg(test)]
-    pub fn out_of_scan_reach(label: &str) -> Result<TempDir> {
-        let mut d = TempDir::new(label)?;
-        d.path = d.root.join("out/of/scan/reach");
-        std::fs::create_dir_all(&d.path)?;
-        Ok(d)
+        Ok(TempDir { path: dir })
     }
 
     pub fn path(&self) -> &Path {
@@ -60,6 +41,6 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }

@@ -14,6 +14,8 @@ pub mod extensions;
 pub mod fetch;
 pub mod file;
 pub mod hash_lookups;
+pub mod homebrew_advisories;
+pub mod homebrew_formulae;
 pub mod indicator_lists;
 pub mod indicator_store;
 pub mod kev;
@@ -27,3 +29,4 @@ pub mod releases;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod user;
+pub mod wordfence;

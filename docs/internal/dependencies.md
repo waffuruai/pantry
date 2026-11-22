@@ -87,3 +87,5 @@ rustls, ring, webpki and the platform verifier are most of the dependency surfac
 ## Desktop dependencies
 
 Pantry Desktop uses the same egui version as Uchi through `eframe` 0.37.0. Its only other direct dependencies are `serde` and `serde_json` for the scanner and automation interfaces. The desktop crate has its own exact pins and lockfile. The scanner workspace retains its dependency allowlist. The release generates desktop licence notices from its locked graph and includes the OFL notices for the Waffuru fonts.
+
+The release packager, `wpantry-release` in `desktop/release`, runs only in the release jobs and `install-local.sh` and ships in no download. Its one dependency is `miniz_oxide` 0.9.1, the version the desktop graph already locks, with its own exact pin and lockfile.

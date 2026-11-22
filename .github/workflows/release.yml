@@ -98,6 +98,9 @@ jobs:
       RUST_TARGETS: ${{ matrix.rust }}
       ASSET: wpantry-${{ matrix.target }}${{ matrix.ext }}
       DESKTOP_PYTHON: ${{ matrix.python || 'python3' }}
+      # The release packager (desktop/release), built from each checkout.
+      PACK_ONE: one/desktop/release/target/release/wpantry-release
+      PACK_TWO: two/elsewhere/desktop/release/target/release/wpantry-release
       DESKTOP_TARGET: ${{ matrix.desktop || matrix.target }}
       DESKTOP_ASSET: wpantry-desktop-${{ matrix.desktop || matrix.target }}.zip
       SETUP_ASSET: wpantry-setup-${{ matrix.desktop || matrix.target }}${{ matrix.setup_ext }}
@@ -146,12 +149,19 @@ jobs:
           name: desktop-notices
           path: notices
 
+      # The packager's own output is compared too: package and setup bundle
+      # run once from each checkout below.
+      - name: Build the release packager twice
+        run: |
+          (cd one/desktop/release && cargo build --quiet --release --locked)
+          (cd two/elsewhere/desktop/release && cargo build --quiet --release --locked)
+
       - name: Build and package desktop twice
         run: |
           one/rust/release/build.sh "$DESKTOP_TARGET" "desktop-one${{ matrix.ext }}" wpantry-desktop
           two/elsewhere/rust/release/build.sh "$DESKTOP_TARGET" "desktop-two${{ matrix.ext }}" wpantry-desktop
-          "$DESKTOP_PYTHON" one/desktop/release/package.py "$DESKTOP_TARGET" "desktop-one${{ matrix.ext }}" "dist/$ASSET" notices/PANTRY-DESKTOP-NOTICES.txt "dist/$DESKTOP_ASSET"
-          "$DESKTOP_PYTHON" two/elsewhere/desktop/release/package.py "$DESKTOP_TARGET" "desktop-two${{ matrix.ext }}" "second-build${{ matrix.ext }}" notices/PANTRY-DESKTOP-NOTICES.txt second-desktop.zip
+          "$PACK_ONE" package "$DESKTOP_TARGET" "desktop-one${{ matrix.ext }}" "dist/$ASSET" notices/PANTRY-DESKTOP-NOTICES.txt "dist/$DESKTOP_ASSET"
+          "$PACK_TWO" package "$DESKTOP_TARGET" "desktop-two${{ matrix.ext }}" "second-build${{ matrix.ext }}" notices/PANTRY-DESKTOP-NOTICES.txt second-desktop.zip
           cmp "dist/$DESKTOP_ASSET" second-desktop.zip || { echo "::error::the two desktop bundles differ"; exit 1; }
 
       - name: Test the packaged desktop and its scanner
@@ -159,7 +169,7 @@ jobs:
 
       - name: Build, compare and test Pantry Setup
         run: |
-          "$DESKTOP_PYTHON" one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          "$PACK_ONE" setup payload "dist/$DESKTOP_ASSET" setup-payload.zlib
           if [ "$RUNNER_OS" != macOS ]; then
             if [ "$RUNNER_OS" = Windows ]; then
               PANTRY_SETUP_PAYLOAD=$(cygpath -w "$PWD/setup-payload.zlib")
@@ -170,8 +180,8 @@ jobs:
           fi
           one/rust/release/build.sh "$DESKTOP_TARGET" "setup-one${{ matrix.ext }}" wpantry-setup
           two/elsewhere/rust/release/build.sh "$DESKTOP_TARGET" "setup-two${{ matrix.ext }}" wpantry-setup
-          "$DESKTOP_PYTHON" one/desktop/release/setup.py bundle "$DESKTOP_TARGET" "setup-one${{ matrix.ext }}" setup-payload.zlib "dist/$SETUP_ASSET"
-          "$DESKTOP_PYTHON" two/elsewhere/desktop/release/setup.py bundle "$DESKTOP_TARGET" "setup-two${{ matrix.ext }}" setup-payload.zlib "second-$SETUP_ASSET"
+          "$PACK_ONE" setup bundle "$DESKTOP_TARGET" "setup-one${{ matrix.ext }}" setup-payload.zlib "dist/$SETUP_ASSET"
+          "$PACK_TWO" setup bundle "$DESKTOP_TARGET" "setup-two${{ matrix.ext }}" setup-payload.zlib "second-$SETUP_ASSET"
           cmp "dist/$SETUP_ASSET" "second-$SETUP_ASSET"
           "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --setup "dist/$SETUP_ASSET"
 
@@ -184,15 +194,14 @@ jobs:
       - name: Ad-hoc sign the app bundles (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_CERT != 'true'
         run: |
-          sign=one/desktop/release/sign.py
-          python3 "$sign" macos "dist/$DESKTOP_ASSET"
-          python3 "$sign" macos second-desktop.zip
+          "$PACK_ONE" sign macos "dist/$DESKTOP_ASSET"
+          "$PACK_ONE" sign macos second-desktop.zip
           cmp "dist/$DESKTOP_ASSET" second-desktop.zip || { echo "::error::ad-hoc signing of the desktop bundle is not deterministic"; exit 1; }
-          python3 one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
-          python3 one/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-one setup-payload.zlib "dist/$SETUP_ASSET"
-          python3 two/elsewhere/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-two setup-payload.zlib "second-$SETUP_ASSET"
-          python3 "$sign" macos "dist/$SETUP_ASSET"
-          python3 "$sign" macos "second-$SETUP_ASSET"
+          "$PACK_ONE" setup payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          "$PACK_ONE" setup bundle "$DESKTOP_TARGET" setup-one setup-payload.zlib "dist/$SETUP_ASSET"
+          "$PACK_TWO" setup bundle "$DESKTOP_TARGET" setup-two setup-payload.zlib "second-$SETUP_ASSET"
+          "$PACK_ONE" sign macos "dist/$SETUP_ASSET"
+          "$PACK_ONE" sign macos "second-$SETUP_ASSET"
           cmp "dist/$SETUP_ASSET" "second-$SETUP_ASSET" || { echo "::error::ad-hoc signing of Setup is not deterministic"; exit 1; }
 
       # Off until the secrets exist (docs/internal/release.md, "Code
@@ -222,10 +231,10 @@ jobs:
           [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in APPLE_DEVELOPER_ID_P12"; exit 1; }
           xcrun notarytool store-credentials pantry-notary --keychain "$keychain" \
             --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
-          sign=(python3 one/desktop/release/sign.py macos --identity "$identity" --keychain "$keychain" --notary-profile pantry-notary)
+          sign=("$PACK_ONE" sign macos --identity "$identity" --keychain "$keychain" --notary-profile pantry-notary)
           "${sign[@]}" "dist/$DESKTOP_ASSET"
-          python3 one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
-          python3 one/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-one setup-payload.zlib "dist/$SETUP_ASSET"
+          "$PACK_ONE" setup payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          "$PACK_ONE" setup bundle "$DESKTOP_TARGET" setup-one setup-payload.zlib "dist/$SETUP_ASSET"
           "${sign[@]}" "dist/$SETUP_ASSET"
 
       # Off until the secret exists. Setup embeds its payload when it is
@@ -250,11 +259,11 @@ jobs:
           }
           trap forget EXIT
           [ -n "$thumbprint" ] || { echo "::error::could not import WINDOWS_SIGNING_PFX"; exit 1; }
-          sign=(python one/desktop/release/sign.py windows --thumbprint "$thumbprint")
+          sign=("$PACK_ONE" sign windows --thumbprint "$thumbprint")
           "${sign[@]}" "dist/$DESKTOP_ASSET"
-          python one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          "$PACK_ONE" setup payload "dist/$DESKTOP_ASSET" setup-payload.zlib
           PANTRY_SETUP_PAYLOAD=$(cygpath -w "$PWD/setup-payload.zlib") one/rust/release/build.sh "$DESKTOP_TARGET" setup-signed.exe wpantry-setup
-          python one/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-signed.exe setup-payload.zlib "dist/$SETUP_ASSET"
+          "$PACK_ONE" setup bundle "$DESKTOP_TARGET" setup-signed.exe setup-payload.zlib "dist/$SETUP_ASSET"
           "${sign[@]}" "dist/$SETUP_ASSET"
 
       - name: Test the signed packages

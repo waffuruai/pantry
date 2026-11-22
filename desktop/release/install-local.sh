@@ -8,7 +8,7 @@
 #   desktop/release/install-local.sh --open       build, install, open Pantry
 #   desktop/release/install-local.sh --no-install build only; files in desktop/dist/
 #
-# Needs the pinned Rust toolchain (rust/rust-toolchain.toml) and python3.
+# Needs the pinned Rust toolchain (rust/rust-toolchain.toml).
 # Nothing is downloaded except the crates cargo fetches. On macOS the app is
 # signed ad hoc (no certificate), as an unsigned release is. Runs in Git Bash
 # on Windows.
@@ -50,18 +50,6 @@ root="$(dirname "$desktop")"
 build="$root/rust/release/build.sh"
 dist="$desktop/dist"
 
-# Python: python3, or python where only that exists (Windows).
-python="${PYTHON:-}"
-if [ -z "$python" ]; then
-  for candidate in python3 python; do
-    if command -v "$candidate" >/dev/null && "$candidate" -c 'import sys; assert sys.version_info >= (3, 11)' 2>/dev/null; then
-      python="$candidate"
-      break
-    fi
-  done
-fi
-[ -n "$python" ] || { echo "install-local.sh: needs Python 3.11 or newer (python3)" >&2; exit 1; }
-
 # The pinned toolchain must already be installed: this script does not
 # download toolchains.
 toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$root/rust/rust-toolchain.toml")"
@@ -92,7 +80,7 @@ fi
 mkdir -p "$dist"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-# Git Bash: give Python and the Windows tools C:/... paths, which bash
+# Git Bash: give the packager and the Windows tools C:/... paths, which bash
 # reads too, instead of relying on MSYS argument conversion.
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -102,6 +90,9 @@ case "$(uname -s)" in
     ;;
 esac
 
+echo "==> Building the release packager"
+(cd "$desktop/release" && CARGO_TARGET_DIR="$desktop/release/target" cargo build --quiet --release --locked)
+pack="$desktop/release/target/release/wpantry-release$exe"
 echo "==> Building the scanner for $host"
 "$build" "$host" "$work/wpantry$exe"
 echo "==> Building Pantry Desktop for $host"
@@ -130,14 +121,14 @@ fi
 desktop_zip="$dist/wpantry-desktop-$package_target.zip"
 setup_out="$dist/wpantry-setup-$package_target$setup_ext"
 echo "==> Packaging $desktop_zip"
-"$python" "$desktop/release/package.py" "$package_target" "$work/wpantry-desktop$exe" "$work/wpantry$exe" "$notices" "$desktop_zip"
+"$pack" package "$package_target" "$work/wpantry-desktop$exe" "$work/wpantry$exe" "$notices" "$desktop_zip"
 if [ "$package_target" = universal-apple-darwin ]; then
   echo "==> Signing Pantry.app ad hoc"
-  "$python" "$desktop/release/sign.py" macos "$desktop_zip"
+  "$pack" sign macos "$desktop_zip"
 fi
 
 echo "==> Building Pantry Setup"
-"$python" "$desktop/release/setup.py" payload "$desktop_zip" "$work/setup-payload.zlib"
+"$pack" setup payload "$desktop_zip" "$work/setup-payload.zlib"
 # Setup embeds its payload when it is compiled, except on macOS, where it
 # reads the payload from its app bundle.
 if [ "$package_target" != universal-apple-darwin ]; then
@@ -149,10 +140,10 @@ if [ "$package_target" != universal-apple-darwin ]; then
 fi
 "$build" "$host" "$work/wpantry-setup$exe" wpantry-setup
 unset PANTRY_SETUP_PAYLOAD
-"$python" "$desktop/release/setup.py" bundle "$package_target" "$work/wpantry-setup$exe" "$work/setup-payload.zlib" "$setup_out"
+"$pack" setup bundle "$package_target" "$work/wpantry-setup$exe" "$work/setup-payload.zlib" "$setup_out"
 if [ "$package_target" = universal-apple-darwin ]; then
   echo "==> Signing Pantry Setup.app ad hoc"
-  "$python" "$desktop/release/sign.py" macos "$setup_out"
+  "$pack" sign macos "$setup_out"
 fi
 
 echo "Built:"

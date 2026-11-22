@@ -1,0 +1,19 @@
+# The release packager: builds the desktop ZIP, Pantry Setup's payload and
+# download, and signs them (.github/workflows/release.yml,
+# desktop/release/install-local.sh). Its own package, so the release jobs
+# build it in seconds without the desktop app's dependencies.
+[package]
+name = "wpantry-release"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+[dependencies]
+miniz_oxide = "=0.9.1"
+
+# Its own workspace, so cargo never reads desktop/Cargo.toml to look for one.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"

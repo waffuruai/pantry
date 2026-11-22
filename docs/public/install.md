@@ -65,7 +65,7 @@ You can build Pantry Desktop from this repository and install it with one comman
 
 **Prerequisites**
 
-- Git, and Python 3.11 or newer (`python3`; on Windows, `python` from python.org).
+- Git.
 - Rust through [rustup](https://rustup.rs). The repository pins one Rust version in `rust/rust-toolchain.toml`; install it with `cd rust && rustup toolchain install`.
 - macOS: the Xcode Command Line Tools (`xcode-select --install`).
 - Linux (Debian or Ubuntu): `sudo apt-get install build-essential pkg-config libgl1-mesa-dev libwayland-dev libxkbcommon-dev`.

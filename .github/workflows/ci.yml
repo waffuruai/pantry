@@ -45,12 +45,13 @@ jobs:
         run: |
           (cd rust && cargo build --locked -p wpantry-cli)
           (cd desktop && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo build --locked && cargo test --locked)
+          (cd desktop/release && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked)
 
       - name: Desktop end-to-end tests
         run: ${{ matrix.python }} desktop/tests/e2e.py desktop/target/debug/wpantry-desktop${{ matrix.ext }} rust/target/debug/wpantry${{ matrix.ext }}
 
       - name: Docs name only real wpantry commands and flags
-        run: ${{ matrix.python }} scripts/docs_flags.py rust/target/debug/wpantry${{ matrix.ext }}
+        run: cd rust && cargo test --locked -p wpantry-cli --test docs_flags
 
       # The build-from-source path the public docs give (docs/public/install.md):
       # release builds, the release packaging, then Setup --install-only into

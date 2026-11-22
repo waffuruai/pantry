@@ -77,6 +77,30 @@ redistribute = false
 max_bytes = 134217728
 
 [[source]]
+id = "homebrew-formulae"
+kind = "releases"
+format = "homebrew-formula"
+url = "https://formulae.brew.sh/api/formula/{}.json"
+tier = "default"
+refresh = "7d"
+license = "BSD-2-Clause"
+redistribute = true
+max_bytes = 4194304
+sends = "formula"
+
+[[source]]
+id = "homebrew-advisories"
+kind = "advisories"
+format = "vulnerability-lookup-osv"
+url = "https://vulnerability.circl.lu/api/vulnerability/?source=osv_homebrew&product={}"
+tier = "default"
+refresh = "1d"
+license = "CC0-1.0 (Homebrew advisory database; mirror by CIRCL)"
+redistribute = true
+max_bytes = 16777216
+sends = "formula"
+
+[[source]]
 id = "cisa-kev"
 kind = "kev"
 format = "kev"

@@ -29,7 +29,7 @@ By default Pantry checks the machine and every git repo under your home director
 - `--deep` reads everything in scope, and is slower: every file of the computer this user can read, `~` first (or each `--path`), for malware with every system's rules and for secrets, plus history files up to 256 MB with no time limit. Hours on a first run; after that only what changed is read.
   - **What it reads:** on macOS the data volume's folders and each local volume under `/Volumes`, never the read-only system volume; on Linux `/`, less `/proc`, `/sys`, `/dev`, `/run` and network or pseudo mounts. Network shares are never read.
   - **Secrets in files:** an uncommitted `.env`, `~/.aws/credentials`, a key under `/opt`. A secret already found in history isn't reported twice.
-  - **Not checked:** folders this user can't read, by place (on macOS, give your terminal Full Disk Access), and files over 10 MB for secrets. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
+  - **Not checked:** folders this user can't read, by place (on macOS, give your terminal Full Disk Access), and files over 10 MB for secrets. When a repo's history couldn't all be read, its "not checked" row gives the command to copy: `wpantry scan --path <repo> --no-machine --deep`.
 - `--no-machine` skips the machine: repo checks only.
 
 What a run couldn't check is reported "not checked", never clean.

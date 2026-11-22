@@ -450,7 +450,7 @@ pub fn ca_trust(scan: &mut Scan, stores: Result<Vec<Store>>) {
             fix_cmd: "Install openssl".into(),
             ..Default::default()
         }),
-        Err(e) => scan.unchecked("CA trust stores", &e.to_string()),
+        Err(e) => scan.missed("CA trust stores", &e),
     }
 }
 

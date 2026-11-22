@@ -30,7 +30,7 @@ use crate::db::Cache;
 use crate::error::Result;
 use crate::sources::cve_scores;
 use crate::sources::fetch;
-use crate::sources::file::{source, url};
+use crate::sources::file::url;
 use crate::utils::json::arr_at;
 use crate::utils::net::Net;
 use serde_json::{Value, json};
@@ -138,50 +138,17 @@ pub fn on_record(cache: &Cache) -> Result<Asked> {
 /// by side, and keep them; one that can't be fetched keeps its last copy.
 pub fn prefetch_products(cache: &Cache, net: &dyn Net, vendors: &[String], offline: bool) -> Result<()> {
     let keys: Vec<(String, String)> = vendors.iter().map(|v| (products_key(v), v.clone())).collect();
-    prefetch(cache, &keys, offline, |vendor| fetch_products(net, vendor))
+    fetch::prefetch(cache, ID, &keys, PARALLEL, offline, |vendor| fetch_products(net, vendor))
 }
 
 /// Fetch the records of the (vendor, product) pairs whose copy isn't
 /// fresh, side by side, and keep them.
 pub fn prefetch_records(cache: &Cache, net: &dyn Net, pairs: &[(String, String)], offline: bool) -> Result<()> {
     let keys: Vec<(String, String)> = pairs.iter().map(|(v, p)| (records_key(v, p), format!("{v}\u{1f}{p}"))).collect();
-    prefetch(cache, &keys, offline, |arg| {
+    fetch::prefetch(cache, ID, &keys, PARALLEL, offline, |arg| {
         let (vendor, product) = arg.split_once('\u{1f}').unwrap_or((arg, ""));
         fetch_records(net, vendor, product)
     })
-}
-
-/// `get` for every (cache key, argument) not fresh, at most [`PARALLEL`]
-/// at once; each answer is stored under its key, and one that failed as a
-/// source leaves the key as it was.
-fn prefetch(
-    cache: &Cache,
-    keys: &[(String, String)],
-    offline: bool,
-    get: impl Fn(&str) -> Result<Value> + Sync,
-) -> Result<()> {
-    if offline || fetch::on(ID).is_err() {
-        return Ok(());
-    }
-    let refresh = source(ID).refresh;
-    let mut stale: Vec<&(String, String)> = Vec::new();
-    for k in keys {
-        if !stale.iter().any(|s| s.0 == k.0) && !cache.fresh(&format!("{}_at", k.0), refresh)? {
-            stale.push(k);
-        }
-    }
-    let fetched = crate::utils::parallel::par_map(&stale, PARALLEL, |(_, arg)| get(arg));
-    for ((key, _), r) in stale.iter().zip(fetched) {
-        match r {
-            Ok(v) => {
-                cache.set(key, &v.to_string())?;
-                cache.touch(&format!("{key}_at"))?;
-            }
-            Err(e) if e.is_source() => {}
-            Err(e) => return Err(e),
-        }
-    }
-    cache.commit()
 }
 
 fn fetch_products(net: &dyn Net, vendor: &str) -> Result<Value> {

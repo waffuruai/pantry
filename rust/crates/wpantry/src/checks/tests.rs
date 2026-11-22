@@ -169,6 +169,10 @@ fn unchecked_is_reported_once() {
     assert_eq!((s.findings[0].note.as_str(), s.findings[0].status.as_str()), ("a: down", "warn"));
     let internal: Result<i32> = Err(Error::Io(std::io::Error::other("disk")));
     assert!(s.guard("x", internal, 0).is_err(), "internal errors pass through");
+    assert_eq!(s.findings[0].vuln_id, "UNREACHABLE", "an offline source is marked unreachable");
+    let bad: Result<i32> = Err(Error::Invalid("nonsense".into()));
+    s.guard("other", bad, 0).unwrap();
+    assert_eq!(s.findings[1].vuln_id, "UNCHECKED", "one that answered nonsense was reached");
 }
 
 #[test]

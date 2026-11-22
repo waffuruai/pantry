@@ -22,6 +22,7 @@
 
 mod ast;
 pub mod atoms;
+pub mod bundle;
 pub mod classify;
 pub mod compile;
 pub mod generate;

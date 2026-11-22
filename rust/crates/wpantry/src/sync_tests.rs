@@ -223,6 +223,11 @@ fn a_sync_refreshes_what_a_scan_found_and_only_that() {
     }
     let rules = crate::checks::malware::yara::rules_dir(&c);
     assert!(std::fs::read_to_string(rules.join("yara-forge-full.yar")).unwrap().contains("rule synced"));
+    let compiled = std::fs::read_dir(&rules).unwrap().flatten().filter(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.starts_with("compiled-") && n.ends_with(".bundle")
+    });
+    assert_eq!(compiled.count(), 1, "compiled for the next scan");
     assert!(rules.join("iocs/feodo-ipblocklist.json").is_file(), "into the directory the scan reads");
     assert_eq!(crate::sources::releases::postgres(&c, &Fake::offline(), true).unwrap()[0].cve, "CVE-2026-1");
     let latest = extensions::latest_extensions(&c, &Fake::offline(), &["c.d".into(), "a.b".into()], true, true);

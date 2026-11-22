@@ -151,3 +151,19 @@ fn a_file_with_secrets_is_one_row_across_its_versions() {
     assert_eq!(rows[0].places.len(), 3, "every version and line is listed");
     assert_eq!(rows[0].ids, ["github-pat", "aws-access-token"]);
 }
+
+#[test]
+fn the_epss_credit_names_first_and_the_copy() {
+    let plain = Finding::default();
+    assert_eq!(epss_credit(std::slice::from_ref(&plain)), None, "no score, no credit");
+    let scored = Finding {
+        epss: Some(0.4),
+        epss_date: "2026-11-05T12:03:04Z".into(),
+        epss_model: "v2026.06.15".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        epss_credit(&[plain, scored]).as_deref(),
+        Some("EPSS scores by FIRST (first.org/epss), 2026-11-05, model v2026.06.15")
+    );
+}

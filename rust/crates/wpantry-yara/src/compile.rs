@@ -10,6 +10,7 @@
 use crate::Error;
 use crate::ast::*;
 use crate::atoms::{AtomTable, Target};
+use crate::bundle;
 use crate::classify::{self, Os};
 use crate::matcher;
 use crate::modules::{self, Module};
@@ -134,9 +135,24 @@ pub struct Compiler {
     regex_reach: usize,
     /// Keep each regex string's capture groups ([`Rules::capture_tree`]).
     keep_captures: bool,
+    /// What [`Compiler::bundle`] writes, while recording.
+    record: Option<bundle::Enc>,
 }
 
 type Filter = Box<dyn Fn(Os, &str) -> bool>;
+
+/// A rule's own fields, as [`Compiler::push`] takes them.
+struct Parts {
+    name: String,
+    os: Os,
+    category: &'static str,
+    score: i64,
+    tags: Vec<String>,
+    meta: Vec<(String, Meta)>,
+    private: bool,
+    global: bool,
+    line: usize,
+}
 
 impl Default for Compiler {
     fn default() -> Self {
@@ -158,7 +174,81 @@ impl Compiler {
             skipped: 0,
             regex_reach: strings::REGEX_REACH,
             keep_captures: false,
+            record: None,
         }
+    }
+
+    /// Record what the rules added after this compile to, for
+    /// [`Compiler::bundle`].
+    pub fn record(&mut self) {
+        self.record.get_or_insert_with(bundle::Enc::new);
+    }
+
+    /// The rules added since [`Compiler::record`], compiled, as bytes that
+    /// [`Compiler::add_bundle`] reads back: with the rules it rejected and
+    /// how many its filter skipped. None when not recording.
+    pub fn bundle(&self) -> Option<Vec<u8>> {
+        let mut enc = bundle::Enc { out: self.record.as_ref()?.out.clone() };
+        enc.skipped(self.skipped);
+        Some(enc.out)
+    }
+
+    /// Add the compiled rules of a bundle [`Compiler::bundle`] wrote, as
+    /// [`Compiler::add_source`] would have added their source: nothing is
+    /// parsed and no string compiled again. The modules the rules import
+    /// must be registered first. A bundle this compiler can't take whole
+    /// (another format, corrupt, a module missing, a rule that no longer
+    /// compiles) is an error, and the compiler may hold part of it: start
+    /// a new one to compile from source instead.
+    pub fn add_bundle(&mut self, data: &[u8]) -> Result<usize, bundle::BadBundle> {
+        let bad = |m: String| bundle::BadBundle(m);
+        let mut d = bundle::Dec::new(data)?;
+        let mut added = 0;
+        // Each record is added as it is read: a whole bundle's records,
+        // read first, would double what a load holds at its peak.
+        while !d.done() {
+            match d.u8()? {
+                bundle::RULE => {
+                    let r = d.rule()?;
+                    let imports = r
+                        .imports
+                        .iter()
+                        .map(|m| {
+                            self.modules.iter().position(|x| x.name() == m).ok_or_else(|| bad(format!("no module {m}")))
+                        })
+                        .collect::<Result<Vec<usize>, _>>()?;
+                    let category = classify::category(&r.category)
+                        .ok_or_else(|| bad(format!("unknown category {}", r.category)))?;
+                    if self.filter.as_ref().is_some_and(|keep| !keep(r.os, category)) {
+                        self.skipped += 1;
+                        continue;
+                    }
+                    let parts = Parts {
+                        name: r.name,
+                        os: r.os,
+                        category,
+                        score: r.score,
+                        tags: r.tags,
+                        meta: r.meta,
+                        private: r.private,
+                        global: r.global,
+                        line: r.line,
+                    };
+                    self.push(&r.namespace, &imports, parts, &r.condition, r.strings)
+                        .map_err(|e| bad(format!("{} no longer compiles: {e}", r.namespace)))?;
+                    added += 1;
+                }
+                bundle::REJECTED => {
+                    let (namespace, rule, error) = d.rejected()?;
+                    self.reject(&namespace, rule, error);
+                }
+                bundle::SKIPPED => {
+                    self.skipped += usize::try_from(d.uint()?).map_err(|_| bad("bad count".into()))?;
+                }
+                t => return Err(bad(format!("bad record {t}"))),
+            }
+        }
+        Ok(added)
     }
 
     /// How far a regex match may run from where it starts, for the rules added
@@ -192,9 +282,29 @@ impl Compiler {
     /// Rules that fail are recorded in [`Rules::rejected`], and parsing picks
     /// up again at the next rule.
     pub fn add_source(&mut self, namespace: &str, src: &str, syntax: Syntax) -> usize {
-        let (file, errors) = parser::parse_recovering(src, syntax);
+        self.add(namespace, src, syntax, None)
+    }
+
+    /// [`add_source`](Self::add_source), also returning the file as `os`'s
+    /// scans read it ([`split_by_os`]): the classifying is done once here,
+    /// so a compile from source makes the split for nothing.
+    pub fn add_source_split(&mut self, namespace: &str, src: &str, syntax: Syntax, os: Os) -> (usize, String) {
+        let mut split = String::new();
+        let added = self.add(namespace, src, syntax, Some((os, &mut split)));
+        (added, split)
+    }
+
+    fn add(&mut self, namespace: &str, src: &str, syntax: Syntax, split: Option<(Os, &mut String)>) -> usize {
+        let (file, errors, items) = parser::parse_items(src, syntax);
+        let mut oses: Vec<Option<Os>> = vec![None; items.len()];
+        let rule_item: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, it))| matches!(it, parser::Item::Rule(_)))
+            .map(|(i, _)| i)
+            .collect();
         for (rule, error) in errors {
-            self.rejected.push(Rejected { namespace: namespace.into(), rule, error });
+            self.reject(namespace, rule, error);
         }
         let mut imports = Vec::new();
         for name in &file.imports {
@@ -203,20 +313,30 @@ impl Compiler {
             }
         }
         let mut added = 0;
-        for rule in file.rules {
+        for (k, rule) in file.rules.into_iter().enumerate() {
             let name = rule.name.clone();
-            let used: Vec<String> = file.imports.iter().filter(|m| uses(&rule.condition, m)).cloned().collect();
-            let class = classify::classify(&rule.name, &rule.tags, &rule.meta, &used, file_need(&rule.condition));
+            let class = class_of(&file.imports, &rule);
+            oses[rule_item[k]] = Some(class.0);
             if self.filter.as_ref().is_some_and(|keep| !keep(class.0, class.1)) {
                 self.skipped += 1;
                 continue;
             }
             match self.rule(namespace, &imports, rule, class) {
                 Ok(()) => added += 1,
-                Err(error) => self.rejected.push(Rejected { namespace: namespace.into(), rule: name, error }),
+                Err(error) => self.reject(namespace, name, error),
             }
         }
+        if let Some((os, out)) = split {
+            *out = split_text(src, &items, &oses, os);
+        }
         added
+    }
+
+    fn reject(&mut self, namespace: &str, rule: String, error: Error) {
+        if let Some(enc) = &mut self.record {
+            enc.rejected(namespace, &rule, &error);
+        }
+        self.rejected.push(Rejected { namespace: namespace.into(), rule, error });
     }
 
     fn rule(
@@ -226,13 +346,63 @@ impl Compiler {
         rule: Rule,
         (os, category, score): (Os, &'static str, i64),
     ) -> Result<(), Error> {
-        let key = (namespace.to_string(), rule.name.clone());
+        let strings: Vec<CompiledString> = rule
+            .strings
+            .iter()
+            .map(|def| {
+                let mut compiled = strings::compile(def, self.regex_reach);
+                if self.keep_captures
+                    && let Some(s) = &def.source
+                {
+                    compiled.captures =
+                        pattern::parse_regex_groups(&s.src, s.nocase || def.mods.nocase, s.dotall, Syntax::Relaxed)
+                            .ok();
+                }
+                compiled
+            })
+            .collect();
+        let parts = Parts {
+            name: rule.name,
+            os,
+            category,
+            score,
+            tags: rule.tags,
+            meta: rule.meta,
+            private: rule.private,
+            global: rule.global,
+            line: rule.line,
+        };
+        self.push(namespace, imports, parts, &rule.condition, strings)
+    }
+
+    /// Add one rule whose strings are compiled: its condition compiles here.
+    fn push(
+        &mut self,
+        namespace: &str,
+        imports: &[usize],
+        p: Parts,
+        condition: &Expr,
+        mut compiled: Vec<CompiledString>,
+    ) -> Result<(), Error> {
+        // Kept as they scan, from here: a full-size pattern never piles up.
+        for s in &mut compiled {
+            for v in &mut s.variants {
+                if let strings::VariantKind::Pattern { prefix, rest, .. } = &mut v.kind {
+                    prefix.iter_mut().chain([rest]).for_each(Node::compact);
+                }
+            }
+            if let Some((n, _)) = &mut s.captures {
+                n.compact();
+            }
+            s.variants.shrink_to_fit();
+        }
+        let key = (namespace.to_string(), p.name.clone());
         if self.names.contains_key(&key) {
-            return Err(Error::Semantic { line: rule.line, msg: format!("duplicate rule {}", rule.name) });
+            return Err(Error::Semantic { line: p.line, msg: format!("duplicate rule {}", p.name) });
         }
         let base = self.strings.len() as u32;
         let ids: Vec<(String, u32)> =
-            rule.strings.iter().enumerate().map(|(i, s)| (s.id.clone(), base + i as u32)).collect();
+            compiled.iter().enumerate().map(|(i, s)| (s.id.clone(), base + i as u32)).collect();
         let mut cx = Cx {
             comp: self,
             namespace,
@@ -241,38 +411,48 @@ impl Compiler {
             scopes: Vec::new(),
             current: None,
             slots: 0,
-            line: rule.line,
+            line: p.line,
         };
-        let (cond, _) = cx.value(&rule.condition)?;
+        let (cond, _) = cx.value(condition)?;
         let slots = cx.slots;
+        if let Some(enc) = &mut self.record {
+            enc.rule(&bundle::RuleRef {
+                namespace,
+                imports: imports.iter().map(|i| self.modules[*i].name()).collect(),
+                name: &p.name,
+                os: p.os,
+                category: p.category,
+                score: p.score,
+                tags: &p.tags,
+                meta: &p.meta,
+                private: p.private,
+                global: p.global,
+                line: p.line,
+                condition,
+                strings: &compiled,
+            });
+        }
         let index = self.rules.len() as u32;
-        for def in &rule.strings {
-            let mut compiled = strings::compile(def, self.regex_reach);
-            if self.keep_captures
-                && let Some(s) = &def.source
-            {
-                compiled.captures =
-                    pattern::parse_regex_groups(&s.src, s.nocase || def.mods.nocase, s.dotall, Syntax::Relaxed).ok();
-            }
-            self.strings.push(compiled);
+        for c in compiled {
+            self.strings.push(c);
             self.string_rule.push(index);
         }
         self.nslots = self.nslots.max(slots);
         self.names.insert(key, self.rules.len());
         self.rules.push(CompiledRule {
-            name: rule.name,
-            os,
-            category,
-            score,
+            name: p.name,
+            os: p.os,
+            category: p.category,
+            score: p.score,
             namespace: namespace.into(),
-            tags: rule.tags,
-            meta: rule.meta,
-            private: rule.private,
-            global: rule.global,
+            tags: p.tags,
+            meta: p.meta,
+            private: p.private,
+            global: p.global,
             strings: base..self.strings.len() as u32,
             cond,
-            needs: file_need(&rule.condition),
-            requires_match: requires_match(&rule.condition),
+            needs: file_need(condition),
+            requires_match: requires_match(condition),
         });
         Ok(())
     }
@@ -281,19 +461,22 @@ impl Compiler {
     pub fn build(self) -> Rules {
         let mut atoms = AtomTable::default();
         let mut brute = Vec::new();
-        for (si, s) in self.strings.iter().enumerate() {
-            for (vi, v) in s.variants.iter().enumerate() {
+        let mut strings = self.strings;
+        for (si, s) in strings.iter_mut().enumerate() {
+            for (vi, v) in s.variants.iter_mut().enumerate() {
                 if v.atoms.is_empty() {
                     brute.push((si as u32, vi as u32));
                 }
-                for (atom, offset) in &v.atoms {
-                    atoms.add(atom, Target { string: si as u32, variant: vi as u32, offset: *offset as u32 });
+                // The table holds them from here: nothing reads a variant's own.
+                for (atom, offset) in std::mem::take(&mut v.atoms) {
+                    atoms.add(&atom, Target { string: si as u32, variant: vi as u32, offset: offset as u32 });
                 }
             }
         }
+        strings.shrink_to_fit();
         Rules {
             rules: self.rules,
-            strings: self.strings,
+            strings,
             string_rule: self.string_rule,
             atoms,
             brute,
@@ -1126,6 +1309,62 @@ fn arith(op: BinOp, a: &Value, b: &Value) -> Value {
             }
         }
     })
+}
+
+/// A rules file as each system's scan reads it: for Windows, Linux and
+/// macOS, the file with every rule that is only another system's replaced
+/// by the lines it took, so what is left reads, compiles and reports lines
+/// exactly as the whole file does under that system's filter
+/// ([`Compiler::set_filter`]). Imports, rules for any system, and text that
+/// doesn't parse (it is rejected the same way) are kept.
+pub fn split_by_os(src: &str, syntax: Syntax) -> [(Os, String); 3] {
+    let (file, _, items) = parser::parse_items(src, syntax);
+    let oses: Vec<Option<Os>> = items
+        .iter()
+        .map(|(_, item)| match item {
+            parser::Item::Rule(i) => Some(class_of(&file.imports, &file.rules[*i]).0),
+            _ => None,
+        })
+        .collect();
+    [Os::Windows, Os::Linux, Os::MacOS].map(|os| (os, split_text(src, &items, &oses, os)))
+}
+
+/// Bump when the system a rule is classed as can change for the same text
+/// (classify, parsing, the file types a condition needs): a split kept
+/// beside its rules file is named by this and the file's text, so an
+/// older one is never read. `the_split_rules_are_versioned` pins what it
+/// covers.
+pub const SPLIT_VERSION: u32 = 1;
+
+/// A rule's system, category and score.
+fn class_of(imports: &[String], rule: &Rule) -> (Os, &'static str, i64) {
+    let used: Vec<String> = imports.iter().filter(|m| uses(&rule.condition, m)).cloned().collect();
+    classify::classify(&rule.name, &rule.tags, &rule.meta, &used, file_need(&rule.condition))
+}
+
+/// `src` with the rules classed (`oses`) as only another system's than
+/// `target` replaced by their newlines. Should a span not fall on whole
+/// characters (error recovery steps a byte at a time), the whole file: it
+/// compiles the same under the filter.
+fn split_text(src: &str, items: &[parser::Span], oses: &[Option<Os>], target: Os) -> String {
+    if !items.iter().all(|(r, _)| src.is_char_boundary(r.start) && src.is_char_boundary(r.end)) {
+        return src.to_string();
+    }
+    let mut out = String::with_capacity(src.len() / 2);
+    out.push_str(&src[..items.first().map_or(src.len(), |(r, _)| r.start)]);
+    for ((range, _), os) in items.iter().zip(oses) {
+        let text = &src[range.clone()];
+        match os {
+            Some(os) if *os != target && *os != Os::Any => {
+                out.extend(std::iter::repeat_n('\n', text.bytes().filter(|b| *b == b'\n').count()));
+            }
+            _ => out.push_str(text),
+        }
+    }
+    if let Some((last, _)) = items.last() {
+        out.push_str(&src[last.end..]);
+    }
+    out
 }
 
 /// The kind of file a condition requires, from the terms it `and`s together:

@@ -168,7 +168,7 @@ pub fn persistence(scan: &mut Scan, (inv, vetted): crate::checks::machine::any::
     let (new, first) = match p::diff(&scan.cache, &inv, now()) {
         Ok(d) => d,
         Err(e) => {
-            scan.unchecked("persistence baseline", &e.to_string());
+            scan.missed("persistence baseline", &e);
             (Vec::new(), Vec::new())
         }
     };

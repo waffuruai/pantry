@@ -766,7 +766,7 @@ pub fn check(scan: &mut Scan, subjects: &[Subject], what: &str) -> Result<()> {
         return Ok(());
     }
     if let Err(e) = fetch::on(cve_records::ID) {
-        scan.unchecked(what, &e.to_string());
+        scan.missed(what, &e);
         return Ok(());
     }
     let programs = subjects;

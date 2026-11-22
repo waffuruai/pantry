@@ -61,7 +61,7 @@ These are the only hosts the binary connects to.
 - **Enforced.** Any other URL is refused before connecting. A redirect is followed only to a listed host, and an `Authorization` header never follows it off the first host. A test checks every source against the list.
 - **Every request** is https, verified against your machine's trust store (a CA you distrust is distrusted here too), names `wpantry` in its User-Agent, times out after 30 seconds, and uses `HTTPS_PROXY` when set.
 - **Cache.** Answers live in `~/.cache/wpantry/wpantry.db`; nothing expires. OSV's answers are kept current from its change lists (only what changed since the last run is read). Each feed, after its refresh period (a day for most), is asked whether it changed and downloaded only when it did.
-- **Offline.** `--offline` uses only the cache. A source that can't be reached and has nothing cached is reported "not checked".
+- **Offline.** `--offline` uses only the cache. A source that can't be reached and has nothing cached is reported "not checked" (`UNREACHABLE` in JSON); the summary line says how many of the not-checked rows are those. The rest (files too big, unreadable folders, versions that can't be compared) aren't fixed by going online.
 
 | Source | Answers | What is sent |
 |---|---|---|

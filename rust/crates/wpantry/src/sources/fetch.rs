@@ -92,7 +92,7 @@ fn in_effect(id: &str) -> Source {
 /// `Offline` when `id` isn't used this run (its tier is `off`, or `deep`
 /// without `--deep`): nothing is asked, and what needs it is unchecked.
 pub fn on(id: &str) -> Result<()> {
-    if file::active(id) { Ok(()) } else { Err(Error::Offline(format!("{id} is turned off (sources.toml tier)"))) }
+    if file::active(id) { Ok(()) } else { Err(Error::Failed(format!("{id} is turned off (sources.toml tier)"))) }
 }
 
 /// [`net::request`] for source `id`: its cap, its outcome kept.

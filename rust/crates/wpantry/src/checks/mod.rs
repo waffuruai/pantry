@@ -253,6 +253,9 @@ pub struct Outcome {
 }
 
 /// One scan.
+/// The most of an error's first line a not-checked row keeps.
+const MAX_ERROR: usize = 300;
+
 pub struct Scan<'a> {
     pub opts: Options,
     pub cache: Cache,
@@ -463,19 +466,46 @@ impl<'a> Scan<'a> {
         self.findings.push(f);
     }
 
-    /// A source we couldn't reach: say so, rather than report it clean.
+    /// Something that couldn't be checked: say so, rather than report it
+    /// clean.
     pub fn unchecked(&mut self, what: &str, why: &str) {
+        self.gap(what, why, "UNCHECKED", "");
+    }
+
+    /// [`Self::unchecked`], with the command that checks it (its `fix_cmd`).
+    pub fn unchecked_until(&mut self, what: &str, why: &str, run: &str) {
+        self.gap(what, why, "UNCHECKED", run);
+    }
+
+    /// A source that couldn't be reached (offline, refused, timed out).
+    pub fn unreachable(&mut self, what: &str, why: &str) {
+        self.gap(what, why, "UNREACHABLE", "");
+    }
+
+    /// A source's error: [`Self::unreachable`] when it couldn't be reached,
+    /// else [`Self::unchecked`].
+    pub fn missed(&mut self, what: &str, e: &Error) {
+        // An error's text can be a whole response: its first line, cut.
+        let why = e.to_string();
+        let first = why.lines().next().unwrap_or("");
+        let cut = first.chars().count() > MAX_ERROR;
+        let why =
+            if cut { format!("{}…", first.chars().take(MAX_ERROR).collect::<String>()) } else { first.to_string() };
+        self.gap(what, &why, if matches!(e, Error::Offline(_)) { "UNREACHABLE" } else { "UNCHECKED" }, "");
+    }
+
+    fn gap(&mut self, what: &str, why: &str, marker: &str, run: &str) {
         if self.findings.iter().any(|f| f.kind == "unchecked" && f.component == what) {
             return;
         }
-        let first = why.lines().next().unwrap_or("");
-        let note = if why.is_empty() { "unavailable".to_string() } else { first.chars().take(160).collect() };
+        let note = why.lines().next().filter(|l| !l.is_empty()).unwrap_or("unavailable").to_string();
         self.add(Finding {
             kind: "unchecked".into(),
             component: what.into(),
-            vuln_id: "UNCHECKED".into(),
+            vuln_id: marker.into(),
             status: "warn".into(),
             note,
+            fix_cmd: run.into(),
             ..Default::default()
         });
     }
@@ -486,7 +516,7 @@ impl<'a> Scan<'a> {
         match r {
             Ok(v) => Ok(v),
             Err(e) if e.is_source() => {
-                self.unchecked(what, &e.to_string());
+                self.missed(what, &e);
                 Ok(default)
             }
             Err(e) => Err(e),
@@ -513,10 +543,13 @@ impl<'a> Scan<'a> {
         }
         let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log, status)?;
         let mut why = answers.gaps;
-        if items.iter().any(|it| !answers.found.contains_key(it)) {
+        let unreached = items.iter().any(|it| !answers.found.contains_key(it));
+        if unreached {
             why.insert(0, "OSV unreachable and not cached".into());
         }
-        if !why.is_empty() {
+        if unreached {
+            self.unreachable(what, &why.join("; "));
+        } else if !why.is_empty() {
             self.unchecked(what, &why.join("; "));
         }
         Ok(answers.found)

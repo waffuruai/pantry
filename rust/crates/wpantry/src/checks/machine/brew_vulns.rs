@@ -140,7 +140,7 @@ pub fn brew(scan: &mut Scan, job: Option<&BrewJob>, ran: Option<Result<Value>>) 
             return Ok(());
         }
         Err(e) if e.is_source() => {
-            scan.unchecked("Homebrew formulae (brew vulns)", &e.to_string());
+            scan.missed("Homebrew formulae (brew vulns)", &e);
             return Ok(());
         }
         Err(e) => return Err(e),

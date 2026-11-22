@@ -86,6 +86,8 @@ Every source wpantry reads today, as entries:
 | `cisa-kev` | kev | kev | default |
 | `endoflife` | eol | endoflife | default |
 | `cve-records` | advisories | vulnerability-lookup | default |
+| `homebrew-advisories` | advisories | vulnerability-lookup-osv | default |
+| `homebrew-formulae` | releases | homebrew-formula | default |
 | `homebrew-casks`, `chrome-releases`, `firefox-releases`, `postgresql-security`, `arch-security` | releases | one each | default |
 | `fedora-advisories` and the other distro feeds in `distros.rs` | advisories | one each | default |
 | `deps-dev` | licenses | deps-dev-api | default with `--licenses` |

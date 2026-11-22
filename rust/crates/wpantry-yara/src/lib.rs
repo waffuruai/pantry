@@ -45,7 +45,7 @@ pub use value::Value;
 /// fetched rules are (relaxed); `None` when any rule doesn't parse, so a
 /// caller never mistakes a file for less than it holds.
 pub fn rule_meta(src: &str, key: &str) -> Option<Vec<Option<String>>> {
-    let (file, errors) = parser::parse_recovering(src, Syntax::Relaxed);
+    let (file, errors, _) = parser::parse_items(src, Syntax::Relaxed);
     errors.is_empty().then(|| {
         file.rules
             .into_iter()

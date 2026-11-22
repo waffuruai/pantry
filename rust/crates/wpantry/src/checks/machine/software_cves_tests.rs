@@ -15,6 +15,7 @@ fn program(name: &str, version: &str, publisher: &str) -> Subject {
         vendors: vendors_for(publisher),
         product: None,
         released: None,
+        support_end: None,
     }
 }
 
@@ -167,7 +168,7 @@ fn a_matching_record_is_a_finding_that_names_it() {
         ),
     ];
     let (found, unknown) = assess(&p, "circutor", &recs, &|id| id == "CVE-2026-120387");
-    assert!(!unknown);
+    assert!(unknown.is_none(), "{unknown:?}");
     assert_eq!(found.len(), 1, "{found:?}");
     let f = &found[0];
     assert_eq!(
@@ -186,7 +187,7 @@ fn a_matching_record_is_a_finding_that_names_it() {
     assert_eq!(f.location, r"HKLM\x\PowerStudio SCADA Wave");
     // The fixed version itself: nothing.
     let fixed = program("PowerStudio SCADA Wave", "24.11.17.0", "CIRCUTOR, SA");
-    assert_eq!(assess(&fixed, "circutor", &recs, &|_| false), (vec![], false));
+    assert_eq!(assess(&fixed, "circutor", &recs, &|_| false), (vec![], None));
 }
 
 #[test]
@@ -194,18 +195,21 @@ fn no_fix_named_warns_and_unreadable_versions_are_not_clean() {
     let p = program("Example Viewer", "3.0", "Example Software, Inc.");
     let open = json!({"vendor": "Example Software", "product": "Example Viewer", "versions": [{"status": "affected", "version": "0", "lessThanOrEqual": "3.0"}]});
     let (found, unknown) = assess(&p, "example software", &[record("CVE-2026-4", open, None)], &|_| false);
-    assert!(!unknown);
+    assert!(unknown.is_none(), "{unknown:?}");
     assert_eq!((found[0].status.as_str(), found[0].fixed.as_str(), found[0].severity.as_str()), ("warn", "", ""));
     assert!(found[0].fix_cmd.starts_with("No fixed version named in the CVE record"), "{}", found[0].fix_cmd);
     let named = json!({"vendor": "Example Software", "product": "Example Viewer", "versions": [{"status": "affected", "version": "25H2", "lessThan": "26H1"}]});
-    assert_eq!(
-        assess(&p, "example software", &[record("CVE-2026-5", named.clone(), None)], &|_| false),
-        (vec![], true)
-    );
+    {
+        let (f, why) = assess(&p, "example software", &[record("CVE-2026-5", named.clone(), None)], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     // An installed version that isn't a dotted number can't be judged by any record.
     let odd = program("Example Viewer", "2024 R2", "Example Software, Inc.");
-    assert_eq!(assess(&odd, "example software", &[record("CVE-2026-5", named, None)], &|_| false), (vec![], true));
-    assert_eq!(assess(&odd, "example software", &[], &|_| false), (vec![], false));
+    {
+        let (f, why) = assess(&odd, "example software", &[record("CVE-2026-5", named, None)], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
+    assert_eq!(assess(&odd, "example software", &[], &|_| false), (vec![], None));
 }
 
 #[test]
@@ -317,7 +321,11 @@ fn unjudged_and_partly_read_records_are_reported() {
     let mut s = testing::scan(&net, &d);
     let many: Vec<Subject> = (1..=6).map(|i| program("Viewer", &format!("{i}.0"), "Example Ltd")).collect();
     check(&mut s, &many, W).unwrap();
-    assert_eq!(testing::unchecked_note(&s, &unjudged(W)), "Viewer", "one name, however many versions are installed");
+    assert_eq!(
+        testing::unchecked_note(&s, &unjudged_label(W)),
+        "Viewer 1.0, Viewer 2.0, Viewer 3.0 and 3 more: CVE-2026-120387 writes some versions in a form Pantry can't read.",
+        "the installs that share a reason share a line"
+    );
     assert_eq!(testing::unchecked_note(&s, &partial(W)), "Viewer");
 }
 
@@ -442,7 +450,7 @@ fn catalog_tools_are_matched_by_the_table_only() {
     assert_eq!(subjects[0].product.as_deref(), Some("Oracle Java SE"));
     let recs = |e: Value| vec![record("CVE-2026-114938", e, Some(7.5))];
     let (java, unknown) = assess(&subjects[0], "oracle corporation", &recs(java_entry()), &|_| false);
-    assert!(!unknown);
+    assert!(unknown.is_none(), "{unknown:?}");
     assert_eq!(
         (java[0].kind.as_str(), java[0].component.as_str(), java[0].status.as_str(), java[0].severity.as_str()),
         ("runtime", "java", "warn", "HIGH")
@@ -468,15 +476,18 @@ fn catalog_tools_are_matched_by_the_table_only() {
         {"version": "8u511b33", "status": "affected"}
     ]});
     let (affected, unknown) = assess(&eight[0], "oracle corporation", &recs(plain.clone()), &|_| false);
-    assert!(!unknown);
+    assert!(unknown.is_none(), "{unknown:?}");
     assert_eq!(
         (affected[0].version.as_str(), affected[0].status.as_str(), affected[0].affected_range.as_str()),
         ("1.8.0_412", "warn", "<=8u511b33 (the 8 train)")
     );
-    assert_eq!(assess(&eight[1], "oracle corporation", &recs(plain.clone()), &|_| false), (vec![], false));
-    assert_eq!(assess(&eight[2], "oracle", &recs(plain), &|_| false), (vec![], true));
+    assert_eq!(assess(&eight[1], "oracle corporation", &recs(plain.clone()), &|_| false), (vec![], None));
+    {
+        let (f, why) = assess(&eight[2], "oracle", &recs(plain), &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     // Performance Pack only: a plain Java 8 isn't affected.
-    assert_eq!(assess(&eight[0], "oracle corporation", &recs(java_entry()), &|_| false), (vec![], false));
+    assert_eq!(assess(&eight[0], "oracle corporation", &recs(java_entry()), &|_| false), (vec![], None));
 }
 
 #[test]
@@ -805,7 +816,10 @@ fn php_8_4_20_fails_cve_2026_109618_and_8_4_27_does_not() {
     assert_eq!(f.fix_cmd, "Update php to 8.4.27 or later from its vendor");
     // CVE-2024-8932 lists the 8.1 to 8.3 trains with a default of affected:
     // 8.4 can't be judged by it, and says so.
-    assert_eq!(testing::unchecked_note(&s, &unjudged(TOOLS_WHAT)), "php");
+    assert_eq!(
+        testing::unchecked_note(&s, &unjudged_label(TOOLS_WHAT)),
+        "php 8.4.20: CVE-2024-8932 and CVE-2024-4577 list no range for the 8.4 line (versions not listed count as affected)."
+    );
     let urls: Vec<String> = net.requests().iter().map(|r| r.url.clone()).collect();
     assert!(urls.iter().any(|u| u.ends_with("/browse/php%20group")) && urls.iter().any(|u| u.ends_with("/browse/php")));
 
@@ -814,7 +828,10 @@ fn php_8_4_20_fails_cve_2026_109618_and_8_4_27_does_not() {
     let fixed = [runtime("php", "8.4.27")];
     tools(&mut s, &fixed, &osv_empty(&fixed)).unwrap();
     assert_eq!(failures(&s), []);
-    assert_eq!(testing::unchecked_note(&s, &unjudged(TOOLS_WHAT)), "php");
+    assert_eq!(
+        testing::unchecked_note(&s, &unjudged_label(TOOLS_WHAT)),
+        "php 8.4.27: CVE-2024-8932 and CVE-2024-4577 list no range for the 8.4 line (versions not listed count as affected)."
+    );
 
     // 8.3.13, which OSV's php-src answer leaves clean: CVE-2024-8932 among three.
     let mut s = testing::scan(&net, &d);
@@ -940,30 +957,36 @@ fn a_train_released_after_the_record_is_not_what_it_calls_affected() {
     let x = php_subject("8.4.27", day84);
     assert_eq!(
         assess(&x, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false),
-        (vec![], false)
+        (vec![], None)
     );
     // CVE-2024-8932 was published 2024-11-22, the day after 8.4's first
     // release (2024-11-21): it could have meant 8.4, so 8.4.27 stays unjudged.
-    assert_eq!(
-        assess(&x, "php group", &[on(e8932.clone(), "CVE-2024-8932", "2024-11-22")], &|_| false),
-        (vec![], true)
-    );
+    {
+        let (f, why) = assess(&x, "php group", &[on(e8932.clone(), "CVE-2024-8932", "2024-11-22")], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     // A record published after 8.4 that lists only 8.3: unjudged.
     let only83 = json!({"vendor": "PHP Group", "product": "PHP", "defaultStatus": "affected",
         "versions": [{"status": "affected", "version": "8.3.*", "lessThan": "8.3.40"}]});
-    assert_eq!(assess(&x, "php group", &[on(only83, "CVE-2026-6", "2025-03-01")], &|_| false), (vec![], true));
+    {
+        let (f, why) = assess(&x, "php group", &[on(only83, "CVE-2026-6", "2025-03-01")], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     // Either date unknown: unjudged.
     let unknown = php_subject("8.4.27", None);
-    assert_eq!(
-        assess(&unknown, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false),
-        (vec![], true)
-    );
-    assert_eq!(assess(&x, "php group", &[on(e4577.clone(), "CVE-2024-4577", "")], &|_| false), (vec![], true));
+    {
+        let (f, why) = assess(&unknown, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
+    {
+        let (f, why) = assess(&x, "php group", &[on(e4577.clone(), "CVE-2024-4577", "")], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     let odd = php_subject("8.4.27", Some("soon"));
-    assert_eq!(
-        assess(&odd, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false),
-        (vec![], true)
-    );
+    {
+        let (f, why) = assess(&odd, "php group", &[on(e4577.clone(), "CVE-2024-4577", "2024-06-09")], &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     // A listed train is still judged by its range.
     let (found, unknown) = assess(
         &php_subject("8.3.5", Some("2023-11-23")),
@@ -971,7 +994,7 @@ fn a_train_released_after_the_record_is_not_what_it_calls_affected() {
         &[on(e4577, "CVE-2024-4577", "2024-06-09")],
         &|_| false,
     );
-    assert!(!unknown);
+    assert!(unknown.is_none(), "{unknown:?}");
     assert_eq!((found[0].vuln_id.as_str(), found[0].fixed.as_str()), ("CVE-2024-4577", "8.3.8"));
 }
 
@@ -999,7 +1022,10 @@ fn the_tool_check_takes_the_train_date_from_the_end_of_life_copy() {
     // endoflife.date not fetched yet: 8.4's first release is unknown.
     let mut s = testing::scan(&net, &d);
     tools(&mut s, &found, &osv_empty(&found)).unwrap();
-    assert_eq!(testing::unchecked_note(&s, &unjudged(TOOLS_WHAT)), "php");
+    assert_eq!(
+        testing::unchecked_note(&s, &unjudged_label(TOOLS_WHAT)),
+        "php 8.4.27: CVE-2024-4577 lists no range for the 8.4 line (versions not listed count as affected)."
+    );
     // Fetched, as the inventory check does before this one: clean, nothing more asked of it.
     let mut s = testing::scan(&net, &d);
     crate::sources::endoflife::eol_prefetch(&s.cache, &net, &["php".to_string()], false).unwrap();
@@ -1043,10 +1069,80 @@ fn versions_are_compared_only_within_one_scheme() {
     };
     let recs = [record("CVE-2026-1", releases, Some(7.5))];
     // The build number of a current IntelliJ: not comparable, not failed.
-    assert_eq!(assess(&ide("263.4567.12"), "jetbrains", &recs, &|_| false), (vec![], true));
+    {
+        let (f, why) = assess(&ide("263.4567.12"), "jetbrains", &recs, &|_| false);
+        assert!(f.is_empty() && why.is_some(), "{why:?}");
+    }
     // The same release as the records number it: judged.
     let (found, unknown) = assess(&ide("2026.2.1"), "jetbrains", &recs, &|_| false);
-    assert!(!unknown);
+    assert!(unknown.is_none(), "{unknown:?}");
     assert_eq!((found[0].status.as_str(), found[0].fixed.as_str()), ("fail", "2026.3"));
-    assert_eq!(assess(&ide("2026.3"), "jetbrains", &recs, &|_| false), (vec![], false));
+    assert_eq!(assess(&ide("2026.3"), "jetbrains", &recs, &|_| false), (vec![], None));
+}
+
+/// Oracle lists the supported versions a flaw affects. A train it left out
+/// of a record is unaffected when it was out and supported on the day the
+/// record was published (Java 27 and Oracle's October 2026 records); a
+/// train out of support then, out only later, or with no dates is not
+/// checked, and the reason says which.
+#[test]
+fn a_java_train_oracle_supported_and_left_out_is_unaffected() {
+    let oct = json!({"vendor": "Oracle Corporation", "product": "Oracle Java SE", "versions": [
+        {"version": "8u503", "status": "affected"},
+        {"version": "8u503-perf", "status": "affected"},
+        {"version": "Oracle Java SE:11.0.32.1", "status": "affected"},
+        {"version": "17.0.20.1", "status": "affected"},
+        {"version": "21.0.12.1", "status": "affected"},
+        {"version": "25.0.4.1", "status": "affected"}
+    ]});
+    let recs = [
+        Record { published: "2026-10-20T00:00:00".into(), ..record("CVE-2026-91451", oct.clone(), Some(7.5)) },
+        Record { published: "2026-10-20T00:00:00".into(), ..record("CVE-2026-91410", oct, Some(5.3)) },
+    ];
+    let java = |v: &str, released: Option<&str>, end: Option<&str>| {
+        let mut x = tool_subjects(&[runtime("java", v)], &|_| false).remove(0);
+        x.released = released.map(str::to_string);
+        x.support_end = end.map(str::to_string);
+        x
+    };
+    let judged = |x: &Subject| assess(x, "oracle corporation", &recs, &|_| false);
+    // Temurin 27: out 2026-09-22, supported to 2027-03-23.
+    assert_eq!(judged(&java("27.0.1.0.2", Some("2026-09-22"), Some("2027-03-23"))), (vec![], None));
+    // An LTS with no end date yet: supported.
+    assert_eq!(judged(&java("27.0.1.0.2", Some("2026-09-22"), Some(""))), (vec![], None));
+    // 26: its support ended the day 27 came out.
+    let (none, why) = judged(&java("26.0.2", Some("2026-03-23"), Some("2026-09-22")));
+    assert!(none.is_empty());
+    assert_eq!(
+        why.as_deref(),
+        Some(
+            "CVE-2026-91451 and CVE-2026-91410 name the 8, 11, 17, 21 and 25 trains but not 26, which was out of support at publication"
+        )
+    );
+    // A train out after the records were published.
+    let (_, why) = judged(&java("29.0.1", Some("2027-09-21"), Some("2028-03-21")));
+    assert!(why.unwrap().ends_with("but not 29, which came out after publication"));
+    // No dates: can't tell.
+    let (_, why) = judged(&java("27.0.1.0.2", None, None));
+    assert!(why.unwrap().contains("Pantry has no release and support dates for 27"));
+    // A listed train is still judged: 25.0.3 is affected.
+    let (found, why) = judged(&java("25.0.3", Some("2025-09-22"), Some("2031-09-30")));
+    assert_eq!((found.len(), why), (2, None));
+}
+
+#[test]
+fn support_end_reads_the_end_of_life_copy() {
+    let d = crate::utils::temp::TempDir::new("support-end").unwrap();
+    let cache = crate::db::Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let rows = json!([
+        {"cycle": "27", "releaseDate": "2026-09-22", "eol": "2027-03-23"},
+        {"cycle": "25", "releaseDate": "2025-09-22", "eol": false},
+        {"cycle": "8", "releaseDate": "2014-03-18", "eol": true}
+    ]);
+    crate::sources::endoflife::store_for_tests(&cache, "eclipse-temurin", &rows);
+    let end = |c: &str| crate::sources::endoflife::support_end(&cache, "eclipse-temurin", c).unwrap();
+    assert_eq!(end("27").as_deref(), Some("2027-03-23"));
+    assert_eq!(end("25").as_deref(), Some(""), "no end yet");
+    assert_eq!(end("8").as_deref(), Some("1970-01-01"), "ended, day not named");
+    assert_eq!(end("99"), None);
 }

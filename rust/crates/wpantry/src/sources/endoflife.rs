@@ -105,6 +105,28 @@ pub fn released(cache: &Cache, product: &str, cycle: &str) -> Result<Option<Stri
     Ok(v.get(cycle).and_then(Value::as_str).map(str::to_string))
 }
 
+/// When support for `cycle` of `product` ends or ended, from the copy
+/// [`eol`] and [`eol_prefetch`] keep: `""` while it has no end date,
+/// `"1970-01-01"` when it ended on a day the page doesn't name; None when
+/// the cycle was never fetched. Nothing is asked.
+pub fn support_end(cache: &Cache, product: &str, cycle: &str) -> Result<Option<String>> {
+    let mut stmt = cache.conn.prepare("SELECT eol FROM eol WHERE product = ? AND cycle = ?")?;
+    let end: Option<Option<String>> =
+        stmt.query_map([product, cycle], |r| r.get::<_, Option<String>>(0))?.next().transpose()?;
+    let Some(end) = end else { return Ok(None) };
+    Ok(Some(match serde_json::from_str::<Value>(&end.unwrap_or_default()).unwrap_or(Value::Null) {
+        Value::String(day) => day,
+        Value::Bool(true) => "1970-01-01".into(),
+        _ => String::new(),
+    }))
+}
+
+/// Keep `data` as endoflife.date's page for `product`, as a fetch does.
+#[cfg(test)]
+pub fn store_for_tests(cache: &Cache, product: &str, data: &Value) {
+    eol_store(cache, product, Some(data)).unwrap();
+}
+
 /// endoflife.date's view of `cycle` of `product`, or None when it doesn't
 /// know the cycle.
 pub fn eol(cache: &Cache, net: &dyn Net, product: &str, cycle: &str, offline: bool) -> Result<Option<Eol>> {

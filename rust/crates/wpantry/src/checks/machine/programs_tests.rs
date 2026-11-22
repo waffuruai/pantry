@@ -204,13 +204,16 @@ fn no_unmapped_publisher_or_program_reaches_the_index() {
 /// IntelliJ is "not checked", not failed.
 #[test]
 fn an_intellij_build_number_is_not_compared_with_release_numbers() {
-    use crate::checks::machine::software_cves::unjudged;
+    use crate::checks::machine::software_cves::unjudged_label;
     let d = crate::utils::temp::TempDir::new("programs-jetbrains").unwrap();
     let net = index();
     let mut s = crate::checks::machine::testing::scan(&net, &d);
     check(&mut s, &[installed("IntelliJ IDEA 2026.3", "263.4567.12", "JetBrains s.r.o.")]).unwrap();
     assert!(s.findings.iter().all(|f| f.vuln_id != "CVE-2026-1"), "{:?}", s.findings);
-    assert_eq!(crate::checks::machine::testing::unchecked_note(&s, &unjudged(WHAT)), "IntelliJ IDEA 2026.3");
+    assert_eq!(
+        crate::checks::machine::testing::unchecked_note(&s, &unjudged_label(WHAT)),
+        "IntelliJ IDEA 2026.3 263.4567.12: CVE-2026-1 numbers versions another way than 263.4567.12 (like `2026.3`)."
+    );
     // The release numbered as the records are: judged, and 2026.3 is clean.
     let mut s = crate::checks::machine::testing::scan(&net, &d);
     check(&mut s, &[installed("IntelliJ IDEA 2026.3", "2026.3", "JetBrains s.r.o.")]).unwrap();

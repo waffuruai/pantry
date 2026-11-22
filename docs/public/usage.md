@@ -162,7 +162,7 @@ wpantry cache prune                                # drop what no scan used in 9
 - `sync` refreshes what the cache already knows, so a later `scan --offline` is current. It inventories nothing:
   - the feeds: CISA KEV, EPSS, the malicious-package index, Homebrew casks, Chrome, Firefox, VS Code's extension lists, the latest Pantry;
   - once a malware scan fetched them: YARA Forge's rules, signature-base's and Feodo Tracker's lists;
-  - Elastic's rules, once turned on ([malware.md](malware.md#adding-elastics-rules)), and the rules and lists of your sources file you said yes to; a rules file put in the rules directory by hand is named, since nothing can update it;
+  - Elastic's rules, once turned on ([malware.md](malware.md#adding-elastics-rules)), replacing a copy you added by hand; and the rules and lists of your sources file you said yes to; a rules file put in the rules directory by hand is named, since nothing can update it;
   - once PostgreSQL was found: its security page;
   - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, upstream repos' release tags, and CVE scores (OSV, CVE.org).
 - `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).

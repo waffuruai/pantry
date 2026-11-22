@@ -328,7 +328,8 @@ fn elastic(r: &Request) -> Result<Response> {
 }
 
 /// Turned on, Elastic's rules are fetched by a sync into the rules
-/// directory, replacing a copy put there by hand, and refreshed when due;
+/// directory, replacing the copies of them put there by hand (whatever
+/// their name), and refreshed when due;
 /// turned off, the copy fetched is removed. A rules file put there by hand
 /// is named.
 #[test]
@@ -339,11 +340,18 @@ fn a_sync_keeps_elastics_rules_current_once_turned_on() {
     std::fs::create_dir_all(&rules).unwrap();
     std::fs::write(rules.join("elastic.yar"), "rule by_hand { condition: false }").unwrap();
     std::fs::write(rules.join("mine.yar"), "rule mine { condition: false }").unwrap();
-    // Off (the default): not asked, and the hand-added copy is named, not touched.
+    // An older copy of Elastic's under another name, holding a rule they
+    // have since dropped; and one with a rule of the user's beside theirs.
+    let theirs = |name: &str| format!("rule {name} {{ meta: author = \"Elastic Security\" condition: false }}\n");
+    std::fs::write(rules.join("protections.yar"), theirs("elastic_a") + &theirs("dropped_since")).unwrap();
+    std::fs::write(rules.join("mixed.yar"), theirs("elastic_b") + "rule kept { condition: false }").unwrap();
+    // Off (the default): not asked, and the hand-added copies are named, not touched.
     let net = Fake::new(elastic);
     let got = run(&c, &net, false, &|_| {}).unwrap();
     assert!(!net.requests().iter().any(|r| r.url.contains("elastic")), "off: never asked");
-    assert_eq!(got.hand_added, [rules.join("elastic.yar"), rules.join("mine.yar")]);
+    let by_hand = ["elastic.yar", "mine.yar", "mixed.yar", "protections.yar"].map(|n| rules.join(n));
+    assert_eq!(got.hand_added, by_hand);
+    assert!(got.replaced.is_empty());
     assert!(std::fs::read_to_string(rules.join("elastic.yar")).unwrap().contains("by_hand"));
     // On: fetched, the yara/rules files only, in name order.
     crate::sources::file::set_test_on(&[yara::ELASTIC]);
@@ -352,7 +360,9 @@ fn a_sync_keeps_elastics_rules_current_once_turned_on() {
     let text = std::fs::read_to_string(rules.join("elastic.yar")).unwrap();
     assert!(text.find("elastic_b").unwrap() < text.find("elastic_a").unwrap(), "{text}");
     assert!(!text.contains("by_hand") && !text.contains("not_a_rule") && !text.contains("not_yara_rules"), "{text}");
-    assert_eq!(got.hand_added, [rules.join("mine.yar")], "ours now");
+    assert_eq!(got.replaced, [rules.join("elastic.yar"), rules.join("protections.yar")], "the copies of theirs");
+    assert!(!rules.join("protections.yar").exists());
+    assert_eq!(got.hand_added, [rules.join("mine.yar"), rules.join("mixed.yar")], "a rule of the user's: kept");
     // Fresh: not asked again; a refresh asks.
     let again = Fake::new(elastic);
     run(&c, &again, false, &|_| {}).unwrap();

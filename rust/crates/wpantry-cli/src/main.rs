@@ -471,6 +471,7 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
             ),
             ("packages", J::Int(synced.packages as i64)),
             ("hand_added", J::Arr(synced.hand_added.iter().map(|p| p.to_string_lossy().as_ref().into()).collect())),
+            ("replaced", J::Arr(synced.replaced.iter().map(|p| p.to_string_lossy().as_ref().into()).collect())),
         ])
         .dumps_indent(1));
     } else {
@@ -480,13 +481,18 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
         for (name, why) in &synced.failed {
             show(&format!("  ⚠ {name} - {why}"));
         }
+        for f in &synced.replaced {
+            show(&format!(
+                "  ✓ replaced {}, your copy of Elastic's rules: the elastic source keeps them current",
+                f.display()
+            ));
+        }
         for f in &synced.hand_added {
-            let elastic = f.file_name().is_some_and(|n| n == "elastic.yar");
             show(&format!(
                 "  · {} was added by hand, so sync can't update it: {}",
                 f.display(),
-                if elastic {
-                    "turn on the elastic source instead (docs/public/malware.md#adding-elastics-rules)"
+                if wpantry::checks::malware::yara::is_elastic_copy(f) {
+                    "turn on the elastic source and sync replaces it (docs/public/malware.md#adding-elastics-rules)"
                 } else {
                     "add where it comes from to your sources file, as a yara source"
                 }

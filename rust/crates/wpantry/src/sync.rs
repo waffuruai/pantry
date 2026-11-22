@@ -43,6 +43,9 @@ pub struct Synced {
     pub packages: usize,
     /// Rules files put in the rules directory by hand: not kept up to date.
     pub hand_added: Vec<std::path::PathBuf>,
+    /// Hand-added copies of a source's rules, removed now that the source
+    /// keeps them current.
+    pub replaced: Vec<std::path::PathBuf>,
 }
 
 fn note(name: &str, r: Result<()>, out: &mut Synced) {
@@ -206,7 +209,11 @@ fn malware(cache: &Cache, net: &dyn Net, refresh: bool, status: Status, out: &mu
     }
     match yara::update_elastic(cache, net, refresh) {
         Ok(None) => {}
-        r => note("Elastic's YARA rules", r.map(|_| ()), out),
+        Ok(Some(e)) => {
+            note("Elastic's YARA rules", Ok(()), out);
+            out.replaced.extend(e.replaced);
+        }
+        Err(e) => note("Elastic's YARA rules", Err(e), out),
     }
     yours(cache, net, status, out);
     out.hand_added = yara::hand_added(cache);

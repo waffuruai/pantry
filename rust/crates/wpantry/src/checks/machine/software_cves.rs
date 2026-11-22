@@ -122,6 +122,15 @@ pub struct Subject {
     /// The product to match, when it isn't the name ("Oracle Java SE" for
     /// `java`).
     pub product: Option<String>,
+    /// Whether NVD's copies of the records (its CPE configurations, kept
+    /// beside the publisher's entries by [`cve_records::trim_nvd`]) judge
+    /// it too: for the apps whose publishers often file records naming no
+    /// product or versions.
+    pub nvd: bool,
+    /// The system it is installed on (`macos`, `linux`, `windows`): an
+    /// entry limited to other systems ([`applies_on`]) isn't its. "" reads
+    /// every entry.
+    pub system: String,
     /// When the installed version's release train was first released
     /// (endoflife.date's `releaseDate` for its cycle), when known.
     pub released: Option<String>,
@@ -143,11 +152,19 @@ impl Subject {
 /// TODO: grow from real misses (reported as issues), never by fuzzy matching.
 pub const VENDOR_ALIASES: &[(&str, &[&str])] = &[
     ("adobe systems", &["adobe"]),
+    // NVD's CPE vendor is the product's name.
+    ("blender foundation", &["blender foundation", "blender"]),
     ("broadcom", &["vmware", "broadcom"]),
     ("circutor", &["circutor"]),
+    ("docker", &["docker", "docker inc"]),
+    ("objective development", &["objective development", "obdev"]),
     // The index keeps the hyphen: `browse/rust-lang`.
     ("rust lang", &["rust-lang"]),
+    ("the document foundation", &["the document foundation", "libreoffice"]),
+    ("transmission", &["transmission", "transmissionbt"]),
     ("vmware", &["vmware"]),
+    ("wireshark", &["wireshark", "wireshark foundation"]),
+    ("zoom", &["zoom", "zoom communications", "zoom video communications"]),
 ];
 
 /// Words a company name ends with that a CVE record's vendor usually drops.
@@ -655,6 +672,8 @@ pub fn assess(
             .affected
             .iter()
             .filter(|a| vendor_key(s(a, "vendor")) == vkey && product_key(s(a, "product"), &vkey, "") == pkey)
+            .filter(|a| x.nvd || !is_nvd(a))
+            .filter(|a| x.system.is_empty() || applies_on(a, &x.system))
             .collect();
         // A train released after the record was published, newer than every
         // train it lists: not what the record calls affected.
@@ -686,6 +705,11 @@ pub fn assess(
         let Some((Verdict::Affected { range, fixed }, _)) =
             verdicts.iter().find(|(v, _)| matches!(v, Verdict::Affected { .. }))
         else {
+            // NVD's configuration placed it where the publisher's entry
+            // couldn't: that is the judgement.
+            if entries.iter().zip(&verdicts).any(|(e, (v, _))| is_nvd(e) && *v != Verdict::Unknown) {
+                continue;
+            }
             for (_, why) in verdicts.iter().filter(|(v, _)| *v == Verdict::Unknown) {
                 match unjudged.iter_mut().find(|(w, _)| w == why) {
                     Some((_, ids)) if ids.contains(&r.id) => {}
@@ -741,6 +765,56 @@ pub fn assess(
         })
         .collect();
     (out, (!why.is_empty()).then(|| why.join("; ")))
+}
+
+/// Whether an `affected[]` entry is NVD's ([`cve_records::trim_nvd`]).
+fn is_nvd(entry: &Value) -> bool {
+    entry.get("nvd").and_then(Value::as_bool) == Some(true)
+}
+
+/// The system this build runs on, as entries' `platforms` name it.
+pub fn this_system() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
+/// Whether an entry applies on `system`: it names no system among its
+/// `platforms` (they may be architectures, `x64`), or names this one.
+/// `MacOS`, `macOS`, `Mac OS X`, `Linux`, `Windows 11`, `win64` and
+/// NVD's words are all read, and so are the phones' (`Android`, `iOS`):
+/// an entry for Zoom on Android isn't Zoom on a Mac's.
+pub fn applies_on(entry: &Value, system: &str) -> bool {
+    let systems: Vec<&str> = crate::utils::json::arr_at(entry, "platforms")
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|p| {
+            let p = p.to_ascii_lowercase().replace([' ', '_'], "");
+            let win = p
+                .strip_prefix("win")
+                .is_some_and(|r| r.is_empty() || r.starts_with("dows") || r.chars().all(|c| c.is_ascii_digit()));
+            if p.starts_with("mac") || p == "osx" {
+                Some("macos")
+            } else if p.starts_with("linux") {
+                Some("linux")
+            } else if win {
+                Some("windows")
+            } else if p.starts_with("android") {
+                Some("android")
+            } else if ["ios", "ipados", "iphone", "iphoneos", "ipad"].contains(&p.as_str()) {
+                Some("ios")
+            } else if p.starts_with("chromeos") {
+                Some("chromeos")
+            } else {
+                None
+            }
+        })
+        .collect();
+    systems.is_empty() || systems.contains(&system)
 }
 
 /// Why [`judge`] couldn't place `installed` by `entry`, as a predicate of
@@ -864,6 +938,8 @@ pub fn tool_subjects(found: &[Component], osv_answered: &dyn Fn(&Component) -> b
                 product: Some(product.to_string()),
                 released: None,
                 support_end: None,
+                nvd: false,
+                system: String::new(),
             })
         })
         .collect()

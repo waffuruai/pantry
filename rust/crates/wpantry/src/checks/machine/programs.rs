@@ -148,6 +148,8 @@ pub fn subject(p: &Program) -> Option<Subject> {
         product: Some(product.to_string()),
         released: None,
         support_end: None,
+        nvd: false,
+        system: "windows".into(),
     })
 }
 

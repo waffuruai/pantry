@@ -24,6 +24,30 @@ fn text(r: &Report, width: usize) -> Vec<String> {
     lines(r, "/c/wpantry.db", width).iter().map(|l| paint(l, Style::new(false))).collect()
 }
 
+#[test]
+fn wordfence_findings_carry_defiants_notice_in_full() {
+    use wpantry::sources::wordfence::DEFIANT_LICENSE;
+    let f = Finding {
+        kind: "wordpress".into(),
+        component: "akismet".into(),
+        version: "5.3.1".into(),
+        location: "/w/site/wp-content/plugins/akismet".into(),
+        vuln_id: "CVE-2026-1001".into(),
+        status: "fail".into(),
+        fixed: "5.3.2".into(),
+        note: "XSS (Wordfence: https://www.wordfence.com/threat-intel/vulnerabilities/id/61c39f5f-3b17-4e4d-824e-241159a73400)"
+            .into(),
+        fix_cmd: "wp plugin update akismet --path=/w/site".into(),
+        ..Default::default()
+    };
+    let t = text(&report(vec![f]), 100);
+    let words = t.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("Defiant Inc.") && words.contains(DEFIANT_LICENSE), "{t:#?}");
+    assert!(words.contains("The MITRE Corporation"));
+    assert!(t.iter().all(|l| l.chars().count() <= 100), "wrapped to the width");
+    assert!(!text(&report(vec![adv("CVE-1", false, "HIGH", "x", "1.6.1")]), 100).join(" ").contains("Defiant"));
+}
+
 /// The table rows and the notes under them: what must fit; summary
 /// sentences wrap.
 fn table(lines: &[String]) -> impl Iterator<Item = &String> {

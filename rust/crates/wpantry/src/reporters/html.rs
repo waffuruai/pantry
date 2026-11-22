@@ -139,6 +139,11 @@ fn bundle(report: &Report) -> J {
         ("plan", J::Arr(plan)),
         ("history", history_json(report)),
         ("scope", J::from(&report.scan.options)),
+        // Wordfence's licence: its copyright and licence go with its findings.
+        (
+            "notices",
+            J::Arr(crate::sources::wordfence::notices(&report.outcome.findings).into_iter().map(J::from).collect()),
+        ),
     ])
 }
 

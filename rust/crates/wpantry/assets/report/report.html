@@ -378,7 +378,7 @@ var MARKERS = Object.create(null);
 ['UNPINNED','UNCHECKED','UNREACHABLE','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA','REPO-POLICY','IGNORE-FILE','IGNORE-PROTECTED'].forEach(function(id){MARKERS[id]=1});
 // Kinds whose ids are the scanner's own rules, never public advisories.
 var RULE_KINDS = ['secret','repo-hook','posture','persistence','hidden-text','suspect-code','document','clipper'];
-var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'Not checked', secret:'Committed secrets', runtime:'Runtimes',
+var KIND_LABEL = {project:'Project dependencies', wordpress:'WordPress core, plugins and themes', mcp:'MCP servers', unchecked:'Not checked', secret:'Committed secrets', runtime:'Runtimes',
   os:'Operating system', compiler:'Compilers', manager:'Version managers', pkgmgr:'Package managers', tool:'Tools', datastore:'Datastores',
   harness:'Agent harnesses', package:'Global packages', brew:'Homebrew', app:'Apps', browser:'Browsers', extension:'Editor extensions',
   image:'Container images', bundled:'Bundled packages', 'repo-hook':'Repo hooks', posture:'Security settings', 'hidden-text':'Hidden text',
@@ -386,7 +386,7 @@ var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'
   license:'Licenses', config:'Configuration', account:'Accounts'};
 // The order every report shares (reporters/view.rs): what acts on its own, what is on the machine, what the repos lock, what the harnesses run, then the rest.
 var KIND_ORDER = ['clipper','malware','posture','persistence','os','runtime','compiler','manager','pkgmgr','tool','datastore','harness','package','brew','app','browser','extension',
-  'project','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
+  'project','wordpress','image','bundled','mcp','repo-hook','hidden-text','suspect-code','document','secret','install-script','license','config','account'];
 var SEV_RANK = {MALICIOUS:0, CRITICAL:1, HIGH:2, MEDIUM:3, LOW:4};
 
 function $(id){return document.getElementById(id)}
@@ -413,12 +413,22 @@ function advLinks(id){
     else if(/^GHSA-/.test(x))u='https://github.com/advisories/'+encodeURIComponent(x);
     else if(/^RUSTSEC-/.test(x))u='https://rustsec.org/advisories/'+encodeURIComponent(x)+'.html';
     else if(/^GO-/.test(x))u='https://pkg.go.dev/vuln/'+encodeURIComponent(x);
+    else if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x))u='https://www.wordfence.com/threat-intel/vulnerabilities/id/'+encodeURIComponent(x); // a Wordfence record without a CVE
     else u='https://osv.dev/vulnerability/'+encodeURIComponent(x);
     out.push({id:x,url:u});
   }
   add(id);
   var info=advInfo[id]; if(info&&info.aliases)info.aliases.forEach(add);
   return out;
+}
+// A Wordfence finding links its record, as the feed's licence asks (sources/wordfence.rs).
+var WORDFENCE_LINK=/https:\/\/www\.wordfence\.com\/threat-intel\/vulnerabilities\/id\/[0-9a-fA-F-]+/;
+function wordfenceLink(f){var m=f.kind==='wordpress'&&typeof f.note==='string'?f.note.match(WORDFENCE_LINK):null;return m?m[0]:''}
+// The notices the bundle carries for Wordfence's data; a file opened without them gets Defiant's line and licence link.
+function noticesHTML(r){
+  var list=r.original&&Array.isArray(bundle.notices)?bundle.notices.filter(function(n){return typeof n==='string'}):[];
+  if(!list.length&&r.findings.some(function(f){return wordfenceLink(f)}))list=['WordPress vulnerability data: Wordfence Intelligence. Copyright 2012-'+new Date().getUTCFullYear()+' Defiant Inc. License: https://www.wordfence.com/wordfence-intelligence-terms-and-conditions/'];
+  return list.map(function(n){return '<p class="legal">'+esc(n)+'</p>'}).join('');
 }
 
 /* ---------- the order fixes go in (SKILL.md): fails before warnings; then
@@ -701,6 +711,8 @@ function detailHTML(row,print){
   if(top.note)out+='<p class="why">'+ticks(top.note)+'</p>';
   out+='<ul class="advs">'+row.fs.map(function(f){
     var links=isAdvisory(f)?advLinks(f.vuln_id):[];
+    var wf=wordfenceLink(f);
+    if(wf&&!links.some(function(l){return l.url===wf}))links=links.concat([{id:'Wordfence',url:wf}]);
     var id=links.length?links.map(function(l){return '<a href="'+esc(l.url)+'" target="_blank" rel="noopener noreferrer">'+esc(l.id)+'</a>'}).join(' '):esc(f.vuln_id||'—');
     var bits='<span class="id">'+id+'</span>'+(f.kev?badge('kev','KEV'):'')+sevBadge(f.severity)+(f.status!==row.state?stateBadge(f.state):'');
     if(isBundle(f.kind))bits+='<span class="mono" style="font-size:13px">'+esc(f.component.split(' › ').slice(1).join(' › '))+(f.version?' '+esc(f.version):'')+(f.fixed?' → '+esc(f.fixed):'')+'</span>';
@@ -960,7 +972,7 @@ function fleetHTML(print){
 }
 function pageHTML(r,print){
   return heroHTML(r)+agentHTML(r,print)+(print?'':jumpHTML(r))+scannedHTML(r,print)+riskHTML(r,print)+patchingHTML(r,print)+manualHTML(r,print)+historyHTML(r,print)+fleetHTML(print)+epssCreditHTML(r)+
-    '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span><p class="legal">wpantry and this report are provided \u201cas is\u201d, without warranty of any kind, express or implied. Waffuru AI, Inc. is not liable for any damage, data loss, downtime or other loss arising from running wpantry, from acting on this report, or from giving this prompt or its commands to an AI agent or any other tool. You are responsible for reviewing and approving every change made to your systems.</p></footer>';
+    '<footer class="foot"><b>Pantry by Waffuru</b><span><a href="https://waffuru.ai" target="_blank" rel="noopener noreferrer">waffuru.ai</a> · <a href="mailto:hello@waffuru.ai">hello@waffuru.ai</a></span><span>This report records what one scan found. It is not proof that every vulnerability was checked or that a fix succeeded: a fresh scan is.</span><p class="legal">wpantry and this report are provided \u201cas is\u201d, without warranty of any kind, express or implied. Waffuru AI, Inc. is not liable for any damage, data loss, downtime or other loss arising from running wpantry, from acting on this report, or from giving this prompt or its commands to an AI agent or any other tool. You are responsible for reviewing and approving every change made to your systems.</p>'+noticesHTML(r)+'</footer>';
 }
 function render(){
   var r=cur(), main=$('main');

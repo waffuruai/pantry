@@ -31,6 +31,7 @@ pub const KIND_ORDER: &[&str] = &[
     "browser",
     "extension",
     "project",
+    "wordpress",
     "image",
     "bundled",
     "mcp",
@@ -49,6 +50,7 @@ pub const KIND_ORDER: &[&str] = &[
 pub fn label(kind: &str) -> String {
     let known = match kind {
         "project" => "Project dependencies",
+        "wordpress" => "WordPress core, plugins and themes",
         "mcp" => "MCP servers",
         "unchecked" => "Not checked",
         "secret" => "Committed secrets",

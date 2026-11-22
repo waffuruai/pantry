@@ -51,6 +51,26 @@ fn chars(s: &str) -> usize {
 }
 
 /// `s` cut to `n` characters, `…` marking the cut.
+/// `s` in lines of at most `n` characters, broken at spaces (a longer word
+/// keeps its own line).
+fn wrap(s: &str, n: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for w in s.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + w.chars().count() > n {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(w);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 fn fit(s: &str, n: usize) -> String {
     if chars(s) <= n {
         return s.to_string();
@@ -324,6 +344,12 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
     }
     if let Some(credit) = view::epss_credit(&r.findings) {
         out.push(vec![(Role::Dim, format!("  · {credit}"))]);
+    }
+    // Wordfence's licence: its copyright and licence go with its findings, in full.
+    for n in wpantry::sources::wordfence::notices(&r.findings) {
+        for l in wrap(&clean(&n), width.saturating_sub(4).max(40)) {
+            out.push(vec![(Role::Dim, format!("    {l}"))]);
+        }
     }
     let fails = v.fails();
     let warns = v.rows() - fails;

@@ -26,7 +26,7 @@ wpantry help                                       # every command (wpantry help
 By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
 - `--path DIR` checks only the repos and files at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks. Nothing else of yours is read: not Downloads, Desktop, Documents or the temp directories. The machine inventory still runs, unless `--no-machine`.
-- `--deep` reads everything in scope, and is slower: the malware scan reads every file (all of `~`, or each `--path`) with every system's rules, and the secret scan reads history files up to 256 MB with no time limit. When a repo's history couldn't all be read, the report's "not checked" line gives the command: `wpantry scan --path <repo> --no-machine --deep`.
+- `--deep` reads everything in scope, and is slower: the malware scan reads every file (all of `~`, or each `--path`) with every system's rules, and the secret scan reads history files up to 256 MB with no time limit. When a repo's history couldn't all be read, its "not checked" row gives the command to copy: `wpantry scan --path <repo> --no-machine --deep`.
 - `--no-machine` skips the machine: repo checks only.
 
 What a run couldn't check is reported "not checked", never clean.

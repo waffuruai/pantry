@@ -170,7 +170,7 @@ The optional HTML presentation bundle preserves the scan envelope unchanged. It 
 | `epss` | number or null | The [EPSS](https://www.first.org/epss/) probability (0–1) that the advisory's CVE is exploited in the next 30 days, the highest of its CVE ids'; likelihood, shown beside the severity and never folded into it. `null` without a CVE or a cached score. Added 2026-11-05 |
 | `epss_percentile` | number or null | That score's percentile among all scored CVEs (0–1). Added 2026-11-05 |
 | `note` | string | One line for a human |
-| `fix_cmd` | string | Command or step that fixes it; `""` when none |
+| `fix_cmd` | string | Command or step that fixes it; `""` when none. On kind `unchecked`: the command that checks what wasn't, one a line (for example `wpantry scan --path <repo> --no-machine --deep`); never part of the fix plan |
 | `fix_auto` | bool | `fix` may run `fix_cmd` unattended |
 | `dep_scope` | string | How a locked dependency is depended on: `runtime`, `dev`, `optional`, or `unknown` (the lockfile doesn't say, or the finding isn't about a locked dependency). Added 2026-10-31 |
 | `dep_direct` | bool or null | The project's own dependency (`true`) or one another pulled in (`false`); `null` when the lockfile doesn't say. Added 2026-10-31 |

@@ -41,6 +41,8 @@ assert.equal(wellFormed('<div><p>x</div>'),'</div> closes p at 9');
 assert.equal(wellFormed('<div><br><img src=x>ok</div>'),null);
 
 /* ---------- a scan of every kind, one finding per priority bucket ---------- */
+// A one-line command as the viewer marks it up: each word kept whole.
+function codeOf(cmd){return '<code>'+cmd.split(/(\s+)/).map(w=>/^\s*$/.test(w)?esc(w):'<span class="w">'+esc(w)+'</span>').join('')+'</code>'}
 function finding(kind,component,vuln_id,status,extra){
   return Object.assign({kind,component,version:'1.0',location:'/Users/me/w/'+component,vuln_id,status,fixed:'',kev:false,severity:'',note:'why '+component,fix_cmd:'',fix_auto:false,dep_scope:'unknown',dep_direct:null,affected_range:''},extra||{});
 }
@@ -74,8 +76,8 @@ const every=[
   finding('license','left-pad','LICENSE','warn',{fix_cmd:'Allow WTFPL in licenses.txt or replace left-pad'}),
   finding('config','~/.npmrc','NPM-SCRIPTS','warn',{fix_cmd:'npm config set ignore-scripts true'}),
   finding('account','me@example.com','BREACH','warn',{fix_cmd:'Change the password used at the breached site'}),
-  finding('unchecked','CISA KEV','UNCHECKED','warn',{note:'offline and not cached <b>x</b>',location:'',version:''}),
-  finding('unchecked','repo dependencies against OSV','UNCHECKED','warn',{note:'offline and not cached',location:'',version:''}),
+  finding('unchecked','CISA KEV','UNREACHABLE','warn',{note:'offline and not cached <b>x</b>',location:'',version:''}),
+  finding('unchecked','repo dependencies against OSV','UNCHECKED','warn',{note:'3 over 10 MB',fix_cmd:'wpantry scan --path ~/r --no-machine --deep',location:'',version:''}),
 ];
 function planOf(findings){ // the shape src/reporters/html.rs writes: one step per command, fails first
   const by=new Map(); findings.forEach((f,i)=>{if(!f.fix_cmd||f.kind==='unchecked')return; if(!by.has(f.fix_cmd))by.set(f.fix_cmd,{command:f.fix_cmd,mode:f.fix_auto?'auto':(f.status==='fail'?'manual':'optional'),findings:[]}); by.get(f.fix_cmd).findings.push(i)});
@@ -97,9 +99,12 @@ assert.equal(wellFormed(page),null,'screen page');
 // 1 SCANNED: the counts by area, and every unchecked source as a gap, never under an area.
 const scanned=section('scanned');
 for(const k of Object.keys(report.checked))assert(scanned.includes('<div class="v">'+report.checked[k]+'</div><div class="k">'+esc(k)+'</div>'),k);
-assert(scanned.includes('2 sources could not be checked'));
+assert(scanned.includes('2 things could not be checked'));
+assert(scanned.includes('1 source could not be reached: re-run when online.'),'only the unreachable one is put down to the network');
+assert(scanned.includes('<span class="why">3 over 10 MB</span><div class="fix">'+codeOf('wpantry scan --path ~/r --no-machine --deep')+'<button class="copy" type="button" data-copy="wpantry scan --path ~/r --no-machine --deep">Copy</button></div>'),'a gap\'s command, whole and copyable');
 for(const f of every.filter(f=>f.kind==='unchecked')){
-  assert(scanned.includes('<div class="gap"><span class="badge gap">Not checked</span><b>'+esc(f.component)+'</b>'),f.component);
+  const badge=f.vuln_id==='UNREACHABLE'?'Unreachable':'Not checked';
+  assert(scanned.includes('<div class="gap"><span class="badge gap">'+badge+'</span><b>'+esc(f.component)+'</b>'),f.component);
   for(const [kind,markup] of areas())assert(!markup.includes(esc(f.component)),kind+' lists a gap as a finding');
 }
 assert(!/every source answered|no coverage gaps were recorded/i.test(scanned),'gaps are never reported as clean');
@@ -141,7 +146,7 @@ const opened=areas().find(x=>x[0]==='project')[1];
 assert(opened.includes('CVE-2019-15551') && opened.includes('href="https://www.cve.org/CVERecord?id=CVE-2021-25900"'));
 assert(opened.includes('CVSS 9.8 (v3.1)') && opened.includes('EPSS 2.1% (84th pct)'),'scores beside the advisory');
 assert(opened.includes('affected &gt;=1.6.0, &lt;1.6.1') && opened.includes('<dt>Dependency scope</dt><dd>runtime</dd>') && opened.includes('Direct'));
-assert(opened.includes('<span class="who">by hand</span><code>cd /Users/me/w/app &amp;&amp; cargo update -p smallvec --precise 1.6.1</code>'));
+assert(opened.includes('<span class="who">by hand</span>'+codeOf('cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1')+''));
 click({open:String(smallvec)});
 // rule kinds and markers never get an advisory link
 for(const [kind,vuln_id] of [['repo-hook','RUNS-REPO-FILE'],['posture','POSTURE-FIREWALL'],['hidden-text','HIDDEN-PROMPT'],['suspect-code','SUSPECT-TYPOSQUAT'],['document','MALWARE'],['clipper','CLIPPER-EXTENSION'],['secret','generic-api-key']]){
@@ -157,7 +162,7 @@ every.forEach((f,i)=>click({open:String(i)}));
 // 3 PATCHING: unattended commands, what the history says was patched, what has no fix.
 const patching=section('patching');
 const autoCmds=[...new Set(every.filter(f=>f.fix_auto).map(f=>f.fix_cmd))];
-for(const c of autoCmds)assert(patching.split('Patched')[0].includes('<code>'+esc(c)+'</code>'),'runs for you: '+c);
+for(const c of autoCmds)assert(patching.split('Patched')[0].includes(codeOf(c)),'runs for you: '+c);
 assert(patching.includes('<div class="big">'+autoCmds.length+'<small>commands</small></div>'));
 assert(patching.includes('<span class="badge ok">Verified</span><code>brew upgrade curl</code>') && patching.includes('verified by scan #4'));
 assert(patching.includes('1 other fix ran: 1 failed, 0 not yet verified'));
@@ -170,17 +175,17 @@ assert(patching.includes('1 more applicable advisory has no released fix'));
 assert(patching.includes('wpantry watch'));
 
 // 4 BY HAND: every non-auto fix_cmd as a numbered step, failures before warnings, none of the unattended ones.
-const manualCmds=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto).map(f=>f.fix_cmd))];
-const failSteps=[...new Set(every.filter(f=>f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd))].length;
+const manualCmds=[...new Set(every.filter(f=>f.kind!=='unchecked'&&f.fix_cmd&&!f.fix_auto).map(f=>f.fix_cmd))];
+const failSteps=[...new Set(every.filter(f=>f.kind!=='unchecked'&&f.fix_cmd&&!f.fix_auto&&f.status==='fail').map(f=>f.fix_cmd))].length;
 assert(section('manual').includes('1\u201310 of '+(manualCmds.length-failSteps)+' steps') && !section('manual').includes('of '+failSteps+' steps'),'ten steps a page by default; a list that fits is not paged');
 click({size:'manual',n:'100'}); // one page, for the checks below
 const manual=section('manual');
 // a script is highlighted, so it is compared as text
 const text=h=>h.replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
-for(const c of manualCmds)assert(c.includes('\n')?text(manual).includes(c):manual.includes('<code>'+esc(c)+'</code>'),'by hand: '+c);
+for(const c of manualCmds)assert(c.includes('\n')?text(manual).includes(c):manual.includes(codeOf(c)),'by hand: '+c);
 assert(manual.includes('<code class="sh"><span class="c"># If it&#39;s real: rotate it first') && manual.includes('<span class="k">git</span> <span class="f">-C</span>'),'a script is highlighted');
 assert(!manual.includes('<code class="sh">sudo fdesetup'),'one line is not a script');
-for(const c of autoCmds)assert(!manual.includes('<code>'+esc(c)+'</code>'),'not by hand: '+c);
+for(const c of autoCmds)assert(!manual.includes(codeOf(c)),'not by hand: '+c);
 assert.equal((manual.match(/<li class="opt">|<li>/g)||[]).length,manualCmds.length);
 const needs=manual.split('Also worth doing')[0], also=manual.split('Also worth doing')[1];
 assert(needs.includes('sudo fdesetup enable') && text(needs).includes('git -C ~/w/repo-b show abc:.env | sed -n 3p\ngit -C ~/.pantry-rewrite.git filter-repo') && also.includes('Update Slack') && !also.includes('sudo fdesetup enable'));
@@ -211,7 +216,7 @@ load(bundle);
 // hero and navigation
 assert(page.includes('<b>erics-mac</b> · eric') && page.includes('scan #42') && page.includes('wpantry 0.2.0') && page.includes('What this machine is <em>exposed</em> to'));
 assert(page.includes('things to update') && page.includes('Results cover only what was checked'));
-assert(page.includes('2 sources not checked: coverage is incomplete.'));
+assert(page.includes('2 things not checked: coverage is incomplete.'));
 assert(page.includes('href="#risk"') && page.includes('href="#manual"') && page.includes('href="#history"'));
 
 // escaping: hostile text stays text
@@ -252,7 +257,7 @@ assert(printed.includes('CVE-2019-15551'),'print opens every row');
 assert(!printed.includes('<button') && !printed.includes('Copy agent prompt') && !printed.includes('class="jump"'));
 assert(!printed.includes('class="fleet"'),'print leaves the callout out');
 assert(printed.includes('Waffuru AI, Inc. is not liable') && printed.includes('Read the report before you hand it over.'),'print keeps the caution and the notice');
-assert(printed.includes('Not checked') && printed.includes('CISA KEV') && printed.includes('sudo fdesetup enable') && printed.includes('Exposure log'));
+assert(printed.includes('Not checked') && printed.includes('CISA KEV') && text(printed).includes('sudo fdesetup enable') && printed.includes('Exposure log'));
 assert.equal(main(),screenBefore,'print leaves the screen alone');
 events['window:afterprint']();
 assert.equal(elements['print-report'].innerHTML,'');

@@ -275,6 +275,10 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
                 (Role::Warn, "⚠".into()),
                 (Role::Plain, fit(&clean(&format!(" {} - {}", g.component, g.note)), width.saturating_sub(3))),
             ]);
+            // The command that checks it, in full: cut, it wouldn't run.
+            for cmd in g.fix_cmd.lines() {
+                out.push(vec![(Role::Plain, "    ".into()), (Role::Command, clean(cmd))]);
+            }
         }
     }
     if !v.batches.is_empty() {

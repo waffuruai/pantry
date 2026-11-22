@@ -150,3 +150,22 @@ fn the_summary_says_how_many_gaps_and_which_couldnt_be_reached() {
     assert!(both.contains("3 things couldn't be checked") && both.contains("2 sources couldn't be reached"), "{both}");
     assert!(!incomplete(&[&big]).contains("online"), "a big file isn't an offline source");
 }
+
+/// A gap's command is printed whole on its own line, however narrow the
+/// terminal: cut, it wouldn't run.
+#[test]
+fn a_gaps_command_is_never_cut() {
+    let cmd = "wpantry scan --path ~/Development/a/very/long/path/to/a/repo/with/big/files --no-machine --deep";
+    let r = report(vec![Finding {
+        kind: "unchecked".into(),
+        component: "secrets in 4 files of ~/Development/a/very/long/path's history".into(),
+        vuln_id: "UNCHECKED".into(),
+        status: "warn".into(),
+        note: "4 over 10 MB. Scan this repo on its own, with files up to 256 MB and no time limit".into(),
+        fix_cmd: format!("git -C ~/r backfill\n{cmd}"),
+        ..Default::default()
+    }]);
+    let out = text(&r, 60);
+    assert!(out.iter().any(|l| l == &format!("    {cmd}")), "{out:#?}");
+    assert!(out.iter().any(|l| l == "    git -C ~/r backfill"), "{out:#?}");
+}

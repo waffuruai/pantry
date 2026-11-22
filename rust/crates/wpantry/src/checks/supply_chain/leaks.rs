@@ -697,10 +697,8 @@ pub(crate) fn secrets(
         scan.count("repos scanned for secrets", 1);
         scan.count("files in git history skipped by a repo's .pantryignore", skipped as i64);
         if unread.total() > 0 {
-            scan.unchecked(
-                &format!("secrets in {} files of {name}'s history", unread.total()),
-                &unread_note(&unread, &short(&root.to_string_lossy()), scan.opts.deep),
-            );
+            let (why, run) = unread_note(&unread, &short(&root.to_string_lossy()), scan.opts.deep);
+            scan.unchecked_until(&format!("secrets in {} files of {name}'s history", unread.total()), &why, &run);
         }
         for f in found {
             let sure = f.confidence == "high";
@@ -725,10 +723,10 @@ pub(crate) fn secrets(
     Ok(())
 }
 
-/// Why history files went unread, and the command that reads them: a deep
-/// scan of the one repo for those out of time or too big, `git backfill`
-/// for a partial clone's.
-fn unread_note(u: &Unread, repo: &str, deep: bool) -> String {
+/// Why history files went unread, and the commands that read them, one a
+/// line: a deep scan of the one repo for those out of time or too big,
+/// `git backfill` for a partial clone's.
+fn unread_note(u: &Unread, repo: &str, deep: bool) -> (String, String) {
     let mut why = Vec::new();
     if u.late > 0 {
         why.push(format!("{} not reached in this scan's time", u.late));
@@ -740,19 +738,22 @@ fn unread_note(u: &Unread, repo: &str, deep: bool) -> String {
         why.push(format!("{} missing from this partial clone", u.missing));
     }
     let r = sh_path(repo);
-    let mut out = why.join(", ");
+    let mut note = why.join(", ");
+    let mut run = Vec::new();
+    if u.missing > 0 {
+        note.push_str(". Download them (git 2.49+), then scan again");
+        run.push(format!("git -C {r} backfill"));
+    }
     if !deep && u.late + u.too_big > 0 {
-        out.push_str(&format!(
-            ". Scan this repo on its own, with files up to {} MB and no time limit: `wpantry scan --path {r} --no-machine --deep`",
+        note.push_str(&format!(
+            ". Scan this repo on its own, with files up to {} MB and no time limit",
             DEEP_MAX_BLOB >> 20
         ));
+        run.push(format!("wpantry scan --path {r} --no-machine --deep"));
     } else if deep && u.late > 0 {
-        out.push_str(". The next scan goes on from here");
+        note.push_str(". The next scan goes on from here");
     }
-    if u.missing > 0 {
-        out.push_str(&format!(". Download them with `git -C {r} backfill` (git 2.49+), then scan again"));
-    }
-    out
+    (note, run.join("\n"))
 }
 
 /// What to do about secrets found in one file of a repo's history, as a

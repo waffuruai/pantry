@@ -474,3 +474,102 @@ fn one_rule_in_one_file_is_one_finding_whatever_versions_repeat_it() {
     assert_eq!(places("line 1, commit c3"), [(1, "c3".to_string())]);
     assert!(places("").is_empty());
 }
+
+#[test]
+fn generic_hits_in_tests_are_one_finding_per_rule_naming_every_place() {
+    let found = vec![
+        leak("generic-password", "spec/a_spec.rb", 9, "c2", "low"),
+        leak("generic-password", "spec/a_spec.rb", 3, "c1", "low"),
+        leak("generic-password", "tests/b_test.py", 4, "c1", "medium"),
+        leak("generic-api-key", "tests/b_test.py", 5, "c1", "low"),
+        leak("github-pat", "tests/b_test.py", 6, "c1", "high"),
+        leak("generic-password", "src/db.rb", 2, "c1", "low"),
+    ];
+    let none = |_: &str, _: &str, _: &str| None;
+    let (fs, counts) = findings("~/r", "~/r", &found, false, &none);
+    assert!(counts.is_empty());
+    let got: Vec<(&str, &str, &str, &str)> = fs
+        .iter()
+        .map(|(f, _)| (f.component.as_str(), f.location.as_str(), f.vuln_id.as_str(), f.status.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("~/r/tests/b_test.py", "line 6, commit c1", "github-pat", "fail"),
+            ("~/r/src/db.rb", "line 2, commit c1", "generic-password", "warn"),
+            ("~/r", TESTS, "generic-password", "warn"),
+            ("~/r", TESTS, "generic-api-key", "warn"),
+        ],
+        "a provider's token in a test is its own finding"
+    );
+    let tests = &fs[2].0;
+    assert_eq!(
+        tests.note,
+        "Generic (in tests; review: medium confidence rule); 3 lines in 2 files: spec/a_spec.rb (lines 3, 9); tests/b_test.py (line 4)"
+    );
+    for show in ["show c1:spec/a_spec.rb | sed -n 3p", "show c2:spec/a_spec.rb | sed -n 9p", "show c1:tests/b_test.py"]
+    {
+        assert!(tests.fix_cmd.contains(show), "{show}: {}", tests.fix_cmd);
+    }
+    assert!(tests.fix_cmd.contains("printf '%s\\n' /spec/a_spec.rb /tests/b_test.py >>"), "{}", tests.fix_cmd);
+    // A new hit in a test leaves the finding's id as it was.
+    let mut more = found.clone();
+    more.insert(0, leak("generic-password", "tests/c_test.py", 1, "c3", "low"));
+    let (again, _) = findings("~/r", "~/r", &more, false, &none);
+    assert_eq!(again[2].0.id(), tests.id());
+    // An ignore file's entry for one test file leaves its hits out.
+    let skip = |_: &str, rule: &str, file: &str| {
+        (rule == "generic-password" && file == "spec/a_spec.rb").then_some("findings skipped by a repo's .pantryignore")
+    };
+    let (fs, counts) = findings("~/r", "~/r", &found, false, &skip);
+    assert_eq!(counts, [("findings skipped by a repo's .pantryignore", 1)]);
+    assert!(fs[2].0.note.ends_with("1 line in 1 file: tests/b_test.py (line 4)"), "{}", fs[2].0.note);
+}
+
+#[test]
+fn vendored_generic_hits_only_with_deep_and_env_files_fail() {
+    let found = vec![
+        leak("generic-password", "vendor/rails/base.rb", 3, "c1", "low"),
+        leak("github-pat", "vendor/rails/base.rb", 4, "c1", "high"),
+        leak("generic-password", "backend/.env", 2, "c1", "low"),
+        leak("generic-password", "tests/.env", 2, "c1", "low"),
+        leak("generic-password", "backend/.env.example", 2, "c1", "low"),
+    ];
+    let none = |_: &str, _: &str, _: &str| None;
+    let (fs, counts) = findings("~/r", "~/r", &found, false, &none);
+    assert_eq!(counts, [(VENDORED, 1)]);
+    let got: Vec<(&str, &str)> = fs.iter().map(|(f, _)| (f.component.as_str(), f.status.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            ("~/r/vendor/rails/base.rb", "fail"),
+            ("~/r/backend/.env", "fail"),
+            ("~/r/tests/.env", "fail"),
+            ("~/r/backend/.env.example", "warn"),
+        ]
+    );
+    assert!(fs[1].0.note.ends_with("(in a committed env or credential file)"), "{}", fs[1].0.note);
+    assert!(!fs[1].0.fix_cmd.contains("review"), "{}", fs[1].0.fix_cmd);
+    let (fs, counts) = findings("~/r", "~/r", &found, true, &none);
+    assert!(counts.is_empty());
+    assert_eq!(fs.len(), 5, "--deep reports vendored code");
+}
+
+#[test]
+fn clones_of_one_repo_share_their_findings() {
+    let found = vec![leak("generic-password", "src/db.rb", 2, "c1", "low")];
+    let forked = vec![
+        leak("generic-password", "src/db.rb", 2, "c1", "low"),
+        leak("generic-password", "src/db.rb", 2, "c9", "low"),
+    ];
+    let none = |_: &str, _: &str, _: &str| None;
+    let mut made = Vec::new();
+    for (name, found) in [("~/a/r", &found), ("~/b/r", &found), ("~/c/r", &forked)] {
+        made.extend(findings(name, name, found, false, &none).0.into_iter().map(|(f, k)| (f, k, name.to_string())));
+    }
+    let fs = merge_clones(made);
+    let got: Vec<&str> = fs.iter().map(|f| f.component.as_str()).collect();
+    assert_eq!(got, ["~/a/r/src/db.rb", "~/c/r/src/db.rb"], "a fork with another version is its own");
+    assert!(fs[0].note.ends_with("; also in 1 other clone: ~/b/r"), "{}", fs[0].note);
+    assert!(!fs[1].note.contains("also in"));
+}

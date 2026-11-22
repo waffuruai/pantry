@@ -19,7 +19,7 @@
 //!
 //! What Pantry does differently: a file that sniffs as binary is skipped (see
 //! [`fragments::binary`]), the generic rules don't read translations, built
-//! bundles, docs and (for passwords) tests ([`noise`]), and secrets never
+//! bundles, docs or commented-out examples ([`noise`]), and secrets never
 //! leave memory: findings carry the rule, the place and a fingerprint.
 
 pub mod decode;
@@ -286,6 +286,13 @@ impl Scanner {
                 continue;
             }
             let line = if pass.depth == 0 { line } else { pass.decoder.line(start, end) };
+            if self.skip_noise
+                && rule.id.starts_with("generic-")
+                && noise::secret_file(path).is_none()
+                && noise::commented_example(line, &hit.secret)
+            {
+                continue;
+            }
             let ctx = Ctx { secret: &hit.secret, matched: trimmed, line, path: path.as_bytes() };
             let (skip, confidence) = self.skipped(rule, &ctx, pass.text, start, raw_end);
             if skip {

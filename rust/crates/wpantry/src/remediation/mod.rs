@@ -61,8 +61,9 @@ pub fn steps(findings: &[Finding]) -> Vec<Step> {
     let mut groups: Vec<(Component, Vec<usize>)> = Vec::new();
     for (i, f) in findings.iter().enumerate() {
         // Every hit in one file is one decision (rotate, or allow the file),
-        // not one step per line.
-        let location = if f.kind == "secret" { "" } else { f.location.as_str() };
+        // not one step per line; each rule's test hits are one of their own.
+        let tests = f.location == crate::checks::supply_chain::leaks::TESTS;
+        let location = if f.kind == "secret" && !tests { "" } else { f.location.as_str() };
         let k = (f.kind.as_str(), f.component.as_str(), f.version.as_str(), location);
         match groups.iter_mut().find(|(key, _)| *key == k) {
             Some((_, v)) => v.push(i),

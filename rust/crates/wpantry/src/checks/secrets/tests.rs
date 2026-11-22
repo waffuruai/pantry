@@ -130,7 +130,7 @@ fn a_scan_past_its_deadline_gives_up_instead_of_reading_on() {
 }
 
 #[test]
-fn generic_rules_skip_translations_docs_and_test_passwords_but_not_real_secrets() {
+fn generic_rules_skip_translations_docs_and_commented_examples_but_not_real_secrets() {
     let s = scanner();
     let rules = |text: &str, path: &str| -> Vec<String> {
         let mut r: Vec<String> = s.scan(text.as_bytes(), path, None).into_iter().map(|f| f.rule).collect();
@@ -144,17 +144,22 @@ fn generic_rules_skip_translations_docs_and_test_passwords_but_not_real_secrets(
     assert_eq!(rules(password, "config/database.yml"), ["generic-password"]);
     assert_eq!(rules(&key, "src/client.py"), ["generic-api-key"]);
     assert_eq!(rules(&key, "backend/tests/unit/test_client.py"), ["generic-api-key"], "keys in tests are read");
+    assert_eq!(rules(password, "spec/lib/client_spec.rb"), ["generic-password"], "and passwords, grouped later");
+    // Env and credential files are never skipped, even in docs/.
+    assert_eq!(rules("DB_PASSWORD=\"Tr0ub4dor&3xq\"\n", "docs/.env"), ["generic-password"]);
+    // A commented-out line that looks real, or names where it's kept, is read.
+    assert_eq!(rules("# password: \"Tr0ub4dor&3xq\"\n", "config/app.yml"), ["generic-password"]);
     // A provider's key is reported wherever it is.
     for path in ["app/src/lang/en.yaml", "README.md", "spec/x_spec.rb", "public/js/app.6fb2ab18.js"] {
         assert_eq!(rules(&github, path), ["github-pat"], "{path}");
     }
-    // False positives: translations, bundles, docs and test passwords.
+    // False positives: translations, bundles, docs and commented-out examples.
     assert_eq!(rules(password, "config/database.yml.md"), Vec::<String>::new());
     for (text, path) in [
         ("password: Jelszó\nforgot_password: Elfelejtett jelszó\n", "app/src/lang/translations/hu-HU.yaml"),
         ("{\"enterWifiPassword\": \"Insira a senha do WiFi\"}\n", "app/lib/l10n/app_pt.arb"),
         (password, "documentation/modules/exploit/demo.md"),
-        (password, "spec/lib/client_spec.rb"),
+        ("# DB_PASSWORD=\"secret\"\n", "api/src/cli/env-stub.liquid"),
         (key.as_str(), "docs/setup.txt"),
         (key.as_str(), "public/admin/js/chunk-2d0b219a.92a44bfd.js"),
     ] {
@@ -163,5 +168,5 @@ fn generic_rules_skip_translations_docs_and_test_passwords_but_not_real_secrets(
     // As betterleaks, with the skips off.
     let mut bl = Scanner::new(RuleSet::load(&[]).unwrap());
     bl.skip_noise = false;
-    assert_eq!(bl.scan(password.as_bytes(), "spec/lib/client_spec.rb", None).len(), 1);
+    assert_eq!(bl.scan(password.as_bytes(), "docs/setup.yml", None).len(), 1);
 }

@@ -347,7 +347,7 @@ fn a_version_the_ranges_cant_place_is_not_checked() {
     let net = net_with(none, no_patches);
     let mut s = testing::scan(&net, &d);
     check(&mut s, &[at("oddver", "1.1.1x")], &brew_fix).unwrap();
-    assert_eq!(testing::unchecked_note(&s, &software_cves::unjudged(WHAT)), "oddver");
+    assert_eq!(testing::unchecked_note(&s, &software_cves::unjudged_label(WHAT)), "oddver");
     assert!(found(&s).is_empty());
     // A range in tags rather than versions.
     let rec = cve_rec("CVE-1", EXPAT, json!([field(json!([{"introduced": "0"}, {"fixed": "R_2_8_2"}]))]));

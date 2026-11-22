@@ -410,7 +410,7 @@ pub fn check(scan: &mut Scan, formulae: &[Installed], fix: &dyn Fn(&str) -> (Str
     }
     for (set, label) in [
         (&unreached, software_cves::unreached(WHAT)),
-        (&unjudged, software_cves::unjudged(WHAT)),
+        (&unjudged, software_cves::unjudged_label(WHAT)),
         (&unpatched, software_cves::unreached(PATCHES)),
     ] {
         if !set.is_empty() {

@@ -689,7 +689,7 @@ fn sync_offline_reports_unreachable_sources() {
     let r = t.run_env(&["sync", "--json"], UNREACHABLE);
     assert_eq!(r.code, 1, "{}", r.err);
     let data = r.json();
-    assert_eq!(keys(&data), set(&["refreshed", "failed", "packages"]));
+    assert_eq!(keys(&data), set(&["refreshed", "failed", "packages", "hand_added", "replaced"]));
     assert!(truthy(&data["failed"]), "{data}");
     assert_eq!(data["packages"], 0);
     let r = t.run_env(&["sync"], UNREACHABLE);

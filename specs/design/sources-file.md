@@ -103,7 +103,7 @@ Every source wpantry reads today, as entries:
 | `maltrail` | hosts | maltrail | deep |
 | `yaraify`, `circl-hashlookup` | hash-lookup | one each | default, after consent |
 | `malwarebazaar` | hash-lookup | malwarebazaar | with the user's `ABUSECH_AUTH_KEY` |
-| `elastic-protections` | yara | yara | off (ELv2: `wpantry rules --enable elastic`) |
+| `elastic` | yara | github-zip | off (ELv2: turned on with `tier = "default"` in the sources file) |
 
 ## Indicators
 

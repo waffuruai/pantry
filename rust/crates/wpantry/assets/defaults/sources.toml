@@ -311,6 +311,18 @@ redistribute = false
 max_bytes = 134217728
 
 [[source]]
+id = "elastic"
+kind = "yara"
+format = "github-zip"
+url = "https://api.github.com/repos/elastic/protections-artifacts/zipball/main"
+redirects = ["codeload.github.com"]
+tier = "off"
+refresh = "1d"
+license = "Elastic License 2.0"
+redistribute = false
+max_bytes = 134217728
+
+[[source]]
 id = "signature-base"
 kind = "hashes"
 format = "signature-base"

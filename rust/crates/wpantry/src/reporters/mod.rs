@@ -31,7 +31,7 @@ pub const HISTORY_DAYS: i64 = 14;
 /// The exposure log's columns, in the order every format shows them: when
 /// it was first seen, whether (and when) it was resolved, how bad it is,
 /// what it is; then the rest. `(CSV name, heading)`.
-pub const EXPOSURE_COLUMNS: [(&str, &str); 15] = [
+pub const EXPOSURE_COLUMNS: [(&str, &str); 16] = [
     ("first_seen", "First seen"),
     ("resolved", "Resolved"),
     ("severity", "Severity"),
@@ -47,11 +47,12 @@ pub const EXPOSURE_COLUMNS: [(&str, &str); 15] = [
     ("last_seen", "Last seen"),
     ("kind", "Kind"),
     ("location", "Location"),
+    ("first_epss", "EPSS first seen"),
 ];
 
 /// One exposure's cells, in [`EXPOSURE_COLUMNS`] order: "open" until it is
 /// resolved.
-pub fn exposure_cells(e: &Exposure) -> [String; 15] {
+pub fn exposure_cells(e: &Exposure) -> [String; 16] {
     [
         history::stamp(e.first_at),
         e.resolved_at.map(history::stamp).unwrap_or_else(|| "open".into()),
@@ -72,6 +73,7 @@ pub fn exposure_cells(e: &Exposure) -> [String; 15] {
         history::stamp(e.last_at),
         e.kind.clone(),
         e.location.clone(),
+        view::epss_text(e.first_epss.map(|s| (s, e.first_epss_percentile.unwrap_or(0.0)))),
     ]
 }
 

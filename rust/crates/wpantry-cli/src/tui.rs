@@ -318,6 +318,9 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
             format!("  · {} project dependencies have no license wpantry can identify", r.unknown_licenses),
         )]);
     }
+    if let Some(credit) = view::epss_credit(&r.findings) {
+        out.push(vec![(Role::Dim, format!("  · {credit}"))]);
+    }
     let fails = v.fails();
     let warns = v.rows() - fails;
     let incomplete = if v.gaps.is_empty() {

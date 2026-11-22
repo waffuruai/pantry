@@ -300,8 +300,10 @@ pub fn batches(findings: &[Finding]) -> Vec<Batch> {
 #[derive(Clone, Debug)]
 pub struct View<'a> {
     pub areas: Vec<Area<'a>>,
-    /// What couldn't be checked.
+    /// What couldn't be checked (a source failed, a path couldn't be read).
     pub gaps: Vec<&'a Finding>,
+    /// What the user chose to leave out of the scan (`--no-personal-files`).
+    pub skipped: Vec<&'a Finding>,
     pub batches: Vec<Batch>,
 }
 
@@ -435,7 +437,12 @@ pub fn view(findings: &[Finding]) -> View<'_> {
         .collect();
     let kind_index = |k: &str| KIND_ORDER.iter().position(|x| *x == k).unwrap_or(KIND_ORDER.len());
     areas.sort_by_key(|a| (rank(a.rows[0].top()), kind_index(a.kind)));
-    View { areas, gaps: findings.iter().filter(|f| f.kind == "unchecked").collect(), batches: batches(findings) }
+    View {
+        areas,
+        gaps: findings.iter().filter(|f| f.is_gap()).collect(),
+        skipped: findings.iter().filter(|f| f.kind == "unchecked" && f.excluded).collect(),
+        batches: batches(findings),
+    }
 }
 
 #[cfg(test)]

@@ -22,6 +22,10 @@ pub(crate) fn circutor_record() -> Value {
                     ],
                     "defaultStatus": "unaffected"
                 }],
+                "problemTypes": [{"descriptions": [
+                    {"lang": "en", "type": "CWE", "cweId": "CWE-347", "description": "CWE-347 Improper Verification of Cryptographic Signature"},
+                    {"lang": "en", "type": "text", "description": "NVD-CWE-noinfo"}
+                ]}],
                 "metrics": [{"cvssV4_0": {"version": "4.0", "baseScore": 10,
                     "vectorString": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H"}}]
             }
@@ -54,6 +58,8 @@ fn a_record_is_trimmed_to_what_is_judged() {
     assert_eq!(t["affected"][0]["product"], "PowerStudio SCADA Wave");
     assert_eq!(t["affected"][0]["versions"][0]["lessThan"], "24.11.17.0");
     assert!(t["affected"][0].get("platforms").is_none());
+    // The weakness types the record names, and only well-formed ones.
+    assert_eq!(t["cwe"], json!(["CWE-347"]));
     // The day it was published, when it says; "" otherwise.
     assert_eq!(t["published"], "");
     let mut dated = circutor_record();
@@ -71,6 +77,7 @@ fn a_record_is_trimmed_to_what_is_judged() {
     let t = trim(&bare).unwrap();
     assert_eq!((t["id"].as_str(), t["title"].as_str()), (Some("CVE-2026-1"), Some("Overflow in a viewer.")));
     assert!(t["score"].is_null() && t["affected"].as_array().unwrap().is_empty());
+    assert_eq!(t["cwe"], json!([]));
     let none = json!({"cveMetadata": {"state": "PUBLISHED", "cveId": "CVE-2026-2"}});
     assert_eq!(trim(&none).unwrap()["title"], "");
 }

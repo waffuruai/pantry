@@ -143,6 +143,7 @@ fn record(id: &str, affected: Value, score: Option<f64>) -> Record {
         published: String::new(),
         score: score.map(|s| (s, "4.0".to_string())),
         affected: vec![affected],
+        cwe: vec!["CWE-347".into()],
     }
 }
 
@@ -177,6 +178,9 @@ fn a_matching_record_is_a_finding_that_names_it() {
     assert!(f.kev);
     assert_eq!((f.cvss, f.cvss_version.as_str()), (Some(10.0), "4.0"));
     assert_eq!(f.affected_range, ">=24.8.0, <24.11.17.0");
+    // The record's title is the advisory summary, and its weakness type
+    // comes with it.
+    assert_eq!((f.summary.as_str(), f.cwe.clone()), ("JWT signature validation bypass", vec!["CWE-347".to_string()]));
     assert_eq!(
         f.note,
         "JWT signature validation bypass (CVE record for vendor \"Circutor\", product \"PowerStudio SCADA Wave\")"
@@ -913,7 +917,14 @@ fn php_subject(version: &str, released: Option<&str>) -> Subject {
 }
 
 fn on(entry: Value, id: &str, day: &str) -> Record {
-    Record { id: id.into(), title: "t".into(), published: day.into(), score: None, affected: vec![entry] }
+    Record {
+        id: id.into(),
+        title: "t".into(),
+        published: day.into(),
+        score: None,
+        affected: vec![entry],
+        cwe: Vec::new(),
+    }
 }
 
 #[test]

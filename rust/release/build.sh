@@ -5,7 +5,7 @@
 # different paths, and requires byte-identical output; anyone can rerun it to
 # check a published binary.
 #
-#   rust/release/build.sh TARGET OUT
+#   rust/release/build.sh TARGET OUT [wpantry-desktop|wpantry-setup]
 #
 # TARGET is a Rust target triple, or universal-apple-darwin (the two macOS
 # targets joined with lipo). OUT is the file to write. The build is --locked
@@ -15,18 +15,24 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: $0 TARGET OUT" >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+  echo "usage: $0 TARGET OUT [wpantry-desktop|wpantry-setup]" >&2
   exit 2
 fi
 target="$1"
 out="$2"
 rust="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root="$(dirname "$rust")"
+binary="${3:-wpantry}"
+case "$binary" in
+  wpantry) project="$rust" ;;
+  wpantry-desktop|wpantry-setup) project="$root/desktop" ;;
+  *) echo "unknown binary: $binary" >&2; exit 2 ;;
+esac
 
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$root" log -1 --format=%ct)}"
 export SOURCE_DATE_EPOCH
-export CARGO_TARGET_DIR="$rust/target"
+export CARGO_TARGET_DIR="$project/target"
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
 
@@ -67,8 +73,8 @@ done
 
 # Builds one triple; prints the binary's path.
 one() {
-  (cd "$rust" && cargo build --quiet --release --locked --target "$1") || return 1
-  echo "$CARGO_TARGET_DIR/$1/release/wpantry$exe"
+  (cd "$project" && cargo build --quiet --release --locked --target "$1" --bin "$binary") || return 1
+  echo "$CARGO_TARGET_DIR/$1/release/$binary$exe"
 }
 
 case "$target" in

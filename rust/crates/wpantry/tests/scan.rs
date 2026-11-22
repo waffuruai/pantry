@@ -31,7 +31,7 @@ fn record(id: &str, aliases: &[&str]) -> Value {
     json!({
         "id": id, "aliases": aliases, "modified": "2026-01-01T00:00:00Z",
         "summary": "Buffer overflow in SmallVec::insert_many",
-        "database_specific": {"severity": "CRITICAL"},
+        "database_specific": {"severity": "CRITICAL", "cwe_ids": ["CWE-787", "not-a-cwe"]},
         "affected": [{"package": {"ecosystem": "crates.io", "name": "smallvec"},
                       "ranges": [{"type": "SEMVER", "events": [{"introduced": "0.6.3"}, {"fixed": "0.6.14"},
                                                                 {"introduced": "1.0.0"}, {"fixed": "1.6.1"}]}]}]
@@ -133,6 +133,19 @@ fn repo_scan_end_to_end() {
         (Some(9.8), "3.1", Some(0.02)),
         "CVE.org's score: OSV's records had none"
     );
+    // What the advisory is, from its records: the summary as published,
+    // the other ids (CVE first is the vuln_id itself, so left out) and the
+    // weakness type; in the scan JSON too.
+    assert_eq!(f.summary, "Buffer overflow in SmallVec::insert_many");
+    let mut aliases = f.aliases.clone();
+    aliases.sort();
+    assert_eq!(aliases, ["GHSA-43w2-9j62-hq99", "RUSTSEC-2021-0003"]);
+    assert_eq!(f.cwe, ["CWE-787"]);
+    let j: Value = serde_json::from_str(&f.to_json().dumps()).unwrap();
+    assert_eq!(
+        (&j["summary"], &j["cwe"], j["aliases"].as_array().map(Vec::len)),
+        (&json!("Buffer overflow in SmallVec::insert_many"), &json!(["CWE-787"]), Some(2))
+    );
     assert_eq!(f.location, wpantry::utils::files::command_path(&dir.join("Cargo.lock")));
     assert!(!f.location.contains(r"\\?\"), "{}", f.location);
     // The directory is shell-quoted when it needs it, without the `\\?\` prefix.
@@ -146,6 +159,11 @@ fn repo_scan_end_to_end() {
     // The findings are the cache's latest, and a second run reads OSV's
     // change list and asks nothing else: nothing changed.
     let cache = Cache::open(Some(&db)).unwrap();
+    // The report reads them back from the cache (`report --json`).
+    let saved = wpantry::reporters::jsonl::findings(&cache).unwrap();
+    let saved = saved.iter().find(|s| s.kind == "project").unwrap();
+    assert_eq!((saved.summary.as_str(), saved.cwe.clone()), (f.summary.as_str(), f.cwe.clone()));
+    assert_eq!(saved.aliases, f.aliases);
     let n: i64 =
         cache.conn.query_row("SELECT COUNT(*) FROM findings WHERE kind = 'project'", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 1);

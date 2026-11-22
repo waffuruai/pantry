@@ -83,3 +83,7 @@ The audits of Mozilla, Google and the Bytecode Alliance are imported (`[imports]
 ## The rustls tree
 
 rustls, ring, webpki and the platform verifier are most of the dependency surface. At every bump of any of them, read the release notes and the vet diff even when the bump is a patch, and check `cargo tree -e normal -i ring` for anything new.
+
+## Desktop dependencies
+
+Pantry Desktop uses the same egui version as Uchi through `eframe` 0.37.0. Its only other direct dependencies are `serde` and `serde_json` for the scanner and automation interfaces. The desktop crate has its own exact pins and lockfile. The scanner workspace retains its dependency allowlist. The release generates desktop licence notices from its locked graph and includes the OFL notices for the Waffuru fonts.

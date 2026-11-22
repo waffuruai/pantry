@@ -92,6 +92,12 @@ fn findings(t: &mut String, v: &View, r: &Report) {
             t.push_str(&format!("- {}: {}\n", cell(&g.component), cell(&g.note)));
         }
     }
+    if !v.skipped.is_empty() {
+        t.push_str("\n## Skipped by your choice\n\n");
+        for g in &v.skipped {
+            t.push_str(&format!("- {}: {}\n", cell(&g.component), cell(&g.note)));
+        }
+    }
     if !v.batches.is_empty() {
         t.push_str("\n## Update plan\n\n| Mode | Command | Runs as | Clears |\n|---|---|---|---|\n");
         let mut scripts = Vec::new();

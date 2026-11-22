@@ -697,6 +697,8 @@ pub fn assess(x: &Subject, vendor: &str, records: &[Record], kev: &dyn Fn(&str) 
             affected_range: range.clone(),
             cvss: r.score.as_ref().map(|(v, _)| *v),
             cvss_version: r.score.as_ref().map(|(_, v)| v.clone()).unwrap_or_default(),
+            summary: crate::finding::clean_summary(&r.title),
+            cwe: r.cwe.clone(),
             ..Default::default()
         });
     }

@@ -277,6 +277,13 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
             ]);
         }
     }
+    if !v.skipped.is_empty() {
+        out.push(Vec::new());
+        out.push(vec![(Role::Dim, "Skipped by your choice".into())]);
+        for g in &v.skipped {
+            out.push(vec![(Role::Dim, fit(&clean(&format!("  · {} - {}", g.component, g.note)), width))]);
+        }
+    }
     if !v.batches.is_empty() {
         out.push(Vec::new());
         out.push(vec![

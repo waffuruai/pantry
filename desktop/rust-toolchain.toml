@@ -1,0 +1,5 @@
+# The exact toolchain every build uses (docs/internal/dependencies.md). Bump by PR.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

@@ -155,6 +155,7 @@ wpantry sync                                       # refresh the cache without s
 wpantry schedule install                           # every day at 09:30: sync, then scan (never fix)
 wpantry schedule install --every week --at 07:00   # also hour, month, quarter, year: each at the period's start
 wpantry schedule status                            # installed? last run, and what it found
+wpantry schedule status --json                     # the same for scripts and Pantry Desktop
 wpantry schedule uninstall
 wpantry cache prune                                # drop what no scan used in 90 days, compact the file
 ```
@@ -165,7 +166,11 @@ wpantry cache prune                                # drop what no scan used in 9
   - once PostgreSQL was found: its security page;
   - for what scans asked about: end-of-life dates, OSV, CIRCL's CVE records, the latest Open VSX and Marketplace versions of the extensions last checked, upstream repos' release tags, and CVE scores (OSV, CVE.org).
 - `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).
-- `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
+- `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority, and on Windows a Task Scheduler job for your account only, with least privilege, that runs while you are signed in. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
+- On Windows, when Pantry Desktop is installed beside the scanner, the task starts `wpantry-desktop.exe --scheduled-run`, which runs `wpantry.exe schedule run` without a console window. With the scanner on its own, the task runs `wpantry.exe schedule run`.
+- On macOS a scheduled run scans with `--no-personal-files`: it leaves Downloads, Desktop and Documents out, because opening them can wait on a permission prompt nobody is there to answer. The report lists them under "Skipped by your choice", not as unfinished checks. Linux and Windows scan those folders.
+- There is one scheduled scan per account. Pantry Desktop's **Scan schedule** sets up the same job, so the CLI and the app see and change one schedule.
+- `schedule status --json` prints one object: `schema`, `backend` (`launchd`, `systemd`, `cron` or `windows`), `installed`, `enabled` (null when nothing is installed), `interval` (in words), `every`, `at` and `last_run` (UTC, null before the first readable run).
 - A scheduled run never changes anything. Run `wpantry fix` yourself.
 - The cache is one SQLite file: `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds advisories for what's here, which versions were checked, every scan's findings, and the feeds; never a mirror of OSV.
 
@@ -202,6 +207,7 @@ wpantry fix CVE-2026-98432 --undo           # remove the stopgap once the kernel
 
 - `fix next` gives the findings one at a time, in fix order. It skips what a fix was tried for since the scan, so an agent can loop on `wpantry fix next --json` until `"item": null`, then scan again. Each item says `how`: `wpantry` (run `fix <id>`), `you` (a command to run), or `terminal` (a secret for `fix secret`).
 - `fix secret ID` needs a terminal and git-filter-repo 2.47+. It shows the line, asks whether it's real, and adds the file to `.pantryignore` if it isn't. If it is and has been rotated, it takes the secret with echo off, rewrites history in a fresh mirror clone, checks it's gone, and asks before the force-push. The secret is never printed by Pantry, passed as an argument, or kept.
+- `fix F-… --from-scan SCAN` fixes one finding only if SCAN is still the latest scan and the finding has an unattended fix; otherwise it stops before running anything. Pantry Desktop uses it so the fix you confirmed is the fix that runs. Without a terminal to ask on (or with `--no-input`) it runs only with `--yes`; otherwise it is a usage error (exit 2). `--dry-run --json` prints `{schema, scan, command}`, the one command it would run.
 - `fix ID` exits 1 when a step is left, a fix failed, nothing is known for the id, or a question went unanswered (no terminal and no `--yes`).
 - Every fix goes into the remediation log with who ran it (`wpantry report remediation`).
 - `wpantry fix` also runs `ca-trust` and `extension-cooldown` when the scan found what they fix, and the CVE-2026-98432 stopgap on a Linux host that needs it.
@@ -222,9 +228,12 @@ For CVE-2026-98432 the [posture checks](posture.md) also cover the Linux kernel 
 ## Keeping Pantry current
 
 ```bash
-wpantry update --check    # exit 10 when a newer release exists
-wpantry update            # asks, then installs it, verified
+wpantry update --check           # exit 10 when a newer release exists
+wpantry update --check --json    # current, latest, available and the release's file names
+wpantry update                   # asks, then installs it, verified
 ```
+
+Pantry Desktop updates through Pantry Setup instead: see [Update Pantry Desktop](install.md#update-pantry-desktop).
 
 See [upgrade](install.md#upgrade).
 
@@ -299,24 +308,24 @@ Options:
   -h, --help     print this help
 
 Commands:
-  scan [options]             Scan this computer and its repos, then show the report
-  fix [options] [target]     Scan, run the unattended fixes and stopgaps, then re-check (list, or
-                             one id)
-  report [options] [part]    The latest scan's report, a log, or the summary, in any format
-  search [options] <query>   Search the cached advisories (for agents)
-  watch [options]            Re-check the advisories with no fix yet; exit 10 when one lands
-  sync [options]             Refresh the cache for offline scans
-  schedule <command>         Run sync and scan on a schedule
-  rules [options] [command]  The malware scan's YARA rules; gen writes one from samples
-  sources [options]          Every outside source, when it was last fetched and what went wrong
-  breach [options]           Show or set consent for the email breach check
-  cache <command>            Maintain the cache
-  update [options]           Install a newer release, verified
-  version [options]          Print the version, implementation and JSON schema
-  tools [options]            List the external tools wpantry uses
-  skill                      Print the agent skill (SKILL.md)
-  licenses                   Print the third-party licences built into wpantry
-  help [command]             Print a command's help
+  scan [options]               Scan this computer and its repos, then show the report
+  fix [options] [target] [id]  Scan, run the unattended fixes and stopgaps, then re-check (list, or
+                               one id)
+  report [options] [part]      The latest scan's report, a log, or the summary, in any format
+  search [options] <query>     Search the cached advisories (for agents)
+  watch [options]              Re-check the advisories with no fix yet; exit 10 when one lands
+  sync [options]               Refresh the cache for offline scans
+  schedule <command>           Run sync and scan on a schedule
+  rules [options] [command]    The malware scan's YARA rules; gen writes one from samples
+  sources [options]            Every outside source, when it was last fetched and what went wrong
+  breach [options]             Show or set consent for the email breach check
+  cache <command>              Maintain the cache
+  update [options]             Install a newer release, verified
+  version [options]            Print the version, implementation and JSON schema
+  tools [options]              List the external tools wpantry uses
+  skill                        Print the agent skill (SKILL.md)
+  licenses                     Print the third-party licences built into wpantry
+  help [command]               Print a command's help
 
 Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 ```
@@ -404,6 +413,7 @@ Arguments:
 Options:
   --dry-run                 print what would run or be written; change nothing
   --yes                     run the fixes and write the stopgaps without asking
+  --from-scan <id>          with a finding id: require this latest scan and an automatic fix
   --undo                    with an id: take wpantry's stopgap away once the real fix is installed
   --bundle <file>           ca-trust: rewrite this PEM bundle instead of the system trust store
   --hours <n>               extension-cooldown: the cooldown (default: 72)
@@ -548,16 +558,18 @@ Options:
 ```
 Usage: wpantry schedule [options] <command>
 
-Run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes.
+Run sync and scan on a schedule (launchd, a systemd user timer, cron, or Windows Task Scheduler);
+never fixes.
 
 Options:
   -h, --help  print this help
 
 Commands:
   install [options]  Install the job
-  status             Whether the job is installed, and how its last run went
+  status [options]   Whether the job is installed, and how its last run went
   uninstall          Remove the job
-  run                What the job runs: sync, then scan --json --no-input
+  run                What the job runs: sync, then scan --json --no-input (with --no-personal-files
+                     on macOS)
   help [command]     Print a command's help
 ```
 
@@ -575,6 +587,18 @@ Options:
   --at <time>       the time of day, HH:MM (default: 09:30)
   --dry-run         print the job definition without installing it
   -h, --help        print this help
+```
+
+### schedule status
+
+```
+Usage: wpantry schedule status [options]
+
+Whether the job is installed, and how its last run went.
+
+Options:
+  --json      the schedule and last run as JSON
+  -h, --help  print this help
 ```
 
 ### rules
@@ -665,6 +689,7 @@ Check for a newer wpantry release and, after a yes, install it verified.
 
 Options:
   --check          only say whether a newer release exists (exit 10 when one does)
+  --json           with --check: current and latest versions as JSON
   --yes            install without asking
   --no-input       never ask: report only
   --offline        use only the cached answer

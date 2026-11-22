@@ -186,6 +186,11 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
     for s in known.values_mut().filter(|s| s.0.is_empty()) {
         s.0 = s.1.as_ref().map(|sc| cvss::label(sc.value).to_string()).unwrap_or_default();
     }
+    let mut texts: HashMap<String, AdvisoryText> = HashMap::new();
+    for f in findings.iter_mut().filter(|f| f.kind != "unchecked" && is_advisory(&f.vuln_id)) {
+        let text = texts.entry(f.vuln_id.clone()).or_insert_with(|| advisory_text(cache, &f.vuln_id));
+        fill_text(f, text);
+    }
     for f in findings.iter_mut().filter(|f| f.kind != "unchecked") {
         if let Some((label, score, epss, _)) = known.get(&f.vuln_id).cloned() {
             if let Some(s) = score {
@@ -203,6 +208,85 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
         let word = cvss::word(&f.severity);
         f.severity =
             if word.is_empty() || word == "NONE" && f.status == "fail" { own(f).to_string() } else { word.to_string() };
+    }
+}
+
+/// What the cache says an advisory is, for a reader: its summary, its
+/// other ids and its weakness types (see [`Finding::summary`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdvisoryText {
+    pub summary: String,
+    pub aliases: Vec<String>,
+    pub cwe: Vec<String>,
+}
+
+/// An advisory's text from the records the cache holds for it (it and the
+/// records naming it as an alias, its own first), and CISA KEV's name for
+/// one of its CVEs when no record has a summary. Nothing is fetched.
+pub fn advisory_text(cache: &Cache, id: &str) -> AdvisoryText {
+    text_of(cache, id, &records(cache, id))
+}
+
+fn text_of(cache: &Cache, id: &str, recs: &[Value]) -> AdvisoryText {
+    let summary = recs
+        .iter()
+        .map(|r| crate::finding::clean_summary(crate::utils::json::str_at(r, "summary")))
+        .find(|s| !s.is_empty())
+        .or_else(|| {
+            cves(id, recs).iter().find_map(|c| {
+                cache
+                    .conn
+                    .query_row("SELECT name FROM kev WHERE cve = ?", [c], |r| r.get::<_, Option<String>>(0))
+                    .ok()
+                    .flatten()
+                    .map(|n| crate::finding::clean_summary(&n))
+                    .filter(|n| !n.is_empty())
+            })
+        })
+        .unwrap_or_default();
+    let mut aliases: Vec<String> = Vec::new();
+    for r in recs {
+        for a in crate::sources::osv::ids_of(r) {
+            if a != id && crate::finding::plain_id(&a) && !aliases.contains(&a) {
+                aliases.push(a);
+            }
+        }
+    }
+    // CVE ids first, then GitHub's, then the rest, each in record order.
+    aliases.sort_by_key(|a| {
+        if a.starts_with("CVE-") {
+            0
+        } else if a.starts_with("GHSA-") {
+            1
+        } else {
+            2
+        }
+    });
+    aliases.truncate(12);
+    let mut cwe: Vec<String> = Vec::new();
+    for r in recs {
+        let ids = r.get("database_specific").map(|d| crate::utils::json::strs_at(d, "cwe_ids")).unwrap_or_default();
+        for c in ids.iter().filter_map(|c| crate::finding::cwe_id(c)) {
+            if !cwe.contains(&c) {
+                cwe.push(c);
+            }
+        }
+    }
+    cwe.truncate(8);
+    AdvisoryText { summary, aliases, cwe }
+}
+
+/// Fill a finding's summary, aliases and weakness types from `text` where
+/// the check left them empty.
+pub fn fill_text(f: &mut Finding, text: &AdvisoryText) {
+    if f.summary.is_empty() {
+        f.summary = text.summary.clone();
+    }
+    if f.aliases.is_empty() {
+        f.aliases = text.aliases.clone();
+    }
+    if f.cwe.is_empty() {
+        f.cwe = text.cwe.clone();
     }
 }
 

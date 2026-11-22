@@ -8,3 +8,6 @@ target/
 
 # Compiled into wpantry (scripts/secret_words.py); a global *.gz ignore must not drop it.
 !rust/crates/wpantry/assets/secrets/words.txt.gz
+
+# install-local.sh output
+desktop/dist/

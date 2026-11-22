@@ -113,3 +113,47 @@ fn a_failing_outdated_finding_is_high() {
     assert_eq!(own(&finding("app", "OUTDATED", "warn", "")), "LOW");
     assert_eq!(own(&finding("app", "BROWSER", "fail", "")), own(&finding("runtime", "OUTDATED", "fail", "")));
 }
+
+/// Oracle: the contract's caps. An advisory with 13 aliases and 9 weakness
+/// types gives the first 12 and 8 (CVE ids first), no more.
+#[test]
+fn advisory_text_caps_aliases_at_12_and_weaknesses_at_8() {
+    let (_d, c) = crate::sources::testing::cache();
+    let aliases: Vec<String> = (1..=13).map(|n| format!("CVE-2026-{n:04}")).collect();
+    let cwes: Vec<String> = [20, 22, 77, 78, 79, 89, 94, 287, 502].iter().map(|n| format!("CWE-{n}")).collect();
+    c.put_vuln(&serde_json::json!({
+        "id": "GHSA-aaaa-bbbb-cccc", "aliases": aliases, "summary": "Many names",
+        "database_specific": {"cwe_ids": cwes},
+    }))
+    .unwrap();
+    let text = advisory_text(&c, "GHSA-aaaa-bbbb-cccc");
+    assert_eq!(text.aliases, aliases[..12], "{:?}", text.aliases);
+    assert_eq!(text.cwe, cwes[..8], "{:?}", text.cwe);
+}
+
+/// Oracle: an area the scan could not check is not an advisory, even when
+/// its id has an advisory's shape and the cache holds that advisory: it
+/// never gains a summary, aliases or weakness types, in the scan's own
+/// step or when an old report is read back. Known bad: drop the
+/// `kind != "unchecked"` guard and it reads like a security notice.
+#[test]
+fn an_unchecked_finding_never_gains_advisory_text() {
+    let (_d, c) = crate::sources::testing::cache();
+    c.put_vuln(&serde_json::json!({
+        "id": "CVE-2026-4242", "aliases": ["GHSA-aaaa-bbbb-cccc"], "summary": "Remote code execution",
+        "database_specific": {"cwe_ids": ["CWE-94"]},
+    }))
+    .unwrap();
+    let mut scanned = vec![finding("unchecked", "CVE-2026-4242", "warn", "")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut scanned);
+    let mut read_back = vec![finding("unchecked", "CVE-2026-4242", "warn", "")];
+    crate::reporters::jsonl::with_text(&c, &mut read_back);
+    for f in scanned.iter().chain(&read_back) {
+        assert!(f.summary.is_empty() && f.aliases.is_empty() && f.cwe.is_empty(), "{f:?}");
+    }
+    // Positive control: the same id on a real finding gains the text.
+    let mut real = vec![finding("runtime", "CVE-2026-4242", "fail", "")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut real);
+    assert_eq!(real[0].summary, "Remote code execution");
+    assert_eq!(real[0].cwe, ["CWE-94"]);
+}

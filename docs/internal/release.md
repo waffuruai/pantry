@@ -115,3 +115,35 @@ Record the result (who verified, on what) as a comment on the release's tracking
 - **"two builds of one commit differ"**: something non-deterministic got into the build (an embedded path, a timestamp, a changed build script). Download both `second-build` and the binary from the job, `diffoscope` them, fix the cause; never publish around it.
 - **The tag check fails**: the tag doesn't match `rust/Cargo.toml`, or isn't on `main`. Delete the unpublished tag (an owner can, before anything was published), fix, tag again.
 - **crates.io publish fails after the GitHub release succeeded**: rerun only the failed job once the cause is fixed; `cargo publish` of an already-published version fails harmlessly, so a partial rerun is safe.
+
+## Desktop bundles
+
+Bump `desktop/Cargo.toml` and its lockfile alongside the scanner version. Keep both pinned toolchains in sync. The release workflow builds each desktop target twice, compares the bundled ZIPs and runs the desktop end-to-end suite against the extracted bundle. Linux desktop binaries target GNU Linux so they can use the system window and graphics libraries.
+
+The release includes a portable ZIP and Pantry Setup for each desktop platform. Setup installs the executables and notices from that release. The workflow builds Setup twice and tests an installed copy. Both packages go through the same checksums, GitHub attestations and cosign signing as the scanner assets. A manual dry run stores them as workflow artifacts. The release job checks every package is attached before making the release public.
+
+The Pantry product page links to the Setup assets on the latest GitHub release. Publish the first release containing Setup before enabling those links on the site. Keep the `wpantry-setup-<target>` and `wpantry-desktop-<target>.zip` filenames stable for downloads and desktop update checks. See [Desktop install and update](../../desktop/README.md#install-and-update).
+
+### Code signing
+
+The build job signs the desktop packages after the two-build compares, so those compares cover the unsigned builds. The publish job then makes `SHA256SUMS`, the attestations and the cosign bundles from the signed files. [`desktop/release/sign.py`](../../desktop/release/sign.py) does the signing.
+
+- **macOS, always**: an ad-hoc signature with the hardened runtime on each Mach-O, then on the bundle: `ai.waffuru.pantry.scanner` for the scanner inside `Pantry.app`, `ai.waffuru.pantry.desktop` for `Pantry.app`, `ai.waffuru.pantry.setup` for `Pantry Setup.app`. This binds `Info.plist` to the signature and keeps the identifier the same across versions. It does not satisfy Gatekeeper: a downloaded copy still needs the "open anyway" step. Ad-hoc signatures have no timestamp, so the job signs both builds and compares them again. Setup's payload is rebuilt from the signed `Pantry.app`.
+- **macOS Developer ID and notarization, off until configured**: replaces the ad-hoc step when `APPLE_DEVELOPER_ID_P12` is set. It signs with a secure timestamp, submits each ZIP with `xcrun notarytool submit --wait`, staples the ticket with `xcrun stapler staple` and repacks. Timestamped bytes differ between runs, so they are not compared.
+- **Windows Authenticode, off until configured**: runs when `WINDOWS_SIGNING_PFX` is set. It signs both desktop executables with `signtool` (SHA-256, RFC 3161 timestamp from `http://timestamp.digicert.com`; change it with `--timestamp-url`), rebuilds Setup so its embedded payload holds the signed executables, then signs Setup.
+
+The standalone scanner assets (`wpantry-<target>`) stay as they are: install.sh, mise and packslip verify them by digest and attestation.
+
+Tom has to provide the certificates. Store them as repository secrets (Settings, Secrets and variables, Actions); only the signing steps read them, never the build steps:
+
+| Secret | What it holds |
+| --- | --- |
+| `APPLE_DEVELOPER_ID_P12` | Base64 of a `.p12` export of the **Developer ID Application** certificate and its private key, from the Apple Developer Program account |
+| `APPLE_DEVELOPER_ID_PASSWORD` | The `.p12` export password |
+| `APPLE_NOTARY_APPLE_ID` | Apple ID used for notarization |
+| `APPLE_NOTARY_TEAM_ID` | The 10-character Team ID |
+| `APPLE_NOTARY_PASSWORD` | An app-specific password for that Apple ID |
+| `WINDOWS_SIGNING_PFX` | Base64 of a `.pfx` code-signing certificate with its private key (OV or EV; an EV key on a hardware token needs a cloud signing service instead, such as Azure Trusted Signing) |
+| `WINDOWS_SIGNING_PASSWORD` | The `.pfx` password |
+
+Run a dry run after adding them and check the logs: `codesign --verify --deep --strict` and `xcrun stapler validate` on macOS, `signtool verify /pa` on Windows. Both run inside `sign.py`.

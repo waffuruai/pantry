@@ -2,6 +2,10 @@
 
 Waffuru's vulnerability scanner for your computer and your code. It finds what actually applies to this machine, not everything that might. The command is `wpantry`.
 
+![Pantry Desktop with made-up demo data: the home screen says 5 things need your attention, a finding being used in attacks opens with a plain explanation, Fix it asks before it changes anything and then reports Fixed and checked, and Fix all fixes the other 3 and checks them with a new scan](docs/images/desktop/pantry-desktop.gif)
+
+Pantry Desktop is the app for people who would rather not use the command line; the [Pantry Desktop guide](docs/public/desktop.md) shows how it works.
+
 ![How Pantry scans your computer: verified sources (CVEs and advisories, indicators of compromise, YARA malware rules, other known attack vectors) feed wpantry, a fast file scanner run on a schedule or when triggered, which judges what it finds and keeps it in one SQLite cache; wpantry report writes terminal tables, JSON, JSON Lines, CSV, HTML and Markdown from it. Alongside, not part of Pantry: a watchdog or sidecar that triggers scans, and an external reporting service that receives JSON reports](docs/images/architecture.png)
 
 [Full size](docs/images/architecture.png) · [SVG](docs/images/architecture.svg) · [How it works](docs/public/architecture.md)
@@ -25,12 +29,22 @@ Every check, every source and exactly what is sent to each: [checks and sources]
 
 ## Install
 
+**Pantry Desktop**, the app with a window: download Pantry Setup for your computer from the [latest release](https://github.com/waffuruai/pantry/releases/latest) and open it. [Download Pantry Setup](docs/public/install.md#download-pantry-setup) covers each platform and the warning macOS and Windows show for an app that is not yet signed. To build it from this repository instead, see [Build it yourself](docs/public/install.md#build-it-yourself).
+
+**The `wpantry` command:**
+
 ```bash
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # recommended
 mise use -g packslip:github.com/waffuruai/pantry                                        # with mise, once it is installed and activated
 ```
 
-Both verify the release before installing anything. New to mise? [Install](docs/public/install.md#install) shows how to set it up first. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks, and the installed programs Pantry's program table names against CVE records; the rest of the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
+Both verify the release before installing anything. New to mise? [Install](docs/public/install.md#install-the-command-line-scanner) shows how to set it up first. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks, and the installed programs Pantry's program table names against CVE records; the rest of the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
+
+## Desktop
+
+Pantry Desktop shows what needs attention, fixes what it can after you say yes, and sets up scheduled scans, in a window on macOS, Linux and Windows. It runs the same scanner and shares its results with the `wpantry` command. Read the [Pantry Desktop guide](docs/public/desktop.md); for building, testing and automating the app, see [desktop/README.md](desktop/README.md).
+
+![Pantry Desktop's home screen with demo data: 5 things need your attention, 4 that Pantry can fix](docs/images/desktop/home.png)
 
 ## Use
 
@@ -49,11 +63,11 @@ Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error. For eve
 
 ## Privacy
 
-Only package names and versions go to OSV.dev, and the vendor and product names of the runtimes and datastores Pantry looks up CVE records for (Oracle's Java SE and MySQL Server) go to CIRCL's Vulnerability-Lookup, without versions. Feeds are downloaded whole. Pantry connects only to a compiled-in list of hosts. Nothing else leaves the machine unless you opt in (the email breach check asks first). Source by source: [what is sent](docs/public/checks-and-sources.md#sources).
+Pantry sends no usage telemetry. Scan results, fix history and reports stay on your computer. Online scans contact advisory sources, which may receive lookup details such as package names and versions. Use `wpantry scan --offline` to scan from cached data. [See what each source receives.](docs/public/checks-and-sources.md#sources)
 
 ## Docs
 
-- [Install](docs/public/install.md), [usage](docs/public/usage.md), [reports](docs/public/reports.md), [checks and sources](docs/public/checks-and-sources.md), [machine settings](docs/public/posture.md), [malware](docs/public/malware.md)
+- [Install](docs/public/install.md), [Pantry Desktop](docs/public/desktop.md), [usage](docs/public/usage.md), [reports](docs/public/reports.md), [checks and sources](docs/public/checks-and-sources.md), [machine settings](docs/public/posture.md), [malware](docs/public/malware.md)
 - [How it works](docs/public/architecture.md)
 - For agents: `wpantry skill` prints the [agent skill](rust/crates/wpantry/assets/SKILL.md)
 - For maintainers: [release](docs/internal/release.md), [crates.io](docs/internal/crates-io.md), [dependencies](docs/internal/dependencies.md), [CLI contract](specs/cli-contract.md)

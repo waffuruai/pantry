@@ -196,6 +196,7 @@ pub enum Ty {
     Bool,
     BoolOrNull,
     NumOrNull,
+    StrList,
 }
 
 impl Ty {
@@ -205,6 +206,7 @@ impl Ty {
             Ty::Bool => v.is_boolean(),
             Ty::BoolOrNull => v.is_boolean() || v.is_null(),
             Ty::NumOrNull => v.is_number() || v.is_null(),
+            Ty::StrList => v.as_array().is_some_and(|a| a.iter().all(Value::is_string)),
         }
     }
 }
@@ -230,6 +232,10 @@ pub const FINDING: &[(&str, Ty)] = &[
     ("cvss_version", Ty::Str),
     ("epss", Ty::NumOrNull),
     ("epss_percentile", Ty::NumOrNull),
+    ("excluded", Ty::Bool),
+    ("summary", Ty::Str),
+    ("aliases", Ty::StrList),
+    ("cwe", Ty::StrList),
 ];
 
 pub const SCOPES: &[&str] = &["runtime", "dev", "optional", "unknown"];
@@ -365,6 +371,10 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "cvss_version",
             "epss",
             "epss_percentile",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe",
         ],
     ),
     ("kev", &["cve", "added", "name", "vendor", "product"]),

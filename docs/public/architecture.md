@@ -30,7 +30,7 @@ flowchart TB
   scope --> read --> ask --> judge --> report
 ```
 
-**Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens.
+**Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens. On macOS the default walk of `~` (no `--path`) also skips `~/Pictures`, `~/Music`, `~/Movies` and any Photos or Music library: they hold no code, and opening them raises a privacy prompt. A `--path` inside one is walked as asked.
 
 **Read.** A run is almost all waiting: on subprocesses (tool versions, npm, Python, openssl, git, Homebrew) and on HTTP. So:
 
@@ -96,6 +96,7 @@ flowchart LR
 ## What it is, and is not
 
 - Pantry is a library crate, `wpantry`, and a thin binary, `wpantry-cli`. The library has no global state and never prints; the CLI owns stdout, stderr and exit codes.
+- [Pantry Desktop](desktop.md) is a window in front of that same binary. It runs the `wpantry` that ships beside it for every scan, fix, schedule change and update check, and reads the same cache, history and scheduled-scan results, so the app and the command line always agree. It adds no checks of its own. Its scan of the machine leaves Downloads, Desktop and Documents out unless you allow them (`--no-personal-files`).
 - Not SAST, reachability analysis, guided remediation, an SBOM reader or an offline OSV mirror. `brew vulns` runs as an external tool, not a port; the secret scan runs betterleaks' rules in Pantry's own scanner. Windows is [#11](https://github.com/waffuruai/pantry/issues/11).
 
 ## Missing evidence is never clean

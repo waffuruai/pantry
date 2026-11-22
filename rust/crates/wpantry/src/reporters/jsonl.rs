@@ -49,6 +49,9 @@ fn from_exposure(e: &Exposure) -> Row {
         cvss_version: e.cvss_version.clone(),
         epss: e.epss,
         epss_percentile: e.epss_percentile,
+        // Exposures never hold `unchecked` findings.
+        excluded: false,
+        ..Default::default()
     };
     from_finding(f)
 }
@@ -57,7 +60,8 @@ fn from_exposure(e: &Exposure) -> Row {
 pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
-         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile FROM findings",
+         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, excluded, \
+         summary, aliases, cwe FROM findings",
     )?;
     let rows = stmt.query_map([], |r| {
         let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -81,9 +85,30 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
             cvss_version: s(16)?,
             epss: r.get(17)?,
             epss_percentile: r.get(18)?,
+            excluded: r.get::<_, Option<i64>>(19)?.unwrap_or(0) != 0,
+            summary: s(20)?,
+            aliases: s(21)?.split_whitespace().map(str::to_string).collect(),
+            cwe: s(22)?.split_whitespace().map(str::to_string).collect(),
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut out: Vec<Finding> = rows.collect::<rusqlite::Result<_>>()?;
+    with_text(cache, &mut out);
+    Ok(out)
+}
+
+/// Fill the summary, aliases and weakness types of findings saved without
+/// them (a scan from before they were kept) from the advisory records the
+/// cache still holds. Nothing is fetched.
+pub fn with_text(cache: &Cache, findings: &mut [Finding]) {
+    use crate::checks::severity::{advisory_text, fill_text, is_advisory};
+    let mut texts = std::collections::HashMap::new();
+    for f in findings.iter_mut() {
+        let bare = f.summary.is_empty() && f.aliases.is_empty() && f.cwe.is_empty();
+        if bare && f.kind != "unchecked" && is_advisory(&f.vuln_id) {
+            let text = texts.entry(f.vuln_id.clone()).or_insert_with(|| advisory_text(cache, &f.vuln_id));
+            fill_text(f, text);
+        }
+    }
 }
 
 /// The OSV record for a finding's id: the record with that id, or the one
@@ -156,12 +181,17 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         Some(r) => {
             let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
+            for a in &f.aliases {
+                if !ids.contains(a) {
+                    ids.push(a.clone());
+                }
+            }
             (ids, format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")))
         }
         None if f.vuln_id.starts_with("CVE-") => {
-            (Vec::new(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
+            (f.aliases.clone(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
         }
-        None => (Vec::new(), String::new()),
+        None => (f.aliases.clone(), String::new()),
     };
     let life = exposure(cache, &row.key)?;
     let now = crate::utils::os::now();
@@ -182,6 +212,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         "cvss": f.cvss, "cvss_version": f.cvss_version, "epss": f.epss, "epss_percentile": f.epss_percentile,
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
+        "excluded": f.excluded, "summary": f.summary, "cwe": f.cwe,
         "aliases": aliases, "url": url, "record": rec,
         "first_seen": first_seen, "last_seen": last_seen, "resolved_at": resolved_at, "days_exposed": days,
         "fix": fix,
@@ -195,7 +226,8 @@ pub fn jsonl(cache: &Cache, all: bool) -> Result<(String, usize)> {
     if all {
         let have: Vec<String> = rows.iter().map(|r| r.key.clone()).collect();
         for e in history::exposures(cache, 0.0)? {
-            let r = from_exposure(&e);
+            let mut r = from_exposure(&e);
+            with_text(cache, std::slice::from_mut(&mut r.finding));
             if e.resolved_at.is_some() && !have.contains(&r.key) {
                 rows.push(r);
             }

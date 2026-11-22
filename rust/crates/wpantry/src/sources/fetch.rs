@@ -184,6 +184,12 @@ pub fn memo(
     cache.memo(key, compute, in_effect(id).refresh, fingerprint, refresh, offline)
 }
 
+/// How long a memo of source `id` stays fresh, in seconds (its `refresh`,
+/// as the user's sources file sets it).
+pub fn refresh_of(id: &str) -> f64 {
+    in_effect(id).refresh
+}
+
 /// Write this process's outcomes for the sources the file declares into the
 /// cache: an attempt that failed keeps the last success it had.
 pub fn save(cache: &Cache) -> Result<()> {

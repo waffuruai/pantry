@@ -39,6 +39,94 @@ pub struct Finding {
     /// EPSS scores.
     pub epss: Option<f64>,
     pub epss_percentile: Option<f64>,
+    /// An `unchecked` finding for an area the user left out on purpose
+    /// (`--no-personal-files`), not a source that failed. It is part of the
+    /// scan's scope, so it doesn't stop the scan resolving exposures or
+    /// verifying fixes ([`crate::history`]). False for every other finding.
+    pub excluded: bool,
+    /// The advisory's own one-line summary as published (OSV's `summary`,
+    /// a CVE record's title, else CISA KEV's name for it), cleaned by
+    /// [`clean_summary`]; "" without one.
+    pub summary: String,
+    /// The advisory's other ids (CVE, GHSA, OSV and distro ids), the
+    /// `vuln_id` itself left out; empty without any.
+    pub aliases: Vec<String>,
+    /// The weakness types the advisory names (`CWE-787`), from OSV's
+    /// `database_specific.cwe_ids` or a CVE record's `problemTypes`.
+    pub cwe: Vec<String>,
+}
+
+/// The longest summary kept, in characters (an ellipsis marks a cut).
+pub const SUMMARY_MAX: usize = 300;
+
+/// An advisory's summary made safe to show on one line: control and
+/// invisible formatting characters (bidi overrides, zero-width marks) and
+/// HTML tags (with a script's or style's body) removed, whitespace runs collapsed to one space, and cut to
+/// [`SUMMARY_MAX`] characters.
+///
+/// ```ignore
+/// assert_eq!(clean_summary("Heap <b>overflow</b>\n in\u{202e} parser"), "Heap overflow in parser");
+/// ```
+pub fn clean_summary(raw: &str) -> String {
+    // Tags first: `<` then a letter, `/` or `!`, up to a `>` within 512
+    // characters. A bare `<` (`versions <1.2`) is text and stays.
+    let mut text = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(i) = rest.find('<') {
+        text.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let tag = after.chars().next().is_some_and(|n| n.is_ascii_alphabetic() || n == '/' || n == '!');
+        match after.char_indices().take(512).find(|(_, c)| *c == '>') {
+            Some((end, _)) if tag => {
+                text.push(' ');
+                rest = &after[end + 1..];
+                // A script's or style's body is code, not words: dropped
+                // with it, up to its closing tag (or the end).
+                let name: String =
+                    after.chars().take_while(char::is_ascii_alphabetic).collect::<String>().to_ascii_lowercase();
+                if name == "script" || name == "style" {
+                    let close = format!("</{name}");
+                    rest = match rest.to_ascii_lowercase().find(&close) {
+                        Some(i) => rest[i..].find('>').map_or("", |j| &rest[i + j + 1..]),
+                        None => "",
+                    };
+                }
+            }
+            _ => {
+                text.push('<');
+                rest = after;
+            }
+        }
+    }
+    text.push_str(rest);
+    let invisible = |c: char| {
+        (c.is_control() && !c.is_whitespace())
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{00ad}')
+    };
+    let kept: String = text.chars().filter(|c| !invisible(*c)).collect();
+    let line = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= SUMMARY_MAX {
+        return line;
+    }
+    let cut: String = line.chars().take(SUMMARY_MAX - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// An id safe to show and to put in a link: letters, digits and `-_.:`,
+/// at most 64 characters.
+pub fn plain_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+}
+
+/// A CWE id in its usual spelling (`CWE-787`), or None for anything else
+/// (`NVD-CWE-Other`, `CWE-noinfo`).
+pub fn cwe_id(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    let digits = t.strip_prefix("CWE-").or_else(|| t.strip_prefix("cwe-"))?;
+    if digits.is_empty() || digits.len() > 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok().map(|n| format!("CWE-{n}"))
 }
 
 impl Finding {
@@ -55,6 +143,13 @@ impl Finding {
         }
     }
 
+    /// A gap in the evidence: an `unchecked` finding for a source that
+    /// failed or a path that couldn't be read, as opposed to an area the
+    /// user chose to skip (`excluded`).
+    pub fn is_gap(&self) -> bool {
+        self.kind == "unchecked" && !self.excluded
+    }
+
     /// `dep_scope` as the contract spells it: `unknown` for "".
     pub fn dep_scope_name(&self) -> &str {
         if self.dep_scope.is_empty() { "unknown" } else { &self.dep_scope }
@@ -63,14 +158,23 @@ impl Finding {
     /// What keeps a finding the same finding from scan to scan: its kind,
     /// component, location and advisory or rule.
     pub fn key(&self) -> String {
-        format!("{}|{}|{}|{}", self.kind, self.component, self.location, self.vuln_id)
+        Self::key_for(&self.kind, &self.component, &self.location, &self.vuln_id)
+    }
+
+    fn key_for(kind: &str, component: &str, location: &str, vuln_id: &str) -> String {
+        format!("{kind}|{component}|{location}|{vuln_id}")
     }
 
     /// A short handle for the finding, the same in every scan that sees it:
     /// `F-` and ten hex digits of its key's SHA-256. `wpantry fix F-…`
     /// takes it.
     pub fn id(&self) -> String {
-        format!("F-{}", &crate::utils::sha256::hex(self.key().as_bytes())[..10])
+        Self::id_for(&self.kind, &self.component, &self.location, &self.vuln_id)
+    }
+
+    pub(crate) fn id_for(kind: &str, component: &str, location: &str, vuln_id: &str) -> String {
+        let key = Self::key_for(kind, component, location, vuln_id);
+        format!("F-{}", &crate::utils::sha256::hex(key.as_bytes())[..10])
     }
 
     pub fn to_json(&self) -> J {
@@ -95,6 +199,14 @@ impl Finding {
             ("dep_scope", self.dep_scope_name().into()),
             ("dep_direct", self.dep_direct.map(J::Bool).unwrap_or(J::Null)),
             ("affected_range", self.affected_range.as_str().into()),
+            ("excluded", self.excluded.into()),
+            ("summary", self.summary.as_str().into()),
+            ("aliases", J::Arr(self.aliases.iter().map(|a| a.as_str().into()).collect())),
+            ("cwe", J::Arr(self.cwe.iter().map(|c| c.as_str().into()).collect())),
         ])
     }
 }
+
+#[cfg(test)]
+#[path = "finding_tests.rs"]
+mod tests;

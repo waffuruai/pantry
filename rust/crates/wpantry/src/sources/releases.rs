@@ -189,6 +189,56 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
 /// Example: `{"tag_name": "v1.11.3", "published_at": "2026-08-28T10:00:00Z"}`
 /// gives `("1.11.3", <2026-08-28>)`.
 pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<(String, f64)> {
+    let v = github_release_info(cache, net, repo, offline)?;
+    Ok(match &v {
+        Value::String(s) => (s.clone(), 0.0),
+        o => (str_at(o, "version").to_string(), o.get("published").and_then(Value::as_f64).unwrap_or(0.0)),
+    })
+}
+
+/// How fresh a [`github_release_info`] answer is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Freshness {
+    /// When the answer was fetched (epoch seconds); None when the cache
+    /// holds no row for it (an answer that was never stored).
+    pub checked_at: Option<f64>,
+    /// The answer came from the cache although it is past the source's
+    /// refresh age (or dated in the future): a fresh check failed, or the
+    /// run was offline with only an old copy.
+    pub stale: bool,
+}
+
+/// [`github_release_info`] with when it was fetched and whether it is stale.
+///
+/// The memo falls back to the cached copy of any age when the fetch fails
+/// as a source (Offline/Invalid); this says so instead of hiding it. A
+/// fetch that succeeds rewrites the row with the current time, so the
+/// answer is stale exactly when the row it came from is outside the
+/// refresh window the memo itself uses.
+///
+/// Example: a cached `"9.9.9"` stored 10 days ago and an unreachable
+/// GitHub gives `("9.9.9", Freshness { checked_at: Some(<10 days ago>), stale: true })`.
+pub fn github_release_info_dated(
+    cache: &Cache,
+    net: &dyn Net,
+    repo: &str,
+    offline: bool,
+) -> Result<(Value, Freshness)> {
+    let info = github_release_info(cache, net, repo, offline)?;
+    let key = format!("github-latest:{repo}");
+    let checked_at = cache.run(&key)?.filter(|(fp, _, _)| fp.is_empty()).map(|(_, at, _)| at);
+    let now = crate::utils::os::now();
+    let max_age = fetch::refresh_of("github-releases");
+    let stale = match checked_at {
+        Some(at) => !(at > now - max_age && at <= now + crate::db::CLOCK_SKEW),
+        None => false,
+    };
+    Ok((info, Freshness { checked_at, stale }))
+}
+
+/// The latest release's tag, publication time and uploaded asset names. Older
+/// cache entries can hold only the tag or omit the asset names.
+pub fn github_release_info(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<Value> {
     let fetch = || -> Result<Value> {
         let headers = net::github_headers();
         let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -200,13 +250,16 @@ pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -
         }
         let v =
             if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
-        Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at"))}))
+        let assets: Vec<&str> = data
+            .get("assets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|asset| asset.get("name").and_then(Value::as_str))
+            .collect();
+        Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at")), "assets": assets}))
     };
-    let v = fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?;
-    Ok(match &v {
-        Value::String(s) => (s.clone(), 0.0),
-        o => (str_at(o, "version").to_string(), o.get("published").and_then(Value::as_f64).unwrap_or(0.0)),
-    })
+    fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)
 }
 
 /// One row of PostgreSQL's security table.

@@ -143,7 +143,15 @@ fn a_dry_run_prints_the_job_and_runs_nothing() {
 fn launchd_install_status_and_uninstall() {
     let _home = test_home();
     let calls = Mutex::new(Vec::new());
-    let run = recorder(&calls, |cmd| ok(if cmd == "id -u" { "777\n" } else { "" }));
+    // A real launchctl prints the job only while it is loaded; this one
+    // answers as if the bootout worked.
+    let run = recorder(&calls, |cmd| {
+        if cmd.starts_with("launchctl print") {
+            failed("Could not find service")
+        } else {
+            ok(if cmd == "id -u" { "777\n" } else { "" })
+        }
+    });
     assert_eq!(install_with(Every::Day, (9, 30), false, Backend::Launchd, &run).unwrap(), EXIT_OK);
     let plist = plist_path();
     let text = std::fs::read_to_string(&plist).unwrap();
@@ -157,11 +165,11 @@ fn launchd_install_status_and_uninstall() {
         ]
     );
     assert!(paths().state.is_dir());
-    assert_eq!(status_with(Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Launchd, &run, false).unwrap(), EXIT_OK);
     assert_eq!(uninstall_with(Backend::Launchd, &run).unwrap(), EXIT_OK);
     assert!(!plist.exists());
     assert_eq!(uninstall_with(Backend::Launchd, &run).unwrap(), EXIT_OK, "nothing scheduled is not an error");
-    assert_eq!(status_with(Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Launchd, &run, false).unwrap(), EXIT_OK);
     let run = recorder(&calls, |cmd| {
         if cmd.starts_with("launchctl bootstrap") {
             failed("Bootstrap failed: 5: Input/output error\n")
@@ -180,7 +188,8 @@ fn systemd_install_status_and_uninstall() {
         return;
     }
     let calls = Mutex::new(Vec::new());
-    let run = recorder(&calls, |_| ok(""));
+    // The timer reads inactive once disabled, as systemd answers after `disable --now`.
+    let run = recorder(&calls, |cmd| if cmd.contains("is-active") { failed("") } else { ok("") });
     assert_eq!(install_with(Every::Week, (6, 15), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
     let dir = unit_dir();
     assert!(dir.join("wpantry.service").is_file());
@@ -190,11 +199,11 @@ fn systemd_install_status_and_uninstall() {
         *calls.lock().unwrap(),
         ["systemctl --user daemon-reload", "systemctl --user enable --now wpantry.timer"]
     );
-    assert_eq!(status_with(Backend::Systemd, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Systemd, &run, false).unwrap(), EXIT_OK);
     assert_eq!(uninstall_with(Backend::Systemd, &run).unwrap(), EXIT_OK);
     assert!(!dir.join("wpantry.timer").exists() && !dir.join("wpantry.service").exists());
     assert_eq!(uninstall_with(Backend::Systemd, &run).unwrap(), EXIT_OK);
-    assert_eq!(status_with(Backend::Systemd, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Systemd, &run, false).unwrap(), EXIT_OK);
     let run =
         recorder(
             &calls,
@@ -204,6 +213,116 @@ fn systemd_install_status_and_uninstall() {
         );
     let err = install_with(Every::Day, (1, 2), false, Backend::Systemd, &run).unwrap_err();
     assert!(err.to_string().contains("systemctl --user daemon-reload failed: Failed to connect to bus"), "{err}");
+}
+
+/// Oracle: `schedule uninstall` exits 0 and says "removed" only when
+/// the job is gone by the scheduler's own evidence (the file no longer
+/// exists, the timer is not active, the crontab has no wpantry line, the
+/// task is not listed); otherwise it exits 1. Known bad: before the fix each
+/// case below returned EXIT_OK and printed "✓ removed ..." while the job
+/// stayed (the launchd case is a plist that `remove_file` can't delete).
+#[test]
+fn uninstall_fails_when_the_job_is_still_there() {
+    let _home = test_home();
+    // launchd: a plist path remove_file can't delete (a non-empty directory).
+    let plist = plist_path();
+    std::fs::create_dir_all(plist.join("stuck")).unwrap();
+    let run = |argv: &[&OsStr], _: Duration| if argv[1] == "print" { failed("not found") } else { ok("") };
+    assert_eq!(uninstall_with(Backend::Launchd, &run).unwrap(), EXIT_FAIL);
+    assert!(plist.exists());
+    std::fs::remove_dir_all(&plist).unwrap();
+    assert_eq!(uninstall_with(Backend::Launchd, &run).unwrap(), EXIT_OK, "nothing scheduled");
+
+    // cron: `crontab FILE` answers 0 but the table keeps our line.
+    let table = format!("5 5 * * * old {CRON_MARK}\n");
+    let sticky = |argv: &[&OsStr], _: Duration| if argv[1] == "-l" { ok(&table) } else { ok("") };
+    assert_eq!(uninstall_with(Backend::Cron, &sticky).unwrap(), EXIT_FAIL);
+
+    // Windows: /delete answers 0 but the task is still listed.
+    let stays = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+        let tool = argv[0].to_string_lossy();
+        if tool.eq_ignore_ascii_case("whoami") || tool.ends_with("whoami.exe") {
+            return ok("\"me\",\"S-1-5-21-123\"\n");
+        }
+        match argv.get(1).map(|a| a.to_string_lossy().into_owned()).as_deref() {
+            Some("/query") if argv.get(2).is_some_and(|a| *a == "/fo") => ok(""),
+            Some("/query") => ok("<Task><Settings><Enabled>true</Enabled></Settings></Task>"),
+            _ => ok(""),
+        }
+    };
+    assert_eq!(uninstall_with(Backend::Windows, &stays).unwrap(), EXIT_FAIL);
+}
+
+/// Oracle (launchd): the plist is gone but `launchctl print` still lists
+/// the job, so it is still loaded and will run: exit 1 with a next step,
+/// never "removed". A launchctl that cannot be asked is no proof either.
+/// Known bad: the old code ignored the bootout and never asked, so it
+/// printed "removed" and exited 0. Only a recorded launchctl runs here.
+#[test]
+fn launchd_uninstall_fails_while_the_job_is_still_loaded() {
+    let _home = test_home();
+    let calls = Mutex::new(Vec::new());
+    let loaded = recorder(&calls, |cmd| {
+        if cmd.starts_with("launchctl bootout") {
+            failed("Boot-out failed: 5: Input/output error")
+        } else {
+            ok(if cmd == "id -u" { "777\n" } else { "" })
+        }
+    });
+    let plist = plist_path();
+    std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+    std::fs::write(&plist, "<plist/>").unwrap();
+    assert_eq!(uninstall_with(Backend::Launchd, &loaded).unwrap(), EXIT_FAIL);
+    // The plist goes either way: one left in LaunchAgents would load the
+    // job again at the next login.
+    assert!(!plist.exists(), "the file goes either way");
+    assert!(calls.lock().unwrap().contains(&format!("launchctl print gui/777/{LABEL}")), "{:?}", calls.lock().unwrap());
+    // Status still reports the job launchd holds.
+    let doc = status_json(Backend::Launchd, &loaded).unwrap();
+    assert!(doc.contains(r#""installed": false"#) && doc.contains(r#""loaded": true"#), "{doc}");
+    let unknown = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+        if argv[1] == "print" { Err(Error::Failed("launchctl did not answer".into())) } else { ok("") }
+    };
+    assert_eq!(uninstall_with(Backend::Launchd, &unknown).unwrap(), EXIT_FAIL);
+    let gone =
+        |argv: &[&OsStr], _: Duration| if argv[1] == "print" { failed("Could not find service") } else { ok("") };
+    assert_eq!(uninstall_with(Backend::Launchd, &gone).unwrap(), EXIT_OK);
+}
+
+/// Oracle: `launchctl print` answering 0 means launchd still holds the job.
+/// With the plist gone (an older uninstall deleted it after a failed
+/// bootout), status says not installed but still loaded. Known bad: the
+/// old status read only the plist and reported nothing scheduled.
+#[test]
+fn launchd_status_reports_a_job_still_loaded_without_its_plist() {
+    let _home = test_home();
+    let loaded = |argv: &[&OsStr], _: Duration| ok(if argv[0] == "id" { "777\n" } else { "" });
+    let doc = status_json(Backend::Launchd, &loaded).unwrap();
+    assert!(doc.contains(r#""installed": false"#) && doc.contains(r#""loaded": true"#), "{doc}");
+    let gone =
+        |argv: &[&OsStr], _: Duration| if argv[1] == "print" { failed("Could not find service") } else { ok("") };
+    assert!(status_json(Backend::Launchd, &gone).unwrap().contains(r#""loaded": false"#));
+    let unknown = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+        if argv.get(1).is_some_and(|a| *a == "print") { Err(Error::Failed("no launchctl".into())) } else { ok("") }
+    };
+    assert!(status_json(Backend::Launchd, &unknown).unwrap().contains(r#""loaded": null"#));
+    let cron = |_: &[&OsStr], _: Duration| ok("");
+    assert!(status_json(Backend::Cron, &cron).unwrap().contains(r#""loaded": null"#));
+}
+
+/// Oracle (systemd): after removing the unit files, a timer systemd
+/// still reports active is a leftover: exit 1. Known bad: the old code
+/// never asked and exited 0.
+#[test]
+fn systemd_uninstall_fails_while_the_timer_is_active() {
+    let _home = test_home();
+    if !hermetic() {
+        return;
+    }
+    let run = |_: &[&OsStr], _: Duration| ok("");
+    assert_eq!(install_with(Every::Day, (6, 15), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
+    assert_eq!(uninstall_with(Backend::Systemd, &run).unwrap(), EXIT_FAIL, "is-active answered 0");
+    assert!(!unit_dir().join("wpantry.timer").exists());
 }
 
 /// A crontab the runner keeps: `crontab -l` reads it, `crontab FILE` replaces it.
@@ -233,11 +352,11 @@ fn cron_install_replaces_its_own_line_and_keeps_the_rest() {
     assert_eq!(lines.len(), 2, "{now}");
     assert_eq!(lines[0], "0 0 * * * other");
     assert!(lines[1].starts_with("30 9 * * * nice -n 10 ") && lines[1].ends_with(CRON_MARK), "{now}");
-    assert_eq!(status_with(Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Cron, &run, false).unwrap(), EXIT_OK);
     assert_eq!(uninstall_with(Backend::Cron, &run).unwrap(), EXIT_OK);
     assert_eq!(table.lock().unwrap().as_deref(), Some("0 0 * * * other\n"));
     assert_eq!(uninstall_with(Backend::Cron, &run).unwrap(), EXIT_OK, "nothing left to remove");
-    assert_eq!(status_with(Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Cron, &run, false).unwrap(), EXIT_OK);
 }
 
 #[test]
@@ -271,9 +390,9 @@ fn status_reads_the_last_run_and_the_log_tail() {
     )
     .unwrap();
     let run = |_: &[&OsStr], _: Duration| ok("");
-    assert_eq!(status_with(Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Launchd, &run, false).unwrap(), EXIT_OK);
     std::fs::write(&p.last, "not json").unwrap();
-    assert_eq!(status_with(Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert_eq!(status_with(Backend::Launchd, &run, false).unwrap(), EXIT_OK);
 }
 
 #[cfg(unix)]
@@ -292,8 +411,16 @@ fn a_scheduled_run_records_the_check_and_logs_one_line() {
         std::fs::write(&prog, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o700)).unwrap();
     };
-    script("case \"$1\" in scan) printf '{\"findings\": []}'; echo 'done: 0 failing' >&2;; esac\nexit 0");
+    let argv_file = d.path().join("argv");
+    script(&format!(
+        "[ \"$1\" = scan ] && echo \"$@\" > '{}'\ncase \"$1\" in scan) printf '{{\"findings\": []}}'; echo 'done: 0 failing' >&2;; esac\nexit 0",
+        argv_file.display()
+    ));
     assert_eq!(run_with(&p, &prog).unwrap(), EXIT_OK);
+    // Oracle: the arguments the scan really received, not the constant.
+    let want =
+        if cfg!(target_os = "macos") { "scan --json --no-input --no-personal-files" } else { "scan --json --no-input" };
+    assert_eq!(std::fs::read_to_string(&argv_file).unwrap().trim_end(), want);
     assert_eq!(std::fs::read_to_string(&p.last).unwrap(), "{\"findings\": []}");
     let log = std::fs::read_to_string(&p.log).unwrap();
     assert!(log.contains(" sync=0 check=0 ") && log.trim_end().ends_with("done: 0 failing"), "{log}");
@@ -329,4 +456,139 @@ fn a_month_quarter_and_year_start_at_the_period_start() {
     assert!(cron_line(Path::new("/x"), Every::Year, 7, 0, &p()).starts_with("0 7 1 1 * "));
     assert_eq!(Every::NAMES.map(|n| Every::parse(n).is_some()), [true; 6]);
     assert_eq!(word(Every::Quarter), "every quarter (1 January, April, July, October)");
+}
+
+#[test]
+fn reporting_identifies_all_the_intervals_the_schedulers_write() {
+    use calendar::read_cadence;
+    let program = Path::new("/opt/Pantry tools/wpantry");
+    for name in Every::NAMES {
+        let period = Every::parse(name).unwrap();
+        let at = (8, 25);
+        let unix_at = if period == Every::Hour { (0, 0) } else { at };
+        let minute_at = if period == Every::Hour { (0, at.1) } else { at };
+        assert_eq!(read_cadence(Backend::Launchd, &plist(program, period, 8, 25, &p())), Some((period, unix_at)));
+        assert_eq!(read_cadence(Backend::Systemd, &unit(program, period, 8, 25, &p()).1), Some((period, unix_at)));
+        assert_eq!(read_cadence(Backend::Cron, &cron_line(program, period, 8, 25, &p())), Some((period, minute_at)));
+        assert_eq!(
+            read_cadence(Backend::Windows, &windows::definition(program, None, period, at, "S-1-5-21-123")),
+            Some((period, at))
+        );
+    }
+    let launcher = Path::new(r"C:\Pantry\wpantry-desktop.exe");
+    for name in Every::NAMES {
+        let period = Every::parse(name).unwrap();
+        let text = windows::definition(program, Some(launcher), period, (8, 25), "S-1-5-21-123");
+        assert_eq!(read_cadence(Backend::Windows, &text), Some((period, (8, 25))), "{text}");
+    }
+    assert_eq!(read_cadence(Backend::Systemd, "OnCalendar=Mon,Wed 14:09"), None);
+    assert_eq!(read_cadence(Backend::Cron, "*/5 * * * * true"), None);
+    assert!(unit(program, Every::Day, 8, 25, &p()).0.contains(r#"ExecStart="/opt/Pantry tools/wpantry" schedule run"#));
+    assert!(cron_line(program, Every::Day, 8, 25, &p()).contains("'/opt/Pantry tools/wpantry' schedule run"));
+}
+
+#[test]
+fn windows_installs_only_the_current_users_scan_and_checks_its_state() {
+    let installed = std::cell::Cell::new(false);
+    let run = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+        let args = argv.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>();
+        match args[0].as_ref() {
+            "whoami.exe" => ok("\"fixture\\user\",\"S-1-5-21-123\"\r\n"),
+            "schtasks.exe" => match args[1].as_ref() {
+                "/create" => {
+                    assert_eq!(args[3], "Waffuru-Pantry-S-1-5-21-123");
+                    let bytes = std::fs::read(argv[5]).unwrap();
+                    assert_eq!(&bytes[..2], &[0xff, 0xfe]);
+                    let units =
+                        bytes[2..].chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect::<Vec<_>>();
+                    let definition = String::from_utf16(&units).unwrap();
+                    assert!(definition.starts_with("<?xml version=\"1.0\" encoding=\"UTF-16\"?>"));
+                    assert!(definition.contains("<UserId>S-1-5-21-123</UserId>"));
+                    assert!(definition.contains("<LogonType>InteractiveToken</LogonType>"));
+                    assert!(definition.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+                    assert!(definition.contains("<Command>C:\\Pantry &amp; tools\\wpantry.exe</Command>"));
+                    assert!(definition.contains("<Arguments>schedule run</Arguments>"));
+                    assert!(!definition.contains(" fix"));
+                    installed.set(true);
+                    ok("")
+                }
+                "/query" if args.get(2).is_some_and(|arg| arg == "/fo") => ok(""),
+                "/query" if installed.get() => ok("<Task><Settings><Enabled>false</Enabled></Settings></Task>"),
+                "/query" => failed("task not registered"),
+                "/delete" => {
+                    installed.set(false);
+                    ok("")
+                }
+                other => panic!("unexpected task command {other}"),
+            },
+            other => panic!("unexpected scheduler tool {other}"),
+        }
+    };
+    assert!(windows::query(&run).unwrap().is_none());
+    let path = Path::new(r"\\?\C:\Pantry & tools\wpantry.exe");
+    windows::install(path, Every::Week, (8, 25), &run).unwrap();
+    let definition = windows::query(&run).unwrap().unwrap();
+    assert!(windows::disabled(&definition));
+    assert!(windows::uninstall(&run).unwrap());
+    assert!(!windows::uninstall(&run).unwrap());
+}
+
+/// Oracle: the task names the windowless desktop launcher only when it sits
+/// beside the scanner, and then runs `--scheduled-run`; a CLI-only folder
+/// keeps the scanner and `schedule run`. Known bad: before this change both
+/// cases produced `wpantry.exe schedule run`, which the first assertion on
+/// `with_app` rejects.
+#[test]
+fn windows_task_runs_the_windowless_launcher_when_the_app_is_installed() {
+    let cli_only = wpantry::utils::temp::TempDir::new("cli-only").unwrap();
+    let scanner = cli_only.path().join("wpantry.exe");
+    std::fs::write(&scanner, b"").unwrap();
+    assert_eq!(windows::launcher(&scanner), None);
+    let text = windows::definition(&scanner, windows::launcher(&scanner).as_deref(), Every::Day, (9, 30), "S-1");
+    assert!(text.contains("<Arguments>schedule run</Arguments>"), "{text}");
+    assert!(text.contains("wpantry.exe</Command>"), "{text}");
+    assert!(!text.contains("--scheduled-run"), "{text}");
+
+    let with_app = wpantry::utils::temp::TempDir::new("with-app").unwrap();
+    let scanner = with_app.path().join("wpantry.exe");
+    let app = with_app.path().join("wpantry-desktop.exe");
+    std::fs::write(&scanner, b"").unwrap();
+    std::fs::write(&app, b"").unwrap();
+    let found = windows::launcher(&scanner).expect("the app beside the scanner");
+    assert_eq!(found.file_name(), app.file_name());
+    let text = windows::definition(&scanner, Some(&found), Every::Day, (9, 30), "S-1");
+    assert!(text.contains("<Arguments>--scheduled-run</Arguments>"), "{text}");
+    assert!(text.contains("wpantry-desktop.exe</Command>"), "{text}");
+    assert!(!text.contains("schedule run"), "{text}");
+    // The rest of the task is unchanged: same user, logon and limits.
+    assert!(text.contains("<LogonType>InteractiveToken</LogonType>"));
+    assert!(text.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+    assert_eq!(calendar::read_cadence(Backend::Windows, &text), Some((Every::Day, (9, 30))));
+    assert!(!windows::disabled(&text));
+
+    // Installing through schtasks writes that same launcher task, and
+    // `schedule status --json` reads it back.
+    let installed = std::sync::Mutex::new(None::<String>);
+    let run = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+        let args = argv.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>();
+        match (args[0].as_ref(), args.get(1).map(|a| a.as_ref())) {
+            ("whoami.exe", _) => ok("\"fixture\\user\",\"S-1-5-21-123\"\r\n"),
+            ("schtasks.exe", Some("/create")) => {
+                let bytes = std::fs::read(argv[5]).unwrap();
+                let units = bytes[2..].chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect::<Vec<_>>();
+                *installed.lock().unwrap() = Some(String::from_utf16(&units).unwrap());
+                ok("")
+            }
+            ("schtasks.exe", Some("/query")) => match installed.lock().unwrap().clone() {
+                Some(text) if args.get(2).is_some_and(|a| a == "/tn") => ok(&text),
+                _ => ok(""),
+            },
+            other => panic!("unexpected command {other:?}"),
+        }
+    };
+    windows::install(&scanner, Every::Hour, (0, 15), &run).unwrap();
+    let text = windows::query(&run).unwrap().unwrap();
+    assert!(text.contains("<Arguments>--scheduled-run</Arguments>"), "{text}");
+    assert_eq!(calendar::read_cadence(Backend::Windows, &text), Some((Every::Hour, (0, 15))));
+    assert_eq!(status_with(Backend::Windows, &run, true).unwrap(), EXIT_OK);
 }

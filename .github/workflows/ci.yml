@@ -20,6 +20,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: python3, ext: "" }
+          - { os: macos-latest, python: python3, ext: "" }
+          - { os: windows-latest, python: python, ext: .exe }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Linux window dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q libgl1-mesa-dev libwayland-dev libxkbcommon-dev libxcursor1 libxi6 libxrandr2 libxinerama1 libxkbcommon-x11-0 xvfb x11-utils
+
+      - name: Build the scanner and desktop
+        run: |
+          (cd rust && cargo build --locked -p wpantry-cli)
+          (cd desktop && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo build --locked && cargo test --locked)
+
+      - name: Desktop end-to-end tests
+        run: ${{ matrix.python }} desktop/tests/e2e.py desktop/target/debug/wpantry-desktop${{ matrix.ext }} rust/target/debug/wpantry${{ matrix.ext }}
+
+      - name: Docs name only real wpantry commands and flags
+        run: ${{ matrix.python }} scripts/docs_flags.py rust/target/debug/wpantry${{ matrix.ext }}
+
+      # The build-from-source path the public docs give (docs/public/install.md):
+      # release builds, the release packaging, then Setup --install-only into
+      # a throwaway home. No window opens.
+      - name: Build from source with install-local.sh
+        run: |
+          desktop/release/install-local.sh --no-install
+          ls desktop/dist
+          home="$RUNNER_TEMP/pantry-local-home"
+          WPANTRY_DESKTOP_HOME="$home" desktop/release/install-local.sh
+          case "$RUNNER_OS" in
+            macOS) scanner="$home/installed/Pantry.app/Contents/MacOS/wpantry" ;;
+            Windows) scanner="$home/installed/wpantry.exe" ;;
+            *) scanner="$home/installed/wpantry" ;;
+          esac
+          "$scanner" --version
+          test -f "$home/installed/.waffuru-pantry-desktop"
+
+      - name: Open a native window under Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python3 desktop/tests/native_smoke.py desktop/target/debug/wpantry-desktop rust/target/debug/wpantry
+
   # What the Rust job doesn't cover: install.sh (rust/release/).
   test:
     name: Test (${{ matrix.os }})

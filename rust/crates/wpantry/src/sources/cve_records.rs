@@ -58,6 +58,9 @@ pub struct Record {
     /// The record's `affected[]` entries: vendor, product, versions,
     /// defaultStatus.
     pub affected: Vec<Value>,
+    /// The weakness types the record's `problemTypes` name (`CWE-787`);
+    /// empty in a copy kept before they were.
+    pub cwe: Vec<String>,
 }
 
 /// A product's records, and whether every page of them was read.
@@ -108,6 +111,7 @@ pub fn records(cache: &Cache, vendor: &str, product: &str) -> Result<Option<Reco
             published: r["published"].as_str().unwrap_or_default().to_string(),
             score: r["score"].as_f64().map(|s| (s, r["cvss_version"].as_str().unwrap_or_default().to_string())),
             affected: arr_at(r, "affected").to_vec(),
+            cwe: crate::utils::json::strs_at(r, "cwe"),
         })
         .collect();
     Ok(Some(Records { records, complete: v["complete"].as_bool().unwrap_or(false) }))
@@ -251,6 +255,16 @@ pub fn trim(rec: &Value) -> Option<Value> {
         })
         .collect();
     let score = cve_scores::of_cve_record(rec).map(|(s, _, _)| s);
+    let mut cwe: Vec<String> = Vec::new();
+    for p in arr_at(&cna, "problemTypes") {
+        for d in arr_at(p, "descriptions") {
+            if let Some(c) = d.get("cweId").and_then(Value::as_str).and_then(crate::finding::cwe_id)
+                && !cwe.contains(&c)
+            {
+                cwe.push(c);
+            }
+        }
+    }
     let published: String =
         meta.get("datePublished").and_then(Value::as_str).unwrap_or_default().chars().take(10).collect();
     Some(json!({
@@ -260,6 +274,7 @@ pub fn trim(rec: &Value) -> Option<Value> {
         "score": score.as_ref().map(|s| s.value),
         "cvss_version": score.as_ref().map(|s| s.version.clone()),
         "affected": affected,
+        "cwe": cwe,
     }))
 }
 

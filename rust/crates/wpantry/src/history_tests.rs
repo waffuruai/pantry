@@ -31,6 +31,9 @@ fn exposures_open_touch_and_resolve_within_a_scope() {
     let two = open.iter().find(|e| e.vuln_id == "CVE-2").unwrap();
     assert!(one.resolved_at.is_none());
     assert_eq!(two.resolved_at.map(|_| true), Some(true), "not seen by the second scan of the same scope");
+    // The scope it was seen in, so the window can scan that folder again.
+    assert_eq!(one.scope, "repos:/r");
+    assert_eq!(one.to_json()["scope"], "repos:/r");
     assert!(two.days_exposed < 0.01, "{}", two.days_exposed);
     // Another scope never resolves it.
     let other = Options { machine: true, paths: None, ..Default::default() };
@@ -161,13 +164,93 @@ fn a_personal_folder_exclusion_cannot_resolve_full_scan_exposures() {
     let background = Options { no_personal_files: true, ..full.clone() };
     assert_eq!(scope_of(&full), "machine:/r");
     assert_eq!(scope_of(&background), "machine:/r;no-personal-files");
-    // No machine pass means this flag changes no coverage.
+    // Since 2026-11-21 the flag also keeps the personal folders out
+    // of the repo walk, so a repo-only scan with it covers less too.
     let repos = Options { machine: false, ..background.clone() };
-    assert_eq!(scope_of(&repos), "repos:/r");
+    assert_eq!(scope_of(&repos), "repos:/r;no-personal-files");
     record_scan(&c, 1.0, &[finding("CVE-1", "fail")], &[], &full).unwrap();
     record_scan(&c, 2.0, &[], &[], &background).unwrap();
     assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none());
     record_scan(&c, 3.0, &[], &[], &full).unwrap();
     assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
+    c.close().unwrap();
+}
+
+#[test]
+fn targeted_fix_history_waits_for_a_complete_later_scan_of_the_same_scope() {
+    let dir = crate::utils::temp::TempDir::new("targeted-fix-history").unwrap();
+    let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
+    let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
+    let finding = finding("CVE-1", "fail");
+    let target = key_of(&finding);
+    let before = now() - 60.0;
+    let scan = record_scan(&cache, before, std::slice::from_ref(&finding), &[], &opts).unwrap();
+    record_fix(&cache, Some(scan), "patch failed", "mitigate", false, std::slice::from_ref(&target)).unwrap();
+    record_fix(&cache, Some(scan), "patch worked", "mitigate", true, &[target]).unwrap();
+    let other = Options { paths: Some(vec!["/different".into()]), ..opts.clone() };
+    record_scan(&cache, now(), &[], &[], &other).unwrap();
+    record_scan(&cache, now(), &[gap()], &[], &opts).unwrap();
+    // It finished after the fix but started before it, so it cannot verify it.
+    record_scan(&cache, before, &[], &[], &opts).unwrap();
+    assert!(fixes(&cache, 0.0).unwrap().iter().all(|f| f.verified_scan.is_none()));
+    let verified = record_scan(&cache, now(), &[], &[], &opts).unwrap();
+    let history = fixes(&cache, 0.0).unwrap();
+    assert_eq!(history[0].verified_scan, None);
+    assert_eq!(history[1].verified_scan, Some(verified));
+}
+
+/// The two findings `--no-personal-files` adds on macOS, as the scan makes them.
+fn skipped_by_choice() -> Vec<Finding> {
+    ["Personal documents and images", "Safari settings"]
+        .iter()
+        .map(|what| Finding {
+            kind: "unchecked".into(),
+            component: (*what).into(),
+            vuln_id: "UNCHECKED".into(),
+            status: "warn".into(),
+            note: "Skipped by your choice (--no-personal-files).".into(),
+            excluded: true,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Oracle: the desktop's default scan (`machine:~;no-personal-files`)
+/// carries only the user's own exclusions, so a later scan of the same
+/// scope that no longer lists an exposure resolves it and verifies the
+/// targeted fix for it. Known-bad case: the same scan with one real source
+/// failure beside the exclusions resolves and verifies nothing.
+#[test]
+fn a_chosen_exclusion_still_resolves_and_verifies_but_a_source_failure_does_not() {
+    let d = crate::utils::temp::TempDir::new("history-excluded").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let desktop = Options { machine: true, no_personal_files: true, ..Default::default() };
+    assert_eq!(scope_of(&desktop), "machine:~;no-personal-files");
+    let exposed = finding("CVE-1", "fail");
+    let target = key_of(&exposed);
+    let mut first = skipped_by_choice();
+    first.push(exposed.clone());
+    let before = now() - 60.0;
+    let s1 = record_scan(&c, before, &first, &[], &desktop).unwrap();
+    assert_eq!(scans(&c, 0.0).unwrap()[0].unchecked, 0, "a chosen exclusion is not a gap");
+    assert_eq!(events(&c, 0.0).unwrap()[0].detail["excluded"], 2);
+    record_fix(&c, Some(s1), "patch", "mitigate", true, std::slice::from_ref(&target)).unwrap();
+
+    // Known-bad: a real source failure beside the exclusions blocks both.
+    let mut broken = skipped_by_choice();
+    broken.push(gap());
+    record_scan(&c, now(), &broken, &[], &desktop).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none(), "a source outage is not a fix");
+    assert!(fixes(&c, 0.0).unwrap()[0].verified_scan.is_none());
+    assert_eq!(scans(&c, 0.0).unwrap()[1].unchecked, 1);
+
+    // Same exclusions, every source answered, the exposure gone: resolved and verified.
+    let s3 = record_scan(&c, now(), &skipped_by_choice(), &[], &desktop).unwrap();
+    let e = exposures(&c, 0.0).unwrap();
+    assert!(e[0].resolved_at.is_some(), "{e:?}");
+    assert_eq!(fixes(&c, 0.0).unwrap()[0].verified_scan, Some(s3));
+    // `fix --verify`'s path agrees: the scan counts as complete.
+    record_fix(&c, Some(s1), "brew upgrade x", "auto", true, std::slice::from_ref(&target)).unwrap();
+    assert_eq!(verify_fixes(&c, s1, s3).unwrap(), 1);
     c.close().unwrap();
 }

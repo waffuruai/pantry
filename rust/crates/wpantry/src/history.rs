@@ -9,7 +9,10 @@
 //! repo says nothing about the others, and a scan without `--licenses` or
 //! with other policy files says nothing about what those would have found.
 //! A scan with an `unchecked` source resolves nothing: a gap in the evidence
-//! is not a fix. A fix is verified only by a complete scan after it ran
+//! is not a fix. An area the user left out on purpose (an `unchecked`
+//! finding marked `excluded`, such as `--no-personal-files`) is not a gap:
+//! it is part of the scope string, so a later scan with the same exclusion
+//! resolves what an earlier one found. A fix is verified only by a complete scan after it ran
 //! that no longer lists what it addressed; a failed fix never is.
 
 use crate::checks::Options;
@@ -54,7 +57,9 @@ pub fn scope_of(opts: &Options) -> String {
     if opts.licenses {
         scope.push_str("+licenses");
     }
-    if opts.machine && opts.no_personal_files {
+    // Any scan with --no-personal-files: it leaves the personal folders out
+    // of the repo walk too, so it says nothing about what a full one found there.
+    if opts.no_personal_files {
         scope.push_str(";no-personal-files");
     }
     let policy: Vec<String> = [
@@ -107,7 +112,10 @@ pub fn record_scan_totals(
     let scope = scope_of(opts);
     let fails = findings.iter().filter(|f| f.status == "fail").count() as i64;
     let warns = findings.iter().filter(|f| f.status == "warn").count() as i64;
-    let unchecked = findings.iter().filter(|f| f.kind == "unchecked").count() as i64;
+    // Only real gaps count: an area skipped by the user's choice is already
+    // in the scope, and counting it would stop every such scan resolving.
+    let unchecked = findings.iter().filter(|f| f.is_gap()).count() as i64;
+    let excluded = findings.iter().filter(|f| f.kind == "unchecked" && f.excluded).count() as i64;
     let counts_json = Value::Object(counts.iter().map(|(k, n)| (k.clone(), json!(n))).collect()).to_string();
     // The counts again in the order they were counted, for the report.
     let checked = Value::Array(counts.iter().map(|(k, n)| json!([k, n])).collect()).to_string();
@@ -185,12 +193,13 @@ pub fn record_scan_totals(
                 params![id, at, key],
             )?;
         }
+        verify_targeted_fixes(cache, id, &scope, started_at)?;
     }
     event(
         cache,
         "scan",
         &json!({"scan": id, "scope": scope, "fails": fails, "warns": warns, "unchecked": unchecked,
-                "seconds": (at - started_at).round()}),
+                "excluded": excluded, "seconds": (at - started_at).round()}),
     )?;
     Ok(id)
 }
@@ -261,6 +270,40 @@ pub fn verify_fixes(cache: &Cache, applied_in: i64, verified_by: i64) -> Result<
     Ok(verified)
 }
 
+/// A later complete scan can verify a targeted fix tied to an earlier scan.
+fn verify_targeted_fixes(cache: &Cache, scan: i64, scope: &str, started_at: f64) -> Result<()> {
+    let mut pending = cache.conn.prepare(
+        "SELECT f.id, f.targets, f.at FROM fixes f JOIN scans s ON s.id = f.scan_id \
+         WHERE s.scope = ? AND f.at <= ? AND f.mode = 'mitigate' AND f.ok = 1 AND f.verified_scan IS NULL",
+    )?;
+    let mut groups = pending.query(params![scope, started_at])?;
+    let mut resolved =
+        cache.conn.prepare("SELECT EXISTS(SELECT 1 FROM exposures WHERE key = ? AND scope = ? AND resolved_at >= ? AND resolved_scan <= ?)")?;
+    let mut verified = Vec::new();
+    while let Some(row) = groups.next()? {
+        let encoded: Option<String> = row.get(1)?;
+        let applied_at: f64 = row.get(2)?;
+        let targets: Vec<String> = encoded.and_then(|encoded| serde_json::from_str(&encoded).ok()).unwrap_or_default();
+        if targets.is_empty() {
+            continue;
+        }
+        let mut cleared = true;
+        for target in targets {
+            if !resolved.query_row(params![target, scope, applied_at, scan], |r| r.get::<_, bool>(0))? {
+                cleared = false;
+                break;
+            }
+        }
+        if cleared {
+            verified.push(row.get::<_, i64>(0)?);
+        }
+    }
+    for id in verified {
+        cache.conn.execute("UPDATE fixes SET verified_scan = ? WHERE id = ?", params![scan, id])?;
+    }
+    Ok(())
+}
+
 pub fn event(cache: &Cache, kind: &str, detail: &Value) -> Result<()> {
     cache
         .conn
@@ -300,6 +343,8 @@ fn user() -> String {
 /// One exposure, open or over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Exposure {
+    /// The scope of the scan that last saw it (`scope_of`).
+    pub scope: String,
     pub kind: String,
     pub component: String,
     pub version: String,
@@ -373,7 +418,7 @@ pub struct ScanRow {
 pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, severity, kev, fixed, note, first_at, last_at, resolved_at, \
-         dep_scope, dep_direct, affected_range, fix_cmd, cvss, cvss_version, epss, epss_percentile \
+         dep_scope, dep_direct, affected_range, fix_cmd, cvss, cvss_version, epss, epss_percentile, scope \
          FROM exposures WHERE last_at >= ? OR resolved_at >= ? OR resolved_at IS NULL \
          ORDER BY resolved_at IS NOT NULL, first_at",
     )?;
@@ -404,6 +449,7 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
             cvss_version: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
             epss: r.get(19)?,
             epss_percentile: r.get(20)?,
+            scope: r.get::<_, Option<String>>(21)?.unwrap_or_default(),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -503,13 +549,15 @@ pub fn scans(cache: &Cache, since: f64) -> Result<Vec<ScanRow>> {
 
 impl Exposure {
     pub fn to_json(&self) -> Value {
-        json!({"kind": self.kind, "component": self.component, "version": self.version, "location": self.location,
+        let id = Finding::id_for(&self.kind, &self.component, &self.location, &self.vuln_id);
+        json!({"id": id, "kind": self.kind, "component": self.component, "version": self.version, "location": self.location,
                "vuln_id": self.vuln_id, "status": self.status, "severity": self.severity, "kev": self.kev,
                "fixed": self.fixed, "note": self.note, "first_at": self.first_at, "last_at": self.last_at,
                "resolved_at": self.resolved_at, "days_exposed": self.days_exposed,
                "first": stamp(self.first_at), "resolved": self.resolved_at.map(stamp),
                "dep_scope": if self.dep_scope.is_empty() { "unknown" } else { self.dep_scope.as_str() },
-               "dep_direct": self.dep_direct, "affected_range": self.affected_range, "fix_cmd": self.fix_cmd})
+               "dep_direct": self.dep_direct, "affected_range": self.affected_range, "fix_cmd": self.fix_cmd,
+               "scope": self.scope})
     }
 }
 

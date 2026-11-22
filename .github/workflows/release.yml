@@ -51,9 +51,28 @@ jobs:
           # the credentials persist-credentials: false dropped.
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
 
+      - name: Desktop and scanner versions agree
+        run: |
+          scanner="$(sed -n 's/^version = "\(.*\)"$/\1/p' rust/Cargo.toml | head -1)"
+          desktop="$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop/Cargo.toml | head -1)"
+          [ "$scanner" = "$desktop" ] || { echo "::error::desktop version $desktop differs from scanner $scanner"; exit 1; }
+          cmp rust/rust-toolchain.toml desktop/rust-toolchain.toml
+
       - name: Install the pinned toolchain
         working-directory: rust
         run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Desktop licence notices
+        working-directory: desktop
+        run: |
+          cargo install --locked cargo-about@0.9.3
+          cargo about generate --locked --fail -c release/about.toml release/about.hbs > PANTRY-DESKTOP-NOTICES.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-notices
+          path: desktop/PANTRY-DESKTOP-NOTICES.txt
+          if-no-files-found: error
 
       - name: cargo package
         working-directory: rust
@@ -68,16 +87,24 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, rust: x86_64-unknown-linux-musl }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, rust: aarch64-unknown-linux-musl }
-          - { os: macos-latest, target: universal-apple-darwin, rust: "aarch64-apple-darwin x86_64-apple-darwin" }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, rust: "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu", desktop: x86_64-unknown-linux-gnu, setup_ext: .tar.gz }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, rust: "aarch64-unknown-linux-musl aarch64-unknown-linux-gnu", desktop: aarch64-unknown-linux-gnu, setup_ext: .tar.gz }
+          - { os: macos-latest, target: universal-apple-darwin, rust: "aarch64-apple-darwin x86_64-apple-darwin", setup_ext: .zip }
           # Windows (#11): repo checks only; the asset keeps its .exe so it runs
           # when downloaded. Git Bash runs build.sh.
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, rust: x86_64-pc-windows-msvc, ext: .exe }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, rust: x86_64-pc-windows-msvc, ext: .exe, setup_ext: .exe, python: python }
     env:
       TARGET: ${{ matrix.target }}
       RUST_TARGETS: ${{ matrix.rust }}
       ASSET: wpantry-${{ matrix.target }}${{ matrix.ext }}
+      DESKTOP_PYTHON: ${{ matrix.python || 'python3' }}
+      DESKTOP_TARGET: ${{ matrix.desktop || matrix.target }}
+      DESKTOP_ASSET: wpantry-desktop-${{ matrix.desktop || matrix.target }}.zip
+      SETUP_ASSET: wpantry-setup-${{ matrix.desktop || matrix.target }}${{ matrix.setup_ext }}
+      # "true" or "false" only: the certificates themselves reach just the
+      # signing steps below, never the build steps and their build scripts.
+      HAS_APPLE_CERT: ${{ secrets.APPLE_DEVELOPER_ID_P12 != '' }}
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_SIGNING_PFX != '' }}
     defaults:
       run:
         shell: bash
@@ -96,7 +123,7 @@ jobs:
 
       - name: musl tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools libgl1-mesa-dev libwayland-dev libxkbcommon-dev
 
       - name: Install the pinned toolchain and targets
         working-directory: one/rust
@@ -114,6 +141,128 @@ jobs:
           # macOS has shasum, Git Bash on Windows only sha256sum.
           if command -v sha256sum >/dev/null; then sha256sum "dist/$ASSET" "second-build${{ matrix.ext }}"; else shasum -a 256 "dist/$ASSET" "second-build${{ matrix.ext }}"; fi
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-notices
+          path: notices
+
+      - name: Build and package desktop twice
+        run: |
+          one/rust/release/build.sh "$DESKTOP_TARGET" "desktop-one${{ matrix.ext }}" wpantry-desktop
+          two/elsewhere/rust/release/build.sh "$DESKTOP_TARGET" "desktop-two${{ matrix.ext }}" wpantry-desktop
+          "$DESKTOP_PYTHON" one/desktop/release/package.py "$DESKTOP_TARGET" "desktop-one${{ matrix.ext }}" "dist/$ASSET" notices/PANTRY-DESKTOP-NOTICES.txt "dist/$DESKTOP_ASSET"
+          "$DESKTOP_PYTHON" two/elsewhere/desktop/release/package.py "$DESKTOP_TARGET" "desktop-two${{ matrix.ext }}" "second-build${{ matrix.ext }}" notices/PANTRY-DESKTOP-NOTICES.txt second-desktop.zip
+          cmp "dist/$DESKTOP_ASSET" second-desktop.zip || { echo "::error::the two desktop bundles differ"; exit 1; }
+
+      - name: Test the packaged desktop and its scanner
+        run: '"$DESKTOP_PYTHON" one/desktop/tests/e2e.py --bundle "dist/$DESKTOP_ASSET"'
+
+      - name: Build, compare and test Pantry Setup
+        run: |
+          "$DESKTOP_PYTHON" one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          if [ "$RUNNER_OS" != macOS ]; then
+            if [ "$RUNNER_OS" = Windows ]; then
+              PANTRY_SETUP_PAYLOAD=$(cygpath -w "$PWD/setup-payload.zlib")
+            else
+              PANTRY_SETUP_PAYLOAD="$PWD/setup-payload.zlib"
+            fi
+            export PANTRY_SETUP_PAYLOAD
+          fi
+          one/rust/release/build.sh "$DESKTOP_TARGET" "setup-one${{ matrix.ext }}" wpantry-setup
+          two/elsewhere/rust/release/build.sh "$DESKTOP_TARGET" "setup-two${{ matrix.ext }}" wpantry-setup
+          "$DESKTOP_PYTHON" one/desktop/release/setup.py bundle "$DESKTOP_TARGET" "setup-one${{ matrix.ext }}" setup-payload.zlib "dist/$SETUP_ASSET"
+          "$DESKTOP_PYTHON" two/elsewhere/desktop/release/setup.py bundle "$DESKTOP_TARGET" "setup-two${{ matrix.ext }}" setup-payload.zlib "second-$SETUP_ASSET"
+          cmp "dist/$SETUP_ASSET" "second-$SETUP_ASSET"
+          "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --setup "dist/$SETUP_ASSET"
+
+      # Signing runs after the byte-for-byte compares above, which cover the
+      # unsigned builds. Ad-hoc signatures carry no certificate or timestamp,
+      # so the step signs both copies and compares them again. Pantry.app is
+      # signed before Setup's payload is rebuilt from it, so Setup installs
+      # the signed app. Attestations, cosign bundles and SHA256SUMS are made
+      # in the publish job from these uploaded, signed files.
+      - name: Ad-hoc sign the app bundles (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT != 'true'
+        run: |
+          sign=one/desktop/release/sign.py
+          python3 "$sign" macos "dist/$DESKTOP_ASSET"
+          python3 "$sign" macos second-desktop.zip
+          cmp "dist/$DESKTOP_ASSET" second-desktop.zip || { echo "::error::ad-hoc signing of the desktop bundle is not deterministic"; exit 1; }
+          python3 one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          python3 one/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-one setup-payload.zlib "dist/$SETUP_ASSET"
+          python3 two/elsewhere/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-two setup-payload.zlib "second-$SETUP_ASSET"
+          python3 "$sign" macos "dist/$SETUP_ASSET"
+          python3 "$sign" macos "second-$SETUP_ASSET"
+          cmp "dist/$SETUP_ASSET" "second-$SETUP_ASSET" || { echo "::error::ad-hoc signing of Setup is not deterministic"; exit 1; }
+
+      # Off until the secrets exist (docs/internal/release.md, "Code
+      # signing"). Developer ID signatures carry a secure timestamp, so
+      # signed bytes differ from run to run and are not compared.
+      - name: Developer ID sign and notarize (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/pantry-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$keychain_password"
+          trap 'security delete-keychain "$keychain" || true; rm -f "$RUNNER_TEMP/developer-id.p12"' EXIT
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$APPLE_DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ { print $2; exit }')"
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in APPLE_DEVELOPER_ID_P12"; exit 1; }
+          xcrun notarytool store-credentials pantry-notary --keychain "$keychain" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" --team-id "$APPLE_NOTARY_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD"
+          sign=(python3 one/desktop/release/sign.py macos --identity "$identity" --keychain "$keychain" --notary-profile pantry-notary)
+          "${sign[@]}" "dist/$DESKTOP_ASSET"
+          python3 one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          python3 one/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-one setup-payload.zlib "dist/$SETUP_ASSET"
+          "${sign[@]}" "dist/$SETUP_ASSET"
+
+      # Off until the secret exists. Setup embeds its payload when it is
+      # compiled, so after signing the desktop executables it is rebuilt
+      # from the signed bundle, then signed itself.
+      - name: Authenticode sign (Windows)
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERT == 'true'
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          pfx="$RUNNER_TEMP/pantry-signing.pfx"
+          printf '%s' "$WINDOWS_SIGNING_PFX" | base64 --decode > "$pfx"
+          # shellcheck disable=SC2016 # PowerShell expands $env:, not bash
+          thumbprint="$(PFX="$(cygpath -w "$pfx")" powershell.exe -NoProfile -NonInteractive -Command \
+            '$p = ConvertTo-SecureString $env:WINDOWS_SIGNING_PASSWORD -AsPlainText -Force; (Import-PfxCertificate -FilePath $env:PFX -CertStoreLocation Cert:\CurrentUser\My -Password $p).Thumbprint' | tr -d '\r')"
+          rm -f "$pfx"
+          # Take the certificate out of the store however the step ends.
+          forget() {
+            # shellcheck disable=SC2016 # PowerShell expands $env:, not bash
+            THUMB="$thumbprint" powershell.exe -NoProfile -NonInteractive -Command 'Remove-Item (Join-Path Cert:\CurrentUser\My $env:THUMB)'
+          }
+          trap forget EXIT
+          [ -n "$thumbprint" ] || { echo "::error::could not import WINDOWS_SIGNING_PFX"; exit 1; }
+          sign=(python one/desktop/release/sign.py windows --thumbprint "$thumbprint")
+          "${sign[@]}" "dist/$DESKTOP_ASSET"
+          python one/desktop/release/setup.py payload "dist/$DESKTOP_ASSET" setup-payload.zlib
+          PANTRY_SETUP_PAYLOAD=$(cygpath -w "$PWD/setup-payload.zlib") one/rust/release/build.sh "$DESKTOP_TARGET" setup-signed.exe wpantry-setup
+          python one/desktop/release/setup.py bundle "$DESKTOP_TARGET" setup-signed.exe setup-payload.zlib "dist/$SETUP_ASSET"
+          "${sign[@]}" "dist/$SETUP_ASSET"
+
+      - name: Test the signed packages
+        if: runner.os == 'macOS' || env.HAS_WINDOWS_CERT == 'true'
+        run: |
+          "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --bundle "dist/$DESKTOP_ASSET"
+          "$DESKTOP_PYTHON" one/desktop/tests/e2e.py --setup "dist/$SETUP_ASSET"
+
       - name: Smoke test
         if: matrix.target != 'aarch64-unknown-linux-musl' || runner.arch == 'ARM64'
         run: |
@@ -123,7 +272,10 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wpantry-${{ matrix.target }}
-          path: dist/${{ env.ASSET }}
+          path: |
+            dist/${{ env.ASSET }}
+            dist/${{ env.DESKTOP_ASSET }}
+            dist/${{ env.SETUP_ASSET }}
           if-no-files-found: error
 
   publish:
@@ -156,6 +308,9 @@ jobs:
       - name: Third-party notices
         run: cp rust/crates/wpantry-cli/THIRD-PARTY-NOTICES.txt dist/THIRD-PARTY-NOTICES.txt
 
+      # dist holds the signed desktop and Setup packages from the build job,
+      # so the checksums, attestations and cosign bundles below cover the
+      # signed bytes.
       - name: SHA256SUMS
         working-directory: dist
         run: |
@@ -327,7 +482,11 @@ jobs:
           assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
           for a in SHA256SUMS install.sh install.sh.sha256 packslip.sigstore.json THIRD-PARTY-NOTICES.txt \
             wpantry-x86_64-unknown-linux-musl wpantry-aarch64-unknown-linux-musl wpantry-universal-apple-darwin \
-            wpantry-x86_64-pc-windows-msvc.exe; do
+            wpantry-x86_64-pc-windows-msvc.exe \
+            wpantry-desktop-x86_64-unknown-linux-gnu.zip wpantry-desktop-aarch64-unknown-linux-gnu.zip \
+            wpantry-desktop-universal-apple-darwin.zip wpantry-desktop-x86_64-pc-windows-msvc.zip \
+            wpantry-setup-x86_64-unknown-linux-gnu.tar.gz wpantry-setup-aarch64-unknown-linux-gnu.tar.gz \
+            wpantry-setup-universal-apple-darwin.zip wpantry-setup-x86_64-pc-windows-msvc.exe; do
             printf '%s\n' "$assets" | grep -qx "$a" || { echo "::error::the draft has no $a"; exit 1; }
           done
           gh release edit "$GITHUB_REF_NAME" --draft=false --latest

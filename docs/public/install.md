@@ -2,7 +2,87 @@
 
 Pantry's command is `wpantry`. It reads your whole home directory, so run only a binary this repository built. Every way in below checks that for you.
 
-## Install
+Pantry comes two ways: **Pantry Desktop**, an app with a window for anyone, and the `wpantry` command for the terminal. Pantry Desktop includes the scanner, so you need only one of them.
+
+## Download Pantry Setup
+
+Pantry Setup installs Pantry Desktop for your user account. It needs no administrator password. Download the file for your computer from the [latest Pantry release](https://github.com/waffuruai/pantry/releases/latest):
+
+| Computer | Download | Then |
+| --- | --- | --- |
+| Mac (Apple silicon or Intel) | `wpantry-setup-universal-apple-darwin.zip` | Open the ZIP, then open **Pantry Setup** |
+| Windows 10 or 11 (x86-64) | `wpantry-setup-x86_64-pc-windows-msvc.exe` | Open it |
+| Linux x86-64 | `wpantry-setup-x86_64-unknown-linux-gnu.tar.gz` | Extract it, then open **pantry-setup.desktop** (in GNOME Files, right-click it and choose Allow Launching first) or run `./"Pantry Setup"` in that folder |
+| Linux arm64 | `wpantry-setup-aarch64-unknown-linux-gnu.tar.gz` | The same as Linux x86-64 |
+
+On Linux, if extracting lost the permissions, run `chmod +x "Pantry Setup" pantry-setup.desktop` in that folder first. Pantry Desktop on Linux needs an X11 or Wayland desktop with OpenGL; it is built on Ubuntu 24.04.
+
+**What happens:** Setup copies Pantry into your account, adds it to your apps, and opens it. Pantry then explains what it checks and offers **Run first scan**. The [Pantry Desktop guide](desktop.md) walks through the rest.
+
+### If your computer warns about the download
+
+Pantry's Mac and Windows apps are not yet signed with an Apple or Microsoft developer certificate. Signing is planned. Until then your computer warns that it cannot check who made the app. Before you get past the warning, make sure the file came from the release page above, and if you can, check it (see [Check a download](#check-a-download)).
+
+- **macOS 15 or later:** when macOS says it could not verify Pantry Setup, choose **Done**. Open **System Settings**, then **Privacy & Security**, scroll to **Security**, and choose **Open Anyway** next to the message about Pantry Setup. Confirm with your password. On macOS 14 and earlier, Control-click Pantry Setup, choose **Open**, then **Open** again. If macOS also blocks Pantry the first time it opens, do the same for Pantry.
+- **Windows:** when "Windows protected your PC" appears, choose **More info**, check that the file name is `wpantry-setup-x86_64-pc-windows-msvc.exe`, then choose **Run anyway**.
+- **Linux** shows no such warning.
+
+### Check a download
+
+Every release file is listed in the release's `SHA256SUMS` and has a GitHub attestation that says this repository's release workflow built it. With [GitHub CLI](https://cli.github.com/) installed and signed in, run this with the file name and version you downloaded:
+
+```sh
+gh attestation verify wpantry-setup-universal-apple-darwin.zip --repo waffuruai/pantry --signer-workflow waffuruai/pantry/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+```
+
+### Where Pantry is installed
+
+| Computer | Pantry is in | Open it from |
+| --- | --- | --- |
+| Mac | `~/Applications/Pantry/Pantry.app` | Launchpad, Spotlight, or that folder |
+| Windows | `%LOCALAPPDATA%\Programs\Pantry\wpantry-desktop.exe` | The Start menu |
+| Linux | `~/.local/share/pantry-desktop/wpantry-desktop` | Your app menu (`~/.local/share/applications/ai.waffuru.pantry.desktop`) |
+
+The scanner Pantry uses sits beside it (inside `Pantry.app` on a Mac). It is not put on your PATH; to use `wpantry` in a terminal as well, install it as shown in [Install the command-line scanner](#install-the-command-line-scanner).
+
+### Update Pantry Desktop
+
+In Pantry, **Check for updates** in the sidebar says whether a newer release exists and links to the right Setup file. To update, quit Pantry, download the new Pantry Setup and run it. Setup replaces the app and keeps your results, history, settings and schedule. If Pantry is still open, Setup says so and changes nothing. Running the same Setup again repairs a damaged install; an older Setup leaves a newer Pantry in place, says so, and opens it.
+
+### Uninstall Pantry Desktop
+
+Quit Pantry, then run Pantry Setup with `--uninstall`:
+
+- Mac: `"Pantry Setup.app/Contents/MacOS/Pantry Setup" --uninstall` in Terminal, from the folder where you opened the ZIP.
+- Windows: `wpantry-setup-x86_64-pc-windows-msvc.exe --uninstall` from the folder you downloaded it to.
+- Linux: `./"Pantry Setup" --uninstall` in the extracted folder.
+
+Setup removes the app's folder (only a folder it installed), the scheduled scan and the Start menu or app menu entry. If a file in the folder cannot be removed, Setup puts the folder back as it was and says why, so you can quit Pantry or fix the permission and run it again. If nothing is installed, it says so. It keeps your scan history, settings and the scanner's cache; [Pantry Desktop](desktop.md#where-pantry-keeps-its-data) lists where they are if you want to delete them too.
+
+## Build it yourself
+
+You can build Pantry Desktop from this repository and install it with one command. The build makes the same Setup file a release has, for your computer only.
+
+**Prerequisites**
+
+- Git, and Python 3.11 or newer (`python3`; on Windows, `python` from python.org).
+- Rust through [rustup](https://rustup.rs). The repository pins one Rust version in `rust/rust-toolchain.toml`; install it with `cd rust && rustup toolchain install`.
+- macOS: the Xcode Command Line Tools (`xcode-select --install`).
+- Linux (Debian or Ubuntu): `sudo apt-get install build-essential pkg-config libgl1-mesa-dev libwayland-dev libxkbcommon-dev`.
+- Windows: Visual Studio Build Tools with the "Desktop development with C++" workload, and Git for Windows. Run the command below in Git Bash.
+
+**Build and install**
+
+```bash
+git clone https://github.com/waffuruai/pantry && cd pantry
+desktop/release/install-local.sh            # build, then install with Pantry Setup
+desktop/release/install-local.sh --open     # the same, then open Pantry
+desktop/release/install-local.sh --no-install   # only build; the files land in desktop/dist/
+```
+
+The script builds the scanner and the app in release mode, packages them the way the release workflow does, signs the Mac app ad hoc (no certificate, as a release is today), and runs the new Setup with `--install-only`. It downloads nothing except the Rust crates cargo needs. If [cargo-about](https://github.com/EmbarkStudios/cargo-about) is installed it writes the app's licence notices; otherwise it leaves a note saying they were not generated. A copy you build yourself is not quarantined, so macOS and Windows do not warn about it.
+
+## Install the command-line scanner
 
 **With the install script** (recommended):
 

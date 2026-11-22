@@ -360,11 +360,18 @@ fn the_unread_note_gives_the_command_that_reads_them() {
     let u = Unread { late: 2, too_big: 1, missing: 3 };
     assert_eq!(
         unread_note(&u, "~/my repo", false),
-        "2 not reached in this scan's time, 1 over 10 MB, 3 missing from this partial clone. \
-         Scan this repo on its own, with files up to 256 MB and no time limit: `wpantry scan --path ~/'my repo' --no-machine --deep`. \
-         Download them with `git -C ~/'my repo' backfill` (git 2.49+), then scan again"
+        (
+            "2 not reached in this scan's time, 1 over 10 MB, 3 missing from this partial clone. \
+             Download them (git 2.49+), then scan again. \
+             Scan this repo on its own, with files up to 256 MB and no time limit"
+                .to_string(),
+            "git -C ~/'my repo' backfill\nwpantry scan --path ~/'my repo' --no-machine --deep".to_string()
+        )
     );
-    assert_eq!(unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true), "1 over 256 MB");
+    assert_eq!(
+        unread_note(&Unread { too_big: 1, ..Unread::default() }, "~/r", true),
+        ("1 over 256 MB".into(), "".into())
+    );
     // A result cached before the reasons were kept counts them as late.
     assert_eq!(Unread::read(&json!({"unchecked": 4})), Unread { late: 4, ..Unread::default() });
 }

@@ -129,3 +129,43 @@ fn colour_follows_the_roles_and_a_scanned_name_cant_escape() {
     let row = coloured.iter().find(|l| l.contains("evil")).unwrap();
     assert!(row.contains("\x1b[1;31m✗\x1b[0m") && !row.contains("\x1b[2J"), "{row:?}");
 }
+
+#[test]
+fn the_summary_says_how_many_gaps_and_which_couldnt_be_reached() {
+    let gap = |what: &str, marker: &str| Finding {
+        kind: "unchecked".into(),
+        component: what.into(),
+        vuln_id: marker.into(),
+        status: "warn".into(),
+        ..Default::default()
+    };
+    let (big, kev, osv) = (
+        gap("secrets in 3 files of ~/x's history", "UNCHECKED"),
+        gap("CISA KEV", "UNREACHABLE"),
+        gap("OSV", "UNREACHABLE"),
+    );
+    assert_eq!(incomplete(&[]), "");
+    assert_eq!(incomplete(&[&big]), " Incomplete: 1 thing couldn't be checked (Not checked, above).");
+    let both = incomplete(&[&big, &kev, &osv]);
+    assert!(both.contains("3 things couldn't be checked") && both.contains("2 sources couldn't be reached"), "{both}");
+    assert!(!incomplete(&[&big]).contains("online"), "a big file isn't an offline source");
+}
+
+/// A gap's command is printed whole on its own line, however narrow the
+/// terminal: cut, it wouldn't run.
+#[test]
+fn a_gaps_command_is_never_cut() {
+    let cmd = "wpantry scan --path ~/Development/a/very/long/path/to/a/repo/with/big/files --no-machine --deep";
+    let r = report(vec![Finding {
+        kind: "unchecked".into(),
+        component: "secrets in 4 files of ~/Development/a/very/long/path's history".into(),
+        vuln_id: "UNCHECKED".into(),
+        status: "warn".into(),
+        note: "4 over 10 MB. Scan this repo on its own, with files up to 256 MB and no time limit".into(),
+        fix_cmd: format!("git -C ~/r backfill\n{cmd}"),
+        ..Default::default()
+    }]);
+    let out = text(&r, 60);
+    assert!(out.iter().any(|l| l == &format!("    {cmd}")), "{out:#?}");
+    assert!(out.iter().any(|l| l == "    git -C ~/r backfill"), "{out:#?}");
+}

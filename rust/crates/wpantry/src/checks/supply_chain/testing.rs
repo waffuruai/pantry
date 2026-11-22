@@ -26,6 +26,7 @@ pub(crate) fn scan<'a>(net: &'a Fake, d: &TempDir, opts: Options) -> Scan<'a> {
 pub(crate) fn repo(d: &TempDir, name: &str) -> Repo {
     let root = d.path().join(name);
     std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     (name.to_string(), root)
 }
 

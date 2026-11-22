@@ -122,6 +122,7 @@ impl Advisories {
         for repo in ["affected", "fixed"] {
             copy_tree(&fixtures().join(repo), &root.join(repo));
             mkdir(&root.join(repo).join(".git"));
+            std::fs::write(root.join(repo).join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         }
         Advisories { t, root, records: records() }
     }

@@ -113,13 +113,10 @@ pub fn plan(findings: &[Finding]) -> (Vec<String>, Vec<String>, Vec<String>) {
 fn secrets_fix(fs: &[&Finding]) -> String {
     use crate::checks::supply_chain::leaks;
     let Some((repo, file)) = leaks::fix_target(&fs[0].fix_cmd) else { return fs[0].fix_cmd.clone() };
-    // `line N, commit C`
-    let at = |f: &Finding| {
-        let (line, commit) = f.location.strip_prefix("line ")?.split_once(", commit ")?;
-        Some((line.parse::<i64>().ok()?, commit.to_string()))
-    };
-    let spots: Vec<(&str, i64, String)> =
-        fs.iter().filter_map(|f| at(f).map(|(line, commit)| (f.vuln_id.as_str(), line, commit))).collect();
+    let spots: Vec<(&str, i64, String)> = fs
+        .iter()
+        .flat_map(|f| leaks::places(&f.location).into_iter().map(|(line, commit)| (f.vuln_id.as_str(), line, commit)))
+        .collect();
     let hits: Vec<(&str, i64, &str)> =
         spots.iter().map(|(rule, line, commit)| (*rule, *line, commit.as_str())).collect();
     if hits.is_empty() {

@@ -54,7 +54,7 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(600);
 pub const DEEP_MAX_BLOB: u64 = 256 << 20;
 pub const DEEP_BUDGET: Duration = Duration::from_secs(6 * 60 * 60);
 /// Bumped when the scanner's results change for the same rules.
-const SCANNER: &str = "secrets-v1";
+const SCANNER: &str = "secrets-v2";
 
 /// One redacted secret in a repo's history.
 #[derive(Clone, Debug, PartialEq)]
@@ -702,27 +702,99 @@ pub(crate) fn secrets(
                 &unread_note(&unread, &short(&root.to_string_lossy()), scan.opts.deep),
             );
         }
-        for f in found {
-            let sure = f.confidence == "high";
-            let decoded = f.tags.iter().find_map(|t| t.strip_prefix("decoded:")).map(|k| format!(" ({k}-encoded)"));
-            scan.add(Finding {
-                kind: "secret".into(),
-                component: format!("{name}/{}", f.file),
-                location: format!("line {}, commit {}", f.line, f.commit),
-                vuln_id: f.rule.clone(),
-                status: if sure { "fail" } else { "warn" }.into(),
-                note: format!(
-                    "{}{}{}",
-                    f.description,
-                    decoded.unwrap_or_default(),
-                    if sure { String::new() } else { format!(" (review: {} confidence rule)", f.confidence) }
-                ),
-                fix_cmd: fix(&short(&root.to_string_lossy()), &f.file, &[(&f.rule, f.line, &f.commit)], !sure),
-                ..Default::default()
-            });
+        for group in by_file_and_rule(&found) {
+            scan.add(finding(name, &short(&root.to_string_lossy()), &group));
         }
     }
     Ok(())
+}
+
+/// The places a collapsed finding names; its note counts them all.
+pub const PLACES: usize = 5;
+
+/// The leaks grouped by file and rule, in the order found (newest version
+/// first): every version of a file repeats its hits, so one rule in one file
+/// is one finding.
+pub fn by_file_and_rule(found: &[Leak]) -> Vec<Vec<&Leak>> {
+    let mut groups: Vec<Vec<&Leak>> = Vec::new();
+    let mut at: HashMap<(&str, &str), usize> = HashMap::new();
+    for f in found {
+        match at.get(&(f.file.as_str(), f.rule.as_str())) {
+            Some(&i) => groups[i].push(f),
+            None => {
+                at.insert((&f.file, &f.rule), groups.len());
+                groups.push(vec![f]);
+            }
+        }
+    }
+    groups
+}
+
+/// One rule's hits in one file of a repo (`name`, at `repo`) as a finding:
+/// it fails when any hit is of high confidence.
+pub fn finding(name: &str, repo: &str, group: &[&Leak]) -> Finding {
+    let rank = |c: &str| match c {
+        "high" => 2,
+        "medium" => 1,
+        _ => 0,
+    };
+    let f = group.iter().max_by_key(|f| rank(&f.confidence)).copied().unwrap_or(group[0]);
+    let sure = f.confidence == "high";
+    let decoded = group
+        .iter()
+        .find_map(|f| f.tags.iter().find_map(|t| t.strip_prefix("decoded:")))
+        .map(|k| format!(" ({k}-encoded)"));
+    // Oldest version first: a new commit adds places at the end, so the
+    // finding keeps its location, and its id, as history grows.
+    let mut places: Vec<(i64, &str)> = Vec::new();
+    for version in group.chunk_by(|a, b| a.commit == b.commit).rev() {
+        for h in version {
+            if !places.contains(&(h.line, h.commit.as_str())) {
+                places.push((h.line, &h.commit));
+            }
+        }
+    }
+    let versions = group.iter().map(|h| h.commit.as_str()).collect::<HashSet<_>>().len();
+    let count = match (places.len(), versions) {
+        (1, _) => String::new(),
+        (n, 1) => format!("; {n} hits"),
+        (n, v) => format!("; {n} hits in {v} versions of the file"),
+    };
+    let hits: Vec<(&str, i64, &str)> = places.iter().map(|(line, commit)| (f.rule.as_str(), *line, *commit)).collect();
+    Finding {
+        kind: "secret".into(),
+        component: format!("{name}/{}", f.file),
+        location: location(&places),
+        vuln_id: f.rule.clone(),
+        status: if sure { "fail" } else { "warn" }.into(),
+        note: format!(
+            "{}{}{}{count}",
+            f.description,
+            decoded.unwrap_or_default(),
+            if sure { String::new() } else { format!(" (review: {} confidence rule)", f.confidence) }
+        ),
+        fix_cmd: fix(repo, &f.file, &hits, !sure),
+        ..Default::default()
+    }
+}
+
+/// `line 12, commit abc; line 40, commit def`: the first [`PLACES`] of a
+/// finding's (line, commit) places.
+pub fn location(places: &[(i64, &str)]) -> String {
+    let shown: Vec<String> =
+        places.iter().take(PLACES).map(|(line, commit)| format!("line {line}, commit {commit}")).collect();
+    shown.join("; ")
+}
+
+/// The (line, commit) places a [`location`] names.
+pub fn places(location: &str) -> Vec<(i64, String)> {
+    location
+        .split("; ")
+        .filter_map(|p| {
+            let (line, commit) = p.strip_prefix("line ")?.split_once(", commit ")?;
+            Some((line.parse().ok()?, commit.to_string()))
+        })
+        .collect()
 }
 
 /// Why history files went unread, and the command that reads them: a deep

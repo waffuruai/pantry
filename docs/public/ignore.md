@@ -57,7 +57,7 @@ A pattern without a `/` in it (`*.pem`) matches that name anywhere on the machin
 
 ## Secrets
 
-For secrets, `.pantryignore` replaces fingerprint lists. Pantry reads git history as files, so each version of a file that holds a secret is its own finding. A file whose secret stayed put over ten commits is ten findings, grouped into one row in the report. One `[secret]` entry for the file covers them all. A secret finding's fix is a script: if the secret is real, the lines that take it out of history; if it isn't, the line that adds the file to `.pantryignore`:
+For secrets, `.pantryignore` replaces fingerprint lists. Pantry reads git history as files, and a rule's hits in every version of a file are one finding: a file whose secret stayed put over ten commits is one finding, naming its first five places, oldest first, and counting the rest. One `[secret]` entry for the file covers them all. A secret finding's fix is a script: if the secret is real, the lines that take it out of history; if it isn't, the line that adds the file to `.pantryignore`:
 
 ```sh
 # If it isn't a secret: leave the file out of this rule's findings.

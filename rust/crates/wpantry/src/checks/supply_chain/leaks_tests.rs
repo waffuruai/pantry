@@ -423,3 +423,59 @@ fn a_secrets_fix_is_the_commands_to_run() {
         "{many}"
     );
 }
+
+fn leak(rule: &str, file: &str, line: i64, commit: &str, confidence: &str) -> Leak {
+    Leak {
+        rule: rule.into(),
+        file: file.into(),
+        line,
+        commit: commit.into(),
+        fingerprint: format!("{commit}:{file}:{rule}:{line}"),
+        description: "Generic".into(),
+        confidence: confidence.into(),
+        tags: Vec::new(),
+    }
+}
+
+#[test]
+fn one_rule_in_one_file_is_one_finding_whatever_versions_repeat_it() {
+    // A config file's password in 8 versions (found newest first: c0 is the
+    // newest), at line 4 in the oldest four and line 3 since, and a key beside it.
+    let mut found: Vec<Leak> =
+        (0..8).map(|v| leak("generic-password", "cfg.yml", 3 + v / 4, &format!("c{v}"), "low")).collect();
+    found.insert(2, leak("generic-api-key", "cfg.yml", 9, "c0", "low"));
+    found.push(leak("generic-password", "cfg.yml", 4, "c7", "medium"));
+    found.push(leak("aws-access-token", "x.env", 1, "c3", "high"));
+    let groups = by_file_and_rule(&found);
+    let sizes: Vec<(&str, &str, usize)> =
+        groups.iter().map(|g| (g[0].file.as_str(), g[0].rule.as_str(), g.len())).collect();
+    assert_eq!(
+        sizes,
+        [("cfg.yml", "generic-password", 9), ("cfg.yml", "generic-api-key", 1), ("x.env", "aws-access-token", 1)]
+    );
+    let f = finding("app", "~/app", &groups[0]);
+    assert_eq!(f.component, "app/cfg.yml");
+    assert_eq!(f.status, "warn");
+    // The medium hit speaks for the group; the repeated place counts once.
+    assert_eq!(f.note, "Generic (review: medium confidence rule); 8 hits in 8 versions of the file");
+    // Oldest first, so a newer commit doesn't move the location (or the id).
+    assert_eq!(
+        f.location,
+        "line 4, commit c7; line 4, commit c6; line 4, commit c5; line 4, commit c4; line 3, commit c3"
+    );
+    assert_eq!(places(&f.location).len(), PLACES);
+    assert_eq!(places(&f.location)[4], (3, "c3".to_string()));
+    let mut newer = vec![leak("generic-password", "cfg.yml", 3, "n", "low")];
+    newer.extend(groups[0].iter().map(|l| (*l).clone()));
+    let refs: Vec<&Leak> = newer.iter().collect();
+    assert_eq!(finding("app", "~/app", &refs).location, f.location);
+    assert!(f.fix_cmd.starts_with("# 8 hits in cfg.yml (generic rules: review)."), "{}", f.fix_cmd);
+    // One hit reads as before.
+    let aws = finding("app", "~/app", &groups[2]);
+    assert_eq!(
+        (aws.location.as_str(), aws.status.as_str(), aws.note.as_str()),
+        ("line 1, commit c3", "fail", "Generic")
+    );
+    assert_eq!(places("line 1, commit c3"), [(1, "c3".to_string())]);
+    assert!(places("").is_empty());
+}

@@ -338,6 +338,9 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
             format!("  · {} project dependencies have no license wpantry can identify", r.unknown_licenses),
         )]);
     }
+    if let Some(credit) = view::epss_credit(&r.findings) {
+        out.push(vec![(Role::Dim, format!("  · {credit}"))]);
+    }
     // Wordfence's licence: its copyright and licence go with its findings, in full.
     for n in wpantry::sources::wordfence::notices(&r.findings) {
         for l in wrap(&clean(&n), width.saturating_sub(4).max(40)) {

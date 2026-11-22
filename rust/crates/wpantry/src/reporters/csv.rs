@@ -21,13 +21,13 @@ fn line(fields: &[&str]) -> String {
 pub fn findings(cache: &Cache) -> Result<String> {
     let mut stmt = cache.conn.prepare(
         "SELECT f.vuln_id, v.aliases, v.url, f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location, \
-         f.cvss, f.cvss_version, f.epss, f.epss_percentile, f.note \
+         f.cvss, f.cvss_version, f.epss, f.epss_percentile, f.epss_date, f.note \
          FROM findings f LEFT JOIN vulns v ON v.id = f.vuln_id OR (' ' || v.aliases || ' ') LIKE ('% ' || f.vuln_id || ' %') \
          GROUP BY f.vuln_id, f.component, f.version, f.location",
     )?;
     let rows: Vec<Vec<String>> = stmt
         .query_map([], |r| {
-            (0..16)
+            (0..17)
                 .map(|i| {
                     Ok(match r.get_ref(i)? {
                         ValueRef::Null => String::new(),
@@ -40,7 +40,7 @@ pub fn findings(cache: &Cache) -> Result<String> {
         })?
         .collect::<std::result::Result<_, _>>()?;
     let mut text = String::from(
-        "id,aliases,url,component,kind,affected_version,safe_version,severity,kev,status,location,cvss,cvss_version,epss,epss_percentile\r\n",
+        "id,aliases,url,component,kind,affected_version,safe_version,severity,kev,status,location,cvss,cvss_version,epss,epss_percentile,epss_date\r\n",
     );
     for mut r in rows {
         // Wordfence's licence: every copy links the record.

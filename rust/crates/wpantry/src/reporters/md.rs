@@ -120,6 +120,9 @@ fn findings(t: &mut String, v: &View, r: &Report) {
         notes
             .push(format!("{} project dependencies have no license wpantry can identify.", r.outcome.unknown_licenses));
     }
+    if let Some(credit) = view::epss_credit(&r.outcome.findings) {
+        notes.push(format!("{credit}."));
+    }
     if !notes.is_empty() {
         t.push('\n');
         for n in notes {

@@ -36,6 +36,8 @@ fn every_finding_gets_cvss_words_scores_and_a_severity() {
         serde_json::json!({"id": "GHSA-vmqv-hx8q-j7mg", "aliases": ["CVE-2025-55305"], "database_specific": {"severity": "MODERATE"}, "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:L/I:H/A:L"}]}),
     );
     c.conn.execute("INSERT INTO epss VALUES ('CVE-2025-55305', 0.12, 0.95)", []).unwrap();
+    c.set("epss_date", "2026-11-05T12:03:04Z").unwrap();
+    c.set("epss_model", "v2026.06.15").unwrap();
     let mut all = vec![
         finding("runtime", "CVE-2026-115557", "fail", ""),
         finding("app", "CVE-2025-55305", "warn", ""),
@@ -67,6 +69,8 @@ fn every_finding_gets_cvss_words_scores_and_a_severity() {
         ]
     );
     assert_eq!(all[1].epss_percentile, Some(0.95));
+    assert_eq!((all[1].epss_date.as_str(), all[1].epss_model.as_str()), ("2026-11-05T12:03:04Z", "v2026.06.15"));
+    assert_eq!((all[0].epss_date.as_str(), all[0].epss_model.as_str()), ("", ""), "no score, no copy named");
     assert!(
         is_advisory("CVE-2024-3094")
             && is_advisory("GHSA-a-b-c")

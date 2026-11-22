@@ -49,7 +49,7 @@ const every=[
   finding('clipper','ClipGrab','CLIPPER-PERSISTENCE','fail',{fix_cmd:"Don't send funds from this machine; remove ClipGrab"}),
   finding('extension','evil.helper','MALICIOUS','fail',{severity:'MALICIOUS',kev:true,fix_cmd:'code --uninstall-extension evil.helper',fix_auto:true}),
   finding('secret','repo-b/.env','aws-access-token','fail',{fix_cmd:'# If it\'s real: rotate it first, then take it out of history.\ngit -C ~/w/repo-b show abc:.env | sed -n 3p\ngit -C ~/.pantry-rewrite.git filter-repo --sensitive-data-removal --replace-text ~/.pantry-redact\nprintf \'\\\\n[secret aws-access-token]\\\\n%s\\\\n\' /.env >> ~/w/repo-b/.pantryignore'}),
-  finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock',cvss:9.8,cvss_version:'3.1',epss:0.0213,epss_percentile:0.84}),
+  finding('project','smallvec','CVE-2021-25900','fail',{kev:true,severity:'CRITICAL',fixed:'1.6.1',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,affected_range:'>=1.6.0, <1.6.1',location:'/Users/me/w/app/Cargo.lock',cvss:9.8,cvss_version:'3.1',epss:0.0213,epss_percentile:0.84,epss_date:'2026-11-05T12:03:04Z',epss_model:'v2026.06.15'}),
   finding('project','smallvec','CVE-2019-15551','fail',{severity:'HIGH',fixed:'1.0.0',fix_cmd:'cd /Users/me/w/app && cargo update -p smallvec --precise 1.6.1',dep_scope:'runtime',dep_direct:true,location:'/Users/me/w/app/Cargo.lock'}),
   finding('runtime','python','EOL','fail',{version:'3.8',fixed:'3.13',fix_cmd:'mise install python@3.13'}),
   finding('brew','openssl@3','CVE-2026-1','fail',{severity:'HIGH',fixed:'3.5.2',fix_cmd:'brew upgrade openssl@3',fix_auto:true}),
@@ -94,6 +94,7 @@ const bundle={scan_id:42,runs:[{title:'Security scan',file:'wpantry scan',report
 load(bundle);
 const page=main();
 assert.equal(wellFormed(page),null,'screen page');
+assert(page.includes('EPSS scores by <a href="https://www.first.org/epss/" target="_blank" rel="noopener noreferrer">FIRST</a>, 2026-11-05, model v2026.06.15'),'the EPSS credit, with the copy');
 
 // 1 SCANNED: the counts by area, and every unchecked source as a gap, never under an area.
 const scanned=section('scanned');

@@ -123,7 +123,7 @@ fn capturing_parse_numbers_groups_and_plain_parse_drops_them() {
             }
             Node::Seq(items) | Node::Alt(items) => items.iter().for_each(|i| walk(i, out)),
             Node::Repeat { node, .. } => walk(node, out),
-            Node::Set(_) | Node::Assert(_) => {}
+            Node::Set(_) | Node::Assert(_) | Node::Lit(_) => {}
         }
     }
     walk(&node, &mut seen);
@@ -139,4 +139,41 @@ fn capturing_parse_numbers_groups_and_plain_parse_drops_them() {
 fn capturing_parse_folds_case_inside_groups() {
     let (node, _) = parse_regex_groups(b"(a)", true, false, Syntax::Strict).unwrap();
     assert_eq!(node, Node::Group(1, Box::new(Node::Set(ByteSet::one(b'a').case_fold()))));
+}
+
+/// A compacted pattern matches exactly what it did: the same ends from
+/// every start, forwards and backwards (reversed, as prefixes are kept),
+/// plain, wide and case-folded.
+#[test]
+fn compacting_a_pattern_never_changes_what_it_matches() {
+    let hex = ["4D 5A [2-4] ( 90 | 0? 00 ) ?? 50 45", "61 62 63 ~64 [0-2] 65 66", "( 61 62 | 63 64 65 ) 66 67"];
+    let regex: [&[u8]; 4] = [br"ab(c|de)f+g?", br"xy[0-9]{2,3}zz\bq", br"(?:pool)+\.com", br"a.{0,4}bcd"];
+    let mut nodes: Vec<Node> = hex.iter().map(|h| parse_hex(h, 1).unwrap()).collect();
+    nodes.extend(regex.iter().map(|r| parse_regex(r, false, false, Syntax::Relaxed, 1).unwrap()));
+    let more: Vec<Node> = nodes.iter().flat_map(|n| [n.widened(), n.case_folded(), n.reversed()]).collect();
+    nodes.extend(more);
+    let wide = |s: &[u8]| s.iter().flat_map(|b| [*b, 0]).collect::<Vec<u8>>();
+    let data: Vec<Vec<u8>> = vec![
+        b"..MZ\x01\x02\x90PE..MZ\x01\x02\x03\x00\x00PE".to_vec(),
+        b"abcxeef abcdef abccdef cdefg abfg".to_vec(),
+        b"abcdeffg ABCDEFF xy12zz q xy123zzq poolpool.com a..bcd".to_vec(),
+        wide(b"abcdeffg xy12zz q pool.com"),
+    ];
+    for n in &nodes {
+        let mut c = n.clone().flatten();
+        let flat = c.clone();
+        c.compact();
+        for d in &data {
+            for forward in [true, false] {
+                for start in 0..=d.len() {
+                    let ends = |p: &Node| crate::matcher::Matcher::new(d, start, forward, 64).all(p, start);
+                    assert_eq!(ends(&c), ends(&flat), "{n:?} from {start}, forward {forward}");
+                }
+            }
+        }
+    }
+    // And it does fold runs: `61 62 63` is one literal.
+    let mut n = parse_hex("61 62 63 ?? 64", 1).unwrap().flatten();
+    n.compact();
+    assert!(matches!(&n, Node::Seq(items) if matches!(&items[0], Node::Lit(b) if &**b == b"abc")), "{n:?}");
 }

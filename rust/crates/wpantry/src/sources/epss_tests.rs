@@ -13,9 +13,9 @@ fn csv(rows: usize) -> String {
 
 #[test]
 fn the_daily_file_is_read_and_a_bad_copy_keeps_the_last() {
-    let (date, rows) = parse(&csv(3)).unwrap();
-    assert_eq!(date, "2026-11-05T12:03:04Z");
-    assert_eq!(rows.len(), 4, "a score outside 0..1 and a malformed line are skipped");
+    let copy = parse(&csv(3)).unwrap();
+    assert_eq!((copy.date.as_str(), copy.model.as_str()), ("2026-11-05T12:03:04Z", "v2026.06.15"));
+    assert_eq!(copy.rows.len(), 4, "a score outside 0..1 and a malformed line are skipped");
     assert!(parse("cve,score\nCVE-1,0.1\n").is_none(), "not EPSS's header");
     let (_d, c) = cache();
     let good = crate::utils::archive::gzip::tests::stored(csv(MIN_ROWS).as_bytes(), None);
@@ -23,6 +23,7 @@ fn the_daily_file_is_read_and_a_bad_copy_keeps_the_last() {
     assert_eq!(refresh(&c, &net, false).unwrap(), MIN_ROWS + 1);
     assert_eq!(lookup(&c, "CVE-2024-3094").unwrap(), Some((0.85, 0.99)));
     assert_eq!(lookup(&c, "CVE-1900-1").unwrap(), None);
+    assert_eq!(edition(&c).unwrap(), ("2026-11-05T12:03:04Z".to_string(), "v2026.06.15".to_string()));
     // A later copy that is short or isn't EPSS is refused; the scores stay.
     c.unset("epss_at").unwrap();
     let short = Fake::new(|_| Ok(Response::ok(csv(5))));

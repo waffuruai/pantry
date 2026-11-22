@@ -464,7 +464,7 @@ fn the_cellar_gives_each_core_formulas_newest_keg() {
         got,
         [("bare".to_string(), "3.0".to_string()), ("core".into(), "1.0".into()), ("jq".into(), "1.8.1_1".into())]
     );
-    assert_eq!(installed(&c)[2].location, c.join("jq/1.8.1_1").display().to_string());
+    assert_eq!(installed(&c)[2].location, c.join("jq").join("1.8.1_1").display().to_string());
     assert!(installed(&d.path().join("nowhere")).is_empty());
 }
 

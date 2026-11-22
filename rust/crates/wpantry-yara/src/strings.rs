@@ -177,20 +177,19 @@ fn byte_quality(b: u8) -> i32 {
 /// The quality of an atom made of these byte sets (one per position).
 fn atom_quality(sets: &[ByteSet]) -> i32 {
     let mut q = 0;
-    let mut distinct = Vec::new();
+    let mut distinct = ByteSet::default();
     for s in sets {
-        let b = s.iter().next().expect("non-empty");
+        let b = s.first().expect("non-empty");
         q += match s.len() {
             1 => byte_quality(b),
             2 => byte_quality(b) - 2,
             _ => 4,
         };
-        if !distinct.contains(&b) {
-            distinct.push(b);
-        }
+        distinct.insert(b);
     }
+    let distinct = distinct.len() as i32;
     // A run of one byte (00 00 00 00) is far commoner than its parts suggest.
-    q + 4 * distinct.len() as i32 - if distinct.len() == 1 && sets.len() > 1 { 20 } else { 0 }
+    q + 4 * distinct - if distinct == 1 && sets.len() > 1 { 20 } else { 0 }
 }
 
 /// Every byte string the sets stand for (`[aA][bB]` → `ab`, `aB`, `Ab`, `AB`).

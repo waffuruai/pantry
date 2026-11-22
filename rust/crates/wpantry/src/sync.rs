@@ -209,6 +209,12 @@ fn malware(cache: &Cache, net: &dyn Net, refresh: bool, status: Status, out: &mu
             note(name, if mine.is_empty() { Ok(()) } else { Err(Error::Offline(mine.join("; "))) }, out);
         }
     }
+    // Compiled now and kept beside the rules (yara::load), the next scan
+    // reads them back instead of compiling.
+    if yara::fetched(cache)? {
+        status("Compiling the YARA rules for the next scan");
+        drop(yara::load(&yara::rules_dir(cache), false, &|id: &str| active(id)));
+    }
     Ok(())
 }
 

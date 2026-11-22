@@ -40,7 +40,10 @@ fn run_with(u: Update, net: &dyn wpantry::utils::net::Net, exe: &Path, db: Optio
         Some(v) => v.trim_start_matches('v').to_string(),
         None => {
             let cache = Cache::open(db)?;
-            let r = selfinstall::latest(&cache, net, u.offline);
+            // Offline answers from the last copy; online always asks, so a
+            // release out since the day's copy isn't missed.
+            let r =
+                if u.offline { selfinstall::latest(&cache, net, true) } else { selfinstall::latest_now(&cache, net) };
             cache.close()?;
             match r {
                 Ok(v) => v,

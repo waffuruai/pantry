@@ -81,6 +81,12 @@ pub fn latest(cache: &Cache, net: &dyn Net, offline: bool) -> Result<String> {
     releases::github_latest(cache, net, REPO, offline)
 }
 
+/// [`latest`] asked of GitHub now, for `wpantry update`: a release out
+/// since the day's copy is seen at once.
+pub fn latest_now(cache: &Cache, net: &dyn Net) -> Result<String> {
+    releases::github_latest_now(cache, net, REPO)
+}
+
 /// A release version as the tags name them: `X.Y.Z`, with an optional
 /// `-pre` or `+build` tail of version characters. Anything else never
 /// reaches a download URL or a command.

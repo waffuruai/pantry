@@ -19,7 +19,8 @@ fn main() {
     if only {
         rules.filters.retain(|f| !f.name.starts_with("Any_Secret_PantryFilter"));
     }
-    let scanner = Scanner::new(rules);
+    let mut scanner = Scanner::new(rules);
+    scanner.skip_noise = !only;
     eprintln!("rules ready in {:?}", t.elapsed());
     for path in std::env::args().skip(1).filter(|a| !a.starts_with("--")) {
         let Ok(data) = std::fs::read(&path) else {

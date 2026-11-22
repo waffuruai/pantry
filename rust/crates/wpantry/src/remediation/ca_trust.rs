@@ -18,37 +18,13 @@ use std::time::Duration;
 /// from a bundle the OS has not fixed yet.
 pub const ROOTS: &str = include_str!("../../assets/distrusted-ca/roots.pem");
 
-/// Standard base64 (what PEM carries); None for a character outside it.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in text.bytes() {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            b' ' | b'\t' | b'\r' | b'\n' => continue,
-            _ => return None,
-        };
-        acc = (acc << 6) | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
-}
-
 /// A certificate's SHA-256 fingerprint (of its DER bytes), upper-case hex
 /// without colons: what `openssl x509 -fingerprint -sha256` prints, joined.
 pub fn fingerprint(pem: &str) -> Option<String> {
     let body: String = pem.lines().filter(|l| !l.starts_with("-----")).map(str::trim).collect();
-    base64_decode(&body).filter(|d| !d.is_empty()).map(|d| crate::utils::sha256::hex(&d).to_ascii_uppercase())
+    crate::utils::base64::decode(&body)
+        .filter(|d| !d.is_empty())
+        .map(|d| crate::utils::sha256::hex(&d).to_ascii_uppercase())
 }
 
 /// A bundle's entries: each certificate with the comment lines above it,

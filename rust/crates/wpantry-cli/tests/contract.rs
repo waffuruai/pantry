@@ -101,7 +101,7 @@ fn html_bundle(path: &Path) -> Value {
     let marker = r#"<script id="pantry-bundle" type="application/json">"#;
     assert_eq!(text.matches(marker).count(), 1);
     let json = text.split_once(marker).unwrap().1.split_once("</script>").unwrap().0;
-    serde_json::from_str(json).unwrap()
+    wpantry::reporters::pack::read(json).expect("a bundle the page can read")
 }
 
 // version, tools, skill, licenses ---------------------------------------

@@ -50,9 +50,6 @@ fn fingerprints_match_openssl() {
         let theirs: String = said.split('=').nth(1).unwrap_or("").trim().replace(':', "");
         assert_eq!(fingerprint(c).unwrap(), theirs.to_ascii_uppercase(), "{said}");
     }
-    assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
-    assert_eq!(base64_decode("aGVs\nbG8gd29ybGQ=").unwrap(), b"hello world");
-    assert!(base64_decode("a*b").is_none());
     assert!(fingerprint("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").is_none());
     let e = entries(
         "# one\nx\n-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n# two\n-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\ntail\n",

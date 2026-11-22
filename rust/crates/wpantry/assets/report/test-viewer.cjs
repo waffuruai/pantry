@@ -16,9 +16,10 @@ const ctx={document,window:{addEventListener(type,fn){events['window:'+type]=fn}
 function load(bundle){
   elements['pantry-bundle']=undefined; el('pantry-bundle').textContent=JSON.stringify(bundle);
   el('waffuru-mark').src='data:image/png;base64,AAAA';
-  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,wordfenceLink,state};";
-  vm.runInNewContext(viewer.replace(/\nrender\(\);\n\}\)\(\);\s*$/, '\nrender();'+hook+'\n})();'),ctx);
-  assert(ctx.viewerTest,'the test hook replaced the final render() call');
+  ctx.viewerTest=undefined;
+  const hook="globalThis.viewerTest={parseCSV,csvToReport,validReport,addText,isAdvisory,agentPrompt,cur,canCelebrate,bucket,areasOf,planFor,wordfenceLink,state,unpack,ready};";
+  vm.runInNewContext(viewer.replace(/\n\}\)\(\);\s*$/, '\n'+hook+'\n})();'),ctx);
+  assert(ctx.viewerTest,'the test hook went in before the viewer closes');
 }
 const main=()=>elements.main.innerHTML;
 function click(dataset){events.click({target:{closest(){return {dataset}}}})}
@@ -424,4 +425,24 @@ load({...bundle,plan:[{command:'rm -rf /',mode:'auto',findings:[999]}]});
 assert(!main().includes('rm -rf'));
 assert(section('manual').includes('Grouped from the findings'));
 
-console.log('viewer: every kind under its area in fix order, gaps as gaps, the plan by hand and unattended, history, escaping, imports, print and the all-clear state passed');
+/* ---------- the packed and deflated bundle src/reporters/pack.rs writes ---------- */
+// pack-fixture.json is that module's output byte for byte (its Rust test
+// checks), so the page decodes exactly what a report carries.
+(async()=>{
+  const fx=JSON.parse(fs.readFileSync(path.join(__dirname,'pack-fixture.json'),'utf8'));
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(ctx.viewerTest.unpack(fx.packed))),fx.bundle,'unpack gives back the bundle');
+  assert.equal(ctx.viewerTest.unpack(bundle),bundle,'an unpacked bundle passes through');
+  const shown=()=>{events['window:beforeprint'](); return main()+elements['print-report'].innerHTML}; // the screen and the whole print document
+  load(fx.bundle); const plain=shown();
+  assert(plain.includes('~/.npmrc') && plain.includes('GHSA-8g5g-mxqh-grgj') && plain.includes('<section class="sec" id="history">'),'the fixture renders its findings and history');
+  load(fx.packed); assert.equal(shown(),plain,'a packed bundle renders as the plain one');
+  Object.assign(ctx,{atob,Blob,Response,DecompressionStream});
+  load({pantry_deflated:fx.deflated}); await ctx.viewerTest.ready;
+  assert.equal(shown(),plain,'a deflated bundle renders as the plain one');
+  load({pantry_deflated:fx.deflated.slice(0,40)}); await ctx.viewerTest.ready;
+  assert(main().includes('is compressed'),'a corrupt stream says so');
+  delete ctx.DecompressionStream;
+  load({pantry_deflated:fx.deflated}); await ctx.viewerTest.ready;
+  assert(main().includes('is compressed') && main().includes('wpantry report --json'),'a browser without DecompressionStream says what to do');
+  console.log('viewer: every kind under its area in fix order, gaps as gaps, the plan by hand and unattended, history, escaping, imports, print, the all-clear state and packed and deflated bundles passed');
+})().catch(e=>{console.error(e);process.exitCode=1});

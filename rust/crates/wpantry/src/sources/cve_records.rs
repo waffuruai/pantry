@@ -214,7 +214,14 @@ fn fetch_records(net: &dyn Net, vendor: &str, product: &str) -> Result<Value> {
         for (_, list) in results.as_object().into_iter().flatten() {
             n += list.as_array().map_or(0, Vec::len);
         }
-        out.extend(arr_at(results, "cvelistv5").iter().filter_map(|pair| trim(pair.get(1)?)));
+        for rec in arr_at(results, "cvelistv5").iter().filter_map(|pair| trim(pair.get(1)?)) {
+            merge(&mut out, rec);
+        }
+        // NVD's copy (FKIE's mirror of it): its CPE configurations, for a
+        // record whose publisher named no product or versions.
+        for rec in arr_at(results, "fkie_nvd").iter().filter_map(|pair| trim_nvd(pair.get(1)?)) {
+            merge(&mut out, rec);
+        }
         let total = v["total_count"].as_u64().unwrap_or(0);
         let size = v["page_size"].as_u64().unwrap_or(100).max(1);
         if n == 0 || page * size >= total {
@@ -247,6 +254,7 @@ pub fn trim(rec: &Value) -> Option<Value> {
                 "product": a.get("product").cloned().unwrap_or(Value::Null),
                 "versions": a.get("versions").cloned().unwrap_or(json!([])),
                 "defaultStatus": a.get("defaultStatus").cloned().unwrap_or(Value::Null),
+                "platforms": a.get("platforms").cloned().unwrap_or(json!([])),
             })
         })
         .collect();
@@ -260,6 +268,173 @@ pub fn trim(rec: &Value) -> Option<Value> {
         "score": score.as_ref().map(|s| s.value),
         "cvss_version": score.as_ref().map(|s| s.version.clone()),
         "affected": affected,
+    }))
+}
+
+/// Add `rec` to `out`, or, when a record with its id is there (the CVE
+/// list's and NVD's copies of one CVE), its `affected[]` entries to that
+/// one's, and its score when that one has none.
+pub fn merge(out: &mut Vec<Value>, rec: Value) {
+    let Some(have) = out.iter_mut().find(|r| r["id"] == rec["id"]) else {
+        out.push(rec);
+        return;
+    };
+    if let (Some(a), Some(b)) = (have["affected"].as_array_mut(), rec["affected"].as_array()) {
+        a.extend(b.iter().cloned());
+    }
+    if have["score"].is_null() && !rec["score"].is_null() {
+        have["score"] = rec["score"].clone();
+        have["cvss_version"] = rec["cvss_version"].clone();
+    }
+    if have["published"].as_str().is_none_or(str::is_empty) {
+        have["published"] = rec["published"].clone();
+    }
+}
+
+/// An NVD record (CVE API 2.0's `cve`, as FKIE mirrors it) in the shape
+/// [`trim`] keeps: one `affected[]` entry per vulnerable application CPE
+/// match, its vendor and product as the CPE names them (`videolan` /
+/// `vlc_media_player`), `"nvd": true`, and the systems it is limited to
+/// (the CPE's target software, or the operating systems a configuration
+/// requires beside it). None for a rejected record or one without an id.
+pub fn trim_nvd(rec: &Value) -> Option<Value> {
+    let rec = rec.get("cve").unwrap_or(rec);
+    let id = rec.get("id").and_then(Value::as_str).filter(|s| s.starts_with("CVE-"))?.to_string();
+    if rec.get("vulnStatus").and_then(Value::as_str) == Some("Rejected") {
+        return None;
+    }
+    let title: String = arr_at(rec, "descriptions")
+        .iter()
+        .find(|d| d["lang"].as_str().is_some_and(|l| l.starts_with("en")))
+        .and_then(|d| d["value"].as_str())
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    let mut affected: Vec<Value> = Vec::new();
+    for config in arr_at(rec, "configurations") {
+        let nodes = arr_at(config, "nodes");
+        // The systems a configuration requires (`AND` with `o:` CPEs not
+        // themselves vulnerable): macOS, Linux, Windows.
+        let required: Vec<&str> = if config["operator"].as_str() == Some("AND") {
+            nodes
+                .iter()
+                .flat_map(|n| arr_at(n, "cpeMatch"))
+                .filter(|m| m["vulnerable"].as_bool() == Some(false))
+                .filter_map(|m| m["criteria"].as_str())
+                .filter_map(system_of_os_cpe)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for m in nodes.iter().flat_map(|n| arr_at(n, "cpeMatch")) {
+            if m["vulnerable"].as_bool() != Some(true) {
+                continue;
+            }
+            let Some(entry) = nvd_entry(m, &required) else { continue };
+            affected.push(entry);
+        }
+    }
+    let score = nvd_score(rec);
+    let published: String = rec.get("published").and_then(Value::as_str).unwrap_or_default().chars().take(10).collect();
+    Some(json!({
+        "id": id,
+        "title": title,
+        "published": published,
+        "score": score.as_ref().map(|s| s.0),
+        "cvss_version": score.as_ref().map(|s| s.1.clone()),
+        "affected": affected,
+    }))
+}
+
+/// An NVD record's base score and CVSS version: the newest CVSS it
+/// carries, NVD's own (`Primary`) before a publisher's.
+fn nvd_score(rec: &Value) -> Option<(f64, String)> {
+    for key in ["cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"] {
+        let list = arr_at(&rec["metrics"], key);
+        let pick = list.iter().find(|m| m["type"].as_str() == Some("Primary")).or(list.first());
+        if let Some(d) = pick.map(|m| &m["cvssData"])
+            && let Some(score) = d["baseScore"].as_f64()
+        {
+            return Some((score, d["version"].as_str().unwrap_or_default().to_string()));
+        }
+    }
+    None
+}
+
+/// The system an operating-system CPE names, in [`crate::utils::os`]'s
+/// words.
+fn system_of_os_cpe(cpe: &str) -> Option<&'static str> {
+    let f: Vec<&str> = cpe.split(':').collect();
+    if f.get(2) != Some(&"o") {
+        return None;
+    }
+    system_of(f.get(3)?, f.get(4)?)
+}
+
+/// `macos`, `linux` or `windows` for a CPE's vendor and product (or a
+/// target software word, with an empty vendor).
+fn system_of(vendor: &str, product: &str) -> Option<&'static str> {
+    match (vendor, product) {
+        ("apple", "macos" | "mac_os_x" | "mac_os" | "macos_x" | "os_x")
+        | ("", "macos" | "mac_os_x" | "mac_os" | "os_x") => Some("macos"),
+        ("linux", "linux_kernel") | ("", "linux") => Some("linux"),
+        ("microsoft", p) if p.starts_with("windows") => Some("windows"),
+        ("", p) if p.starts_with("windows") => Some("windows"),
+        _ => None,
+    }
+}
+
+/// One vulnerable application CPE match as an `affected[]` entry: its
+/// range (`versionStart*`, `versionEnd*`) or exact version, unaffected
+/// elsewhere. A match for a pre-release (`update` set), for another kind
+/// of software than an application, or limited to a system outside
+/// macOS, Linux and Windows (`iphone_os`, `android`) is left out.
+fn nvd_entry(m: &Value, required: &[&str]) -> Option<Value> {
+    let cpe = m["criteria"].as_str()?;
+    let f: Vec<&str> = cpe.split(':').collect();
+    if f.len() < 11 || f[2] != "a" {
+        return None;
+    }
+    let (vendor, product, version, update, target) = (f[3], f[4], f[5], f[6], f[10]);
+    if !matches!(update, "*" | "-") {
+        return None;
+    }
+    let mut platforms: Vec<&str> = required.to_vec();
+    if !matches!(target, "*" | "-") {
+        platforms = vec![system_of("", target)?];
+    }
+    let get = |k: &str| m[k].as_str().unwrap_or_default();
+    let mut versions: Vec<Value> = Vec::new();
+    let exact = !matches!(version, "*" | "-" | "");
+    // No version and no range: "every version", as NVD wrote old records
+    // (Blender's 2008 temporary-file issue); not a range anything is in.
+    let bounds = ["versionStartIncluding", "versionStartExcluding", "versionEndIncluding", "versionEndExcluding"];
+    if !exact && bounds.iter().all(|k| get(k).is_empty()) {
+        return None;
+    }
+    let start = match (get("versionStartIncluding"), get("versionStartExcluding")) {
+        ("", "") => "0".to_string(),
+        ("", x) => {
+            // Above x, not at it.
+            versions.push(json!({"version": x, "status": "unaffected"}));
+            x.to_string()
+        }
+        (i, _) => i.to_string(),
+    };
+    match (get("versionEndExcluding"), get("versionEndIncluding")) {
+        _ if exact => versions.push(json!({"version": version, "status": "affected"})),
+        ("", "") => versions.push(json!({"version": start, "lessThan": "*", "status": "affected"})),
+        (lt, "") => versions.push(json!({"version": start, "lessThan": lt, "status": "affected"})),
+        (_, le) => versions.push(json!({"version": start, "lessThanOrEqual": le, "status": "affected"})),
+    }
+    Some(json!({
+        "vendor": vendor,
+        "product": product,
+        "versions": versions,
+        "defaultStatus": "unaffected",
+        "platforms": platforms,
+        "nvd": true,
     }))
 }
 

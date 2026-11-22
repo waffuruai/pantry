@@ -18,7 +18,7 @@
 //! never asked to fetch them.
 
 use crate::checks::Scan;
-use crate::checks::secrets::{Scanner, rules};
+use crate::checks::secrets::{Scanner, noise, rules};
 use crate::checks::supply_chain::repos::Repo;
 use crate::db::Cache;
 use crate::error::{Error, Result};
@@ -54,7 +54,7 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(600);
 pub const DEEP_MAX_BLOB: u64 = 256 << 20;
 pub const DEEP_BUDGET: Duration = Duration::from_secs(6 * 60 * 60);
 /// Bumped when the scanner's results change for the same rules.
-const SCANNER: &str = "secrets-v1";
+const SCANNER: &str = "secrets-v3";
 
 /// One redacted secret in a repo's history.
 #[derive(Clone, Debug, PartialEq)]
@@ -672,6 +672,7 @@ pub(crate) fn secrets(
     ran: Vec<Option<Result<Value>>>,
 ) -> Result<()> {
     let (refresh, offline) = (scan.opts.refresh, scan.opts.offline);
+    let mut made: Vec<(Finding, String, String)> = Vec::new();
     for (((name, root), (job, _)), ran) in repos.iter().zip(jobs).zip(ran) {
         scan.status(&format!("Scanning {name}'s git history for secrets"));
         if job.as_ref().is_ok_and(|j| j.own_policy) {
@@ -700,28 +701,309 @@ pub(crate) fn secrets(
             let (why, run) = unread_note(&unread, &short(&root.to_string_lossy()), scan.opts.deep);
             scan.unchecked_until(&format!("secrets in {} files of {name}'s history", unread.total()), &why, &run);
         }
-        for f in found {
+        // What history holds, so `--deep`'s read of the files doesn't
+        // report it again.
+        for f in &found {
             scan.history_secrets.insert((root.join(&f.file), f.rule.clone(), f.line.max(0) as usize));
-            let sure = f.confidence == "high";
-            let decoded = f.tags.iter().find_map(|t| t.strip_prefix("decoded:")).map(|k| format!(" ({k}-encoded)"));
-            scan.add(Finding {
-                kind: "secret".into(),
-                component: format!("{name}/{}", f.file),
-                location: format!("line {}, commit {}", f.line, f.commit),
-                vuln_id: f.rule.clone(),
-                status: if sure { "fail" } else { "warn" }.into(),
-                note: format!(
-                    "{}{}{}",
-                    f.description,
-                    decoded.unwrap_or_default(),
-                    if sure { String::new() } else { format!(" (review: {} confidence rule)", f.confidence) }
-                ),
-                fix_cmd: fix(&short(&root.to_string_lossy()), &f.file, &[(&f.rule, f.line, &f.commit)], !sure),
-                ..Default::default()
-            });
         }
+        let skipper = crate::checks::ignore::Skipper::new(root);
+        let skip = |kind: &str, id: &str, rel: &str| skipper.skips(kind, id, rel);
+        let (fs, counts) = findings(name, &short(&root.to_string_lossy()), &found, scan.opts.deep, &skip);
+        for (what, n) in counts {
+            scan.count(what, n);
+        }
+        made.extend(fs.into_iter().map(|(f, key)| (f, key, name.clone())));
+    }
+    for f in merge_clones(made) {
+        scan.add(f);
     }
     Ok(())
+}
+
+/// Where a repo's generic hits in tests are, as a finding's location.
+pub const TESTS: &str = "test files";
+/// The count of vendored files whose generic hits only `--deep` reports.
+pub const VENDORED: &str = "files of vendored code a generic secret rule hit (reported with --deep)";
+
+/// What a repo's hits left out, by count.
+pub type Counts = Vec<(&'static str, i64)>;
+/// A test file's versions (commit, oldest first) and their lines.
+type Versions<'a> = Vec<(&'a str, Vec<i64>)>;
+
+/// Whether an ignore file skips a hit (kind, rule, path in the repo): the
+/// count it goes under if so.
+pub type Skip<'a> = &'a dyn Fn(&str, &str, &str) -> Option<&'static str>;
+
+/// A repo's (`name`, at `repo`) hits as findings, each with what makes it
+/// the same finding in a clone of the repo; and what was left out, by
+/// count. One finding per file and rule, except for a generic rule:
+///
+/// - in an env or credential file, it fails ([`finding`]);
+/// - in tests, one finding per rule names every place ([`test_finding`]);
+/// - in vendored code, none, unless `deep`.
+pub fn findings(name: &str, repo: &str, found: &[Leak], deep: bool, skip: Skip) -> (Vec<(Finding, String)>, Counts) {
+    fn bump(counts: &mut Counts, what: &'static str) {
+        match counts.iter_mut().find(|(w, _)| *w == what) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((what, 1)),
+        }
+    }
+    let mut counts = Vec::new();
+    let mut out = Vec::new();
+    let mut tests: Vec<Vec<&Leak>> = Vec::new();
+    for group in by_file_and_rule(found) {
+        let (file, rule) = (group[0].file.as_str(), group[0].rule.as_str());
+        let generic = rule.starts_with("generic-") && noise::secret_file(file).is_none();
+        if generic && !deep && noise::vendored(file) {
+            bump(&mut counts, VENDORED);
+            continue;
+        }
+        if generic && noise::test(file) {
+            // One finding for many files: the ignore files are asked here,
+            // as no one path of it would match.
+            if let Some(what) = skip("secret", rule, file) {
+                bump(&mut counts, what);
+                continue;
+            }
+            match tests.iter_mut().find(|t| t[0].rule == rule) {
+                Some(t) => t.extend(group),
+                None => tests.push(group),
+            }
+            continue;
+        }
+        let key = clone_key(rule, file, &group);
+        out.push((finding(name, repo, &group), key));
+    }
+    for group in tests {
+        let key = clone_key(&group[0].rule, TESTS, &group);
+        out.push((test_finding(name, repo, &group), key));
+    }
+    (out, counts)
+}
+
+/// What a finding is in any clone of its repo: its rule, its file (or
+/// [`TESTS`]) and every place, commits included.
+fn clone_key(rule: &str, file: &str, group: &[&Leak]) -> String {
+    let mut places: Vec<String> = group.iter().map(|h| format!("{}:{}:{}", h.file, h.line, h.commit)).collect();
+    places.sort_unstable();
+    places.dedup();
+    format!("{rule}|{file}|{}", places.join(","))
+}
+
+/// Findings that clones (or forks) of one repo share, the same file at the
+/// same commits, as one: the first repo's, naming the others.
+pub fn merge_clones(made: Vec<(Finding, String, String)>) -> Vec<Finding> {
+    let mut out: Vec<(Finding, String, Vec<String>)> = Vec::new();
+    for (f, key, name) in made {
+        match out.iter_mut().find(|(_, k, _)| *k == key) {
+            Some((_, _, also)) => also.push(name),
+            None => out.push((f, key, Vec::new())),
+        }
+    }
+    out.into_iter()
+        .map(|(mut f, _, also)| {
+            if !also.is_empty() {
+                f.note.push_str(&format!(
+                    "; also in {} other clone{}: {}",
+                    also.len(),
+                    if also.len() == 1 { "" } else { "s" },
+                    also.join(", ")
+                ));
+            }
+            f
+        })
+        .collect()
+}
+
+/// The places a collapsed finding names; its note counts them all.
+pub const PLACES: usize = 5;
+
+/// The leaks grouped by file and rule, in the order found (newest version
+/// first): every version of a file repeats its hits, so one rule in one file
+/// is one finding.
+pub fn by_file_and_rule(found: &[Leak]) -> Vec<Vec<&Leak>> {
+    let mut groups: Vec<Vec<&Leak>> = Vec::new();
+    let mut at: HashMap<(&str, &str), usize> = HashMap::new();
+    for f in found {
+        match at.get(&(f.file.as_str(), f.rule.as_str())) {
+            Some(&i) => groups[i].push(f),
+            None => {
+                at.insert((&f.file, &f.rule), groups.len());
+                groups.push(vec![f]);
+            }
+        }
+    }
+    groups
+}
+
+fn rank(confidence: &str) -> u8 {
+    match confidence {
+        "high" => 2,
+        "medium" => 1,
+        _ => 0,
+    }
+}
+
+/// One rule's hits in one file of a repo (`name`, at `repo`) as a finding:
+/// it fails when any hit is of high confidence, or the file is an env or
+/// credential file (not a template of one).
+pub fn finding(name: &str, repo: &str, group: &[&Leak]) -> Finding {
+    let f = group.iter().max_by_key(|f| rank(&f.confidence)).copied().unwrap_or(group[0]);
+    let held = noise::secret_file(&f.file) == Some(true);
+    let sure = f.confidence == "high" || held;
+    let decoded = group
+        .iter()
+        .find_map(|f| f.tags.iter().find_map(|t| t.strip_prefix("decoded:")))
+        .map(|k| format!(" ({k}-encoded)"));
+    // Oldest version first: a new commit adds places at the end, so the
+    // finding keeps its location, and its id, as history grows.
+    let mut places: Vec<(i64, &str)> = Vec::new();
+    for version in group.chunk_by(|a, b| a.commit == b.commit).rev() {
+        for h in version {
+            if !places.contains(&(h.line, h.commit.as_str())) {
+                places.push((h.line, &h.commit));
+            }
+        }
+    }
+    let versions = group.iter().map(|h| h.commit.as_str()).collect::<HashSet<_>>().len();
+    let count = match (places.len(), versions) {
+        (1, _) => String::new(),
+        (n, 1) => format!("; {n} hits"),
+        (n, v) => format!("; {n} hits in {v} versions of the file"),
+    };
+    let hits: Vec<(&str, i64, &str)> = places.iter().map(|(line, commit)| (f.rule.as_str(), *line, *commit)).collect();
+    Finding {
+        kind: "secret".into(),
+        component: format!("{name}/{}", f.file),
+        location: location(&places),
+        vuln_id: f.rule.clone(),
+        status: if sure { "fail" } else { "warn" }.into(),
+        note: format!(
+            "{}{}{}{count}",
+            f.description,
+            decoded.unwrap_or_default(),
+            if f.confidence == "high" {
+                String::new()
+            } else if held {
+                " (in a committed env or credential file)".to_string()
+            } else {
+                format!(" (review: {} confidence rule)", f.confidence)
+            }
+        ),
+        fix_cmd: fix(repo, &f.file, &hits, !sure),
+        ..Default::default()
+    }
+}
+
+/// A generic rule's hits in a repo's tests as one finding, at [`TESTS`]:
+/// its note names every file and line. It asks for review.
+pub fn test_finding(name: &str, repo: &str, group: &[&Leak]) -> Finding {
+    let f = group.iter().max_by_key(|f| rank(&f.confidence)).copied().unwrap_or(group[0]);
+    // Each file's versions (oldest first) and their lines.
+    let mut files: Vec<(&str, Versions)> = Vec::new();
+    for h in group.iter().rev() {
+        let i = match files.iter().position(|(file, _)| *file == h.file) {
+            Some(i) => i,
+            None => {
+                files.push((&h.file, Vec::new()));
+                files.len() - 1
+            }
+        };
+        let versions = &mut files[i].1;
+        match versions.iter_mut().find(|(c, _)| *c == h.commit) {
+            Some((_, lines)) if !lines.contains(&h.line) => lines.push(h.line),
+            Some(_) => {}
+            None => versions.push((&h.commit, vec![h.line])),
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(b.0));
+    let lines_of = |versions: &[(&str, Vec<i64>)]| {
+        let mut all: Vec<i64> = versions.iter().flat_map(|(_, l)| l.iter().copied()).collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    };
+    let hits: usize = files.iter().map(|(_, v)| lines_of(v).len()).sum();
+    let named: Vec<String> = files
+        .iter()
+        .map(|(file, versions)| {
+            let lines: Vec<String> = lines_of(versions).iter().map(i64::to_string).collect();
+            format!("{file} (line{} {})", if lines.len() == 1 { "" } else { "s" }, lines.join(", "))
+        })
+        .collect();
+    Finding {
+        kind: "secret".into(),
+        component: name.to_string(),
+        location: TESTS.into(),
+        vuln_id: f.rule.clone(),
+        status: "warn".into(),
+        note: format!(
+            "{} (in tests; review: {} confidence rule); {hits} line{} in {} file{}: {}",
+            f.description,
+            f.confidence,
+            if hits == 1 { "" } else { "s" },
+            files.len(),
+            if files.len() == 1 { "" } else { "s" },
+            named.join("; ")
+        ),
+        fix_cmd: tests_fix(repo, &f.rule, &files),
+        ..Default::default()
+    }
+}
+
+/// What to do about a rule's hits in a repo's tests: look at the lines,
+/// and if none is real, leave the files out of that rule's findings.
+fn tests_fix(repo: &str, rule: &str, files: &[(&str, Versions)]) -> String {
+    use crate::checks::supply_chain::quote;
+    let mut out = vec![
+        format!(
+            "# {rule} in {} test file{} (generic rule: review): test values, unless one is real.",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        ),
+        "# If one is real: rotate it first, then take it out of history with git filter-repo --sensitive-data-removal."
+            .to_string(),
+        format!("repo={}", sh_path(repo)),
+        String::new(),
+        "# 1. Show the lines".to_string(),
+    ];
+    for (file, versions) in files {
+        for (commit, lines) in versions {
+            let lines: Vec<String> = lines.iter().map(|l| format!("{l}p")).collect();
+            out.push(format!(
+                "git -C \"$repo\" show {} | sed -n {}",
+                quote(&format!("{commit}:{file}")),
+                quote(&lines.join(";"))
+            ));
+        }
+    }
+    let paths: Vec<String> = files.iter().map(|(file, _)| quote(&format!("/{file}"))).collect();
+    out.extend([
+        String::new(),
+        "# If none is: leave these files out of this rule's findings".to_string(),
+        format!("printf '\\n[secret {rule}]\\n' >> \"$repo/{}\"", crate::checks::ignore::FILE),
+        format!("printf '%s\\n' {} >> \"$repo/{}\"", paths.join(" "), crate::checks::ignore::FILE),
+    ]);
+    out.join("\n")
+}
+
+/// `line 12, commit abc; line 40, commit def`: the first [`PLACES`] of a
+/// finding's (line, commit) places.
+pub fn location(places: &[(i64, &str)]) -> String {
+    let shown: Vec<String> =
+        places.iter().take(PLACES).map(|(line, commit)| format!("line {line}, commit {commit}")).collect();
+    shown.join("; ")
+}
+
+/// The (line, commit) places a [`location`] names.
+pub fn places(location: &str) -> Vec<(i64, String)> {
+    location
+        .split("; ")
+        .filter_map(|p| {
+            let (line, commit) = p.strip_prefix("line ")?.split_once(", commit ")?;
+            Some((line.parse().ok()?, commit.to_string()))
+        })
+        .collect()
 }
 
 /// Why history files went unread, and the commands that read them, one a

@@ -991,6 +991,16 @@ fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
         );
         return Ok(EXIT_FAIL);
     };
+    if f.kind == "secret" && f.location == wpantry::checks::supply_chain::leaks::TESTS {
+        cache.close()?;
+        eprintln!(
+            "{}",
+            Style::stderr().red(&format!(
+                "✗ wpantry: {id} is one rule's hits in many test files: follow its fix script, which shows each line"
+            ))
+        );
+        return Ok(EXIT_USAGE);
+    }
     let Some(target) = secret::target(f, &findings) else {
         cache.close()?;
         eprintln!(

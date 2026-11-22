@@ -44,12 +44,11 @@ pub fn target(f: &Finding, findings: &[Finding]) -> Option<Target> {
         return None;
     }
     let (repo, file) = leaks::fix_target(&f.fix_cmd)?;
-    let at = |x: &Finding| {
-        let (line, commit) = x.location.strip_prefix("line ")?.split_once(", commit ")?;
-        Some((x.vuln_id.clone(), line.parse::<i64>().ok()?, commit.to_string()))
-    };
-    let hits: Vec<(String, i64, String)> =
-        findings.iter().filter(|x| x.kind == "secret" && x.component == f.component).filter_map(at).collect();
+    let hits: Vec<(String, i64, String)> = findings
+        .iter()
+        .filter(|x| x.kind == "secret" && x.component == f.component)
+        .flat_map(|x| leaks::places(&x.location).into_iter().map(|(line, commit)| (x.vuln_id.clone(), line, commit)))
+        .collect();
     (!hits.is_empty()).then_some(Target { repo, file, hits })
 }
 

@@ -148,7 +148,7 @@ for(const [kind,vuln_id] of [['repo-hook','RUNS-REPO-FILE'],['posture','POSTURE-
   assert(!ctx.viewerTest.isAdvisory({...every[0],kind,vuln_id}));
   assert(!ctx.viewerTest.isAdvisory({...every[0],kind,vuln_id:'FUTURE-RULE'}));
 }
-for(const id of ['UNPINNED','UNCHECKED','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA'])assert(!ctx.viewerTest.isAdvisory({...every[4],vuln_id:id}));
+for(const id of ['UNPINNED','UNCHECKED','UNREACHABLE','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA'])assert(!ctx.viewerTest.isAdvisory({...every[4],vuln_id:id}));
 assert(ctx.viewerTest.isAdvisory(every[4]));
 every.forEach((f,i)=>click({open:String(i)}));
 assert(!main().includes('https://osv.dev/vulnerability/'),'every id here is a CVE or a rule');

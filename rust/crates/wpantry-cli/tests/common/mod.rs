@@ -147,6 +147,7 @@ pub fn git_repo(path: &Path, worktree: bool) -> PathBuf {
         std::fs::write(path.join(".git"), "gitdir: /elsewhere\n").unwrap();
     } else {
         std::fs::create_dir(path.join(".git")).unwrap();
+        std::fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     }
     path.to_path_buf()
 }

@@ -55,7 +55,7 @@ pub fn images_with(scan: &mut Scan, repos: &[Repo], engine: Option<PathBuf>) -> 
         ) {
             Ok(p) => p,
             Err(e) if e.is_source() || matches!(e, Error::Missing(_)) => {
-                scan.unchecked(&format!("image {r}"), &e.to_string());
+                scan.missed(&format!("image {r}"), &e);
                 continue;
             }
             Err(e) => return Err(e),

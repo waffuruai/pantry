@@ -320,14 +320,7 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
     }
     let fails = v.fails();
     let warns = v.rows() - fails;
-    let incomplete = if v.gaps.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " Incomplete: {} source(s) couldn't be checked (offline?); re-run when they're reachable.",
-            v.gaps.len()
-        )
-    };
+    let incomplete = incomplete(&v.gaps);
     out.push(if fails > 0 {
         let advisories = r.findings.iter().filter(|f| f.status == "fail").count();
         vec![(
@@ -560,6 +553,23 @@ pub fn paint(line: &Line, style: Style) -> String {
         .collect::<String>()
         .trim_end()
         .to_string()
+}
+
+/// The summary's tail when something couldn't be checked: how many, and
+/// how many of those were sources that couldn't be reached.
+fn incomplete(gaps: &[&wpantry::finding::Finding]) -> String {
+    if gaps.is_empty() {
+        return String::new();
+    }
+    let n = gaps.len();
+    let things = if n == 1 { "thing" } else { "things" };
+    match gaps.iter().filter(|f| f.vuln_id == "UNREACHABLE").count() {
+        0 => format!(" Incomplete: {n} {things} couldn't be checked (Not checked, above)."),
+        u => format!(
+            " Incomplete: {n} {things} couldn't be checked (Not checked, above); {u} {} couldn't be reached: re-run when online.",
+            if u == 1 { "source" } else { "sources" }
+        ),
+    }
 }
 
 #[cfg(test)]

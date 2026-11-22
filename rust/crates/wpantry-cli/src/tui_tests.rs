@@ -129,3 +129,24 @@ fn colour_follows_the_roles_and_a_scanned_name_cant_escape() {
     let row = coloured.iter().find(|l| l.contains("evil")).unwrap();
     assert!(row.contains("\x1b[1;31m✗\x1b[0m") && !row.contains("\x1b[2J"), "{row:?}");
 }
+
+#[test]
+fn the_summary_says_how_many_gaps_and_which_couldnt_be_reached() {
+    let gap = |what: &str, marker: &str| Finding {
+        kind: "unchecked".into(),
+        component: what.into(),
+        vuln_id: marker.into(),
+        status: "warn".into(),
+        ..Default::default()
+    };
+    let (big, kev, osv) = (
+        gap("secrets in 3 files of ~/x's history", "UNCHECKED"),
+        gap("CISA KEV", "UNREACHABLE"),
+        gap("OSV", "UNREACHABLE"),
+    );
+    assert_eq!(incomplete(&[]), "");
+    assert_eq!(incomplete(&[&big]), " Incomplete: 1 thing couldn't be checked (Not checked, above).");
+    let both = incomplete(&[&big, &kev, &osv]);
+    assert!(both.contains("3 things couldn't be checked") && both.contains("2 sources couldn't be reached"), "{both}");
+    assert!(!incomplete(&[&big]).contains("online"), "a big file isn't an offline source");
+}

@@ -428,8 +428,24 @@ impl<'a> Scan<'a> {
         self.findings.push(f);
     }
 
-    /// A source we couldn't reach: say so, rather than report it clean.
+    /// Something that couldn't be checked: say so, rather than report it
+    /// clean.
     pub fn unchecked(&mut self, what: &str, why: &str) {
+        self.gap(what, why, "UNCHECKED");
+    }
+
+    /// A source that couldn't be reached (offline, refused, timed out).
+    pub fn unreachable(&mut self, what: &str, why: &str) {
+        self.gap(what, why, "UNREACHABLE");
+    }
+
+    /// A source's error: [`Self::unreachable`] when it couldn't be reached,
+    /// else [`Self::unchecked`].
+    pub fn missed(&mut self, what: &str, e: &Error) {
+        self.gap(what, &e.to_string(), if matches!(e, Error::Offline(_)) { "UNREACHABLE" } else { "UNCHECKED" });
+    }
+
+    fn gap(&mut self, what: &str, why: &str, marker: &str) {
         if self.findings.iter().any(|f| f.kind == "unchecked" && f.component == what) {
             return;
         }
@@ -438,7 +454,7 @@ impl<'a> Scan<'a> {
         self.add(Finding {
             kind: "unchecked".into(),
             component: what.into(),
-            vuln_id: "UNCHECKED".into(),
+            vuln_id: marker.into(),
             status: "warn".into(),
             note,
             ..Default::default()
@@ -451,7 +467,7 @@ impl<'a> Scan<'a> {
         match r {
             Ok(v) => Ok(v),
             Err(e) if e.is_source() => {
-                self.unchecked(what, &e.to_string());
+                self.missed(what, &e);
                 Ok(default)
             }
             Err(e) => Err(e),
@@ -478,10 +494,13 @@ impl<'a> Scan<'a> {
         }
         let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log, status)?;
         let mut why = answers.gaps;
-        if items.iter().any(|it| !answers.found.contains_key(it)) {
+        let unreached = items.iter().any(|it| !answers.found.contains_key(it));
+        if unreached {
             why.insert(0, "OSV unreachable and not cached".into());
         }
-        if !why.is_empty() {
+        if unreached {
+            self.unreachable(what, &why.join("; "));
+        } else if !why.is_empty() {
             self.unchecked(what, &why.join("; "));
         }
         Ok(answers.found)

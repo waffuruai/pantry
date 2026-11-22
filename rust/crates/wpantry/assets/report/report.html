@@ -371,7 +371,7 @@ var state = {run:0, q:'', show:{fail:true,warn:true}, kevOnly:false, open:{}, pa
 
 /* ---------- vocabulary ---------- */
 var MARKERS = Object.create(null);
-['UNPINNED','UNCHECKED','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA','REPO-POLICY','IGNORE-FILE','IGNORE-PROTECTED'].forEach(function(id){MARKERS[id]=1});
+['UNPINNED','UNCHECKED','UNREACHABLE','EOL','OUTDATED','INSTALL-SCRIPT','LICENSE','NPM-SCRIPTS','MISSING','MALICIOUS','DEPRECATED','BREACH','BROWSER','OS-UPDATE','DISTRUSTED-CA','REPO-POLICY','IGNORE-FILE','IGNORE-PROTECTED'].forEach(function(id){MARKERS[id]=1});
 // Kinds whose ids are the scanner's own rules, never public advisories.
 var RULE_KINDS = ['secret','repo-hook','posture','persistence','hidden-text','suspect-code','document','clipper'];
 var KIND_LABEL = {project:'Project dependencies', mcp:'MCP servers', unchecked:'Not checked', secret:'Committed secrets', runtime:'Runtimes',

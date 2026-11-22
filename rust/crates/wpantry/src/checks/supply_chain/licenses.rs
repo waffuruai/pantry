@@ -97,7 +97,7 @@ pub(crate) fn licenses(scan: &mut Scan, read: &[(PathBuf, Vec<lockfiles::Package
     {
         Ok(f) => f,
         Err(e) if e.is_source() => {
-            scan.unchecked("dependency licenses (deps.dev)", &e.to_string());
+            scan.missed("dependency licenses (deps.dev)", &e);
             return Ok(());
         }
         Err(e) => return Err(e),

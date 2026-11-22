@@ -38,7 +38,8 @@ pub const LOCKFILES: &[&str] = &[
 pub const DISCOVER_DEPTH: usize = 6;
 
 /// Every git repo at or under `root`, sorted. A directory holding a `.git`
-/// directory is a repo and is not descended into. A `.git` file (a linked
+/// directory with a `HEAD` in it is a repo and is not descended into (an
+/// empty `.git`, as a downloaded template has, is not a repo). A `.git` file (a linked
 /// worktree or a submodule) also ends the descent, but only counts when it
 /// is `root` itself. Symlinks are not followed, and only directory entries
 /// are looked at.
@@ -53,7 +54,8 @@ pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
         let Ok(rd) = std::fs::read_dir(d) else { return };
         let entries: Vec<std::fs::DirEntry> = rd.filter_map(|e| e.ok()).collect();
         if let Some(git) = entries.iter().find(|e| e.file_name() == ".git") {
-            if level == 0 || git.file_type().is_ok_and(|t| t.is_dir()) {
+            let dir = git.file_type().is_ok_and(|t| t.is_dir());
+            if (dir && git.path().join("HEAD").is_file()) || (level == 0 && !dir) {
                 found.push(d.to_path_buf());
             }
             return;
@@ -161,7 +163,8 @@ fn expand_user(p: &Path, home: &Path) -> PathBuf {
 }
 
 pub fn is_git(path: &Path) -> bool {
-    path.join(".git").exists()
+    let git = path.join(".git");
+    git.is_file() || git.join("HEAD").is_file()
 }
 
 fn is_lockfile(name: &str) -> bool {

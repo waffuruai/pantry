@@ -347,9 +347,12 @@ fn json_envelope() {
     assert!(!findings(&env).is_empty()); // offline: the unreachable sources are reported, never clean
     let unchecked = of_kind(&env, "unchecked");
     assert!(!unchecked.is_empty());
-    for f in unchecked {
-        assert_eq!((str_(&f["status"]), str_(&f["vuln_id"])), ("warn", "UNCHECKED"));
+    for f in &unchecked {
+        assert_eq!(str_(&f["status"]), "warn");
+        assert!(["UNCHECKED", "UNREACHABLE"].contains(&str_(&f["vuln_id"])), "{f}");
     }
+    // Offline, the feeds couldn't be reached: marked so.
+    assert!(unchecked.iter().any(|f| str_(&f["vuln_id"]) == "UNREACHABLE"));
     assert_eq!(r.code, if any_fail(&env) { 1 } else { 0 });
 }
 

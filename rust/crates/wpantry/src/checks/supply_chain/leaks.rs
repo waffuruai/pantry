@@ -689,7 +689,7 @@ pub(crate) fn secrets(
         let (found, unread, skipped) = match job.and_then(|job| finish(&scan.cache, &job, ran, refresh, offline)) {
             Ok(f) => f,
             Err(e) if e.is_source() => {
-                scan.unchecked(&format!("secrets in {name}'s history"), &e.to_string());
+                scan.missed(&format!("secrets in {name}'s history"), &e);
                 continue;
             }
             Err(e) => return Err(e),

@@ -123,7 +123,7 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
                 *unsupported.entry(f.file_name().unwrap_or_default().to_string_lossy().into_owned()).or_default() += 1
             }
             Err(e) if e.is_source() => {
-                scan.unchecked(&format!("repo dependencies in {}", short(&f.to_string_lossy())), &e.to_string())
+                scan.missed(&format!("repo dependencies in {}", short(&f.to_string_lossy())), &e)
             }
             Err(e) => return Err(e),
         }

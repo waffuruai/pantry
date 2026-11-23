@@ -205,3 +205,13 @@ fn a_relative_redirect_resolves_against_the_url_it_answered() {
     assert_eq!(resolve(base, "https://elsewhere.example/a"), "https://elsewhere.example/a");
     assert_eq!(resolve("https://h.example", "a.gz"), "https://h.example/a.gz", "a URL with no path");
 }
+
+/// `wpantry update` downloads through [`Http`], so its URLs must pass the
+/// allowlist (the fakes in selfinstall's tests don't check it).
+#[test]
+fn wpantry_update_downloads_are_allowed() {
+    for asset in ["SHA256SUMS", "packslip.sigstore.json"] {
+        let url = crate::sources::file::url("wpantry-release").replace("{}", &format!("v0.7.0/{asset}"));
+        assert!(allowed(&url).is_ok(), "{url}");
+    }
+}

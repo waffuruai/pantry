@@ -36,6 +36,9 @@ pub const HOSTS: &[&str] = &[
     "marketplace.visualstudio.com",
     "open-vsx.org",
     "api.github.com",
+    // `wpantry update`'s release downloads (`SHA256SUMS`, the binary, its
+    // signature), which GitHub redirects to the asset hosts below.
+    "github.com",
     "api.deps.dev",
     "haveibeenpwned.com",
     "api.xposedornot.com",

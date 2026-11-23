@@ -27,7 +27,6 @@ pub const REPO: &str = "waffuruai/pantry";
 /// else is refused.
 pub const SIGNER_PIN: &str = "ps1_nhdt6s6bechkheqxxkkcy3womq";
 pub const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-const DOWNLOAD: &str = "https://github.com/waffuruai/pantry/releases/download/v{version}/{asset}";
 /// A release binary is a few MB; anything bigger is not one.
 const MAX_ASSET: usize = 64 << 20;
 
@@ -115,7 +114,7 @@ pub fn sum_for(sums: &str, asset: &str) -> Option<String> {
 }
 
 fn download(net: &dyn Net, version: &str, asset: &str) -> Result<Vec<u8>> {
-    let url = DOWNLOAD.replace("{version}", version).replace("{asset}", asset);
+    let url = crate::sources::file::url("wpantry-release").replace("{}", &format!("v{version}/{asset}"));
     let resp = net::request(net, &url, None, &[("Accept", "application/octet-stream")], None)?;
     if resp.status == 404 {
         return Err(Error::Offline(format!("{url}: not found")));

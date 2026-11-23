@@ -4,10 +4,12 @@
 
 use crate::checks::Scan;
 
+pub(crate) const PERSONAL_FOLDERS: &[&str] = &["Downloads", "Desktop", "Documents"];
+
 /// `~/Downloads`, `~/Desktop` and `~/Documents`, those that exist.
 pub(crate) fn dirs() -> Vec<std::path::PathBuf> {
     let home = crate::utils::files::home();
-    ["Downloads", "Desktop", "Documents"].iter().map(|d| home.join(d)).filter(|d| d.is_dir()).collect()
+    PERSONAL_FOLDERS.iter().map(|d| home.join(d)).filter(|d| d.is_dir()).collect()
 }
 
 /// The top of `~/Downloads`, `~/Desktop` and `~/Documents`: the documents and images
@@ -15,9 +17,10 @@ pub(crate) fn dirs() -> Vec<std::path::PathBuf> {
 /// them when it is installed.
 pub(crate) fn downloads(scan: &mut Scan) {
     if scan.opts.no_personal_files {
-        scan.unchecked(
+        scan.excluded(
             "Personal documents and images",
-            "Downloads, Desktop and Documents are excluded from this background scan's document and malware passes (--no-personal-files); an interactive scan can check them with the user's permission.",
+            "--no-personal-files",
+            "Downloads, Desktop and Documents were not read. Include personal folders in a scan to check them.",
         );
         return;
     }

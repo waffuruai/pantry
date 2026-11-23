@@ -74,7 +74,11 @@ fn older_caches_gain_the_added_columns() {
             "epss",
             "epss_percentile",
             "epss_date",
-            "epss_model"
+            "epss_model",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe"
         ]
     );
     let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
@@ -153,7 +157,11 @@ fn schema_matches_the_contract() {
             "epss",
             "epss_percentile",
             "epss_date",
-            "epss_model"
+            "epss_model",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe"
         ]
     );
 }

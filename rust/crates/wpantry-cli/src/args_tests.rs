@@ -333,7 +333,13 @@ fn report_options() {
 #[test]
 fn schedule_cache_and_update() {
     let sched = |every: &str, at: &str, dry_run: bool| {
-        Parsed::Run(Command::Schedule { action: "install".into(), every: every.into(), at: at.into(), dry_run })
+        Parsed::Run(Command::Schedule {
+            action: "install".into(),
+            every: every.into(),
+            at: at.into(),
+            dry_run,
+            json: false,
+        })
     };
     assert_eq!(p(&["schedule", "install"]), sched("day", "09:30", false));
     assert_eq!(
@@ -352,6 +358,7 @@ fn schedule_cache_and_update() {
     assert_eq!(
         p(&["update", "--check", "--yes", "--no-input", "--offline", "--version", "v1.2.3"]),
         Parsed::Run(Command::Update {
+            json: false,
             check: true,
             yes: true,
             no_input: true,
@@ -384,7 +391,17 @@ fn schedule_cache_and_update() {
 #[test]
 fn fix_one_thing() {
     let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| {
-        Parsed::Run(Command::Mitigate { target, dry_run, yes, no_input, undo, bundle: None, hours: 72, json: false })
+        Parsed::Run(Command::Mitigate {
+            target,
+            dry_run,
+            yes,
+            no_input,
+            undo,
+            bundle: None,
+            hours: 72,
+            json: false,
+            from_scan: None,
+        })
     };
     assert_eq!(p(&["fix", "cve-2026-98432"]), one(Target::Id("CVE-2026-98432".into()), false, false, false, false));
     assert_eq!(p(&["fix", "list"]), one(Target::List, false, false, false, false));
@@ -524,4 +541,17 @@ fn ignore_takes_a_finding_or_rule_id_and_never_a_prompt() {
     assert!(usage(&["ignore", "remove", "F-xyz"]).contains("expects a rule id such as R-3fa9c01b2e"));
     assert!(usage(&["ignore", "list", "x"]).contains("too many arguments"));
     assert!(usage(&["ignore"]).contains("Usage: wpantry ignore"));
+}
+
+/// Oracle: the parser refuses `fix F-… --from-scan N --no-input`
+/// without `--yes` or `--dry-run`, and accepts either. Known bad: before the
+/// fix it parsed, and the fix ran unasked.
+#[test]
+fn from_scan_with_no_input_needs_yes_or_dry_run() {
+    let id = "F-0123456789";
+    assert!(usage(&["fix", id, "--from-scan", "3", "--no-input"]).contains(FROM_SCAN_NEEDS_YES));
+    for ok in [["--no-input", "--yes"], ["--no-input", "--dry-run"]] {
+        let argv: Vec<&str> = ["fix", id, "--from-scan", "3"].into_iter().chain(ok).collect();
+        assert!(matches!(p(&argv), Parsed::Run(_)), "{argv:?}");
+    }
 }

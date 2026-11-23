@@ -76,8 +76,12 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "first_epss_percentile", "REAL"),
     ("fixes", "host", "TEXT"),
     ("kev", "vendor", "TEXT"),
+    ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),
     ("eol", "released", "TEXT"),
+    ("findings", "summary", "TEXT"),
+    ("findings", "aliases", "TEXT"),
+    ("findings", "cwe", "TEXT"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -468,8 +472,8 @@ impl Cache {
         let mut stmt = self.conn.prepare(
             "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
              fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, \
-             epss_date, epss_model) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             epss_date, epss_model, excluded, summary, aliases, cwe) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )?;
         for f in findings {
             stmt.execute(params![
@@ -493,7 +497,11 @@ impl Cache {
                 f.epss,
                 f.epss_percentile,
                 f.epss_date,
-                f.epss_model
+                f.epss_model,
+                f.excluded as i64,
+                f.summary,
+                f.aliases.join(" "),
+                f.cwe.join(" ")
             ])?;
         }
         Ok(())

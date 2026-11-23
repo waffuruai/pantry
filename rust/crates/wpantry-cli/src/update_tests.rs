@@ -11,7 +11,7 @@ fn github(tag: &'static str) -> Fake {
 }
 
 fn update(version: Option<&str>) -> Update {
-    Update { check: false, yes: false, no_input: true, offline: false, version: version.map(String::from) }
+    Update { check: false, json: false, yes: false, no_input: true, offline: false, version: version.map(String::from) }
 }
 
 const SOURCE: &str = "/w/pantry/rust/target/release/wpantry";

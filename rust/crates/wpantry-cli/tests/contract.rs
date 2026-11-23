@@ -640,11 +640,13 @@ fn report_keeps_scan_history() {
     assert_eq!(r.code, 0, "{}", r.err);
     let data = r.json();
     let mut want = set(ENVELOPE);
-    want.insert("history".into());
+    want.extend(["history", "scan", "fix_plan"].map(str::to_owned));
     assert_eq!(keys(&data), want);
     assert_eq!(keys(&data["history"]), set(&["since_days", "exposures", "fixes", "scans", "events"]));
     let scans = arr(&data["history"]["scans"]);
     assert_eq!(scans.len(), 2, "{scans:?}");
+    assert_eq!(&data["scan"], scans.last().unwrap());
+    assert!(arr(&data["fix_plan"]).is_empty());
     assert!(scans.iter().all(|s| str_(&s["scope"]).starts_with("repos:")));
     let kinds: Vec<&str> = arr(&data["history"]["events"]).iter().map(|e| str_(&e["kind"])).collect();
     assert_eq!(kinds, ["scan", "scan"]);
@@ -786,6 +788,18 @@ fn schedule_dry_run_and_cache_prune() {
     let r = t.run_env(&["schedule", "status"], &[("XDG_STATE_HOME", s(&state))]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("last run: never"));
+    // The JSON keeps every documented field, `program` included (null or
+    // a path: the temp HOME holds no job, but cron and Task Scheduler are
+    // per-user tables outside it, so either may answer).
+    let r = t.run_env(&["schedule", "status", "--json"], &[("XDG_STATE_HOME", s(&state))]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let doc = r.json();
+    for key in ["schema", "installed", "enabled", "loaded", "backend", "interval", "every", "at", "last_run", "program"]
+    {
+        assert!(doc.get(key).is_some(), "{key} missing: {doc}");
+    }
+    assert!(doc["program"].is_null() || doc["program"].is_string(), "{doc}");
+    assert!(doc["installed"] == json!(true) || doc["program"].is_null(), "no job, no program: {doc}");
     t.project_run("scan", &[]);
     let r = t.run(&["cache", "prune", "--older-than", "1"]);
     assert_eq!(r.code, 0, "{}", r.err);
@@ -826,6 +840,94 @@ fn update_check_offline_reports_and_exits_0_or_10() {
     assert!(r.out.contains("built from a checkout"));
     let r = t.run(&["update", "--version", "nope", "--offline"]);
     assert_eq!(r.code, 3, "{}{}", r.out, r.err);
+}
+
+/// Oracle (contract "Programs that drive wpantry"): `update --check --json` says
+/// how old its answer is. `checked_at` is the cached fetch time as
+/// `YYYY-MM-DD HH:MM UTC`; `stale` is true when the answer is past its
+/// refresh age, which only an offline answer can be (here: a month-old
+/// entry and `--offline`), false for a fresh one. Online it asks GitHub
+/// now: an unreachable GitHub is an error, never the stored copy, however
+/// old or new. Exit codes are unchanged (0: not newer). Known bad: before
+/// the fix the month-old entry printed `available: false` with neither key,
+/// indistinguishable from a fresh "up to date".
+#[test]
+fn update_check_json_says_when_its_answer_is_stale() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let put = |at: f64| {
+        t.conn()
+            .execute(
+                "INSERT OR REPLACE INTO runs VALUES (?, ?, ?, ?)",
+                rusqlite::params!["github-latest:waffuruai/pantry", "", at, r#"{"version": "0.0.1", "assets": []}"#],
+            )
+            .unwrap();
+    };
+    put(now() - 30.0 * 86400.0);
+    // Online and unreachable: an error, not the month-old copy as the answer.
+    let r = t.run_env(&["update", "--check", "--json"], UNREACHABLE);
+    assert_eq!(r.code, 3, "{}{}", r.out, r.err);
+    assert!(!r.out.contains("\"latest\""), "{}", r.out);
+    // --offline reads the old copy: stale, with when it was checked.
+    let r = t.run(&["update", "--check", "--json", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    assert_eq!(v["available"], json!(false), "{v}");
+    assert_eq!(v["stale"], json!(true), "a month-old copy offline: {v}");
+    let at = v["checked_at"].as_str().unwrap_or_else(|| panic!("checked_at: {v}"));
+    assert!(regex_search(r"^\d{4}-\d\d-\d\d \d\d:\d\d UTC$", at), "{at}");
+    put(now());
+    // A fresh copy is still not an online answer.
+    let r = t.run_env(&["update", "--check", "--json"], UNREACHABLE);
+    assert_eq!(r.code, 3, "{}{}", r.out, r.err);
+    assert!(!r.out.contains("\"latest\""), "{}", r.out);
+    let r = t.run(&["update", "--check", "--json", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    assert_eq!(v["stale"], json!(false), "a fresh copy: {v}");
+    assert!(v["checked_at"].is_string(), "{v}");
+    for k in ["current", "latest", "available", "assets"] {
+        assert!(v.get(k).is_some(), "{k} kept: {v}");
+    }
+}
+
+/// Oracle: the `--json` form's `stale`. The text form of an old cached
+/// answer (offline) says it could not check and when it last did, never
+/// "the latest release"; a fresh answer still says "the latest release".
+/// Online and unreachable it says it couldn't check, whatever is stored.
+/// Known bad: before, the text read the same month-old copy as a fresh "no".
+#[test]
+fn update_check_text_says_when_its_answer_is_stale() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let put = |at: f64| {
+        t.conn()
+            .execute(
+                "INSERT OR REPLACE INTO runs VALUES (?, ?, ?, ?)",
+                rusqlite::params!["github-latest:waffuruai/pantry", "", at, r#"{"version": "0.0.1", "assets": []}"#],
+            )
+            .unwrap();
+    };
+    put(now() - 30.0 * 86400.0);
+    let r = t.run_env(&["update", "--check"], UNREACHABLE);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("couldn't check for a newer release"), "{}", r.out);
+    assert!(!r.out.contains("is the latest release"), "{}", r.out);
+    let r = t.run(&["update", "--check", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("couldn't check for a newer release just now (last checked "), "{}", r.out);
+    assert!(regex_search(r"last checked \d{4}-\d\d-\d\d \d\d:\d\d UTC\)", &r.out), "{}", r.out);
+    assert!(!r.out.contains("is the latest release"), "{}", r.out);
+    put(now());
+    // Online asks GitHub now, past the fresh copy.
+    let r = t.run_env(&["update", "--check"], UNREACHABLE);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("couldn't check for a newer release"), "{}", r.out);
+    assert!(!r.out.contains("is the latest release"), "{}", r.out);
+    let r = t.run(&["update", "--check", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("is the latest release"), "{}", r.out);
+    assert!(!r.out.contains("couldn't check"), "{}", r.out);
 }
 
 /// harden is gone: its two fixes are fix's, by name.
@@ -1013,6 +1115,141 @@ fn mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias() {
     let r = t.run(&["fix", "GHSA-other", "--yes"]);
     assert_eq!(r.code, 1, "{}{}", r.out, r.err);
     assert!(r.out.contains(&format!("failed: {bad}")), "{}", r.out);
+}
+
+/// A cache whose latest scan has one finding with an unattended fix that
+/// touches `marker`; returns (finding id, scan id). The marker is how the
+/// tests below see whether the fix ran.
+#[cfg(unix)]
+fn one_auto_fix(t: &Ctx, marker: &Path) -> (String, i64) {
+    t.project_run("scan", &[]);
+    let conn = t.conn();
+    conn.execute("DELETE FROM findings", []).unwrap();
+    let cmd = format!("touch {}", s(marker));
+    insert_finding(
+        &conn,
+        (
+            "app",
+            "demo",
+            "1.0.0",
+            "/opt/demo",
+            "GHSA-demo",
+            "fail",
+            "1.0.1",
+            0,
+            "HIGH",
+            "demo bug",
+            &cmd,
+            1,
+            "",
+            None,
+            "",
+        ),
+    );
+    let scan: i64 = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0)).unwrap();
+    drop(conn);
+    let list = t.run(&["fix", "list", "--json"]).json();
+    let id = list["items"][0]["id"].as_str().expect("one item with an id").to_string();
+    (id, scan)
+}
+
+/// Oracle (contract "Programs that drive wpantry"): `fix F-… --from-scan N`
+/// with no one to ask runs only with `--yes`; `--no-input` alone, or no
+/// terminal and no `--yes`, is a usage error (exit 2) and the fix's command
+/// never runs (the marker file stays absent). Known bad: before the fix,
+/// `--no-input` without `--yes` exited 0 and created the marker.
+#[cfg(unix)]
+#[test]
+fn fix_from_scan_needs_yes_without_a_terminal() {
+    let t = Ctx::new();
+    let marker = t.tmp.join("ran");
+    let (id, scan) = one_auto_fix(&t, &marker);
+    let n = scan.to_string();
+    for argv in [vec!["fix", &id, "--from-scan", &n, "--no-input"], vec!["fix", &id, "--from-scan", &n]] {
+        let r = t.run(&argv);
+        assert_eq!(r.code, 2, "{argv:?} {}{}", r.out, r.err);
+        assert!(r.err.contains("--yes"), "{}", r.err);
+        assert!(!marker.exists(), "{argv:?} ran the fix");
+    }
+    let r = t.run(&["fix", &id, "--from-scan", &n, "--dry-run", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!marker.exists(), "a dry run ran the fix");
+    // Positive control: the approved form runs it, so the marker can tell.
+    let r = t.run(&["fix", &id, "--from-scan", &n, "--yes", "--no-input"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(marker.exists(), "the approved fix ran: {}", r.out);
+}
+
+/// Oracle (contract "Programs that drive wpantry"): `fix … --from-scan N` runs only
+/// one finding's automatic fix. A committed secret, a finding without an
+/// automatic fix, and an id that matches two findings are each refused,
+/// for the dry run too, and the command never runs (the marker stays
+/// absent). Known bad: drop any one of the guards and its case runs
+/// `touch` (checked by hand on a mutant of each).
+#[cfg(unix)]
+#[test]
+fn fix_from_scan_refuses_secrets_manual_fixes_and_ambiguous_ids() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let marker = t.tmp.join("ran");
+    let cmd = format!("touch {}", s(&marker));
+    let conn = t.conn();
+    conn.execute("DELETE FROM findings", []).unwrap();
+    let row = |kind: &'static str, location: &'static str, id: &'static str, auto: i64| {
+        (kind, "demo", "1.0.0", location, id, "fail", "1.0.1", 0, "HIGH", "demo", cmd.as_str(), auto, "", None, "")
+    };
+    insert_finding(&conn, row("secret", "/p/.env", "SECRET-DEMO", 1));
+    insert_finding(&conn, row("app", "/opt/manual", "GHSA-manual", 0));
+    // The same finding twice (one id, two rows): which one is meant is
+    // not clear, so neither runs.
+    insert_finding(&conn, row("app", "/opt/twice", "GHSA-twice", 1));
+    insert_finding(&conn, row("app", "/opt/twice", "GHSA-twice", 1));
+    let scan: i64 = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0)).unwrap();
+    drop(conn);
+    let n = scan.to_string();
+    // The finding ids, as a program that drives wpantry reads them from the report.
+    let report = t.run(&["report", "all", "--json"]).json();
+    let id_of = |location: &str| {
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["location"] == location)
+            .and_then(|f| f["id"].as_str())
+            .unwrap_or_else(|| panic!("no finding at {location}: {report}"))
+            .to_string()
+    };
+    let (secret, manual, twice) = (id_of("/p/.env"), id_of("/opt/manual"), id_of("/opt/twice"));
+    let shared = report["findings"].as_array().unwrap().iter().filter(|f| f["id"] == twice.as_str()).count();
+    assert_eq!(shared, 2, "the fixture has two findings with one id: {report}");
+    for id in [secret.as_str(), manual.as_str(), twice.as_str()] {
+        for extra in [&["--yes", "--no-input"][..], &["--dry-run", "--json"][..]] {
+            let mut argv = vec!["fix", id, "--from-scan", &n];
+            argv.extend_from_slice(extra);
+            let r = t.run(&argv);
+            assert_ne!(r.code, 0, "{argv:?} {}{}", r.out, r.err);
+            assert!(r.err.contains("no automatic fix in the selected scan"), "{argv:?} {}", r.err);
+            assert!(!marker.exists(), "{argv:?} ran the fix");
+        }
+    }
+}
+
+/// Oracle (contract "Programs that drive wpantry": "A changed scan ... is an error
+/// before a command runs"): once a newer scan exists, `fix F-… --from-scan
+/// <old> --yes --no-input` fails naming the newer scan and the fix's command
+/// never runs. Known bad: a build that skips the latest-scan comparison runs
+/// the old scan's fix and creates the marker (checked by hand on a mutant).
+#[cfg(unix)]
+#[test]
+fn fix_from_scan_refuses_when_a_newer_scan_exists() {
+    let t = Ctx::new();
+    let marker = t.tmp.join("ran");
+    let (id, scan) = one_auto_fix(&t, &marker);
+    t.conn().execute("INSERT INTO scans (started_at, finished_at) VALUES (?1, ?1)", rusqlite::params![now()]).unwrap();
+    let r = t.run(&["fix", &id, "--from-scan", &scan.to_string(), "--yes", "--no-input"]);
+    assert_ne!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.err.contains("A newer scan is available"), "{}", r.err);
+    assert!(!marker.exists(), "the stale scan's fix ran");
 }
 
 /// CVE-2026-98432's stopgap: on Linux --dry-run reports the kernel,

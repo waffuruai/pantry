@@ -7,6 +7,10 @@ use std::path::PathBuf;
 use wcli::{Arg, Command as Cli, Exit, Matches, Opt};
 use wpantry::reporters::Part;
 
+/// Why `fix F-… --from-scan N` with no one to ask and no `--yes` is refused.
+pub(crate) const FROM_SCAN_NEEDS_YES: &str =
+    "--from-scan runs an approved fix only with --yes; preview it with --dry-run";
+
 /// How a report is shown: the terminal's tables (the default), or a format
 /// a file or another program reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -190,6 +194,7 @@ pub enum Command {
         every: String,
         at: String,
         dry_run: bool,
+        json: bool,
     },
     Cache {
         action: String,
@@ -197,6 +202,7 @@ pub enum Command {
     },
     Update {
         check: bool,
+        json: bool,
         yes: bool,
         no_input: bool,
         offline: bool,
@@ -213,6 +219,8 @@ pub enum Command {
         /// `--bundle FILE` (`ca-trust`) and `--hours N` (`extension-cooldown`).
         bundle: Option<PathBuf>,
         hours: u32,
+        /// Only act on the automatic fix from this scan.
+        from_scan: Option<i64>,
         /// `list` and `next`: as JSON.
         json: bool,
     },
@@ -347,6 +355,7 @@ pub fn program() -> Cli {
                 .arg(Arg::new("[id]", "with secret: the finding id (F-…) of a committed secret"))
                 .option("--dry-run", "print what would run or be written; change nothing")
                 .option("--yes", "run the fixes and write the stopgaps without asking")
+                .option("--from-scan <id>", "with a finding id: require this latest scan and an automatic fix")
                 .option("--undo", "with an id: take wpantry's stopgap away once the real fix is installed")
                 .option("--bundle <file>", "ca-trust: rewrite this PEM bundle instead of the system trust store")
                 .opt(Opt::new("--hours <n>", "extension-cooldown: the cooldown").default("72"))
@@ -385,7 +394,7 @@ pub fn program() -> Cli {
         )
         .command(
             Cli::new("schedule")
-                .description("Run sync and scan on a schedule (launchd, a systemd user timer, or cron); never fixes.")
+                .description("Run sync and scan on a schedule (launchd, a systemd user timer, cron, or Windows Task Scheduler); never fixes.")
                 .summary("Run sync and scan on a schedule")
                 .subcommand_required()
                 .command(
@@ -399,9 +408,13 @@ pub fn program() -> Cli {
                         .opt(Opt::new("--at <time>", "the time of day, HH:MM").default("09:30"))
                         .option("--dry-run", "print the job definition without installing it"),
                 )
-                .command(Cli::new("status").description("Whether the job is installed, and how its last run went."))
+                .command(
+                    Cli::new("status")
+                        .description("Whether the job is installed, and how its last run went.")
+                        .option("--json", "the schedule and last run as JSON"),
+                )
                 .command(Cli::new("uninstall").description("Remove the job."))
-                .command(Cli::new("run").description("What the job runs: sync, then scan --json --no-input.")),
+                .command(Cli::new("run").description("What the job runs: sync, then scan --json --no-input (with --no-personal-files on macOS).")),
         )
         .command(
             Cli::new("rules")
@@ -487,6 +500,7 @@ pub fn program() -> Cli {
                 .description("Check for a newer wpantry release and, after a yes, install it verified.")
                 .summary("Install a newer release, verified")
                 .option("--check", "only say whether a newer release exists (exit 10 when one does)")
+                .option("--json", "with --check: current and latest versions as JSON")
                 .option("--yes", "install without asking")
                 .option("--no-input", "never ask: report only")
                 .option("--offline", "use only the cached answer")
@@ -658,6 +672,9 @@ fn command(m: &Matches) -> Result<Command, Exit> {
         ["scan"] => Command::Scan(Check { events: flag("events"), ..check(m, false)? }),
         ["fix"] => match m.arg("target").unwrap_or("all") {
             "all" => {
+                if m.value("from-scan").is_some() {
+                    return Err(m.error("--from-scan requires one finding id"));
+                }
                 if m.flag("undo") {
                     return Err(m.error("--undo takes one id: wpantry fix CVE-2026-98432 --undo"));
                 }
@@ -694,7 +711,23 @@ fn command(m: &Matches) -> Result<Command, Exit> {
                 if matches!(target, Target::List | Target::Next | Target::Secret(_)) && flag("undo") {
                     return Err(m.error("--undo takes one id: wpantry fix CVE-2026-98432 --undo"));
                 }
+                let from_scan = m.get::<i64>("from-scan")?;
+                if from_scan.is_some_and(|id| id < 1) {
+                    return Err(m.error("--from-scan expects a positive scan id"));
+                }
+                if from_scan.is_some()
+                    && (!matches!(&target, Target::Id(id) if wpantry::remediation::queue::is_id(id)) || flag("undo"))
+                {
+                    return Err(m.error("--from-scan requires one finding id and cannot be used with --undo"));
+                }
+                // an unattended --from-scan fix runs only when approved.
+                // Oracle: `fix F-… --from-scan N --no-input` without --yes or
+                // --dry-run is a usage error (exit 2) and runs nothing.
+                if from_scan.is_some() && flag("no-input") && !flag("yes") && !flag("dry-run") {
+                    return Err(m.error(FROM_SCAN_NEEDS_YES));
+                }
                 Command::Mitigate {
+                    from_scan,
                     target,
                     dry_run: flag("dry-run"),
                     yes: flag("yes"),
@@ -732,6 +765,7 @@ fn command(m: &Matches) -> Result<Command, Exit> {
                 every: m.value("every").unwrap_or("day").to_string(),
                 at,
                 dry_run: flag("dry-run"),
+                json: flag("json"),
             }
         }
         ["rules", rest @ ..] => Command::Rules {
@@ -751,13 +785,19 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             action: action.to_string(),
             older_than: at_least_one::<i64>(m, "older-than", "a number of days")?.unwrap_or(90),
         },
-        ["update"] => Command::Update {
-            check: flag("check"),
-            yes: flag("yes"),
-            no_input: flag("no-input"),
-            offline: flag("offline"),
-            version: m.value("version").map(String::from),
-        },
+        ["update"] => {
+            if flag("json") && (!flag("check") || m.value("version").is_some()) {
+                return Err(m.error("--json requires --check and cannot be combined with --version"));
+            }
+            Command::Update {
+                check: flag("check"),
+                json: flag("json"),
+                yes: flag("yes"),
+                no_input: flag("no-input"),
+                offline: flag("offline"),
+                version: m.value("version").map(String::from),
+            }
+        }
         ["version"] => Command::Version { json: flag("json") },
         ["tools"] => Command::Tools { json: flag("json") },
         ["skill"] => Command::Skill,

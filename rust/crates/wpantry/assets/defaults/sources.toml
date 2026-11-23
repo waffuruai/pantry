@@ -181,6 +181,19 @@ max_bytes = 134217728
 sends = "repository"
 
 [[source]]
+id = "wpantry-release"
+kind = "releases"
+format = "github-release-asset"
+url = "https://github.com/waffuruai/pantry/releases/download/{}"
+redirects = ["release-assets.githubusercontent.com", "objects.githubusercontent.com"]
+tier = "default"
+refresh = "1d"
+license = "MIT"
+redistribute = true
+max_bytes = 67108864
+sends = "platform"
+
+[[source]]
 id = "arch-security"
 kind = "advisories"
 format = "arch-tracker"

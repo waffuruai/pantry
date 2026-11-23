@@ -37,7 +37,8 @@ pub const HOSTS: &[&str] = &[
     "open-vsx.org",
     "api.github.com",
     // `wpantry update`'s release downloads (`SHA256SUMS`, the binary, its
-    // signature), which GitHub redirects to the asset hosts below.
+    // signature), which GitHub redirects to the asset hosts below. Only
+    // pantry's own release path ([`SCOPED`]), never another repository.
     "github.com",
     "api.deps.dev",
     "haveibeenpwned.com",
@@ -61,6 +62,11 @@ pub const HOSTS: &[&str] = &[
     // WordPress core, plugin and theme advisories, with the user's own key.
     "www.wordfence.com",
 ];
+
+/// Hosts in [`HOSTS`] wpantry asks for one path only: any other path there
+/// is refused as if the host weren't listed, so a URL naming another
+/// repository on `github.com` is never fetched.
+const SCOPED: &[(&str, &str)] = &[("github.com", "/waffuruai/pantry/releases/download/")];
 
 /// Redirects followed per request; every hop must be in [`HOSTS`] too.
 const MAX_REDIRECTS: usize = 5;
@@ -91,12 +97,30 @@ pub fn allow(host: &str) {
     }
 }
 
-/// `Ok` when `url` is https to a host in [`HOSTS`], or one [`allow`]ed.
+/// `Ok` when `url` is https to a host in [`HOSTS`], on its [`SCOPED`] path if
+/// it has one, or to a host the user [`allow`]ed.
 fn allowed(url: &str) -> Result<()> {
-    match host_of(url) {
-        Some(h) if HOSTS.contains(&h.as_str()) || ALLOWED.read().expect("lock").contains(&h) => Ok(()),
-        _ => Err(Error::Invalid(format!("{url}: not a host wpantry asks (docs/public/checks-and-sources.md)"))),
+    let ok = host_of(url).is_some_and(|h| {
+        ALLOWED.read().expect("lock").contains(&h)
+            || (HOSTS.contains(&h.as_str())
+                && SCOPED.iter().filter(|(s, _)| *s == h).all(|(_, prefix)| on_path(url, prefix)))
+    });
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!("{url}: not a host wpantry asks (docs/public/checks-and-sources.md)")))
     }
+}
+
+/// Whether `url`'s path starts with `prefix` and can't be read as another:
+/// no `.` or `..` segment, no empty segment, no percent-escape.
+fn on_path(url: &str, prefix: &str) -> bool {
+    let rest = url.strip_prefix("https://").unwrap_or(url);
+    let path = rest.find('/').map_or("", |i| &rest[i..]);
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    path.starts_with(prefix)
+        && !path.contains('%')
+        && !path[1..].split('/').any(|s| s.is_empty() || s == "." || s == "..")
 }
 
 #[derive(Clone, Debug, PartialEq)]

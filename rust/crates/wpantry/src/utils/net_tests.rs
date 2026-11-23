@@ -214,4 +214,18 @@ fn wpantry_update_downloads_are_allowed() {
         let url = crate::sources::file::url("wpantry-release").replace("{}", &format!("v0.7.0/{asset}"));
         assert!(allowed(&url).is_ok(), "{url}");
     }
+    // github.com is pantry's releases only: no other repository, and no path
+    // that could be read as one.
+    for url in [
+        "https://github.com/evil/pantry/releases/download/v0.7.0/SHA256SUMS",
+        "https://github.com/waffuruai/other/releases/download/v1/x",
+        "https://github.com/waffuruai/pantry/archive/main.zip",
+        "https://github.com/waffuruai/pantry/releases/download/../../../evil/x/releases/download/v1/x",
+        "https://github.com/waffuruai/pantry/releases/download/%2e%2e/x",
+        "https://github.com/waffuruai/pantry/releases/download//evil",
+        "https://github.com/",
+        "https://github.com",
+    ] {
+        assert!(allowed(url).is_err(), "{url}");
+    }
 }

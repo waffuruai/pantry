@@ -34,6 +34,8 @@ pub struct Store {
     pub trusts: bool,
     pub unchecked: Option<String>,
     pub hint: String,
+    /// `hint` is a command `wpantry fix` may run unattended.
+    pub auto: bool,
 }
 
 /// What `openssl verify` established for a store.
@@ -220,7 +222,14 @@ impl Checker {
         }
         self.seen.push(real);
         Some(Pending {
-            store: Store { label: label.into(), shown: shown.into(), trusts: false, unchecked, hint: hint.into() },
+            store: Store {
+                label: label.into(),
+                shown: shown.into(),
+                trusts: false,
+                unchecked,
+                hint: hint.into(),
+                auto: false,
+            },
             bundle: bundle.to_path_buf(),
         })
     }
@@ -264,9 +273,59 @@ fn pip_cert_store(c: &mut Checker, pc: &str) -> Option<Pending> {
             trusts: false,
             unchecked: Some("PIP_CERT names no file".into()),
             hint: hint.into(),
+            auto: false,
         },
         bundle: PathBuf::from(pc),
     })
+}
+
+/// pip's trust store when its config sets `global.cert` to `cert` (what
+/// `pip config get global.cert` prints for `py`), judged like `PIP_CERT`:
+/// a file that's gone (Homebrew removed, say) is unchecked, never clean.
+fn pip_conf_store(c: &mut Checker, py: &str, cert: &str) -> Option<Pending> {
+    let shown = format!("global.cert={cert}");
+    let hint = format!(
+        "Point pip at a bundle without the leaked CAs ({py} -m pip config --user set global.cert <bundle>), or unset it ({py} -m pip config --user unset global.cert)"
+    );
+    if Path::new(cert).is_file() {
+        return c.store("pip", &shown, Path::new(cert), &hint);
+    }
+    if c.seen.iter().any(|s| s == cert) {
+        return None;
+    }
+    c.seen.push(cert.into());
+    Some(Pending {
+        store: Store {
+            label: "pip".into(),
+            shown,
+            trusts: false,
+            unchecked: Some("pip's global.cert names no file".into()),
+            hint,
+            auto: false,
+        },
+        bundle: PathBuf::from(cert),
+    })
+}
+
+/// The fix for a pip whose own vendored bundle (`py`'s) trusts the leaked
+/// CAs: point pip's config at `clean`, a bundle this scan judged clean,
+/// which `wpantry fix` may do unattended (a user-level setting, undone with
+/// `pip config --user unset global.cert`). Without one, `stale` is
+/// Homebrew's bundle when Homebrew is here but its bundle isn't clean yet.
+fn pip_fix(py: &str, clean: Option<&str>, stale: Option<&str>) -> (String, bool) {
+    use crate::checks::supply_chain::quote;
+    let set = |bundle: &str| format!("{} -m pip config --user set global.cert {}", quote(py), quote(bundle));
+    match (clean, stale) {
+        (Some(bundle), _) => (set(bundle), true),
+        (None, Some(brew)) => (format!("Run: brew upgrade ca-certificates, then {}", set(brew)), false),
+        (None, None) => (
+            format!(
+                "Run: {py} -m pip install --user -U pip, if a pip for this Python ships a fixed bundle; or {}",
+                set("<a bundle without the leaked CAs>")
+            ),
+            false,
+        ),
+    }
 }
 
 /// A store found and not yet verified.
@@ -330,8 +389,9 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
     if MACOS && sh(&[OsStr::new("xcode-select"), OsStr::new("-p")]).starts_with('/') {
         pythons.push("/usr/bin/python3".into());
     }
-    // pip reads PIP_CERT instead of its vendored bundle when it is set: then
-    // that file is pip's store, and the vendored bundles aren't what pip trusts.
+    // pip reads PIP_CERT instead of its vendored bundle when it is set, and
+    // its config's global.cert otherwise: then that file is pip's store, and
+    // the vendored bundle isn't what pip trusts.
     let pip_cert = std::env::var("PIP_CERT").ok().filter(|p| !p.is_empty());
     if let Some(pc) = &pip_cert {
         add(pip_cert_store(&mut c, pc));
@@ -344,25 +404,40 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
             .unwrap_or("")
             .to_string()
     };
+    let conf_of = |py: &str| {
+        let argv = ["-I", "-m", "pip", "config", "get", "global.cert"].map(OsStr::new);
+        let said = sh(&[&[OsStr::new(py)], &argv[..]].concat());
+        // An unset key is an error message; only a path is a setting.
+        said.trim().lines().last().filter(|l| l.starts_with('/')).unwrap_or("").to_string()
+    };
     let bundles = parallel::par_map(&pythons, parallel::PROBES, |py| {
         (
             path_of(py, "import certifi; print(certifi.where())"),
             path_of(py, "import pip._vendor.certifi as c; print(c.where())"),
+            conf_of(py),
         )
     });
-    for (py, (certifi, pip_ca)) in pythons.iter().zip(bundles) {
+    // The vendored pip bundles found, with their Python, for the fix below.
+    let mut vendored: Vec<(String, String)> = Vec::new();
+    for (py, (certifi, pip_ca, conf)) in pythons.iter().zip(bundles) {
         if certifi.starts_with('/') {
             add(c.store("certifi", &certifi, Path::new(&certifi), &format!("Run: {py} -m pip install -U certifi")));
         }
-        if !pip_ca.starts_with('/') || pip_cert.is_some() {
+        if pip_cert.is_some() {
             continue;
         }
-        add(c.store(
-            "pip",
-            &pip_ca,
-            Path::new(&pip_ca),
-            &format!("Run: {py} -m pip install -U pip, or export PIP_CERT to a fixed bundle"),
-        ));
+        if !conf.is_empty() {
+            add(pip_conf_store(&mut c, py, &conf));
+            continue;
+        }
+        if !pip_ca.starts_with('/') {
+            continue;
+        }
+        let p = c.store("pip", &pip_ca, Path::new(&pip_ca), "");
+        if let Some(p) = &p {
+            vendored.push((p.store.shown.clone(), py.clone()));
+        }
+        add(p);
     }
     // Node compiles its roots in; dump them to check like any other bundle.
     let nodes: Vec<String> = process::on_path::<&str>("node", &[]).into_iter().map(|(node, _)| node).collect();
@@ -387,6 +462,23 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
         ));
     }
     let mut out = c.finish(pending);
+    // A clean bundle pip can be pointed at: Homebrew's, else the system's.
+    let clean = |path: &str| {
+        let real = realpath(path);
+        out.iter().any(|s| realpath(&s.shown) == real && !s.trusts && s.unchecked.is_none())
+    };
+    let brew_ca = (!brew.is_empty()).then(|| format!("{brew}/etc/ca-certificates/cert.pem"));
+    let system = ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"];
+    let target = brew_ca.iter().map(String::as_str).chain(system).find(|p| Path::new(p).is_file() && clean(p));
+    let target = target.map(str::to_string);
+    let stale = brew_ca.filter(|b| Path::new(b).is_file() && !clean(b));
+    for s in out.iter_mut().filter(|s| s.label == "pip") {
+        if let Some((_, py)) = vendored.iter().find(|(shown, _)| *shown == s.shown) {
+            let (hint, auto) = pip_fix(py, target.as_deref(), stale.as_deref());
+            s.hint = hint;
+            s.auto = auto && s.trusts;
+        }
+    }
     // The macOS trust settings that Safari, URLSession and Go use; -L: local only.
     if MACOS {
         let trusts = parallel::par_map(&c.ints, parallel::PROBES, |int| {
@@ -411,6 +503,7 @@ fn check_with(sh: Sh) -> Result<Vec<Store>> {
             trusts,
             unchecked: None,
             hint: "Install the latest macOS update".into(),
+            auto: false,
         });
     }
     Ok(out)
@@ -437,6 +530,7 @@ pub fn ca_trust(scan: &mut Scan, stores: Result<Vec<Store>>) {
                     status: "fail".into(),
                     note: format!("trusts the leaked eMudhra intermediate CAs ({})", ADVISORY),
                     fix_cmd: s.hint,
+                    fix_auto: s.auto,
                     ..Default::default()
                 });
             }

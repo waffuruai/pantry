@@ -30,7 +30,7 @@ flowchart TB
   scope --> read --> ask --> judge --> report
 ```
 
-**Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens.
+**Scope.** `repos::walk` finds the git repos (and, with `--path`, scans a directory without one as a single project). Build output and dependency directories are skipped everywhere a walk happens. On macOS the default walk of `~` (no `--path`) also skips `~/Pictures`, `~/Music`, `~/Movies` and any Photos or Music library: they hold no code, and opening them raises a privacy prompt. A `--path` inside one is walked as asked.
 
 **Read.** A run is almost all waiting: on subprocesses (tool versions, npm, Python, openssl, git, Homebrew) and on HTTP. So:
 

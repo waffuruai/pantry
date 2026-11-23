@@ -108,7 +108,7 @@ The rule every module follows: when Pantry cannot tell, it says so; a gap never 
 - A `querybatch` answer that isn't an object, or whose `vulns` isn't a list of advisories with ids, is an error, not "no advisories", and never replaces an earlier answer.
 - A malicious-package report that can't be fetched is unchecked and asked again next run; nothing is made up.
 - A lockfile that isn't the format it is named as (no `lockfileVersion`, no `module` line, a `packages` that isn't the section npm or pnpm writes), or that links outside its repo, is unchecked, not empty. `npm-shrinkwrap.json` wins over a `package-lock.json` beside it, as in npm.
-- A trust store openssl can't load is unchecked, not "doesn't trust the distrusted CAs". `PIP_CERT`, when set, is pip's store and judged like any other.
+- A trust store openssl can't load is unchecked, not "doesn't trust the distrusted CAs". `PIP_CERT`, when set, is pip's store and judged like any other; otherwise so is the file pip's config names as `global.cert`, and a `global.cert` naming no file is unchecked.
 - A posture check that can't tell says so, never passes.
 - A repo whose history git can't read is unchecked for secrets, never a repo with none; files a scan left for later are counted as unchecked.
 - A Python distribution whose metadata is missing, unreadable or names no version is an unchecked gap, never a package that isn't installed.

@@ -71,7 +71,10 @@ fn pip_is_pointed_at_a_clean_bundle_when_there_is_one() {
     assert_eq!(cmd, "'/opt/my python/bin/python3' -m pip config --user set global.cert /etc/ssl/cert.pem");
     assert!(auto, "a clean system bundle is used while Homebrew's is stale");
     let (cmd, auto) = pip_fix("/usr/bin/python3", None, Some(brew));
-    assert!(cmd.starts_with("Run: brew upgrade ca-certificates, then /usr/bin/python3 -m pip config") && !auto, "{cmd}");
+    assert!(
+        cmd.starts_with("Run: brew upgrade ca-certificates, then /usr/bin/python3 -m pip config") && !auto,
+        "{cmd}"
+    );
     let (cmd, auto) = pip_fix("/usr/bin/python3", None, None);
     assert!(cmd.contains("pip install --user -U pip") && cmd.contains("global.cert") && !auto, "{cmd}");
 }
@@ -207,7 +210,14 @@ fn directories_and_unreadable_files_as_stores() {
     let p = c.store("x", "hashed", &hashed, "h").unwrap();
     assert_eq!(
         p.store,
-        Store { label: "x".into(), shown: "hashed".into(), trusts: false, unchecked: None, hint: "h".into(), auto: false }
+        Store {
+            label: "x".into(),
+            shown: "hashed".into(),
+            trusts: false,
+            unchecked: None,
+            hint: "h".into(),
+            auto: false
+        }
     );
     assert_eq!(p.bundle, hashed);
     assert!(c.store("x", "hashed", &hashed, "").is_none(), "once");

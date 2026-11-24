@@ -150,3 +150,21 @@ fn no_answer_is_unknown_not_a_pass() {
         assert_eq!((c.probe)(&r).status, Status::Unknown, "{id}");
     }
 }
+
+#[test]
+fn macos_27s_missing_key_wording_reads_as_unset() {
+    // macOS 27 wording for a key that isn't set: no automatic login, AirDrop's
+    // mode never chosen, no screen saver delay of its own.
+    let r = machine(&[
+        ("autoLoginUser", "Error: Could not find key 'autoLoginUser' in domain 'com.apple.loginwindow'.\n"),
+        ("DisableAirDrop", "Error: Could not find key 'DisableAirDrop' in domain 'com.apple.NetworkBrowser'.\n"),
+        ("DiscoverableMode", "Error: Could not find key 'DiscoverableMode' in domain 'com.apple.sharingd'.\n"),
+    ]);
+    let by_id = |id: &str| (CHECKS.iter().find(|c| c.id == id).expect(id).probe)(&r);
+    assert_eq!(by_id("POSTURE-AUTO-LOGIN").status, Status::Pass);
+    assert_eq!(by_id("POSTURE-AIRDROP").status, Status::Pass);
+    assert_eq!(
+        read(&r, "com.apple.loginwindow", "autoLoginUser"),
+        "The domain/default pair of (com.apple.loginwindow, autoLoginUser) does not exist"
+    );
+}

@@ -94,8 +94,8 @@ pub fn md5(d: &[u8]) -> [u8; 16] {
     ];
     let k: Vec<u32> = (0..64).map(|i| ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32).collect();
     let mut h = [0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
-    for block in padded(d, false).chunks_exact(64) {
-        let w: Vec<u32> = block.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().expect("4"))).collect();
+    for block in padded(d, false).as_chunks::<64>().0 {
+        let w: Vec<u32> = block.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         let [mut a, mut b, mut c, mut dd] = h;
         for i in 0..64 {
             let (f, g) = match i / 16 {
@@ -123,10 +123,10 @@ pub fn md5(d: &[u8]) -> [u8; 16] {
 
 pub fn sha1(d: &[u8]) -> [u8; 20] {
     let mut h = [0x6745_2301u32, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
-    for block in padded(d, true).chunks_exact(64) {
+    for block in padded(d, true).as_chunks::<64>().0 {
         let mut w = [0u32; 80];
-        for (i, c) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes(c.try_into().expect("4"));
+        for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*c);
         }
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
@@ -170,10 +170,10 @@ pub fn sha256(d: &[u8]) -> [u8; 32] {
     ];
     let mut h: [u32; 8] =
         [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    for block in padded(d, true).chunks_exact(64) {
+    for block in padded(d, true).as_chunks::<64>().0 {
         let mut w = [0u32; 64];
-        for (i, c) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes(c.try_into().expect("4"));
+        for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*c);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);

@@ -153,7 +153,7 @@ fn monte_carlo_pi(d: &[u8]) -> Value {
     const COORDS: usize = 6;
     let radius = (256f64.powi(3) - 1.0).powi(2);
     let (mut inside, mut total) = (0u64, 0u64);
-    for chunk in d.chunks_exact(COORDS) {
+    for chunk in d.as_chunks::<COORDS>().0 {
         let (mut x, mut y) = (0f64, 0f64);
         for j in 0..3 {
             x = x * 256.0 + f64::from(chunk[j]);

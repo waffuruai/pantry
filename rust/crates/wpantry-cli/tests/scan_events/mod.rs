@@ -1,0 +1,301 @@
+//! `scan --events` from the outside (specs/cli-contract.md, `scan
+//! --events`): the binary run on fixture folders in a temp HOME, offline,
+//! its stderr read as the event stream.
+//!
+//! Risks and their oracles:
+//! - the stream breaks its order or its schema in a real scan: the order
+//!   rules in [`order`] and the field lists in the contract;
+//! - the events disagree with the report: the `--json` envelope on stdout
+//!   (its findings, their ids, the exit code);
+//! - the flag changes what a caller already reads: stdout byte for byte
+//!   against the same scan without it, and stderr without the flag;
+//! - a secret reaches stderr: the secret texts of the rules' own cases
+//!   (crates/wpantry/tests/secret-cases.toml), none of which may appear;
+//! - a reader that stops early fails the scan: the exit code and stdout of
+//!   the same scan read to the end.
+
+use crate::common::*;
+use serde_json::Value;
+use std::collections::BTreeSet;
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// The event lines of a run's stderr; every line must be one.
+fn events(err: &str) -> Vec<Value> {
+    err.lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not an event ({e}): {l:?}"))).collect()
+}
+
+/// The order rules: `start` first and `done` last, once each; the steps in
+/// the order `start` lists, each begun and ended once; `at`, `tally` and
+/// `finding` inside a step, naming it. Returns the step ids as begun.
+fn order(lines: &[Value]) -> Vec<String> {
+    assert_eq!(lines.first().map(|l| &l["event"]), Some(&Value::from("start")), "{lines:?}");
+    assert_eq!(lines.last().map(|l| &l["event"]), Some(&Value::from("done")), "{lines:?}");
+    let listed: Vec<String> =
+        lines[0]["steps"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
+    let mut begun = Vec::new();
+    let mut open: Option<String> = None;
+    for (n, l) in lines.iter().enumerate() {
+        assert_eq!(l["v"], 1, "{l}");
+        let event = l["event"].as_str().unwrap();
+        assert!(n == 0 || event != "start", "a second start: {l}");
+        assert!(n == lines.len() - 1 || event != "done", "a line after done: {l}");
+        match (event, l["state"].as_str()) {
+            ("step", Some("begin")) => {
+                assert!(open.is_none(), "{l} began before the last step ended");
+                let id = l["id"].as_str().unwrap().to_string();
+                assert_eq!(l["index"].as_u64().unwrap() as usize, begun.len() + 1, "{l}");
+                assert_eq!(l["of"].as_u64().unwrap() as usize, listed.len(), "{l}");
+                open = Some(id.clone());
+                begun.push(id);
+            }
+            ("step", Some("end")) => {
+                assert_eq!(open.take().as_deref(), l["id"].as_str(), "an end without its begin: {l}");
+                assert!(l["ms"].as_u64().is_some(), "{l}");
+            }
+            ("at" | "tally" | "finding", _) => {
+                let step = open.as_deref().unwrap_or_else(|| panic!("outside a step: {l}"));
+                if event != "tally" {
+                    assert_eq!(l["step"].as_str(), Some(step), "{l}");
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(open.is_none(), "a step never ended");
+    assert_eq!(begun, listed, "the steps run are the ones start listed, in its order");
+    begun
+}
+
+/// A path as a program compares it: no `\\?\` prefix, `/` for `\`.
+fn plain(p: &str) -> String {
+    p.strip_prefix(r"\\?\").unwrap_or(p).replace('\\', "/")
+}
+
+/// A folder with a lockfile and a secret: one project, findings offline.
+fn fixture(t: &Ctx) -> PathBuf {
+    let dir = t.home.join("project");
+    mkdir(&dir);
+    write(&dir.join("Cargo.lock"), "version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+    // A GitHub token from the rules' own cases, stored reversed.
+    let token: String = "gvrMOVt7kvW7QXR9RsHxWt65VWBByL5t718Z_phg".chars().rev().collect(); // gitleaks:allow
+    write(&dir.join("settings.txt"), format!("token = {token}\n"));
+    dir
+}
+
+fn scan_args(dir: &Path) -> Vec<&str> {
+    vec!["scan", "--no-machine", "--path", s(dir), "--offline", "--no-malware", "--deep", "--json"]
+}
+
+#[test]
+fn scan_help_names_the_flag_and_fix_does_not_take_it() {
+    let t = Ctx::new();
+    let help = t.run(&["scan", "--help"]);
+    assert_eq!(help.code, 0);
+    assert!(help.out.contains("--events"), "{}", help.out);
+    let fix = t.run(&["fix", "--events", "--no-machine", "--path", s(&t.home), "--offline"]);
+    assert_eq!(fix.code, 2, "{}", fix.err);
+}
+
+#[test]
+fn the_stream_follows_the_scan_and_agrees_with_the_report() {
+    let t = Ctx::new();
+    let dir = fixture(&t);
+    let mut argv = scan_args(&dir);
+    argv.push("--events");
+    let r = t.run(&argv);
+    assert!([0, 1].contains(&r.code), "{}", r.err);
+    let lines = events(&r.err);
+    let steps = order(&lines);
+    assert_eq!(steps.first().map(String::as_str), Some("sources"));
+    assert_eq!(&steps[steps.len() - 3..], ["file-secrets", "rating", "report"]);
+    assert!(!steps.iter().any(|s| s == "machine" || s == "malware" || s == "breach"), "{steps:?}");
+
+    let start = &lines[0];
+    let paths: Vec<String> = start["paths"].as_array().unwrap().iter().map(|p| plain(p.as_str().unwrap())).collect();
+    assert_eq!(paths, [plain(s(&dir))]);
+    assert!(Path::new(start["paths"][0].as_str().unwrap()).is_absolute());
+
+    // The report on stdout is the authority the events agree with.
+    let env = envelope(&r.out);
+    let reported: BTreeSet<String> =
+        arr(&env["findings"]).iter().map(|f| f["id"].as_str().unwrap().to_string()).collect();
+    let told: BTreeSet<String> =
+        lines.iter().filter(|l| l["event"] == "finding").map(|l| l["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(told, reported, "no ignore file: every finding told is reported, and the reverse");
+    let done = lines.last().unwrap();
+    assert_eq!(done["exit"], r.code);
+    let real = arr(&env["findings"]).iter().filter(|f| f["kind"] != "unchecked").count();
+    assert_eq!(done["findings"], real);
+    assert_eq!(done["unchecked"], arr(&env["findings"]).len() - real);
+    let secret = lines.iter().find(|l| l["event"] == "finding" && l["kind"] == "secret").expect("the token is found");
+    assert_eq!(secret["step"], "file-secrets");
+    assert_eq!(secret["status"], "fail");
+
+    // What it read is inside the folder, as absolute paths.
+    let at: Vec<&Value> = lines.iter().filter(|l| l["event"] == "at").collect();
+    assert!(!at.is_empty());
+    let canon = plain(&std::fs::canonicalize(&dir).unwrap().to_string_lossy());
+    for a in &at {
+        let p = plain(a["path"].as_str().unwrap());
+        assert!(p.starts_with(&plain(s(&dir))) || p.starts_with(&canon), "{a}");
+        assert!(["file", "dir"].contains(&a["kind"].as_str().unwrap()), "{a}");
+    }
+    // Each step's end counts the findings it told.
+    for end in lines.iter().filter(|l| l["state"] == "end") {
+        let id = end["id"].as_str().unwrap();
+        let n = lines.iter().filter(|l| l["event"] == "finding" && l["step"] == id && l["kind"] != "unchecked").count();
+        assert_eq!(end["findings"], n, "{end}");
+    }
+}
+
+#[test]
+fn the_flag_changes_nothing_on_stdout_and_nothing_without_it() {
+    // One HOME (a finding's id hashes its path), a fresh cache each run.
+    let t = Ctx::new();
+    let dir = fixture(&t);
+    for argv in [scan_args(&dir), vec!["scan", "--no-machine", "--path", s(&dir), "--offline", "--no-malware"]] {
+        let without = fresh(&t).run(&argv);
+        let with = fresh(&t).run(&[argv.as_slice(), &["--events"]].concat());
+        assert_eq!(with.code, without.code, "{argv:?}");
+        assert_eq!(with.out, without.out, "stdout is byte for byte the same: {argv:?}");
+        assert!(!without.err.contains("\"event\""), "no event without --events: {}", without.err);
+        assert_eq!(without.err, "", "without --events and without a terminal, stderr says nothing: {argv:?}");
+        order(&events(&with.err));
+    }
+}
+
+/// `t` with its cache removed, so the next run starts as the first did.
+fn fresh(t: &Ctx) -> &Ctx {
+    if let Some(dir) = t.db.parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    t
+}
+
+/// The rules' own secret cases, each in a file: the deep scan finds them,
+/// and no secret, nor the line around it, reaches the event stream.
+#[test]
+fn no_secret_reaches_the_events() {
+    let cases = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../wpantry/tests/secret-cases.toml"))
+        .expect("the secret cases");
+    let t = Ctx::new();
+    let dir = t.home.join("secrets");
+    mkdir(&dir);
+    let mut texts = Vec::new();
+    for c in wpantry::utils::toml::parse(&cases).unwrap().iter().filter(|c| c.name == "case") {
+        if !c.str("name").ends_with(": a secret") {
+            continue;
+        }
+        let text: String = c.str("reversed_text").chars().rev().collect();
+        write(&dir.join(format!("case{}.txt", texts.len())), &text);
+        texts.push(text);
+        if texts.len() == 80 {
+            break;
+        }
+    }
+    let r = t.run(&[
+        "scan",
+        "--no-machine",
+        "--path",
+        s(&dir),
+        "--offline",
+        "--no-malware",
+        "--deep",
+        "--json",
+        "--events",
+    ]);
+    assert!([0, 1].contains(&r.code), "{}", r.err);
+    let lines = events(&r.err);
+    order(&lines);
+    let told = lines.iter().filter(|l| l["event"] == "finding" && l["kind"] == "secret").count();
+    assert!(told >= 40, "the scan found the secrets ({told} of {}): the check isn't vacuous", texts.len());
+    // Secret-shaped runs: 12 or more letters, digits and token punctuation,
+    // with a digit and a letter in them.
+    let mut leaked = Vec::new();
+    for text in &texts {
+        let runs = text.split(|c: char| !(c.is_ascii_alphanumeric() || "+/=_-.".contains(c)));
+        for run in runs.filter(|w| w.len() >= 12) {
+            if run.chars().any(|c| c.is_ascii_digit())
+                && run.chars().any(|c| c.is_ascii_alphabetic())
+                && r.err.contains(run)
+            {
+                leaked.push(run.to_string());
+            }
+        }
+        for line in text.lines().map(str::trim).filter(|l| l.len() >= 12) {
+            if r.err.contains(line) {
+                leaked.push(line.to_string());
+            }
+        }
+    }
+    assert!(leaked.is_empty(), "secret text in the events: {leaked:?}");
+}
+
+/// The caller reads the first line and closes its end: the scan carries on
+/// to the same exit code and the same report.
+#[test]
+fn a_reader_that_closes_early_changes_nothing() {
+    let t = Ctx::new();
+    let dir = fixture(&t);
+    let mut argv = scan_args(&dir);
+    argv.push("--events");
+    let read = fresh(&t).run(&argv);
+    fresh(&t);
+    let mut child = Command::new(BIN)
+        .args(&argv)
+        .env("HOME", &t.home)
+        .env("WPANTRY_DB", &t.db)
+        .env("NO_COLOR", "1")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    let mut first = String::new();
+    err.read_line(&mut first).unwrap();
+    assert!(first.contains("\"start\""), "{first}");
+    drop(err);
+    let mut out = String::new();
+    child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    let code = child.wait().unwrap().code();
+    assert_eq!(code, Some(read.code));
+    assert_eq!(out, read.out);
+}
+
+/// Notes the scan prints on stderr become `note` events: a missing
+/// `--path`, and the report written to a file.
+#[test]
+fn notes_become_events() {
+    let t = Ctx::new();
+    let dir = fixture(&t);
+    let gone = t.home.join("gone");
+    let out = t.tmp.join("report.json");
+    let r = t.run(&[
+        "scan",
+        "--no-machine",
+        "--path",
+        s(&dir),
+        "--path",
+        s(&gone),
+        "--offline",
+        "--no-malware",
+        "--json",
+        "-o",
+        s(&out),
+        "--events",
+    ]);
+    assert!([0, 1].contains(&r.code), "{}", r.err);
+    // The report went to the file; stdout has only the scan's log lines.
+    assert!(!r.out.contains("\"schema\""), "{}", r.out);
+    let lines = events(&r.err);
+    order(&lines);
+    let notes: Vec<&str> = lines.iter().filter(|l| l["event"] == "note").map(|l| l["text"].as_str().unwrap()).collect();
+    assert!(notes.iter().any(|n| n.contains("wrote the report to")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("gone")), "{notes:?}");
+    envelope(&read(&out));
+}

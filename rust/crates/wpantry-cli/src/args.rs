@@ -116,6 +116,9 @@ pub struct Check {
     /// `--allow-sleep` (or `WPANTRY_ALLOW_SLEEP=1`): let the machine sleep
     /// during the scan.
     pub allow_sleep: bool,
+    /// `scan --events`: the scan's progress as JSON Lines on stderr, no
+    /// progress line and no prompts.
+    pub events: bool,
 }
 
 /// What `fix list` and `fix ID` act on.
@@ -310,6 +313,10 @@ pub fn program() -> Cli {
             Cli::new("scan")
                 .description("Scan this computer and its repos, then show the report. Changes nothing.")
                 .opts(scan_opts())
+                .option(
+                    "--events",
+                    "write the scan's progress to stderr as JSON Lines (steps, the path being read, findings), for programs that run wpantry; implies --no-input",
+                )
                 .after_help(EXIT_CODES),
         )
         .command(
@@ -546,7 +553,7 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
 fn command(m: &Matches) -> Result<Command, Exit> {
     let flag = |n: &str| m.flag(n);
     Ok(match m.path().as_slice() {
-        ["scan"] => Command::Scan(check(m, false)?),
+        ["scan"] => Command::Scan(Check { events: flag("events"), ..check(m, false)? }),
         ["fix"] => match m.arg("target").unwrap_or("all") {
             "all" => {
                 if m.flag("undo") {

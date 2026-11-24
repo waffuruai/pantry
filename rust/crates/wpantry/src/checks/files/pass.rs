@@ -253,6 +253,12 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
 
 /// [`run_cached`], with every engine the checks use.
 pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Results {
+    run_watched(jobs, cache, engines, &|_| {})
+}
+
+/// [`run_with`], telling `at` each file as it is read (from the reading
+/// threads; a file whose cached result still holds isn't read, nor told).
+pub fn run_watched(jobs: &[Job], cache: Option<&Cache>, engines: &Engines, at: &(dyn Fn(&Path) + Sync)) -> Results {
     let salts = engines.salts();
     let started = crate::utils::os::now();
     let mut uniq: Vec<Job> = Vec::new();
@@ -340,6 +346,7 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
     let todo: Vec<usize> = (0..views.len()).filter(|&i| !users[i].is_empty()).collect();
     let done: Vec<Vec<(usize, usize, Out)>> = parallel::par_map(&todo, parallel::cores(), |&i| {
         let v = &views[i];
+        at(&v.path);
         let reads: Vec<(usize, usize, &Read)> = users[i].iter().map(|&(j, r)| (j, r, &plans[j].reads()[r])).collect();
         let cap = |when| reads.iter().filter(|(_, _, r)| r.when == when).map(|(_, _, r)| r.cap).max().unwrap_or(0);
         let (head, bytes) = v.load(cap(When::Always), cap(When::Program), targets::looks_executable);

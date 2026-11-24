@@ -98,6 +98,7 @@ pub fn projects(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
     let mut shared: BTreeMap<PathBuf, Vec<lockfiles::Package>> = BTreeMap::new();
     for (root, f) in &files {
         scan.status(&format!("Reading {}", short(&f.to_string_lossy())));
+        scan.at(f, crate::checks::watch::At::File);
         match lockfiles::extract_noting(f, root).map_err(as_source) {
             Ok(Some(x)) => {
                 if !x.unchecked.is_empty() {

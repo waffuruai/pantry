@@ -7,6 +7,7 @@
 //! error.
 
 mod args;
+mod events;
 mod progress;
 mod schedule;
 mod style;
@@ -58,19 +59,37 @@ fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
+/// A one-line note on stderr, or the events' `note` under `scan --events`.
+fn tell(line: &str) {
+    match events::active() {
+        Some(ev) => ev.note(&style::clean(line)),
+        None => eprintln!("{line}"),
+    }
+}
+
 /// One scan with a live progress line; the line is gone before this returns.
-fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result<Outcome> {
-    let progress = progress::Progress::start();
+/// Under `scan --events` (`watch`) no line: the events say what it does.
+fn scan(
+    opts: Options,
+    json: bool,
+    net: &dyn wpantry::utils::net::Net,
+    watch: Option<&dyn wpantry::checks::watch::Watch>,
+) -> Result<Outcome> {
+    let progress = if watch.is_some() { progress::Progress::new(false) } else { progress::Progress::start() };
     let log = |m: &str| {
         if !json {
             progress.println(&Style::stdout().line(m));
         }
     };
-    let note = |m: &str| progress.eprintln(&Style::stderr().line(m));
+    let note = |m: &str| match events::active().filter(|_| watch.is_some()) {
+        Some(ev) => ev.note(&style::clean(m)),
+        None => progress.eprintln(&Style::stderr().line(m)),
+    };
     // WPANTRY_TIMINGS=1: every step with the seconds since the scan began,
-    // on stderr, so a slow run says where the time went.
+    // on stderr, so a slow run says where the time went. Not under
+    // --events, whose steps carry their times.
     let started = std::time::Instant::now();
-    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some();
+    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some() && watch.is_none();
     // One line per step, not per file: a step whose message starts the same
     // way as the last one within a quarter second is the same step.
     let last = std::sync::Mutex::new((String::new(), std::time::Instant::now()));
@@ -87,7 +106,11 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result
     };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
-    let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask).run();
+    let mut s = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask);
+    if let Some(w) = watch {
+        s = s.with_watch(w);
+    }
+    let out = s.run();
     progress.finish();
     out
 }
@@ -142,15 +165,28 @@ fn cmd_scan(a: Check) -> Result<i32> {
         offline: a.offline,
         jobs: a.jobs,
         licenses: a.check_licenses,
-        ask: !(quiet || a.dry_run || a.no_input),
+        // --events: a program reads stderr, so nobody answers a question.
+        ask: !(quiet || a.dry_run || a.no_input || a.events),
     };
-    let first = scan(opts.clone(), quiet, &net)?;
+    let ev = a.events.then(|| {
+        let home = wpantry::utils::files::home();
+        let paths = opts.paths.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| vec![home]);
+        events::start(wpantry::checks::watch::steps(&opts), &paths)
+    });
+    let first = scan(opts.clone(), quiet, &net, ev.map(|e| e as &dyn wpantry::checks::watch::Watch))?;
     // The scan is done; what it found is shown as `wpantry report` shows it.
+    if let Some(ev) = ev {
+        ev.outcome(&first.findings);
+        wpantry::checks::watch::Watch::step(ev, events::REPORT.id);
+    }
     let status = cmd_report(&a.show)?;
     if a.show.format == Shown::Tui
         && let Some(n) = update::notice(&net, a.offline)
     {
-        eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
+        match ev {
+            Some(ev) => ev.note(&style::clean(&format!("ℹ {n}"))),
+            None => eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}"))),
+        }
     }
     if quiet || !(a.fix || a.dry_run) {
         return Ok(status);
@@ -191,7 +227,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         cache.close()?;
     }
     say("\nRe-checking after the updates…");
-    let again = scan(Options { refresh: false, ask: false, ..opts.clone() }, false, &net)?;
+    let again = scan(Options { refresh: false, ask: false, ..opts.clone() }, false, &net, None)?;
     if !applied.ran.is_empty() {
         let cache = Cache::open(None)?;
         wpantry::history::verify_fixes(&cache, first.scan_id, again.scan_id)?;
@@ -427,7 +463,7 @@ fn cmd_report(show: &Show) -> Result<i32> {
     match &show.out {
         Some(path) => {
             Output::new(path)?.write(&text)?;
-            eprintln!("{}", Style::stderr().line(&format!("✓ wrote the report to {}", path.display())));
+            tell(&Style::stderr().line(&format!("✓ wrote the report to {}", path.display())));
         }
         None => {
             // A pipe that closes early (`| head`) ends the output, not the process.
@@ -1337,13 +1373,21 @@ fn main() {
             Ok(Ok(code)) => code,
             // The cache can't be opened or written, a file we need is gone.
             Ok(Err(e)) => {
-                eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: {e}")));
+                match events::active() {
+                    // `done` carries it: stderr is the events' stream.
+                    Some(ev) => ev.finish(EXIT_INTERNAL, Some(&e.to_string())),
+                    None => eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: {e}"))),
+                }
                 EXIT_INTERNAL
             }
             Err(_) => EXIT_INTERNAL,
         },
     };
     let _ = std::io::stdout().flush();
+    // `scan --events`: `done` is the last line, with the exit code.
+    if let Some(ev) = events::active() {
+        ev.finish(code, None);
+    }
     std::process::exit(code);
 }
 

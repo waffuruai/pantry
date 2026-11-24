@@ -22,6 +22,7 @@ pub mod secrets;
 pub mod severity;
 pub mod supply_chain;
 pub mod suspects;
+pub mod watch;
 
 use crate::component::Component;
 use crate::component::Status;
@@ -268,6 +269,10 @@ pub struct Scan<'a> {
     pub status: Status<'a>,
     /// Asks the user a yes/no question (see [`Scan::with_ask`]).
     pub asker: Option<crate::checks::email::Ask<'a>>,
+    /// Who follows the scan's steps and findings (see [`Scan::with_watch`]).
+    pub watch: &'a dyn watch::Watch,
+    /// How many of `findings` the watch has been told about.
+    watched: std::cell::Cell<usize>,
     pub home: PathBuf,
     pub repos: Vec<Repo>,
     pub findings: Vec<Finding>,
@@ -303,6 +308,8 @@ impl<'a> Scan<'a> {
             note,
             status: &crate::component::quiet,
             asker: None,
+            watch: &watch::Quiet,
+            watched: std::cell::Cell::new(0),
             home: crate::utils::files::home(),
             repos: Vec::new(),
             findings: Vec::new(),
@@ -374,7 +381,9 @@ impl<'a> Scan<'a> {
                 yara: self.malware.as_ref().map(|m| m.loaded.clone()),
                 secrets: self.secret_engine(),
             };
-            self.files = Some(files::pass::run_with(&jobs, Some(&self.cache), &engines));
+            let w = self.watch;
+            let at = |p: &Path| w.at(p, watch::At::File);
+            self.files = Some(files::pass::run_watched(&jobs, Some(&self.cache), &engines, &at));
         }
         self.files.as_ref().expect("the files pass just ran")
     }
@@ -455,9 +464,42 @@ impl<'a> Scan<'a> {
         self
     }
 
-    /// Say what the scan is doing now.
+    /// Tell `watch` each step as it begins, what is being read, and each
+    /// finding as its step makes it (the CLI's `scan --events`). Off by
+    /// default.
+    pub fn with_watch(mut self, watch: &'a dyn watch::Watch) -> Scan<'a> {
+        self.watch = watch;
+        self
+    }
+
+    /// Say what the scan is doing now; the findings made since the last
+    /// time go to the watch.
     pub fn status(&self, what: &str) {
+        self.tell_findings();
         (self.status)(what);
+    }
+
+    /// The next step begins: the findings the last one made go to the
+    /// watch first. `step` is one of [`watch::steps`].
+    pub fn step(&self, step: watch::Step) {
+        self.tell_findings();
+        self.watch.step(step.id);
+    }
+
+    /// The scan is reading this file or looking in this folder now.
+    pub fn at(&self, path: &Path, what: watch::At) {
+        self.watch.at(path, what);
+    }
+
+    /// The findings the watch hasn't been told about yet. Called only
+    /// between checks, so a check that amends what it just added (a
+    /// Gradle declaration's note) is done with it.
+    fn tell_findings(&self) {
+        let from = self.watched.get().min(self.findings.len());
+        for f in &self.findings[from..] {
+            self.watch.finding(f);
+        }
+        self.watched.set(self.findings.len());
     }
 
     // helpers ---------------------------------------------------------------
@@ -573,25 +615,42 @@ impl<'a> Scan<'a> {
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
         crate::utils::walk::forget_walks();
+        self.step(watch::SOURCES);
         self.use_sources();
         self.load_kev()?;
         self.status("Fetching EPSS's exploit predictions");
         let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
         self.guard("EPSS (exploit predictions)", epss, 0)?;
+        self.step(watch::REPOS);
         let (log, note, status) = (self.log, self.note, self.status);
+        match self.opts.paths.as_deref() {
+            Some(paths) => paths.iter().for_each(|p| self.at(p, watch::At::Dir)),
+            None => self.at(&self.home, watch::At::Dir),
+        }
         self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
+        self.watch.repos(self.repos.len());
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
         self.status("Listing the repos' files");
         crate::utils::walk::prewalk(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>());
-        let found: Vec<Component> = if self.opts.machine { machine::run(&mut self)? } else { Vec::new() };
+        let found: Vec<Component> = if self.opts.machine {
+            self.step(watch::MACHINE);
+            machine::run(&mut self)?
+        } else {
+            Vec::new()
+        };
         supply_chain::run(&mut self, &found)?;
         if !self.opts.no_malware {
+            self.step(watch::MALWARE);
             crate::checks::malware::run(&mut self);
         }
         if self.opts.deep {
+            self.step(watch::FILE_SECRETS);
             crate::checks::secrets::files::report(&mut self);
         }
+        // Before the ignore files: the watch was told every finding as it
+        // was made, and the report says which stayed.
+        self.step(watch::RATING);
         crate::checks::ignore::apply(&mut self);
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);

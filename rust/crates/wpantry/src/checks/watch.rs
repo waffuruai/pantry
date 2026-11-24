@@ -51,6 +51,8 @@ pub trait Watch: Sync {
     fn at(&self, _path: &Path, _what: At) {}
     /// How many repos (or folders scanned as one project) are in scope.
     fn repos(&self, _n: usize) {}
+    /// A folder walk listed `n` more files (from the walking threads).
+    fn listed(&self, _n: usize) {}
     /// A finding the current step has made. Provisional: an ignore file
     /// can still leave it out and the rating step can change its severity.
     fn finding(&self, _f: &Finding) {}

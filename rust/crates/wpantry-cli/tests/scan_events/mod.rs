@@ -299,3 +299,114 @@ fn notes_become_events() {
     assert!(notes.iter().any(|n| n.contains("gone")), "{notes:?}");
     envelope(&read(&out));
 }
+
+/// A tree to keep a scan busy: `repos` checkouts of `dirs` folders with
+/// `files` files each, the files hard links of three small seeds (quick to
+/// make, read like any other file). Returns the folder holding the repos.
+fn big_tree(t: &Ctx, repos: usize, dirs: usize, files: usize) -> PathBuf {
+    let seeds = t.tmp.join("seeds");
+    mkdir(&seeds);
+    let kinds =
+        [("js", "const a = 1;\nmodule.exports = a;\n"), ("py", "def f(x):\n    return x\n"), ("txt", "notes\n")];
+    for (ext, text) in kinds {
+        write(&seeds.join(format!("seed.{ext}")), text);
+    }
+    let code = t.home.join("code");
+    for r in 0..repos {
+        let repo = git_repo(&code.join(format!("repo{r}")), false);
+        for d in 0..dirs {
+            let dir = repo.join(format!("src/d{d}"));
+            mkdir(&dir);
+            for f in 0..files {
+                let (ext, _) = kinds[f % kinds.len()];
+                std::fs::hard_link(seeds.join(format!("seed.{ext}")), dir.join(format!("f{f}.{ext}"))).unwrap();
+            }
+        }
+    }
+    code
+}
+
+/// The run's event lines, each with when it arrived after the start.
+fn timed(t: &Ctx, argv: &[&str]) -> (i32, Vec<(std::time::Duration, Value)>) {
+    let mut child = Command::new(BIN)
+        .args(argv)
+        .env("HOME", &t.home)
+        .env("WPANTRY_DB", &t.db)
+        .env("NO_COLOR", "1")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let drain = std::thread::spawn(move || std::io::copy(&mut stdout, &mut std::io::sink()));
+    let started = std::time::Instant::now();
+    let mut lines = Vec::new();
+    for l in BufReader::new(child.stderr.take().unwrap()).lines() {
+        let l = l.unwrap();
+        lines.push((started.elapsed(), serde_json::from_str(&l).unwrap_or_else(|e| panic!("not an event ({e}): {l}"))));
+    }
+    drain.join().unwrap().unwrap();
+    (child.wait().unwrap().code().unwrap_or(-1), lines)
+}
+
+/// The longest time inside a step without an `at` or a `tally` line,
+/// counted from the step's begin to its end, and the step it was in.
+fn longest_silence(lines: &[(std::time::Duration, Value)]) -> (std::time::Duration, String) {
+    let (mut longest, mut where_) = (std::time::Duration::ZERO, String::new());
+    let mut last: Option<(std::time::Duration, String)> = None;
+    for (at, l) in lines {
+        let quiet = |since: &std::time::Duration| at.saturating_sub(*since);
+        match (l["event"].as_str(), l["state"].as_str()) {
+            (Some("step"), Some("begin")) => last = Some((*at, l["id"].as_str().unwrap().to_string())),
+            (Some("at" | "tally"), _) | (Some("step"), Some("end")) => {
+                if let Some((since, step)) = &last
+                    && quiet(since) > longest
+                {
+                    (longest, where_) = (quiet(since), step.clone());
+                }
+                let step = last.take().map(|(_, s)| s).unwrap_or_default();
+                last = (l["event"] != "step").then_some((*at, step));
+            }
+            _ => {}
+        }
+    }
+    (longest, where_)
+}
+
+/// A follower is never left without a sign of life while the scan works:
+/// no step goes 2 s without an `at` or a `tally`, cold and with the cache
+/// warm (when nothing is read at all). The writer promises a line at least
+/// every BEAT (1 s) plus a TICK; 2 s leaves room for a loaded runner. Before
+/// the heartbeat and the folder lines, the files pass was silent while it
+/// looked over every file: 0.8 s on this tree in a debug build, 2.9 s on
+/// one of 150,000 files, which this check fails; with them, 1.04 s at most
+/// on that tree. 40,000 files keep the test quick; the step that runs the
+/// files pass must also name a folder before it reads the first file, which
+/// fails without the folder lines at any size.
+#[test]
+fn a_big_tree_is_never_silent_for_long() {
+    let t = Ctx::new();
+    let code = big_tree(&t, 8, 25, 200);
+    let argv = ["scan", "--no-machine", "--path", s(&code), "--offline", "--no-input", "--json", "--events"];
+    // Cold, then warm: with the cache warm nothing is read, so only the
+    // folders looked over and the heartbeat show the step is alive.
+    for run in ["cold", "warm"] {
+        let (code, lines) = timed(&t, &argv);
+        assert!([0, 1].contains(&code), "{run}: exit {code}");
+        let plain: Vec<Value> = lines.iter().map(|(_, l)| l.clone()).collect();
+        order(&plain);
+        let (longest, step) = longest_silence(&lines);
+        assert!(longest < std::time::Duration::from_secs(2), "{run}: {step} was silent for {longest:?}");
+        let files_step: Vec<&Value> =
+            plain.iter().filter(|l| l["event"] == "at" && l["step"] == "repo-files").collect();
+        let first_dir = files_step.iter().position(|l| l["kind"] == "dir");
+        let first_file = files_step.iter().position(|l| l["kind"] == "file");
+        assert!(first_dir.is_some(), "{run}: repo-files never said which folder it looked over");
+        assert!(first_file.is_none() || first_dir < first_file, "{run}: a file was read before any folder was named");
+        let tally = plain.iter().rfind(|l| l["event"] == "tally").unwrap();
+        assert_eq!(tally["listed"], 8 * 25 * 200, "{run}: every file the walks listed is counted: {tally}");
+    }
+}

@@ -7,6 +7,8 @@
 //!   an `at` outside its step): the order rules checked by [`order`];
 //! - rate limiting writes a stale `at`, or drops a `step` or a `finding`:
 //!   the last path told, and every queued line counted;
+//! - a long read leaves a follower with nothing: the heartbeat tallies
+//!   written while a step is told nothing, and how far apart they are;
 //! - a reader that closes early or stops reading holds the scan up: the
 //!   time the scan's calls take while the writer can't write.
 
@@ -173,7 +175,7 @@ fn every_event_has_its_fields() {
     assert_eq!(pick(&at[0], &["path", "kind", "step"]), serde_json::json!(["/scan/here/x.txt", "file", "a"]));
     assert_eq!(pick(&at[1], &["kind", "step"]), serde_json::json!(["dir", "b"]));
     let tally = of("tally");
-    assert_eq!(keys(&tally[0]), sorted(&["v", "event", "repos", "files", "findings", "unchecked"]));
+    assert_eq!(keys(&tally[0]), sorted(&["v", "event", "repos", "files", "findings", "unchecked", "listed"]));
     assert_eq!(tally.last().unwrap()["repos"], 2);
     assert_eq!(tally.last().unwrap()["files"], 1);
     let finding = &of("finding")[0];
@@ -341,4 +343,30 @@ fn lines_are_ascii_with_no_control_characters() {
     assert!(raw.lines().all(|l| l.starts_with("{\"v\": 1, \"event\": \"")), "{raw}");
     let lines = kept.lines();
     assert!(lines.iter().any(|l| l["path"] == "/odd\nname\u{1b}[31m\u{9b}é"));
+}
+
+/// A step that is told nothing for a while (one long read) still writes a
+/// tally about every BEAT, the same counts each time, and never faster
+/// than the rate limit; between steps nothing is written.
+#[test]
+fn a_quiet_step_still_beats() {
+    let kept = Kept::default();
+    let ev = Events::new(Box::new(kept.clone()), vec![A, B], &[]);
+    ev.step("a");
+    ev.listed(7);
+    std::thread::sleep(BEAT * 3 + TICK * 3);
+    ev.step(REPORT.id);
+    ev.finish(0, None);
+    let lines = kept.lines();
+    order(&lines);
+    let in_a: Vec<&Value> = lines
+        .iter()
+        .skip_while(|l| l["id"] != "a")
+        .take_while(|l| !(l["id"] == "a" && l["state"] == "end"))
+        .filter(|l| l["event"] == "tally")
+        .collect();
+    // The first tally is the counts changing; then one per BEAT of silence.
+    assert!(in_a.len() >= 3, "{in_a:?}");
+    assert!(in_a.len() <= 5, "faster than once a BEAT: {in_a:?}");
+    assert!(in_a.iter().all(|l| l["listed"] == 7 && l["files"] == 0), "{in_a:?}");
 }

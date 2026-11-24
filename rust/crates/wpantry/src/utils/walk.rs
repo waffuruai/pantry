@@ -45,12 +45,26 @@ pub const DEEPEST: usize = 12;
 /// same listing of every repo; [`forget_walks`] drops the memo between
 /// scans.
 pub fn walk(root: &Path, depth: usize) -> Vec<(PathBuf, Vec<String>)> {
+    walk_seen(root, depth, &|_, _| {})
+}
+
+/// [`walk`], telling `seen` each folder as it is listed, with how many
+/// files it holds (nothing when the listing is already memoised).
+///
+/// ```
+/// let root = std::env::temp_dir();
+/// let n = std::sync::atomic::AtomicUsize::new(0);
+/// wpantry::utils::walk::walk_seen(&root, 0, &|_dir, _files| {
+///     n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+/// });
+/// ```
+pub fn walk_seen(root: &Path, depth: usize, seen: &(dyn Fn(&Path, usize) + Sync)) -> Vec<(PathBuf, Vec<String>)> {
     let hit = WALKS.lock().expect("lock").get(root).cloned();
     let walked = match hit {
         Some(w) if w.0 >= depth => w,
         _ => {
             let deep = depth.max(DEEPEST);
-            let w = Arc::new((deep, walk_uncached(root, deep)));
+            let w = Arc::new((deep, walk_uncached(root, deep, seen)));
             WALKS.lock().expect("lock").insert(root.to_path_buf(), w.clone());
             w
         }
@@ -65,8 +79,13 @@ static WALKS: std::sync::LazyLock<Mutex<Walks>> = std::sync::LazyLock::new(|| Mu
 /// Walk `roots` side by side into the memo, so the checks that ask next
 /// find them walked.
 pub fn prewalk(roots: &[PathBuf]) {
+    prewalk_seen(roots, &|_, _| {});
+}
+
+/// [`prewalk`], telling `seen` each folder as it is listed ([`walk_seen`]).
+pub fn prewalk_seen(roots: &[PathBuf], seen: &(dyn Fn(&Path, usize) + Sync)) {
     crate::utils::parallel::par_map(roots, crate::utils::parallel::cores(), |r| {
-        walk(r, DEEPEST);
+        walk_seen(r, DEEPEST, seen);
     });
 }
 
@@ -97,8 +116,17 @@ pub fn unreadable(root: &Path) -> Vec<PathBuf> {
     UNREADABLE.lock().expect("lock").get(root).cloned().unwrap_or_default()
 }
 
-fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, usize, Vec<String>)> {
-    fn visit(root: &Path, d: &Path, level: usize, depth: usize, out: &mut Vec<(PathBuf, usize, Vec<String>)>) {
+type Seen<'a> = &'a (dyn Fn(&Path, usize) + Sync);
+
+fn walk_uncached(root: &Path, depth: usize, seen: Seen) -> Vec<(PathBuf, usize, Vec<String>)> {
+    fn visit(
+        root: &Path,
+        d: &Path,
+        level: usize,
+        depth: usize,
+        seen: Seen,
+        out: &mut Vec<(PathBuf, usize, Vec<String>)>,
+    ) {
         let rd = match std::fs::read_dir(d) {
             Ok(rd) => rd,
             Err(e) => {
@@ -123,12 +151,13 @@ fn walk_uncached(root: &Path, depth: usize) -> Vec<(PathBuf, usize, Vec<String>)
         }
         files.sort();
         dirs.sort();
+        seen(d, files.len());
         out.push((d.to_path_buf(), level, files));
         for sub in dirs {
-            visit(root, &sub, level + 1, depth, out);
+            visit(root, &sub, level + 1, depth, seen, out);
         }
     }
     let mut out = Vec::new();
-    visit(root, root, 0, depth, &mut out);
+    visit(root, root, 0, depth, seen, &mut out);
     out
 }

@@ -381,9 +381,7 @@ impl<'a> Scan<'a> {
                 yara: self.malware.as_ref().map(|m| m.loaded.clone()),
                 secrets: self.secret_engine(),
             };
-            let w = self.watch;
-            let at = |p: &Path| w.at(p, watch::At::File);
-            self.files = Some(files::pass::run_watched(&jobs, Some(&self.cache), &engines, &at));
+            self.files = Some(files::pass::run_watched(&jobs, Some(&self.cache), &engines, self.watch));
         }
         self.files.as_ref().expect("the files pass just ran")
     }
@@ -632,7 +630,12 @@ impl<'a> Scan<'a> {
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
         self.status("Listing the repos' files");
-        crate::utils::walk::prewalk(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>());
+        let w = self.watch;
+        let seen = |dir: &Path, files: usize| {
+            w.at(dir, watch::At::Dir);
+            w.listed(files);
+        };
+        crate::utils::walk::prewalk_seen(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(), &seen);
         let found: Vec<Component> = if self.opts.machine {
             self.step(watch::MACHINE);
             machine::run(&mut self)?

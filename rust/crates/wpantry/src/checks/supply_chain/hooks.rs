@@ -668,7 +668,9 @@ pub fn repo_hooks(scan: &mut Scan, repos: &[Repo]) {
     scan.status("Looking for code the repos run on open or install");
     let iocs = Indicators::parse(&scan.opts.policy.repo_hooks());
     let accepted = scan.opts.policy.hooks_policy();
+    let watch = scan.watch;
     let found: Vec<Vec<Hook>> = parallel::par_map(repos, parallel::PROBES, |(_, root)| {
+        watch.at(root, crate::checks::watch::At::Dir);
         let mut h = scan_repo(root, &iocs);
         h.extend(campaign_markers(root));
         h

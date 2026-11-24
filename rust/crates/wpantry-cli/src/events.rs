@@ -9,7 +9,9 @@
 //! so a reader that is slow or gone never holds the scan up. `step`,
 //! `finding`, `note` and `done` are always queued; `at` and `tally` are
 //! state the writer samples at most every [`TICK`], so they are the only
-//! lines rate limiting drops, and the one written is the newest.
+//! lines rate limiting drops, and the one written is the newest. A step
+//! that goes [`BEAT`] without a line gets the tally again (a heartbeat), so
+//! a long read or a long look over a big tree is never silent.
 //!
 //! ```text
 //! {"v":1,"event":"step","id":"secrets","title":"Looking for secrets in git history","state":"begin","index":4,"of":10}
@@ -32,6 +34,9 @@ use wpantry::utils::json::{J, obj};
 pub const VERSION: i64 = 1;
 /// The most often an `at` or a `tally` line is written.
 pub const TICK: Duration = Duration::from_millis(100);
+/// The longest a step goes without a line: then the tally is written again
+/// even when no count moved, so a long read is never silent.
+pub const BEAT: Duration = Duration::from_secs(1);
 /// How long the end of a run waits for a reader to take the last lines.
 pub const DRAIN: Duration = Duration::from_secs(5);
 /// The step the CLI adds after the library's: the report written.
@@ -64,11 +69,13 @@ struct Shared {
     files: AtomicU64,
     findings: AtomicU64,
     unchecked: AtomicU64,
+    /// Files the scan's folder walks have listed so far.
+    listed: AtomicU64,
 }
 
 impl Shared {
-    fn tally(&self) -> [u64; 4] {
-        [&self.repos, &self.files, &self.findings, &self.unchecked].map(|a| a.load(Ordering::Relaxed))
+    fn tally(&self) -> [u64; 5] {
+        [&self.repos, &self.files, &self.findings, &self.unchecked, &self.listed].map(|a| a.load(Ordering::Relaxed))
     }
 }
 
@@ -161,24 +168,28 @@ pub fn finding_line(step: &str, f: &Finding) -> String {
     )
 }
 
-fn tally_line(t: [u64; 4]) -> String {
+fn tally_line(t: [u64; 5]) -> String {
     let n = |i: usize| J::Int(t[i] as i64);
-    line("tally", vec![("repos", n(0)), ("files", n(1)), ("findings", n(2)), ("unchecked", n(3))])
+    line("tally", vec![("repos", n(0)), ("files", n(1)), ("findings", n(2)), ("unchecked", n(3)), ("listed", n(4))])
 }
 
 /// The writer thread: queued lines in order, and every [`TICK`] the
-/// newest `at` and the tally when they changed. A write that fails (the
-/// reader closed its end) stops the writing, never the scan.
+/// newest `at` and the tally when they changed, or when a step has gone
+/// [`BEAT`] without a line. A write that fails (the reader closed its end)
+/// stops the writing, never the scan.
 fn write_all(mut out: Box<dyn Write + Send>, rx: Receiver<Msg>, shared: Arc<Shared>, stopped: Sender<()>) {
     let mut broken = false;
+    // When the last line was written, for the heartbeat.
+    let wrote = std::cell::Cell::new(Instant::now());
     let mut put = |l: &str| {
         if !broken
             && out.write_all(l.as_bytes()).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush()).is_err()
         {
             broken = true;
         }
+        wrote.set(Instant::now());
     };
-    let mut tallied = [0u64; 4];
+    let mut tallied = [0u64; 5];
     // The step whose `begin` was written last and whose `end` wasn't yet:
     // the only one an `at` line may name.
     let mut open = 0;
@@ -229,7 +240,9 @@ fn write_all(mut out: Box<dyn Write + Send>, rx: Receiver<Msg>, shared: Arc<Shar
                 last_at = Instant::now();
             }
             let t = shared.tally();
-            if open != 0 && t != tallied {
+            // The heartbeat: a step that has been quiet for BEAT (a long
+            // read, a slow lookup) still says it is alive.
+            if open != 0 && (t != tallied || wrote.get().elapsed() >= BEAT) {
                 put(&tally_line(t));
                 tallied = t;
             }
@@ -415,6 +428,10 @@ impl Watch for Events {
 
     fn repos(&self, n: usize) {
         self.shared.repos.store(n as u64, Ordering::Relaxed);
+    }
+
+    fn listed(&self, n: usize) {
+        self.shared.listed.fetch_add(n as u64, Ordering::Relaxed);
     }
 
     fn finding(&self, f: &Finding) {

@@ -17,6 +17,7 @@ struct Recorder {
     at: Mutex<Vec<(PathBuf, At)>>,
     repos: Mutex<Vec<usize>>,
     findings: Mutex<Vec<(String, String)>>,
+    listed: std::sync::atomic::AtomicUsize,
 }
 
 impl Watch for Recorder {
@@ -25,6 +26,9 @@ impl Watch for Recorder {
     }
     fn at(&self, path: &Path, what: At) {
         self.at.lock().unwrap().push((path.to_path_buf(), what));
+    }
+    fn listed(&self, n: usize) {
+        self.listed.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
     fn repos(&self, n: usize) {
         self.repos.lock().unwrap().push(n);
@@ -78,6 +82,7 @@ fn the_steps_follow_the_options() {
     Quiet.step("sources");
     Quiet.at(Path::new("/"), At::Dir);
     Quiet.repos(1);
+    Quiet.listed(1);
     Quiet.finding(&Finding::default());
 }
 
@@ -120,6 +125,13 @@ fn a_scan_tells_its_watch_every_step_in_order_and_each_finding_once() {
     let at = rec.at.lock().unwrap().clone();
     assert!(at.iter().any(|(p, w)| *w == At::File && p.ends_with("Cargo.lock")), "{at:?}");
     assert!(at.iter().any(|(p, w)| *w == At::File && p.ends_with("settings.txt")), "{at:?}");
+    // The walk listed the folder's two files (again if another test's scan
+    // dropped the shared memo meanwhile), and the folder was named
+    // (looked over) before the first file was read.
+    let listed = rec.listed.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(listed >= 2 && listed % 2 == 0, "{listed}");
+    let first_file = at.iter().position(|(_, w)| *w == At::File).unwrap();
+    assert!(at[..first_file].iter().any(|(p, w)| *w == At::Dir && p.ends_with("project")), "{at:?}");
     let canon = std::fs::canonicalize(&dir).unwrap();
     for (p, _) in &at {
         assert!(p.starts_with(&dir) || p.starts_with(&canon), "{} is outside the scan", p.display());

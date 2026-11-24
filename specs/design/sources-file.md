@@ -9,8 +9,16 @@ How wpantry declares, fetches and trusts every outside source, for [04-layout-an
 | `rust/crates/wpantry/assets/defaults/sources.toml` | The bundled sources, compiled into the binary. Their hosts make up `HOSTS` |
 | `~/.config/wpantry/sources.toml` | The user's sources. Read on every run when it exists |
 | `--sources FILE` | Read in place of the user's file for one run |
+| `--add-sources FILE` | Repeatable. Its sources are added to the file in effect (`--sources`, or the user's file, which may not exist) for one run of `scan`, `fix` or `sources` |
 
 The user's file can add a source, or change the `tier` of a bundled one (for example, `off`). It can't change a bundled source's URL: a different URL is a different source, with its own `id`.
+
+An added file follows the same rules as the user's file. Its sources come after the user's, in the order the files are given. In addition:
+
+- An `id` names one source across all the files. A source defined in the user's file or an earlier added file can't be defined again; the error names the `id` and both files.
+- Any file may still set only the `tier` of a bundled source, and the last one to set it wins. Any other setting for a bundled `id` is refused, as in the user's file.
+- An added file that is missing or can't be read is an error (exit 2), as is one that can't be used. Only the user's default file may be missing.
+- `sync` and `rules` don't take `--add-sources`.
 
 ## An entry
 
@@ -53,6 +61,7 @@ license = "CC0-1.0"
 2. **The user's sources:**
    - The first time a source with a new host is used, wpantry asks once. The answer is stored in the cache by `id` and URL.
    - With `--no-input` and no stored yes, the source is skipped and reported `unchecked`, never fetched silently.
+   - A source on this machine (`path`, below) reaches no host and is never asked about.
 3. **Sending data:**
    - A user source with `sends` may only send a SHA-256, and it needs its own consent beside the hash-lookup consent.
    - Nothing else in the file can make wpantry send data.
@@ -75,6 +84,46 @@ license = "CC0-1.0"
 | `hash-lookup` | `circl` or `yaraify` | asked about flagged files after the hash-lookup consent and its own; `sends = "sha256"` is required |
 
 A bundled source's entry in the user's file may only set `tier`.
+
+## Sources on this machine
+
+A source of the user's own may give `path = "..."` in place of `url`. It is read from a file or folder on this machine and has the transport `local` and no host. The rules:
+
+1. **Syntax.**
+   - A source gives a `url` or a `path`, never both and never neither. Either mistake is an error naming the source.
+   - A path is absolute (`/srv/rules`, or `C:\rules` and `\\server\share\rules` as TOML literal strings, `'C:\rules'`) or starts with `~/` for the home folder.
+   - A relative path, a path with a `..` part, and an empty path are refused, naming the source. A path written for another system (`C:\...` on macOS) is refused when it is read.
+   - `transport` may be left out or set to `local`; any other value with a `path` is an error.
+   - Only a source of the user's own may have a `path`. On a bundled `id` it is refused like any other change to a bundled source.
+2. **Kinds.** `yara`, `hashes`, `hosts`, `filenames` and `indicators`, the kinds kept as a file. `advisories` and `hash-lookup` stay remote: a `path` for them is refused.
+3. **Reading.** Where a remote source is fetched into its copy (`rules/user-<id>.yar`, `rules/iocs/user-<id>.<kind>.txt`), a local one is read into the same copy, and everything after the copy is unchanged.
+   - A regular file is read up to the source's `max_bytes`.
+   - For `yara` only, the path may be a folder. Its `*.yar` files are joined in byte-wise name order, each followed by a newline, as Elastic's rules are. `max_bytes` applies to the joined text.
+   - In a folder, only regular files directly inside it are read: no subfolders, no symlinks followed, nothing outside the folder. A folder with no `*.yar` file is refused.
+   - A folder for any other kind is refused.
+   - A `path` that is itself a symlink is resolved once; what it names must be a regular file or a folder.
+4. **The same guards as a download.**
+   - A `sha256` pin is checked over the bytes read (for a folder, over the joined text).
+   - A copy that can't be read, is over its cap or fails its pin is refused. The last good copy stays, and the reason shows in `wpantry sources` as a failed fetch's does. With no good copy, the source is `unchecked`.
+   - A gzip list is copied as it is and read like a downloaded one.
+5. **Freshness.** A local source is read again when its fingerprint differs from the one kept at its last good read: the file's modification time and size, or, for a folder, the names, sizes and modification times of its `*.yar` files (and the path, pin and cap). `refresh` is ignored. `--offline` still reads it.
+6. **Consent.** A local source sends nothing and reaches no host, so it is used without asking, `--no-input` included. It still obeys its `tier`: `off` is never used, `deep` only with `--deep`.
+7. **Listing.** `wpantry sources` shows the path where a host would be. `--json` gives `"transport": "local"`, `"host": null` and the path as written in `"path"`; `"path"` is null for every other source.
+
+```toml
+[[source]]
+id = "team-rules"
+kind = "yara"
+format = "yara"
+path = "~/src/team-rules/yara"     # a folder of .yar files
+
+[[source]]
+id = "offline-hashes"
+kind = "hashes"
+format = "lines"
+path = '/mnt/transfer/hashes.txt'
+sha256 = "..."                     # optional, as for a download
+```
 
 ## The bundled sources (phase 3)
 

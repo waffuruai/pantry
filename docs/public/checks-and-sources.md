@@ -117,6 +117,35 @@ A sources file of your own, `~/.config/wpantry/sources.toml` (or `--sources FILE
 
 A source of yours on a host Pantry doesn't already ask, or one that sends anything (a hash lookup may send a flagged file's SHA-256, nothing else), is used only after you say yes, once. With `--no-input` and no yes, it is reported not checked. Details: [the sources file](../../specs/design/sources-file.md).
 
+`--add-sources FILE` on `scan`, `fix` and `sources` adds a file's sources to yours for one run, instead of replacing your file as `--sources` does. Repeat it for more files. An `id` may be defined once across all of them; an added file may still set a bundled source's `tier`.
+
+### Sources on this machine
+
+A source of yours may read a file or folder on this machine with `path` instead of `url`: rules copied to an offline machine, a team's own rule repository checked out next to your code, or lists a program that runs `wpantry` has already downloaded and checked. It works for YARA rules and for hash, host, file-name and indicator lists. A local source sends nothing and reaches no host, so it is used without asking, with `--no-input` and `--offline` too. Its `tier` still holds.
+
+A folder of YARA rules: every `.yar` file directly in it, joined in name order. Subfolders and symlinks inside it are not read.
+
+```toml
+[[source]]
+id = "team-rules"
+kind = "yara"
+format = "yara"
+path = "~/src/team-rules/yara"
+```
+
+A hash list, pinned so that only the copy you checked is used:
+
+```toml
+[[source]]
+id = "offline-hashes"
+kind = "hashes"
+format = "lines"
+path = "/mnt/transfer/hashes.txt"
+sha256 = "<the file's SHA-256>"
+```
+
+A path is absolute, or starts with `~/`; on Windows, write it as a literal string (`path = 'C:\rules\team'`). Relative paths and `..` are refused. Pantry reads the source again when the file (or a `.yar` file in the folder) changes size or modification time. A file that is missing, over its `max_bytes` or fails its pin keeps the last good copy, and `wpantry sources` says why.
+
 ### Third-party sources
 
 Sources Pantry knows how to read but doesn't ship or fetch by default, usually because of their licence. Add one to your sources file to use it.

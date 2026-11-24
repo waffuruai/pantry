@@ -431,6 +431,8 @@ Options:
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
   --events                  write the scan's progress to stderr as JSON Lines (steps, the path being
@@ -514,6 +516,8 @@ Options:
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
   -h, --help                print this help
@@ -702,9 +706,11 @@ Every outside source wpantry reads: its kind, tier, host and licence, when it wa
 whether that is fresh, and what last went wrong.
 
 Options:
-  --json            the sources as JSON
-  --sources <file>  your sources file (default: ~/.config/wpantry/sources.toml when it exists)
-  -h, --help        print this help
+  --json                the sources as JSON
+  --sources <file>      your sources file (default: ~/.config/wpantry/sources.toml when it exists)
+  --add-sources <file>  add this sources file's sources to yours; repeat it for more (an id may be
+                        defined once)
+  -h, --help            print this help
 ```
 
 ### ignore

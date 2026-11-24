@@ -33,6 +33,50 @@ pub fn which(name: &str) -> Option<PathBuf> {
         .find(|p| is_executable(p))
 }
 
+/// Where the system's administration tools live on Unix. A program that
+/// starts wpantry may give it a PATH without the `sbin` folders (a job
+/// runner, another program's child, `env -i`); the checks that run `spctl`,
+/// `scutil`, `system_profiler`, `cupsctl` or `sysadminctl` by name would then
+/// get nothing back and report that they couldn't tell.
+#[cfg(unix)]
+pub const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin"];
+
+/// What a command named `prog` runs, given PATH `path`: `prog` itself when
+/// it has a slash or PATH has it (the spawn finds it there), else the copy
+/// in a [`SYSTEM_DIRS`] folder, else `prog` (the spawn then fails as it
+/// would have).
+///
+/// ```
+/// # #[cfg(unix)] {
+/// use std::ffi::OsStr;
+/// use wpantry::utils::process::resolve;
+/// // sysctl is in /usr/sbin or /sbin; PATH here has neither.
+/// let tool = resolve(OsStr::new("sysctl"), Some(OsStr::new("/nowhere")));
+/// assert!(tool.is_absolute() && tool.ends_with("sysctl"));
+/// # }
+/// ```
+pub fn resolve(prog: &OsStr, path: Option<&OsStr>) -> PathBuf {
+    let given = PathBuf::from(prog);
+    #[cfg(unix)]
+    {
+        let bare = !prog.to_string_lossy().contains('/') && !prog.is_empty();
+        let on_path = || path.is_some_and(|p| std::env::split_paths(p).any(|d| is_executable(&d.join(prog))));
+        if bare
+            && !on_path()
+            && let Some(found) = SYSTEM_DIRS.iter().map(|d| Path::new(d).join(prog)).find(|p| is_executable(p))
+        {
+            return found;
+        }
+    }
+    let _ = path;
+    given
+}
+
+/// [`resolve`] against this process's PATH.
+fn program(prog: &OsStr) -> PathBuf {
+    resolve(prog, std::env::var_os("PATH").as_deref())
+}
+
 fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -88,7 +132,7 @@ const ETXTBSY: i32 = -1;
 /// hold the call past `timeout` (plus a second's grace once it's killed).
 pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-    let mut cmd = Command::new(prog);
+    let mut cmd = Command::new(program(prog));
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("NO_COLOR", "1");
     for (k, v) in env {
         cmd.env(k, v);
@@ -197,7 +241,7 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     let start = |argv: &[&OsStr], stdin: Stdio| -> Result<std::process::Child> {
         let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-        let mut cmd = Command::new(prog);
+        let mut cmd = Command::new(program(prog));
         cmd.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
         // A read of a partial clone never makes git fetch what it's missing.
         cmd.env("GIT_NO_LAZY_FETCH", "1");

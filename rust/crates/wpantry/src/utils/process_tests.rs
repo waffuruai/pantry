@@ -89,3 +89,28 @@ fn a_pipe_hands_over_each_line_and_ends_at_its_deadline() {
         pipe_lines(&[OsStr::new("/no/such/program")], &[OsStr::new("cat")], Duration::from_secs(1), |_| {}).is_err()
     );
 }
+
+/// Risk: wpantry started with a PATH that leaves out the `sbin` folders
+/// runs `spctl`, `scutil` and the other system tools by name and gets
+/// nothing, so posture checks say they couldn't tell. Oracle: the tool's
+/// own copy in a system folder, and PATH still winning when it has one.
+#[cfg(unix)]
+#[test]
+fn a_system_tool_runs_from_its_folder_when_path_leaves_it_out() {
+    let d = TempDir::new("resolve").unwrap();
+    // `sysctl` is in /usr/sbin or /sbin on every Unix CI runs on.
+    let in_system = |p: &Path| SYSTEM_DIRS.iter().any(|dir| p == Path::new(dir).join("sysctl"));
+    let tool = resolve(OsStr::new("sysctl"), Some(d.path().as_os_str()));
+    assert!(in_system(&tool), "{}", tool.display());
+    let tool = resolve(OsStr::new("sysctl"), None);
+    assert!(in_system(&tool), "no PATH at all: {}", tool.display());
+    // PATH has its own: the spawn finds it there, so the name stays.
+    executable(&d.path().join("sysctl"), "#!/bin/sh\necho mine\n");
+    assert_eq!(resolve(OsStr::new("sysctl"), Some(d.path().as_os_str())), PathBuf::from("sysctl"));
+    // A path, or a name no folder has, is left as it is; so is a tool of
+    // the bin folders, which the spawn's own search already covers.
+    assert_eq!(resolve(OsStr::new("./sysctl"), None), PathBuf::from("./sysctl"));
+    let missing = "wpantry-no-such-tool";
+    assert_eq!(resolve(OsStr::new(missing), Some(d.path().as_os_str())), PathBuf::from(missing));
+    assert_eq!(resolve(OsStr::new("sh"), Some(d.path().as_os_str())), PathBuf::from("sh"));
+}

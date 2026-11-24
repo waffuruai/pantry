@@ -173,13 +173,19 @@ fn sources() {
                 "last_attempt",
                 "last_success",
                 "fresh",
-                "error"
+                "error",
+                "records",
+                "skipped"
             ])
         );
         assert!(["default", "deep", "off"].contains(&str_(&s["tier"])), "{s}");
         assert!(["https", "git", "local"].contains(&str_(&s["transport"])), "{s}");
         assert_eq!(s["host"].is_null(), s["transport"] == "git" || s["transport"] == "local", "{s}");
         assert_eq!(s["path"].is_null(), s["transport"] != "local", "{s}");
+        // Counts only for a folder of OSV records on this machine.
+        if s["format"] != "osv-dir" {
+            assert_eq!(pick(s, &["records", "skipped"]), json!([null, null]), "{s}");
+        }
     }
     let r = t.run(&["sources"]);
     assert_eq!(r.code, 0);

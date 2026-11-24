@@ -166,6 +166,31 @@ pub fn is_kev(rec: &Value, kev: &HashSet<String>) -> bool {
 }
 
 /// OpenSSF malicious-package reports (MAL-…).
+/// An advisory finding's note, naming the user's source when a record of
+/// the group came from a folder of OSV records on this machine
+/// ([`crate::sources::osv_dir`]): `(from your source ID: LINK)` when the
+/// finding's own record did (its link, or none: never an OSV.dev one it
+/// doesn't give), `(also in your source ID)` when another of the group did.
+///
+/// ```ignore
+/// // "widget overflow (from your source team-advisories: https://example.com/TEAM-2026-0001)"
+/// ```
+pub fn local_note(note: &str, main: &Value, group: &[Value]) -> String {
+    use crate::sources::osv_dir::{SOURCE_KEY, link};
+    let source = |r: &Value| r.get(SOURCE_KEY).and_then(Value::as_str).map(str::to_string);
+    let tail = match source(main) {
+        Some(id) => match link(main) {
+            Some(url) => format!("(from your source {id}: {url})"),
+            None => format!("(from your source {id})"),
+        },
+        None => match group.iter().find_map(source) {
+            Some(id) => format!("(also in your source {id})"),
+            None => return note.to_string(),
+        },
+    };
+    if note.is_empty() { tail } else { format!("{note} {tail}") }
+}
+
 pub fn is_malicious(rec: &Value) -> bool {
     osv::ids_of(rec).iter().any(|i| i.starts_with("MAL-"))
 }
@@ -369,6 +394,20 @@ impl<'a> Scan<'a> {
                     self.unchecked(&format!("the source {} (your sources file)", s.id), &e.to_string());
                 }
             }
+        }
+        // The user's folders of OSV records, read when they changed; a
+        // source that is off or kept for --deep keeps its records.
+        let effective = file::effective();
+        let declared: Vec<file::Source> =
+            effective.sources.iter().filter(|s| effective.user.contains(&s.id)).cloned().collect();
+        let mine: Vec<file::Source> = declared.iter().filter(|s| file::active(&s.id)).cloned().collect();
+        match crate::sources::osv_dir::load(&self.cache, &mine, &declared) {
+            Ok(failed) => {
+                for (id, why) in failed {
+                    self.unchecked(&format!("the source {id} (your sources file)"), &why);
+                }
+            }
+            Err(e) => self.unchecked("your sources file's advisories", &e.to_string()),
         }
     }
 
@@ -614,7 +653,7 @@ impl<'a> Scan<'a> {
         }
         let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log, status)?;
         let mut why = answers.gaps;
-        let unreached = items.iter().any(|it| !answers.found.contains_key(it));
+        let unreached = items.iter().any(|it| !answers.found.contains_key(it) || answers.unanswered.contains(it));
         if unreached {
             why.insert(0, "OSV unreachable and not cached".into());
         }
@@ -843,7 +882,7 @@ impl<'a> Scan<'a> {
                     status: "fail".into(),
                     kev: true,
                     severity: "MALICIOUS".into(),
-                    note: if summary.is_empty() { "known malicious package".into() } else { summary.into() },
+                    note: local_note(if summary.is_empty() { "known malicious package" } else { summary }, bad, group),
                     fix_cmd: REMOVE.replace("{}", who),
                     ..Finding::of(c)
                 });
@@ -883,10 +922,14 @@ impl<'a> Scan<'a> {
                         status: "warn".into(),
                         kev,
                         severity,
-                        note: format!(
-                            "{} (no fix released for {} yet)",
-                            str_at(main, "summary"),
-                            if eco.is_empty() { "it" } else { &eco }
+                        note: local_note(
+                            &format!(
+                                "{} (no fix released for {} yet)",
+                                str_at(main, "summary"),
+                                if eco.is_empty() { "it" } else { &eco }
+                            ),
+                            main,
+                            group,
                         ),
                         fix_cmd: step,
                         ..Finding::of(c)
@@ -917,7 +960,7 @@ impl<'a> Scan<'a> {
                 fixed: safe.clone(),
                 kev,
                 severity: severity_of(main),
-                note: str_at(main, "summary").into(),
+                note: local_note(str_at(main, "summary"), main, group),
                 fix_cmd,
                 fix_auto,
                 affected_range,

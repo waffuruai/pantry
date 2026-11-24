@@ -11,10 +11,12 @@
 //! `refresh` period, and it is read with `--offline` too: it contacts
 //! nobody.
 //!
-//! A folder is read flat: only the regular files directly in it, no
-//! subfolders, and no symlinks followed, so nothing outside the folder is
-//! read. The path itself may be a symlink: it is resolved once, and what it
-//! names must be a regular file or a folder.
+//! A folder of rules is read flat: only the regular files directly in it,
+//! no subfolders, and no symlinks followed, so nothing outside the folder
+//! is read. A folder of OSV records ([`crate::sources::osv_dir`]) is read
+//! with the same rules and one level of real subfolders. The path itself
+//! may be a symlink: it is resolved once, and what it names must be a
+//! regular file or a folder.
 //!
 //! ```toml
 //! [[source]]
@@ -33,11 +35,36 @@ use std::time::UNIX_EPOCH;
 
 /// What a local source's path names, resolved.
 #[derive(Debug, PartialEq)]
-enum Found {
+pub(crate) enum Found {
     File(PathBuf),
-    /// A folder and its `*.yar` files, in byte-wise name order.
-    Folder(PathBuf, Vec<PathBuf>),
+    /// A folder and the files read from it ([`folder_files`]), in byte-wise
+    /// order of their paths relative to the folder.
+    Folder(PathBuf, Vec<Entry>),
 }
+
+/// One file of a folder source: where it is, and its path relative to the
+/// folder with `/` between parts (`npm/TEAM-1.json`), the name it is
+/// ordered and pinned by.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Entry {
+    pub path: PathBuf,
+    pub rel: Vec<u8>,
+}
+
+/// Which files of a folder a source reads.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Walk {
+    /// The extension a file has to have (`yar`, `json`).
+    pub ext: &'static str,
+    /// How many levels of subfolders below the folder are read: 0 reads it
+    /// flat.
+    pub depth: usize,
+    /// The most files listed; more is an error, not a cut.
+    pub max_files: usize,
+}
+
+/// A YARA rules folder: its `*.yar` files, flat.
+const RULES: Walk = Walk { ext: "yar", depth: 0, max_files: usize::MAX };
 
 #[cfg(test)]
 thread_local! {
@@ -88,53 +115,86 @@ pub(crate) fn copy(cache: &Cache, s: &Source, key: &str) -> Result<Option<Vec<u8
 /// or, for YARA rules, a folder with `*.yar` files in it.
 fn locate(s: &Source) -> std::result::Result<Found, String> {
     let p = file::local_path(s).map_err(|e| e.to_string())?;
-    let real = std::fs::canonicalize(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let real = resolve(&p)?;
+    if !real.1 {
+        return Ok(Found::File(real.0));
+    }
+    if s.kind != "yara" {
+        return Err(format!(
+            "{} is a folder: a folder is a source only of YARA rules (kind yara) or of OSV records (format osv-dir)",
+            p.display()
+        ));
+    }
+    let rules = folder_files(&real.0, RULES).map_err(|e| format!("{}: {e}", p.display()))?;
+    if rules.is_empty() {
+        return Err(format!("{} has no .yar files", p.display()));
+    }
+    Ok(Found::Folder(real.0, rules))
+}
+
+/// `p` resolved once (a symlink to the file or folder is followed here, and
+/// only here), and whether it is a folder; refused unless it names a
+/// regular file or a folder.
+pub(crate) fn resolve(p: &Path) -> std::result::Result<(PathBuf, bool), String> {
+    let real = std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()))?;
     let meta = std::fs::symlink_metadata(&real).map_err(|e| format!("{}: {e}", p.display()))?;
     if meta.is_file() {
-        return Ok(Found::File(real));
+        return Ok((real, false));
     }
     if !meta.is_dir() {
         return Err(format!("{} is not a regular file or a folder", p.display()));
     }
-    if s.kind != "yara" {
-        return Err(format!("{} is a folder: a folder is a source only of YARA rules (kind yara)", p.display()));
-    }
-    let rules = rule_files(&real).map_err(|e| format!("{}: {e}", p.display()))?;
-    if rules.is_empty() {
-        return Err(format!("{} has no .yar files", p.display()));
-    }
-    Ok(Found::Folder(real, rules))
+    Ok((real, true))
 }
 
-/// The `*.yar` regular files directly in `dir`, in byte-wise name order:
-/// a symlink or a subfolder is passed over, never followed.
-fn rule_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for e in std::fs::read_dir(dir)?.flatten() {
-        // The entry's own type: a symlink is a symlink here, not its target.
-        let regular = e.file_type().is_ok_and(|t| t.is_file());
-        let p = e.path();
-        if regular && p.extension().is_some_and(|x| x == "yar") {
-            out.push(p);
+/// The regular files with `walk.ext` in `dir` and, `walk.depth` levels
+/// down, in its real subfolders, in byte-wise order of their relative
+/// paths: a symlink (to a file or a folder) is passed over, never followed,
+/// and a subfolder deeper than `walk.depth` is not read. More than
+/// `walk.max_files` such files is an error.
+///
+/// ```ignore
+/// // dir/a.json, dir/npm/b.json, dir/npm/deep/c.json, dir/link.json -> x
+/// // depth 1: a.json, npm/b.json
+/// ```
+pub(crate) fn folder_files(dir: &Path, walk: Walk) -> std::io::Result<Vec<Entry>> {
+    let mut out: Vec<Entry> = Vec::new();
+    // (folder, its relative path with a trailing `/`, its level)
+    let mut todo: Vec<(PathBuf, Vec<u8>, usize)> = vec![(dir.to_path_buf(), Vec::new(), 0)];
+    while let Some((at, prefix, level)) = todo.pop() {
+        for e in std::fs::read_dir(&at)?.flatten() {
+            // The entry's own type: a symlink is a symlink here, not its target.
+            let Ok(kind) = e.file_type() else { continue };
+            let mut rel = prefix.clone();
+            rel.extend_from_slice(e.file_name().as_encoded_bytes());
+            if kind.is_dir() && level < walk.depth {
+                rel.push(b'/');
+                todo.push((e.path(), rel, level + 1));
+                continue;
+            }
+            let p = e.path();
+            if kind.is_file() && p.extension().is_some_and(|x| x == walk.ext) {
+                if out.len() >= walk.max_files {
+                    return Err(std::io::Error::other(format!("more than {} .{} files", walk.max_files, walk.ext)));
+                }
+                out.push(Entry { path: p, rel });
+            }
         }
     }
-    out.sort_by(|a, b| {
-        let name = |p: &PathBuf| p.file_name().map(|n| n.as_encoded_bytes().to_vec()).unwrap_or_default();
-        name(a).cmp(&name(b))
-    });
+    out.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(out)
 }
 
 /// What a read depends on: where it reads, the pin and the cap, and each
 /// file's name, size and modification time. A changed one is read again.
-fn fingerprint(s: &Source, found: &Found) -> String {
+pub(crate) fn fingerprint(s: &Source, found: &Found) -> String {
     let mut h = crate::utils::sha256::Sha256::new();
     h.update(format!("{}\n{}\n{}\n", s.url, s.sha256, s.max_bytes).as_bytes());
     let files: Vec<&PathBuf> = match found {
         Found::File(f) => vec![f],
-        Found::Folder(dir, rules) => {
+        Found::Folder(dir, entries) => {
             h.update(format!("folder {}\n", dir.display()).as_bytes());
-            rules.iter().collect()
+            entries.iter().map(|e| &e.path).collect()
         }
     };
     for f in files {
@@ -172,10 +232,10 @@ fn read(s: &Source, found: &Found) -> std::result::Result<Vec<u8>, String> {
                 let over =
                     |e: String| format!("{}: {e} (the .yar files are read up to {} bytes)", dir.display(), s.max_bytes);
                 let Some(room) = s.max_bytes.checked_sub(out.len() as u64 + 1) else {
-                    return Err(over(format!("{} is over the cap with the newline after it", f.display())));
+                    return Err(over(format!("{} is over the cap with the newline after it", f.path.display())));
                 };
-                let body = read_entry(f, room).map_err(over)?;
-                let body = rules_text(f, body).map_err(|e| format!("{}: {e}", dir.display()))?;
+                let body = read_entry(&f.path, room).map_err(over)?;
+                let body = rules_text(&f.path, body).map_err(|e| format!("{}: {e}", dir.display()))?;
                 out.extend_from_slice(&body);
                 out.push(b'\n');
             }
@@ -202,9 +262,9 @@ fn rules_text(f: &Path, body: Vec<u8>) -> std::result::Result<Vec<u8>, String> {
     Ok(body.strip_prefix(b"\xEF\xBB\xBF").map(<[u8]>::to_vec).unwrap_or(body))
 }
 
-/// One rule file of a folder, at most `max` bytes, refused when it is no
-/// longer the regular file listed (swapped for a symlink since).
-fn read_entry(f: &Path, max: u64) -> std::result::Result<Vec<u8>, String> {
+/// One file of a folder, at most `max` bytes, refused when it is no longer
+/// the regular file listed (swapped for a symlink since).
+pub(crate) fn read_entry(f: &Path, max: u64) -> std::result::Result<Vec<u8>, String> {
     let listed = std::fs::symlink_metadata(f).map_err(|e| e.to_string())?;
     if !listed.file_type().is_file() {
         return Err(format!("{} is not a regular file", f.display()));

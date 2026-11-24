@@ -1252,6 +1252,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>, added: &[std::path:
     let user = sources::effective().user.clone();
     let cache = Cache::open(None)?;
     let all = wpantry::sources::fetch::listing(&cache)?;
+    // A folder of OSV records: how many records its last good read holds,
+    // and how many of its files were skipped.
+    let mut counts = std::collections::HashMap::new();
+    for l in all.iter().filter(|l| wpantry::sources::osv_dir::is_osv_dir(&l.source)) {
+        if let Some(n) = wpantry::sources::osv_dir::counts(&cache, &l.source.id)? {
+            counts.insert(l.source.id.clone(), n);
+        }
+    }
     cache.close()?;
     let now = wpantry::utils::os::now();
     let when = |t: f64| if t > 0.0 { J::Float(t) } else { J::Null };
@@ -1284,6 +1292,8 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>, added: &[std::path:
                     ("last_success", when(l.state.success)),
                     ("fresh", J::Bool(l.fresh)),
                     ("error", if l.state.error.is_empty() { J::Null } else { l.state.error.as_str().into() }),
+                    ("records", counts.get(&s.id).map_or(J::Null, |n| J::Int(n.0 as i64))),
+                    ("skipped", counts.get(&s.id).map_or(J::Null, |n| J::Int(n.1 as i64))),
                 ])
             })
             .collect();
@@ -1313,6 +1323,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>, added: &[std::path:
             s.license,
             if s.redistribute { "" } else { " (fetched here, never redistributed)" }
         ));
+        if let Some((records, skipped)) = counts.get(&s.id) {
+            show(&format!(
+                "{:<28} {records} {} loaded, {skipped} {} skipped",
+                "",
+                if *records == 1 { "record" } else { "records" },
+                if *skipped == 1 { "file" } else { "files" }
+            ));
+        }
         if !l.state.error.is_empty() {
             show(&format!("{:<28} last error: {}", "", l.state.error));
         }

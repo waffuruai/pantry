@@ -25,6 +25,7 @@ pub mod malicious_packages;
 mod mutate;
 pub mod osv;
 pub mod osv_changes;
+pub mod osv_dir;
 pub mod package_licenses;
 pub mod releases;
 #[cfg(test)]

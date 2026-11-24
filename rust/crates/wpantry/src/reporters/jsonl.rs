@@ -124,14 +124,20 @@ fn with_text_in(cache: &Cache, advisories: &mut Advisories, findings: &mut [Find
     }
 }
 
-/// The OSV record for a finding's id: the record with that id, or the one
-/// that lists it as an alias.
-fn record(cache: &Cache, vuln_id: &str) -> Result<Option<Value>> {
+/// The OSV record for a finding's id, and where it came from: the record
+/// with that id, or the one that lists it as an alias, from OSV's cached
+/// records first, then from the user's folders of OSV records
+/// ([`crate::sources::osv_dir`]), whose link (`Some`, "" for none) is the
+/// record's own.
+fn record(cache: &Cache, vuln_id: &str) -> Result<Option<(Value, Option<String>)>> {
     if vuln_id.is_empty() {
         return Ok(None);
     }
     if let Some(r) = cache.vuln(vuln_id)? {
-        return Ok(Some(r));
+        return Ok(Some((r, None)));
+    }
+    if let Some((r, url)) = crate::sources::osv_dir::by_id(cache, vuln_id, false)? {
+        return Ok(Some((r, Some(url))));
     }
     let found: Option<String> = cache
         .conn
@@ -141,7 +147,10 @@ fn record(cache: &Cache, vuln_id: &str) -> Result<Option<Value>> {
             |r| r.get(0),
         )
         .optional()?;
-    Ok(found.and_then(|t| serde_json::from_str(&t).ok()))
+    if let Some(r) = found.and_then(|t| serde_json::from_str(&t).ok()) {
+        return Ok(Some((r, None)));
+    }
+    Ok(crate::sources::osv_dir::by_id(cache, vuln_id, true)?.map(|(r, url)| (r, Some(url))))
 }
 
 /// The exposure row for a finding's key, if scans have been recorded.
@@ -199,11 +208,12 @@ fn resolved_scan(cache: &Cache, key: &str) -> Result<Option<i64>> {
 
 fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let f = &row.finding;
-    let rec = record(cache, &f.vuln_id)?;
+    let found = record(cache, &f.vuln_id)?;
     let wordfence = crate::sources::wordfence::link_in(&f.note).filter(|_| f.kind == crate::sources::wordfence::KIND);
-    let (aliases, url) = match &rec {
+    let cve = || format!("https://www.cve.org/CVERecord?id={}", f.vuln_id);
+    let (aliases, url) = match &found {
         _ if wordfence.is_some() => (Vec::new(), wordfence.unwrap_or_default().to_string()),
-        Some(r) => {
+        Some((r, local)) => {
             let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
             for a in &f.aliases {
@@ -211,11 +221,15 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
                     ids.push(a.clone());
                 }
             }
-            (ids, format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")))
+            let url = match local {
+                // A record of the user's own: its own link, never OSV.dev's.
+                Some(u) if u.is_empty() && f.vuln_id.starts_with("CVE-") => cve(),
+                Some(u) => u.clone(),
+                None => format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")),
+            };
+            (ids, url)
         }
-        None if f.vuln_id.starts_with("CVE-") => {
-            (f.aliases.clone(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
-        }
+        None if f.vuln_id.starts_with("CVE-") => (f.aliases.clone(), cve()),
         None => (f.aliases.clone(), String::new()),
     };
     let life = exposure(cache, &row.key)?;
@@ -240,7 +254,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
         "excluded": f.excluded, "summary": f.summary, "cwe": f.cwe,
-        "aliases": aliases, "url": url, "record": rec,
+        "aliases": aliases, "url": url, "record": found.map(|(r, _)| r),
         "first_seen": first_seen, "last_seen": last_seen, "resolved_at": resolved_at, "days_exposed": days,
         "first_epss": first_epss, "first_epss_percentile": first_epss_percentile,
         "fix": fix,

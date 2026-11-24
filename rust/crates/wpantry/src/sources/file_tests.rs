@@ -158,7 +158,16 @@ fn a_local_path_is_absolute_or_under_home_and_only_for_a_file_kind() {
     refused(yara, "a url (https) or a path");
     refused(&format!("{yara}path = \"/srv/r.yar\"\ntransport = \"https\""), "transport is local");
     refused(&format!("{yara}transport = \"local\""), "gives its path");
-    refused("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-api\"\npath = \"/srv/osv\"", "fetched over https");
+    // Advisories on this machine are a folder of OSV records, and such a
+    // folder is never fetched.
+    refused("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-api\"\npath = \"/srv/osv\"", "format = \"osv-dir\"");
+    refused("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-dir\"\nurl = \"https://a.b/osv\"", "gives a path");
+    refused("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-dir\"", "gives a path");
+    refused("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-dir\"\npath = \"advisories\"", "absolute");
+    let osv = local("advisories", "osv-dir", "\"~/advisories\"").unwrap();
+    let s = osv.last().unwrap();
+    assert_eq!((s.transport, s.host(), s.url.as_str()), (Transport::Local, None, "~/advisories"));
+    assert!(local("advisories", "osv-api", "\"/srv/osv\"").is_err());
     refused(
         "id = \"mine\"\nkind = \"hash-lookup\"\nformat = \"circl\"\npath = \"/srv/h\"\nsends = \"sha256\"",
         "fetched over https",

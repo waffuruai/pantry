@@ -309,13 +309,18 @@ const USER_FORMATS: &[(&str, &[&str])] = &[
     ("hosts", &["lines"]),
     ("filenames", &["lines"]),
     ("indicators", &["maltrail-csv"]),
-    ("advisories", &["osv-api"]),
+    ("advisories", &["osv-api", "osv-dir"]),
     ("hash-lookup", &["circl", "yaraify"]),
 ];
 
 /// The kinds a local source (`path = …`) may have: the ones kept as a file
-/// ([`crate::sources::user`]), read into that file instead of fetched.
-const LOCAL_KINDS: &[&str] = &["yara", "hashes", "hosts", "filenames", "indicators"];
+/// ([`crate::sources::user`]), read into that file instead of fetched, and
+/// advisories as a folder of OSV records (`format = "osv-dir"`,
+/// [`crate::sources::osv_dir`]).
+const LOCAL_KINDS: &[&str] = &["yara", "hashes", "hosts", "filenames", "indicators", "advisories"];
+
+/// The format of a folder of OSV records on this machine.
+pub const OSV_DIR: &str = "osv-dir";
 
 /// What the user's sources file is called in messages.
 pub const USER_FILE_NAME: &str = "your sources file";
@@ -388,6 +393,14 @@ fn merge_one(all: &mut Vec<Source>, defined: &mut Vec<(String, String)>, name: &
                 return Err(bad(&format!("a {} source's format is {}", s.kind, f.join(" or "))));
             }
             _ => {}
+        }
+        // A folder of OSV records is read on this machine, and advisories on
+        // this machine come only as such a folder.
+        if s.format == OSV_DIR && s.transport != Transport::Local {
+            return Err(bad("an osv-dir source is a folder on this machine: it gives a path, not a url"));
+        }
+        if s.kind == "advisories" && s.transport == Transport::Local && s.format != OSV_DIR {
+            return Err(bad("an advisories source with a path is a folder of OSV records: format = \"osv-dir\""));
         }
         if s.transport == Transport::Local {
             if !LOCAL_KINDS.contains(&s.kind.as_str()) {

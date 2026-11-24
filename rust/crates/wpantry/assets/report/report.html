@@ -404,7 +404,11 @@ function isBundle(kind){return kind==='image'||kind==='bundled'}
 function spansPlaces(kind){return kind==='project'||kind==='secret'}
 function when(ms){var d=new Date(ms);return isNaN(d.getTime())?'':d.toISOString().slice(0,16).replace('T',' ')+' UTC'}
 
-function advLinks(id){
+// A finding from a folder of OSV records of your own names its source and its record's own link (or none) in its note (checks/mod.rs, local_note): it gets that link, never an OSV.dev one the record doesn't give.
+var LOCAL_SOURCE=/\(from your source [a-z0-9-]+(?:: (https:\/\/\S+?))?\)(?= \(|$)/;
+function advLinks(id,f){
+  var local=f&&typeof f.note==='string'?f.note.match(LOCAL_SOURCE):null;
+  if(local)return local[1]?[{id:id,url:local[1]}]:/^CVE-/.test(id)?[{id:id,url:'https://www.cve.org/CVERecord?id='+encodeURIComponent(id)}]:[];
   var out=[], seen=Object.create(null);
   function add(x){
     if(!x||seen[x]||isMarker(x))return; seen[x]=1;
@@ -714,7 +718,7 @@ function detailHTML(row,print){
   var top=row.top, out='<div class="detail">';
   if(top.note)out+='<p class="why">'+ticks(top.note)+'</p>';
   out+='<ul class="advs">'+row.fs.map(function(f){
-    var links=isAdvisory(f)?advLinks(f.vuln_id):[];
+    var links=isAdvisory(f)?advLinks(f.vuln_id,f):[];
     var wf=wordfenceLink(f);
     if(wf&&!links.some(function(l){return l.url===wf}))links=links.concat([{id:'Wordfence',url:wf}]);
     var id=links.length?links.map(function(l){return '<a href="'+esc(l.url)+'" target="_blank" rel="noopener noreferrer">'+esc(l.id)+'</a>'}).join(' '):esc(f.vuln_id||'—');

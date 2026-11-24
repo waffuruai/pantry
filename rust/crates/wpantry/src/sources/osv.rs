@@ -71,6 +71,10 @@ pub struct Answers {
     /// whose records couldn't be downloaded, or answers older than a day that
     /// couldn't be asked again. The findings they do give still stand.
     pub gaps: Vec<String>,
+    /// Items in `found` only for records from the user's folders of OSV
+    /// records ([`crate::sources::osv_dir`]): OSV never answered them, so
+    /// the caller still reports them unchecked against OSV.
+    pub unanswered: BTreeSet<Item>,
 }
 
 /// OSV's answers for `items`. Only a cache failure is an error.
@@ -157,7 +161,7 @@ pub fn lookup(
     }
     let mut out = Answers::default();
     let mut old = 0;
-    for it in items {
+    for it in &items {
         let Some((at, ids)) = cache.query(&it.0, &it.1, &it.2)? else { continue };
         if !current(it, at)? {
             old += 1;
@@ -172,10 +176,32 @@ pub fn lookup(
                 if let Some(affected) = r.get_mut("affected").and_then(Value::as_array_mut) {
                     affected.retain(|a| matches(a, &it.0, &it.1));
                 }
+                crate::sources::osv_dir::strip(&mut r);
                 recs.push(r);
             }
         }
-        out.found.insert(it.clone(), recs);
+        out.found.insert((*it).clone(), recs);
+    }
+    // The user's folders of OSV records, judged here: after OSV's records,
+    // and one with an id OSV's answer already has is the same advisory.
+    let local = crate::sources::osv_dir::matching(cache, items.iter().copied(), &crate::sources::osv_dir::in_use())?;
+    for (it, recs) in local.found {
+        if !out.found.contains_key(&it) {
+            out.unanswered.insert(it.clone());
+        }
+        let have = out.found.entry(it).or_default();
+        for r in recs {
+            if !have.iter().any(|h| str_at(h, "id") == str_at(&r, "id")) {
+                have.push(r);
+            }
+        }
+    }
+    for (source, ids) in &local.undecided {
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        out.gaps.push(format!(
+            "your source {source} has advisories whose versions can't be compared here (a range of git commits, or an ecosystem without a known order), so they weren't used: {}",
+            ids.join(", ")
+        ));
     }
     if !absent.is_empty() {
         let ids: Vec<&str> = absent.iter().map(String::as_str).collect();

@@ -187,7 +187,13 @@ fn a_local_path_resolves_under_home_and_never_relative() {
         ..bundled()[0].clone()
     };
     assert_eq!(local_path(&s("~/rules/t.yar")).unwrap(), home.join("rules/t.yar"));
-    assert_eq!(local_path(&s("/srv/t.yar")).unwrap(), std::path::PathBuf::from("/srv/t.yar"));
+    // `/srv/t.yar` has no drive, so it is an absolute path only off Windows.
+    let rooted = local_path(&s("/srv/t.yar"));
+    if cfg!(windows) {
+        assert!(rooted.is_err(), "{rooted:?}");
+    } else {
+        assert_eq!(rooted.unwrap(), std::path::PathBuf::from("/srv/t.yar"));
+    }
     let windows = local_path(&s(r"C:\rules\t.yar"));
     assert_eq!(windows.is_ok(), cfg!(windows), "{windows:?}");
 }

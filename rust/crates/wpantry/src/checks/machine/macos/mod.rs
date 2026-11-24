@@ -24,11 +24,24 @@ mod time;
 mod updates;
 
 pub(super) fn read(r: Runner, domain: &str, key: &str) -> String {
-    r(&["defaults", "read", domain, key])
+    missing_key(r(&["defaults", "read", domain, key]), domain, key)
 }
 
 pub(super) fn read_host(r: Runner, domain: &str, key: &str) -> String {
-    r(&["defaults", "-currentHost", "read", domain, key])
+    missing_key(r(&["defaults", "-currentHost", "read", domain, key]), domain, key)
+}
+
+/// macOS 27 says `Could not find key '<key>' in domain '<domain>'` for a key
+/// that isn't set, where earlier releases said `The domain/default pair of
+/// (<domain>, <key>) does not exist`; the checks read the older wording, so the
+/// newer one is given as it. `Domain '<domain>' not found` is left alone: it is
+/// also what a container without Full Disk Access answers.
+fn missing_key(out: String, domain: &str, key: &str) -> String {
+    if out.contains("Could not find key") {
+        format!("The domain/default pair of ({domain}, {key}) does not exist")
+    } else {
+        out
+    }
 }
 
 /// The checks, in the order the report lists them.

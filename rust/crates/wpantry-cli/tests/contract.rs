@@ -164,6 +164,7 @@ fn sources() {
                 "tier",
                 "host",
                 "transport",
+                "path",
                 "user",
                 "license",
                 "redistribute",
@@ -176,8 +177,9 @@ fn sources() {
             ])
         );
         assert!(["default", "deep", "off"].contains(&str_(&s["tier"])), "{s}");
-        assert!(["https", "git"].contains(&str_(&s["transport"])), "{s}");
-        assert_eq!(s["host"].is_null(), s["transport"] == "git", "{s}");
+        assert!(["https", "git", "local"].contains(&str_(&s["transport"])), "{s}");
+        assert_eq!(s["host"].is_null(), s["transport"] == "git" || s["transport"] == "local", "{s}");
+        assert_eq!(s["path"].is_null(), s["transport"] != "local", "{s}");
     }
     let r = t.run(&["sources"]);
     assert_eq!(r.code, 0);
@@ -188,7 +190,8 @@ fn sources() {
     write(
         &mine,
         "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n\n\
-         [[source]]\nid = \"team-rules\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example.com/t.yar\"\n",
+         [[source]]\nid = \"team-rules\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example.com/t.yar\"\n\n\
+         [[source]]\nid = \"team-hashes\"\nkind = \"hashes\"\nformat = \"lines\"\npath = \"~/lists/bad.txt\"\n",
     );
     let r = t.run(&["sources", "--sources", s(&mine), "--json"]);
     assert_eq!(r.code, 0);
@@ -197,6 +200,14 @@ fn sources() {
     assert_eq!(by_id["cisa-kev"]["tier"], "off");
     assert!(truthy(&by_id["team-rules"]["user"]));
     assert_eq!(by_id["team-rules"]["host"], "rules.example.com");
+    assert_eq!(by_id["team-rules"]["path"], Value::Null);
+    // A source on this machine: no host, its path as written.
+    let local = &by_id["team-hashes"];
+    assert_eq!(pick(local, &["transport", "host", "path"]), json!(["local", null, "~/lists/bad.txt"]), "{local}");
+    let r = t.run(&["sources", "--sources", s(&mine)]);
+    assert_eq!(r.code, 0);
+    let line = r.out.lines().find(|l| l.starts_with("team-hashes")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(line.contains("~/lists/bad.txt (yours)"), "the path where a host would be: {line}");
     write(&mine, "[[source]]\nid = \"cisa-kev\"\nurl = \"https://evil.example/kev.json\"\n");
     let r = t.run(&["sources", "--sources", s(&mine)]);
     assert_eq!(r.code, 2);

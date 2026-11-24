@@ -118,6 +118,8 @@ pub struct Check {
     pub no_online_hash: bool,
     /// `--sources FILE`: the user's sources file for this run.
     pub sources: Option<PathBuf>,
+    /// `--add-sources FILE` (repeatable): sources added to the user's for this run.
+    pub add_sources: Vec<PathBuf>,
     /// `--allow-sleep` (or `WPANTRY_ALLOW_SLEEP=1`): let the machine sleep
     /// during the scan.
     pub allow_sleep: bool,
@@ -183,6 +185,8 @@ pub enum Command {
         json: bool,
         /// `--sources FILE`: the user's sources file to list with.
         file: Option<PathBuf>,
+        /// `--add-sources FILE` (repeatable): sources added to it.
+        added: Vec<PathBuf>,
     },
     /// `report`: the latest scan, shown.
     Report(Show),
@@ -324,6 +328,10 @@ fn scan_opts() -> Vec<Opt> {
             "--sources <file>",
             "your sources file for this run (default: ~/.config/wpantry/sources.toml when it exists)",
         ),
+        Opt::new(
+            "--add-sources <file>",
+            "add this sources file's sources to yours for this run; repeat it for more (an id may be defined once)",
+        ),
         Opt::new("--allow-sleep", "let the Mac idle-sleep during the scan (kept awake otherwise; or WPANTRY_ALLOW_SLEEP=1)"),
     ]);
     opts
@@ -439,7 +447,11 @@ pub fn program() -> Cli {
                 .description("Every outside source wpantry reads: its kind, tier, host and licence, when it was last fetched, whether that is fresh, and what last went wrong.")
                 .summary("Every outside source, when it was last fetched and what went wrong")
                 .option("--json", "the sources as JSON")
-                .option("--sources <file>", "your sources file (default: ~/.config/wpantry/sources.toml when it exists)"),
+                .option("--sources <file>", "your sources file (default: ~/.config/wpantry/sources.toml when it exists)")
+                .option(
+                    "--add-sources <file>",
+                    "add this sources file's sources to yours; repeat it for more (an id may be defined once)",
+                ),
         )
         .command(
             Cli::new("ignore")
@@ -570,6 +582,7 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
         no_personal_files: m.flag("no-personal-files"),
         no_online_hash: m.flag("no-online-hash"),
         sources: m.value("sources").map(expand),
+        add_sources: m.values("add-sources").into_iter().map(expand).collect(),
         allow_sleep: m.flag("allow-sleep")
             || std::env::var("WPANTRY_ALLOW_SLEEP").is_ok_and(|v| !v.is_empty() && v != "0"),
         show: show(m)?,
@@ -780,7 +793,11 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             out: m.value("out").map(expand),
         },
         ["ignore", action] => Command::Ignore { action: ignore_action(m, action)?, json: flag("json") },
-        ["sources"] => Command::Sources { json: flag("json"), file: m.value("sources").map(expand) },
+        ["sources"] => Command::Sources {
+            json: flag("json"),
+            file: m.value("sources").map(expand),
+            added: m.values("add-sources").into_iter().map(expand).collect(),
+        },
         ["breach"] => Command::Breach { enable: flag("enable"), disable: flag("disable") },
         ["cache", action] => Command::Cache {
             action: action.to_string(),

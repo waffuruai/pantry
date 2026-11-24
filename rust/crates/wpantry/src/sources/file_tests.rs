@@ -118,3 +118,133 @@ fn a_broken_file_says_what_is_wrong() {
     assert_eq!((ok[0].max_bytes, ok[0].redistribute, ok[0].refresh, ok[0].tier), (10, true, 43_200.0, Tier::Default));
     assert_eq!((duration("30m"), duration("2s"), duration("1w"), duration("d")), (Some(1800.0), Some(2.0), None, None));
 }
+
+/// Risk: a `path` reads something the person didn't mean (a path relative
+/// to wherever wpantry runs, one that climbs out with `..`), or a source
+/// that must stay remote, or a bundled source, is pointed at a file.
+/// Oracle: the sources file rules in `specs/design/sources-file.md`; each
+/// refusal names the source.
+#[test]
+fn a_local_path_is_absolute_or_under_home_and_only_for_a_file_kind() {
+    let one = |body: &str| merged(&format!("[[source]]\n{body}\n"));
+    let local = |kind: &str, format: &str, path: &str| {
+        one(&format!("id = \"mine\"\nkind = \"{kind}\"\nformat = \"{format}\"\npath = {path}"))
+    };
+    for path in ["\"/srv/rules\"", "\"~/rules/team.yar\"", r"'C:\Users\me\rules'", r"'\\server\share\rules'"] {
+        let all = local("yara", "yara", path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let s = all.last().unwrap();
+        assert_eq!((s.id.as_str(), s.transport, s.host()), ("mine", Transport::Local, None), "{path}");
+        assert_eq!(s.url, path.trim_matches(['"', '\'']), "the path as written");
+        assert_eq!(s.max_bytes, crate::utils::net::MAX_BODY, "capped like a download");
+    }
+    for (kind, format) in
+        [("hashes", "lines"), ("hosts", "lines"), ("filenames", "lines"), ("indicators", "maltrail-csv")]
+    {
+        assert!(local(kind, format, "\"/srv/list.txt\"").is_ok(), "{kind}");
+    }
+    let refused = |body: &str, why: &str| {
+        let e = one(body).unwrap_err().to_string();
+        assert!(e.contains("\"mine\"") && e.contains(why), "{body}: {e}");
+    };
+    let yara = "id = \"mine\"\nkind = \"yara\"\nformat = \"yara\"\n";
+    refused(&format!("{yara}path = \"rules/team.yar\""), "absolute");
+    refused(&format!("{yara}path = \"./team.yar\""), "absolute");
+    refused(&format!("{yara}path = \"~other/team.yar\""), "absolute");
+    refused(&format!("{yara}path = \"/srv/../etc/rules\""), "..");
+    refused(&format!("{yara}path = '..\\rules'"), "..");
+    refused(&format!("{yara}path = \"~/../x\""), "..");
+    refused(&format!("{yara}path = \"\""), "not empty");
+    refused(&format!("{yara}path = \"/srv/r.yar\"\nurl = \"https://a.b/r.yar\""), "not both");
+    refused(yara, "a url (https) or a path");
+    refused(&format!("{yara}path = \"/srv/r.yar\"\ntransport = \"https\""), "transport is local");
+    refused(&format!("{yara}transport = \"local\""), "gives its path");
+    refused("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-api\"\npath = \"/srv/osv\"", "fetched over https");
+    refused(
+        "id = \"mine\"\nkind = \"hash-lookup\"\nformat = \"circl\"\npath = \"/srv/h\"\nsends = \"sha256\"",
+        "fetched over https",
+    );
+    let moved = one("id = \"cisa-kev\"\npath = \"/srv/kev.json\"").unwrap_err().to_string();
+    assert!(moved.contains("\"cisa-kev\"") && moved.contains("only setting is its tier"), "{moved}");
+    assert!(
+        parse("[[source]]\nid = \"a\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"http://a.b/r.yar\"\n").is_err(),
+        "http:// stays refused"
+    );
+    assert!(bundled().iter().all(|s| s.transport != Transport::Local), "no bundled source reads this machine");
+}
+
+/// Risk: `~/` is taken from somewhere other than the home folder, or a path
+/// that is only absolute on another system (`C:\…` on macOS) is read from
+/// the current folder. Oracle: the home folder wpantry uses everywhere
+/// ([`crate::utils::files::home`]) and `Path::is_absolute` where it runs.
+#[test]
+fn a_local_path_resolves_under_home_and_never_relative() {
+    let _home = crate::utils::files::test_home();
+    let home = crate::utils::files::home();
+    let s = |path: &str| Source {
+        id: "mine".into(),
+        url: path.into(),
+        transport: Transport::Local,
+        ..bundled()[0].clone()
+    };
+    assert_eq!(local_path(&s("~/rules/t.yar")).unwrap(), home.join("rules/t.yar"));
+    assert_eq!(local_path(&s("/srv/t.yar")).unwrap(), std::path::PathBuf::from("/srv/t.yar"));
+    let windows = local_path(&s(r"C:\rules\t.yar"));
+    assert_eq!(windows.is_ok(), cfg!(windows), "{windows:?}");
+}
+
+/// Risk: an added sources file replaces the person's own instead of adding
+/// to it, or two files quietly define one id (the later one winning).
+/// Oracle: `--add-sources` in `specs/cli-contract.md`: every file's sources
+/// are used; an id defined twice is an error naming it and both files; any
+/// file may still set a bundled source's tier.
+#[test]
+fn added_files_add_sources_and_an_id_is_defined_once() {
+    let src = |id: &str| {
+        format!("[[source]]\nid = \"{id}\"\nkind = \"hashes\"\nformat = \"lines\"\npath = \"/srv/{id}.txt\"\n")
+    };
+    let f = |name: &str, text: String| (name.to_string(), text);
+    let all = merged_files(&[
+        f(USER_FILE_NAME, src("own")),
+        f("the added sources file /a.toml", format!("{}[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n", src("added"))),
+    ])
+    .unwrap();
+    let ids: Vec<&str> = all.iter().skip(bundled().len()).map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["own", "added"], "both files' sources, the user's first");
+    assert_eq!(all.iter().find(|s| s.id == "cisa-kev").unwrap().tier, Tier::Off, "a tier from an added file");
+    let twice = merged_files(&[f(USER_FILE_NAME, src("team")), f("the added sources file /a.toml", src("team"))])
+        .unwrap_err()
+        .to_string();
+    assert!(twice.contains("\"team\"") && twice.contains(USER_FILE_NAME) && twice.contains("/a.toml"), "{twice}");
+    let later = merged_files(&[
+        f("the added sources file /a.toml", src("team")),
+        f("the added sources file /b.toml", src("team")),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(later.contains("/a.toml") && later.contains("/b.toml"), "{later}");
+    let broken = merged_files(&[f("the added sources file /a.toml", "[[source]]\nid = \"Bad\"\n".into())])
+        .unwrap_err()
+        .to_string();
+    assert!(broken.contains("/a.toml") && broken.contains("kebab-case"), "{broken}");
+}
+
+/// Risk: a named file that can't be read is passed over, so a run uses
+/// fewer sources than asked with no word of it. Oracle: only the default
+/// sources file may be missing.
+#[test]
+fn read_files_needs_every_file_named_and_not_the_default() {
+    let d = crate::utils::temp::TempDir::new("srcfiles").unwrap();
+    let added = d.path().join("added.toml");
+    std::fs::write(&added, "# none\n").unwrap();
+    let main = d.path().join("main.toml");
+    std::fs::write(&main, "# mine\n").unwrap();
+    let got = read_files(Some(&main), std::slice::from_ref(&added)).unwrap();
+    assert_eq!(
+        got.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect::<Vec<_>>(),
+        [(USER_FILE_NAME, "# mine\n"), (added_name(&added).as_str(), "# none\n")]
+    );
+    let missing = d.path().join("missing.toml");
+    let (name, why) = read_files(Some(&main), std::slice::from_ref(&missing)).unwrap_err();
+    assert!(name.contains("missing.toml") && why.contains("missing.toml"), "{name}: {why}");
+    assert_eq!(read_files(Some(&missing), &[]).unwrap_err().0, USER_FILE_NAME, "a --sources FILE named must exist");
+}

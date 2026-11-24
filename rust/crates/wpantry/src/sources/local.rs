@@ -1,0 +1,206 @@
+//! Sources on this machine (`path = "..."` in a sources file of the user's
+//! own; `specs/design/sources-file.md`): a file, or for YARA rules a folder
+//! of `*.yar` files, read into the same copy a fetched source makes
+//! ([`crate::sources::user`]), with the same guards as a download: the
+//! source's `max_bytes`, its `sha256` pin, and a copy that can't be read or
+//! fails its pin keeping the last good one, the reason kept for
+//! `wpantry sources` ([`fetch::record`]).
+//!
+//! A local source is read again when what it is made of changed (each
+//! file's name, size and modification time, [`fingerprint`]), never on a
+//! `refresh` period, and it is read with `--offline` too: it contacts
+//! nobody.
+//!
+//! A folder is read flat: only the regular files directly in it, no
+//! subfolders, and no symlinks followed, so nothing outside the folder is
+//! read. The path itself may be a symlink: it is resolved once, and what it
+//! names must be a regular file or a folder.
+//!
+//! ```toml
+//! [[source]]
+//! id = "team-rules"
+//! kind = "yara"
+//! format = "yara"
+//! path = "~/src/team-rules/yara"
+//! ```
+
+use crate::db::Cache;
+use crate::error::Result;
+use crate::sources::fetch;
+use crate::sources::file::{self, Source};
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+/// What a local source's path names, resolved.
+#[derive(Debug, PartialEq)]
+enum Found {
+    File(PathBuf),
+    /// A folder and its `*.yar` files, in byte-wise name order.
+    Folder(PathBuf, Vec<PathBuf>),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read a local source's contents.
+    pub(crate) static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Source `s`'s new copy when what it reads changed since the last good
+/// read (`key` names its fingerprint in the cache), None when unchanged or
+/// when it can't be used now (the last copy stays, and why is recorded).
+pub(crate) fn copy(cache: &Cache, s: &Source, key: &str) -> Result<Option<Vec<u8>>> {
+    let fp_key = format!("{key}_fp");
+    let found = match locate(s) {
+        Ok(f) => f,
+        Err(why) => {
+            fetch::record(&s.id, Err(why));
+            return Ok(None);
+        }
+    };
+    let fp = fingerprint(s, &found);
+    if let Some(kept) = cache.get(&fp_key)?
+        && let Some((was, bytes)) = kept.split_once(' ')
+        && was == fp
+    {
+        fetch::record(&s.id, Ok(bytes.parse().unwrap_or(0)));
+        return Ok(None);
+    }
+    #[cfg(test)]
+    READS.with(|r| r.set(r.get() + 1));
+    let body = match read(s, &found) {
+        Ok(b) => b,
+        Err(why) => {
+            fetch::record(&s.id, Err(why));
+            return Ok(None);
+        }
+    };
+    if !s.sha256.is_empty() && crate::utils::sha256::hex(&body) != s.sha256 {
+        fetch::record(&s.id, Err(format!("rejected: {} doesn't match its sha256 pin", s.url)));
+        return Ok(None);
+    }
+    fetch::record(&s.id, Ok(body.len() as u64));
+    cache.set(&fp_key, &format!("{fp} {}", body.len()))?;
+    Ok(Some(body))
+}
+
+/// Where `s` reads: its path resolved once (a symlink to the file or folder
+/// is followed here, and only here), refused unless it names a regular file
+/// or, for YARA rules, a folder with `*.yar` files in it.
+fn locate(s: &Source) -> std::result::Result<Found, String> {
+    let p = file::local_path(s).map_err(|e| e.to_string())?;
+    let real = std::fs::canonicalize(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let meta = std::fs::symlink_metadata(&real).map_err(|e| format!("{}: {e}", p.display()))?;
+    if meta.is_file() {
+        return Ok(Found::File(real));
+    }
+    if !meta.is_dir() {
+        return Err(format!("{} is not a regular file or a folder", p.display()));
+    }
+    if s.kind != "yara" {
+        return Err(format!("{} is a folder: a folder is a source only of YARA rules (kind yara)", p.display()));
+    }
+    let rules = rule_files(&real).map_err(|e| format!("{}: {e}", p.display()))?;
+    if rules.is_empty() {
+        return Err(format!("{} has no .yar files", p.display()));
+    }
+    Ok(Found::Folder(real, rules))
+}
+
+/// The `*.yar` regular files directly in `dir`, in byte-wise name order:
+/// a symlink or a subfolder is passed over, never followed.
+fn rule_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        // The entry's own type: a symlink is a symlink here, not its target.
+        let regular = e.file_type().is_ok_and(|t| t.is_file());
+        let p = e.path();
+        if regular && p.extension().is_some_and(|x| x == "yar") {
+            out.push(p);
+        }
+    }
+    out.sort_by(|a, b| {
+        let name = |p: &PathBuf| p.file_name().map(|n| n.as_encoded_bytes().to_vec()).unwrap_or_default();
+        name(a).cmp(&name(b))
+    });
+    Ok(out)
+}
+
+/// What a read depends on: where it reads, the pin and the cap, and each
+/// file's name, size and modification time. A changed one is read again.
+fn fingerprint(s: &Source, found: &Found) -> String {
+    let mut h = crate::utils::sha256::Sha256::new();
+    h.update(format!("{}\n{}\n{}\n", s.url, s.sha256, s.max_bytes).as_bytes());
+    let files: Vec<&PathBuf> = match found {
+        Found::File(f) => vec![f],
+        Found::Folder(dir, rules) => {
+            h.update(format!("folder {}\n", dir.display()).as_bytes());
+            rules.iter().collect()
+        }
+    };
+    for f in files {
+        let meta = std::fs::symlink_metadata(f).ok();
+        let when = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos());
+        h.update(format!("{}\t{:?}\t{:?}\n", f.display(), meta.map(|m| m.len()), when).as_bytes());
+    }
+    h.hex()
+}
+
+/// The bytes `s` reads, at most its `max_bytes`: a file whole, a folder's
+/// rule files joined in name order, each followed by a newline (as
+/// Elastic's rules are joined, [`crate::checks::malware::yara`]).
+fn read(s: &Source, found: &Found) -> std::result::Result<Vec<u8>, String> {
+    match found {
+        Found::File(f) => crate::utils::files::read_capped_bytes(f, s.max_bytes).map_err(|e| e.to_string()),
+        Found::Folder(dir, rules) => {
+            let mut out = Vec::new();
+            for f in rules {
+                let room = s.max_bytes.saturating_sub(out.len() as u64 + 1);
+                let body = read_entry(f, room).map_err(|e| {
+                    format!("{}: {e} (the .yar files are read up to {} bytes)", dir.display(), s.max_bytes)
+                })?;
+                out.extend_from_slice(&body);
+                out.push(b'\n');
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// One rule file of a folder, at most `max` bytes, refused when it is no
+/// longer the regular file listed (swapped for a symlink since).
+fn read_entry(f: &Path, max: u64) -> std::result::Result<Vec<u8>, String> {
+    let listed = std::fs::symlink_metadata(f).map_err(|e| e.to_string())?;
+    if !listed.file_type().is_file() {
+        return Err(format!("{} is not a regular file", f.display()));
+    }
+    use std::io::Read;
+    let mut file = std::fs::File::open(f).map_err(|e| e.to_string())?;
+    let opened = file.metadata().map_err(|e| e.to_string())?;
+    // The file opened is the one listed (same device and inode), not what a
+    // symlink put in its place since points at.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (opened.dev(), opened.ino()) != (listed.dev(), listed.ino()) {
+            return Err(format!("{} changed while it was read", f.display()));
+        }
+    }
+    // TODO: compare the volume serial and file index on Windows too.
+    if !opened.is_file() {
+        return Err(format!("{} is not a regular file", f.display()));
+    }
+    let mut body = Vec::new();
+    (&mut file).take(max + 1).read_to_end(&mut body).map_err(|e| e.to_string())?;
+    if body.len() as u64 > max {
+        return Err(format!("{} is over {max} bytes", f.display()));
+    }
+    Ok(body)
+}
+
+#[cfg(test)]
+#[path = "local_tests.rs"]
+mod tests;

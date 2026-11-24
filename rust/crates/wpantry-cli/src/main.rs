@@ -134,6 +134,9 @@ fn quiet(show: &Show) -> bool {
 }
 
 fn cmd_scan(a: Check) -> Result<i32> {
+    if let Some(code) = check_added_sources(a.sources.as_deref(), &a.add_sources) {
+        return Ok(code);
+    }
     let quiet = quiet(&a.show);
     let opts = Options {
         paths: a.path.clone(),
@@ -143,6 +146,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         deep: a.deep,
         no_online_hash: a.no_online_hash,
         sources: a.sources.clone(),
+        add_sources: a.add_sources.clone(),
         no_personal_files: a.no_personal_files,
         policy: Policy {
             secret_rules: a.secret_rules.clone(),
@@ -483,7 +487,7 @@ fn cmd_report(show: &Show) -> Result<i32> {
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     // The user's tiers hold here as in a scan: a source turned off isn't fetched.
-    if let Some(code) = use_sources_file(None) {
+    if let Some(code) = use_sources_file(None, &[]) {
         return Ok(code);
     }
     let net = wpantry::utils::net::Http::new();
@@ -1118,7 +1122,7 @@ fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
 /// `--update` fetches YARA Forge's package first.
 fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     use wpantry::checks::malware;
-    if let Some(code) = use_sources_file(None) {
+    if let Some(code) = use_sources_file(None, &[]) {
         return Ok(code);
     }
     let cache = Cache::open(None)?;
@@ -1180,19 +1184,45 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
 }
 
 /// Use the sources file (`file`, else `~/.config/wpantry/sources.toml` when
-/// there is one) for this run; the exit code when it can't be used.
-fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
+/// there is one) and the `added` ones (`--add-sources FILE`) for this run;
+/// the exit code when they can't be used.
+fn use_sources_file(file: Option<&std::path::Path>, added: &[std::path::PathBuf]) -> Option<i32> {
     use wpantry::sources::file as sources;
-    let path = file.map(std::path::Path::to_path_buf).unwrap_or_else(sources::user_file);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && file.is_none() => None,
-        Err(e) => {
-            eprintln!("wpantry: error: {}: {e}", path.display());
+    let files = match sources::read_files(file, added) {
+        Ok(f) => f,
+        Err((_, why)) => {
+            eprintln!("wpantry: error: {why}");
             return Some(EXIT_USAGE);
         }
     };
-    if let Err(e) = sources::configure(text.as_deref(), false) {
+    if let Err(e) = sources::configure_files(&files, false) {
+        eprintln!("wpantry: error: {e}");
+        return Some(EXIT_USAGE);
+    }
+    None
+}
+
+/// For a scan with `--add-sources`: a usage error, before the scan, when an
+/// added file can't be read or used (an option given must not be passed
+/// over quietly). A fault in the user's own file alone is left to the scan,
+/// which reports it as without `--add-sources`.
+fn check_added_sources(file: Option<&std::path::Path>, added: &[std::path::PathBuf]) -> Option<i32> {
+    use wpantry::sources::file as sources;
+    if added.is_empty() {
+        return None;
+    }
+    let files = match sources::read_files(file, added) {
+        Ok(f) => f,
+        Err((name, _)) if name == sources::USER_FILE_NAME => return None,
+        Err((_, why)) => {
+            eprintln!("wpantry: error: {why}");
+            return Some(EXIT_USAGE);
+        }
+    };
+    if sources::merged_files(&files[..files.len() - added.len()]).is_err() {
+        return None;
+    }
+    if let Err(e) = sources::merged_files(&files) {
         eprintln!("wpantry: error: {e}");
         return Some(EXIT_USAGE);
     }
@@ -1200,9 +1230,9 @@ fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
 }
 
 /// `sources`: every outside source and what its fetches came to.
-fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+fn cmd_sources(json: bool, file: Option<std::path::PathBuf>, added: &[std::path::PathBuf]) -> Result<i32> {
     use wpantry::sources::file as sources;
-    if let Some(code) = use_sources_file(file.as_deref()) {
+    if let Some(code) = use_sources_file(file.as_deref(), added) {
         return Ok(code);
     }
     let user = sources::effective().user.clone();
@@ -1222,9 +1252,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
                     ("format", s.format.as_str().into()),
                     ("tier", s.tier.as_str().into()),
                     ("host", s.host().map_or(J::Null, |h| h.as_str().into())),
+                    ("transport", s.transport.as_str().into()),
                     (
-                        "transport",
-                        if s.transport == wpantry::sources::file::Transport::Git { "git" } else { "https" }.into(),
+                        "path",
+                        if s.transport == wpantry::sources::file::Transport::Local {
+                            s.url.as_str().into()
+                        } else {
+                            J::Null
+                        },
                     ),
                     ("user", J::Bool(user.contains(&s.id))),
                     ("license", s.license.as_str().into()),
@@ -1252,7 +1287,10 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
         } else {
             "never fetched".to_string()
         };
-        let host = s.host().unwrap_or_else(|| "git".into());
+        let host = match s.transport {
+            wpantry::sources::file::Transport::Local => s.url.clone(),
+            _ => s.host().unwrap_or_else(|| "git".into()),
+        };
         let host = if user.contains(&s.id) { format!("{host} (yours)") } else { host };
         show(&format!("{:<28} {:<18} {:<7} {:<34} {}", s.id, s.kind, s.tier.as_str(), host, fetched));
         show(&format!(
@@ -1397,8 +1435,8 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_print(wpantry::SKILL),
         Command::Licenses => cmd_print(NOTICES),
-        Command::Sources { json, file } => cmd_sources(json, file),
         Command::Ignore { action, json } => cmd_ignore(action, json),
+        Command::Sources { json, file, added } => cmd_sources(json, file, &added),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),

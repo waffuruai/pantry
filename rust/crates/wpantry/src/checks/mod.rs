@@ -226,6 +226,9 @@ pub struct Options {
     /// The user's sources file for this run (`--sources FILE`); None reads
     /// `~/.config/wpantry/sources.toml` when it exists.
     pub sources: Option<PathBuf>,
+    /// Sources files whose sources are added to the user's for this run
+    /// (`--add-sources FILE`, repeatable), in order.
+    pub add_sources: Vec<PathBuf>,
 }
 
 impl Options {
@@ -335,16 +338,16 @@ impl<'a> Scan<'a> {
     /// ones used are named in the counts.
     fn use_sources(&mut self) {
         use crate::sources::{file, user};
-        let path = self.opts.sources.clone().unwrap_or_else(file::user_file);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opts.sources.is_none() => None,
-            Err(e) => {
-                self.unchecked("your sources file", &format!("{}: {e}", path.display()));
-                None
+        // A file that can't be read leaves the bundled sources in effect,
+        // as one that can't be used does.
+        let files = match file::read_files(self.opts.sources.as_deref(), &self.opts.add_sources) {
+            Ok(f) => f,
+            Err((name, why)) => {
+                self.unchecked(&name, &why);
+                Vec::new()
             }
         };
-        if let Err(e) = file::configure(text.as_deref(), self.opts.deep) {
+        if let Err(e) = file::configure_files(&files, self.opts.deep) {
             self.unchecked("your sources file", &e.to_string());
         }
         let effective = file::effective();

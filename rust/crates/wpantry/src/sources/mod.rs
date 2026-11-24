@@ -19,6 +19,7 @@ pub mod homebrew_formulae;
 pub mod indicator_lists;
 pub mod indicator_store;
 pub mod kev;
+pub mod local;
 pub mod malicious_packages;
 #[cfg(test)]
 mod mutate;

@@ -121,7 +121,7 @@ A source of yours on a host Pantry doesn't already ask, or one that sends anythi
 
 ### Sources on this machine
 
-A source of yours may read a file or folder on this machine with `path` instead of `url`: rules copied to an offline machine, a team's own rule repository checked out next to your code, or lists a program that runs `wpantry` has already downloaded and checked. It works for YARA rules and for hash, host, file-name and indicator lists. A local source sends nothing and reaches no host, so it is used without asking, with `--no-input` and `--offline` too. Its `tier` still holds.
+A source of yours may read a file or folder on this machine with `path` instead of `url`: rules copied to an offline machine, a team's own rule repository checked out next to your code, or lists a program that runs `wpantry` has already downloaded and checked. It works for YARA rules, for hash, host, file-name and indicator lists, and for a folder of advisories. A local source sends nothing and reaches no host, so it is used without asking, with `--no-input` and `--offline` too. Its `tier` still holds.
 
 A folder of YARA rules: every `.yar` file directly in it, joined in name order. Subfolders and symlinks inside it are not read. Rules must be UTF-8 text: a file in another encoding (Latin-1, UTF-16) fails the source, which the scan reports as unchecked, naming the file.
 
@@ -145,6 +145,26 @@ sha256 = "<the file's SHA-256>"
 ```
 
 A path is absolute, or starts with `~/`; on Windows, write it as a literal string (`path = 'C:\rules\team'`). Relative paths and `..` are refused. Pantry reads the source again when the file (or a `.yar` file in the folder) changes size or modification time. A file that is missing, over its `max_bytes` or fails its pin keeps the last good copy, and `wpantry sources` says why.
+
+A folder of advisories in the [OSV format](https://ossf.github.io/osv-schema/), one record per `.json` file: advisories copied to an offline machine, a team's advisories for its internal packages, or advisories a program that runs `wpantry` has already downloaded and checked. Pantry checks your packages against them as it does against OSV's, offline too.
+
+```toml
+[[source]]
+id = "team-advisories"
+kind = "advisories"
+format = "osv-dir"
+path = "~/advisories"
+```
+
+The smallest record that works names an id and an affected range (`~/advisories/TEAM-2026-0001.json`):
+
+```json
+{"id": "TEAM-2026-0001",
+ "affected": [{"package": {"ecosystem": "npm", "name": "acme-internal-widget"},
+               "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.2.4"}]}]}]}
+```
+
+Records may sit directly in the folder or one folder down (`npm/TEAM-2026-0001.json`); deeper folders and symlinks are not read. A finding from one of them names your source in its note and links the record's first `ADVISORY` or `WEB` reference, or nothing when it has none. A file that isn't an OSV record is skipped, and `wpantry sources` says how many records were loaded and how many files were skipped. A folder over 100,000 files or 1 GiB keeps its last good load. A `sha256` pin covers every file and its path; [the sources file spec](../../specs/design/sources-file.md#advisories-on-this-machine) shows how to compute it.
 
 ### Third-party sources
 

@@ -454,6 +454,22 @@ assert(section('manual').includes('Grouped from the findings'));
 }
 
 
+// A record from a folder of your own OSV records links what the record gives, or nothing: never OSV.dev.
+{
+  const mine=[
+    finding('project','acme-internal-widget','TEAM-2026-0001','fail',{fixed:'1.2.4',note:'key leak (from your source team-advisories: https://advisories.example.com/TEAM-2026-0001)'}),
+    finding('project','acme-other','TEAM-2026-0002','fail',{fixed:'2.0.0',note:'other leak (from your source team-advisories)'}),
+    finding('project','acme-third','GHSA-aaaa-bbbb-cccc','fail',{fixed:'3.0.0',note:'third leak (also in your source team-advisories)'}),
+  ];
+  load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:mine}}],plan:[]});
+  mine.forEach((f,i)=>click({open:String(i)}));
+  const page=main();
+  assert(page.includes('<a href="https://advisories.example.com/TEAM-2026-0001"'),'the record’s own link');
+  assert(!page.includes('osv.dev'),'no OSV.dev link for a record of your own');
+  assert(!page.includes('href="https://advisories.example.com/TEAM-2026-0002'),'no link when the record gives none');
+  assert(page.includes('href="https://github.com/advisories/GHSA-aaaa-bbbb-cccc"'),'a remote record keeps its link');
+}
+
 /* ---------- the packed and deflated bundle src/reporters/pack.rs writes ---------- */
 // pack-fixture.json is that module's output byte for byte (its Rust test
 // checks), so the page decodes exactly what a report carries.

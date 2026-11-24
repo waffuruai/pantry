@@ -359,6 +359,76 @@ fn local_sources_never_panic_and_a_pinned_copy_stays_good() {
     });
 }
 
+/// Risk: a folder of OSV records on this machine (`format = "osv-dir"`)
+/// holds anything at all; the reader or the matching panics, a corrupted
+/// file takes the good records with it, or a pinned folder takes in a
+/// corrupted file. Oracle: every load and lookup returns; the good file's
+/// record is always held and matched; a corrupted file is either a record
+/// or counted as skipped; the pinned folder keeps its pinned record.
+#[test]
+fn a_folder_of_osv_records_never_panics_and_keeps_its_good_records() {
+    use crate::sources::osv_dir;
+    let (d, c) = cache();
+    let set_time = |p: &std::path::Path, i: usize| {
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + i as u64)).unwrap();
+    };
+    let source = |id: &str, dir: &std::path::Path, extra: &str| {
+        crate::sources::file::merged(&format!(
+            "[[source]]\nid = \"{id}\"\nkind = \"advisories\"\nformat = \"osv-dir\"\npath = '{}'\n{extra}\n",
+            dir.display()
+        ))
+        .unwrap()
+        .into_iter()
+        .last()
+        .unwrap()
+    };
+    let good = json!({"id": "TEAM-GOOD", "affected": [{"package": {"ecosystem": "npm", "name": "lib"},
+        "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "2.0.0"}]}]}],
+        "references": [{"type": "WEB", "url": "https://team.example/TEAM-GOOD"}]})
+    .to_string();
+    let sample = json!({"id": "TEAM-M", "aliases": ["CVE-2026-1"], "withdrawn": null,
+        "affected": [{"package": {"ecosystem": "PyPI", "name": "lib"}, "versions": ["1.0"],
+                      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "1.0"}, {"last_affected": "1.5"}]},
+                                 {"type": "GIT", "repo": "https://git.example/lib", "events": [{"introduced": "0"}]}]}]})
+    .to_string();
+    let open_dir = d.path().join("open");
+    let pinned_dir = d.path().join("pinned");
+    for dir in [&open_dir, &pinned_dir] {
+        std::fs::create_dir_all(dir.join("npm")).unwrap();
+        std::fs::write(dir.join("good.json"), &good).unwrap();
+    }
+    let pin = osv_dir::pin(&[(b"good.json", good.as_bytes())]);
+    let open = source("m-osv-open", &open_dir, "");
+    let pinned = source("m-osv-pinned", &pinned_dir, &format!("sha256 = \"{pin}\""));
+    let both = [open.clone(), pinned.clone()];
+    assert!(osv_dir::load(&c, &both, &both).unwrap().is_empty());
+    let items = [
+        ("npm".to_string(), "lib".to_string(), "1.0.0".to_string()),
+        ("PyPI".to_string(), "lib".to_string(), "1.2".to_string()),
+    ];
+    let mut i = 0;
+    each("OSV record file", sample.as_bytes(), 25, |m| {
+        i += 1;
+        for dir in [&open_dir, &pinned_dir] {
+            let f = dir.join("npm/m.json");
+            std::fs::write(&f, m).unwrap();
+            set_time(&f, i);
+        }
+        let _ = osv_dir::load(&c, &both, &both);
+        // A corrupted file is a record of its own, or it is counted.
+        let want = match osv_dir::record(m) {
+            Some(r) if r["id"] != "TEAM-GOOD" => (2, 0),
+            Some(_) => (1, 0),
+            None => (1, 1),
+        };
+        assert_eq!(osv_dir::counts(&c, "m-osv-open").unwrap(), Some(want), "{}", String::from_utf8_lossy(m));
+        assert_eq!(osv_dir::counts(&c, "m-osv-pinned").unwrap(), Some((1, 0)), "the pinned folder keeps its load");
+        let got = osv_dir::matching(&c, &items, &["m-osv-open".to_string(), "m-osv-pinned".to_string()]).unwrap();
+        assert!(got.found[&items[0]].iter().any(|r| r["id"] == "TEAM-GOOD"), "the good record still matches");
+    });
+}
+
 #[test]
 fn a_sources_file_never_panics() {
     let good = crate::defaults::SOURCES.as_bytes();

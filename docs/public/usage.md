@@ -253,6 +253,31 @@ See [upgrade](install.md#upgrade).
 - A dependency finding also says how it's depended on: `dep_scope` (`runtime`, `dev`, `optional`, `unknown`), `dep_direct` (the project's own, or pulled in; `null` when unknown) and `affected_range`. A dev-only dependency is rarely exposed where the code runs.
 - `wpantry report --jsonl` adds each finding's full OSV record, when it was first and last seen and resolved, and what `wpantry fix` did about it.
 
+### Following a scan while it runs
+
+A program that runs `wpantry scan` as a child process (a script, a CI wrapper, an editor, a dashboard) can follow it with `--events`: one JSON object per line on stderr, while stdout gets the report as usual. A scan of a whole home folder can take minutes; the events say which step it is in, what it is reading and what it has found so far.
+
+```bash
+wpantry scan --json --events 2>events.jsonl >report.json
+```
+
+```
+{"v": 1, "event": "start", "version": "0.8.0", "steps": [{"id": "sources", "title": "Getting advisory data"}, …], "paths": ["/home/me/code"]}
+{"v": 1, "event": "step", "id": "dependencies", "title": "Checking dependencies", "state": "begin", "index": 3, "of": 11}
+{"v": 1, "event": "at", "step": "dependencies", "path": "/home/me/code/app/Cargo.lock", "kind": "file"}
+{"v": 1, "event": "finding", "step": "dependencies", "id": "F-3fa9c01b2e", "kind": "project", "severity": "CRITICAL", "status": "fail", "title": "…", "component": "smallvec", "location": "/home/me/code/app/Cargo.lock", "vuln_id": "CVE-2021-25900"}
+{"v": 1, "event": "step", "id": "dependencies", "state": "end", "index": 3, "of": 11, "findings": 1, "unchecked": 0, "ms": 812}
+{"v": 1, "event": "done", "exit": 1, "findings": 1, "unchecked": 0, "ms": 9120}
+```
+
+- `--events` never prompts (as `--no-input`) and draws no progress line. Check that `wpantry scan --help` lists it before passing it.
+- Ignore events and fields you don't know: new ones are added without changing `v`.
+- A `finding` event is provisional: the report on stdout is the final word (an ignore file can still leave a finding out, and severities are filled in near the end).
+- Events carry what the report shows, never a file's contents or a secret.
+- If your program stops reading, the scan carries on and exits as it would have.
+
+Every event, field and step: [`scan --events` in the CLI contract](../../specs/cli-contract.md#scan---events).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -384,6 +409,8 @@ Options:
                             when it exists)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
+  --events                  write the scan's progress to stderr as JSON Lines (steps, the path being
+                            read, findings), for programs that run wpantry; implies --no-input
   -h, --help                print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.

@@ -17,7 +17,7 @@ wpantry [-h] [-V]
 wpantry scan [--path DIR]... [--no-machine] [--refresh] [--offline] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS] [--no-input] [--jobs N]
              [--secret-rules FILE] [--licenses [FILE]] [--install-scripts FILE] [--no-posture] [--posture-policy FILE]
              [--repo-hooks FILE] [--suspect-policy FILE] [--hooks-policy FILE] [--no-malware] [--deep]
-             [--no-online-hash] [--sources FILE] [--no-personal-files] [--allow-sleep]
+             [--no-online-hash] [--sources FILE] [--no-personal-files] [--allow-sleep] [--events]
 wpantry fix [list|all|ID] [--dry-run] [--yes] [--undo] [--bundle FILE] [--hours N] [the scan's options]
 wpantry search QUERY [--applicable] [--limit N] [--json]
 wpantry report [findings|history|exposure|remediation|audit|summary|all] [--txt|--json|--jsonl|--csv|--md|--html] [-o FILE] [--since DAYS]
@@ -71,6 +71,7 @@ Removed 2026-11-05: wpantry scans files and never touches the clipboard. The `cl
 | `--no-online-hash` | Never look up a flagged file's SHA-256 online. Otherwise, after one yes (asked once on a terminal, kept in the cache as `online_hash_consent`), the SHA-256 of each file the malware scan flagged (at most 50 a scan), and nothing else about it, goes to YARAify and CIRCL hashlookup, and to MalwareBazaar when `ABUSECH_AUTH_KEY` is set. A malware verdict makes the finding `fail`, Critical, and its note names the source and family; a known-good answer is noted on a heuristic `warn`. A source that can't be reached is `unchecked`. Added 2026-11-04 |
 | `--sources FILE` | The user's sources file for this run, in place of `~/.config/wpantry/sources.toml` (`$XDG_CONFIG_HOME/wpantry/sources.toml`), which is read when it exists (`specs/design/sources-file.md`). It may set a bundled source's `tier` (`default`, `deep`, `off`: an `off` source isn't asked, and what needs it is `unchecked`), and add sources of its own: YARA rules, hash, host and file-name lists, an OSV-compatible API (asked beside OSV.dev), or a hash lookup that sends only a SHA-256. A source of the user's whose host wpantry doesn't already ask, or that sends anything, is used only after a yes, asked once on a terminal and kept by its id and URL; without one it is `unchecked`. Each used is counted as `user source <id>`. A file that can't be used leaves the bundled sources in effect and is `unchecked`. Added 2026-11-05 |
 | `--allow-sleep` | Let the machine idle-sleep during the scan. Otherwise, on macOS, the scan holds an idle-sleep assertion (`/usr/bin/caffeinate -i -w PID`) that ends with it; elsewhere nothing changes. `WPANTRY_ALLOW_SLEEP=1` does the same. Added 2026-11-06 |
+| `--events` | `scan` only (not `fix`): while the scan runs, write its progress to stderr as JSON Lines ([below](#scan---events)). Stdout and the report are unchanged. No progress line, no prompts (as `--no-input`), no `WPANTRY_TIMINGS` lines; the notes the scan prints on stderr become `note` events. A caller detects support by `scan --help` listing `--events`; an older wpantry rejects it with exit 2 before scanning. Added 2026-11-24 |
 | `rules` | The YARA rule sources the malware scan uses (ours, built in; YARA Forge's `full` package, fetched into `rules/` beside the cache at most daily; any `.yar` you put there), how many compile and how many are for this system; `--update` fetches YARA Forge now (exit 1 when it can't); `--json` as `{directory, sources: [{source, rules}], rules, this_system, rejected, update_failed}`. Added 2026-11-04 |
 | `search` | Rank cached advisories (SQLite FTS5 syntax); `--applicable` keeps those in the latest findings |
 | `report --jsonl` | Latest findings as JSON Lines, one object per finding: every [finding](#finding) key, plus `aliases` (the record's other ids), `url`, `record` (the full OSV JSON, or `null`), `first_seen`, `last_seen`, `resolved_at` (`YYYY-MM-DD HH:MM UTC` strings, `null` when unknown or open), `days_exposed`, `first_epss` and `first_epss_percentile` (the exposure's first EPSS score, `null` until it had one; added 2026-11-21) and `fix` (`null`, or `{attempted_at, mode, ok, verified, succeeded}` for the latest `fix` run of its `fix_cmd`). `report exposure --jsonl` (or `history`, `all`) adds the exposures a later scan of the same scope resolved and the latest scan no longer lists. `--csv` and `--jsonl` may be given together; one is required |
@@ -106,7 +107,7 @@ macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 0.5.0): the
 | `WORDFENCE_API_KEY` | Sent to Wordfence Intelligence (`Authorization: Bearer`) to download its v3 production feed, at most daily; WordPress core, plugins and themes in the repos are checked against it (kind `wordpress`). Unset, each site is one `unchecked` finding (`WordPress core, plugins and themes in <site> (<n>)`) whose note says how to get a free key. Added 2026-11-22 |
 | `WPANTRY_NO_UPDATE_CHECK` | Set to anything: `scan` never mentions a newer wpantry release |
 | `WPANTRY_ALLOW_SLEEP` | `1` (anything but empty or `0`): as `--allow-sleep` |
-| `WPANTRY_TIMINGS` | Set to anything: every scan step is printed to stderr with the seconds since the scan began (for finding slow steps; not under `--json`) |
+| `WPANTRY_TIMINGS` | Set to anything: every scan step is printed to stderr with the seconds since the scan began (for finding slow steps; not under `--json`; under `--events` the step events carry the times instead) |
 | `NO_COLOR` | Honoured: set to anything non-empty, no ANSI colour. Without it, wpantry colours its report, `tools`, prompts and errors only on a terminal, and never when `TERM=dumb`. `--json` output, pipes and files are never coloured. Child tools always run with `NO_COLOR=1` |
 
 ## Exit codes
@@ -125,6 +126,51 @@ macOS and Linux: everything. Windows (`x86_64-pc-windows-msvc`, from 0.5.0): the
 The page shows the report the cache keeps for the latest scan: `scan --html -o FILE` and `report --html -o FILE` write the same page. It embeds the schema-1 envelope `scan --json` prints, the scan's scope (kept with the scan in the cache), the update plan and 14 days of history (`--since DAYS` for more). Its phase is `after updates` when the scan verified fixes `fix` ran, `scan` otherwise.
 
 With `-o FILE`, the parent must exist. Output is staged beside the destination (before scanning, for `scan` and `fix`), written with mode 0600 on Unix and renamed over the destination only after successful generation. A destination symlink is replaced rather than followed. File errors return 3; a scan error leaves a previous report intact. Without `-o`, a format is written to `pantry_report_<when>.<ext>` (such as `pantry_report_20261105T143000Z.html`, the time in UTC) in the current directory when stdout is a terminal, and to stdout when stdout is a pipe or a file (an agent, `| jq`, `> out.json`); `-o -` sends it to stdout on a terminal too. Nothing opens a browser, fetches anything, or leaves the machine.
+
+## `scan --events`
+
+For a caller that runs the scanner as a child process (a script, a CI wrapper, an editor, a dashboard) and follows the scan while it runs. Added 2026-11-24.
+
+- One JSON object per line on stderr, ending in `\n`, flushed per line. Plain printable ASCII (every other character is a `\uXXXX` escape), so no colour and no terminal control characters. Paths are absolute where the scan reads them (`at`, `start`) and as the report shows them in a finding (`component`, `location`).
+- Every line has `v` (this format's version, 1) and `event`. A consumer ignores an event it doesn't know and a field it doesn't know: events and fields are added without changing `v`; `v` changes only when a field is removed or changes meaning. Separators may be `", "` and `": "`; read the lines as JSON.
+- A usage error comes before the first event, as plain text with exit 2: skip a line that isn't a JSON object.
+- Order: `start` is first and `done` last, once each. The steps run in the order `start` lists them, each `begin` before its `end`, `index` up by one each time. `at`, `tally` and `finding` lines fall between a step's `begin` and `end`.
+- Rate limits: `at` and `tally` are written at most every 100 ms (about 10 a second), and the `at` written is the newest path at that moment; the paths in between are dropped. `step`, `finding`, `note` and `done` are never dropped.
+- A reader that closes its end early, or stops reading, never stalls or fails the scan: lines it can't take are dropped, and the exit code and stdout are those of the same scan read to the end. At the end the scan waits at most 5 seconds for the reader to take the lines still queued.
+
+| event | fields | when |
+|---|---|---|
+| `start` | `version` (wpantry's), `steps` (`[{id, title}]`, in the order they run), `paths` (the folders in scope, absolute; `$HOME` without `--path`) | first |
+| `step` | `id`, `title`, `state: "begin"`, `index` (from 1), `of` (how many steps) | a step begins |
+| `at` | `step`, `path`, `kind` (`file`: being read; `dir`: being looked in) | what the scan is reading now (rate limited) |
+| `tally` | `repos` (in scope), `files` (read so far: a file whose cached result still holds isn't read again), `findings`, `unchecked` (finding events so far) | when the counts change (rate limited), and before each step's `end` |
+| `finding` | `step`, `id` (the report's `F-…`), `kind`, `severity`, `status`, `title` (the note's first line, at most 200 characters, else `component vuln_id`), `component`, `location`, `vuln_id` | when the step has made it (below) |
+| `note` | `text` | a note the scan would have printed on stderr (a missing `--path`, the report written to a file, a newer release) |
+| `step` | `id`, `state: "end"`, `index`, `of`, `findings` (this step's finding events, `unchecked` ones not counted), `unchecked`, `ms` | a step ends |
+| `done` | `exit` (the process's exit code), `findings` and `unchecked` (the report's, after ignore files; `null` when the scan didn't finish), `ms` (the run), `error` (only when the run failed: the message, which is not printed otherwise) | last |
+
+A `finding` event is provisional; the report is authoritative. An ignore file can still leave the finding out (in `rating`), and `severity` can be `""` or change there, where CVSS scores are filled in. What couldn't be checked comes as `finding` events with `kind: "unchecked"` and is counted apart. Events carry only what the report shows of a finding, never a file's contents: a secret's event names its rule, its file and its line number, never the secret or the text around it.
+
+The steps, by `id`, with their titles. `start` lists only the ones this run takes.
+
+| id | title | taken | its findings arrive |
+|---|---|---|---|
+| `sources` | Getting advisory data | always | as each source is asked (`unchecked` when one can't be) |
+| `repos` | Finding repos | always | none (a missing `--path` is a `note`) |
+| `machine` | Looking at this computer | without `--no-machine` | as each machine check finishes; an advisory after OSV answers for its batch |
+| `dependencies` | Checking dependencies | always | as each lockfile's OSV answer is read, and the WordPress sites after theirs |
+| `secrets` | Looking for secrets in git history | always | per repo, as its history scan is read (the scans run during `dependencies`; this step waits for them) |
+| `repo-files` | Reading the repos' files | always | as each check finishes: hooks, hidden text, suspect code, MPTCP listeners, documents, install scripts |
+| `images` | Checking container images | always | per image |
+| `extensions` | Checking MCP servers and extensions | always | as each check finishes |
+| `malicious` | Checking package names against known malicious packages | always | as each ecosystem is swept |
+| `breach` | Checking email addresses against breaches | without `--no-machine` | by the step's end |
+| `malware` | Scanning for malware | without `--no-malware` | by the step's end: a verdict waits for the hash lookups |
+| `file-secrets` | Looking for secrets in files | `--deep` | at the step's end, with the files pass done |
+| `rating` | Rating and saving the findings | always | none new |
+| `report` | Writing the report | always | none |
+
+The files pass, one read of each file for every content check and the malware scan, runs in the first step that needs it: `machine` on a machine scan, else `repo-files`. Its `at` lines name that step.
 
 ## `scan --json`
 

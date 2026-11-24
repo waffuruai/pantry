@@ -500,7 +500,7 @@ fn windows_installs_only_the_current_users_scan_and_checks_its_state() {
                     let bytes = std::fs::read(argv[5]).unwrap();
                     assert_eq!(&bytes[..2], &[0xff, 0xfe]);
                     let units =
-                        bytes[2..].chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect::<Vec<_>>();
+                        bytes[2..].as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes(*p)).collect::<Vec<_>>();
                     let definition = String::from_utf16(&units).unwrap();
                     assert!(definition.starts_with("<?xml version=\"1.0\" encoding=\"UTF-16\"?>"));
                     assert!(definition.contains("<UserId>S-1-5-21-123</UserId>"));
@@ -575,7 +575,7 @@ fn windows_task_runs_the_windowless_launcher_when_one_sits_beside_the_scanner() 
             ("whoami.exe", _) => ok("\"fixture\\user\",\"S-1-5-21-123\"\r\n"),
             ("schtasks.exe", Some("/create")) => {
                 let bytes = std::fs::read(argv[5]).unwrap();
-                let units = bytes[2..].chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect::<Vec<_>>();
+                let units = bytes[2..].as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes(*p)).collect::<Vec<_>>();
                 *installed.lock().unwrap() = Some(String::from_utf16(&units).unwrap());
                 ok("")
             }

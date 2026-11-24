@@ -40,6 +40,75 @@ fn pip_cert_is_pips_store_and_one_that_cant_be_judged_is_unchecked() {
     assert!(judged(&mut c, &empty).is_none(), "an empty bundle trusts nothing");
 }
 
+/// pip's config `global.cert` is pip's store: judged like any bundle, and
+/// unchecked when the file it names is gone.
+#[test]
+fn pip_config_cert_is_pips_store_and_a_missing_one_is_unchecked() {
+    let Some(openssl) = which("openssl") else { return };
+    let mut c = Checker::new(openssl).unwrap();
+    let bad = c.dir.path().join("pipconf-bad.pem");
+    std::fs::write(&bad, include_str!("../../../assets/distrusted-ca/roots.pem")).unwrap();
+    let missing = c.dir.path().join("pipconf-missing.pem").display().to_string();
+    let pending = pip_conf_store(&mut c, "/usr/bin/python3", &bad.display().to_string()).unwrap();
+    let s = c.finish(vec![pending]).pop().unwrap();
+    assert!(s.trusts && s.shown.starts_with("global.cert=") && !s.auto, "{s:?}");
+    assert!(s.hint.contains("/usr/bin/python3 -m pip config --user unset global.cert"), "{}", s.hint);
+    let pending = pip_conf_store(&mut c, "/usr/bin/python3", &missing).unwrap();
+    let s = c.finish(vec![pending]).pop().unwrap();
+    assert!(!s.trusts && s.unchecked.as_deref() == Some("pip's global.cert names no file"), "{s:?}");
+    assert!(pip_conf_store(&mut c, "/usr/bin/python3", &missing).is_none(), "one store per file");
+}
+
+/// A vendored pip bundle is fixed by pointing pip at a clean bundle,
+/// unattended; without one the fix names what to do first.
+#[test]
+fn pip_is_pointed_at_a_clean_bundle_when_there_is_one() {
+    let brew = "/opt/homebrew/etc/ca-certificates/cert.pem";
+    let (cmd, auto) = pip_fix("/usr/bin/python3", Some(brew), None);
+    assert_eq!(cmd, format!("/usr/bin/python3 -m pip config --user set global.cert {brew}"));
+    assert!(auto);
+    let (cmd, auto) = pip_fix("/opt/my python/bin/python3", Some("/etc/ssl/cert.pem"), Some(brew));
+    assert_eq!(cmd, "'/opt/my python/bin/python3' -m pip config --user set global.cert /etc/ssl/cert.pem");
+    assert!(auto, "a clean system bundle is used while Homebrew's is stale");
+    let (cmd, auto) = pip_fix("/usr/bin/python3", None, Some(brew));
+    assert!(
+        cmd.starts_with("Run: brew upgrade ca-certificates, then /usr/bin/python3 -m pip config") && !auto,
+        "{cmd}"
+    );
+    let (cmd, auto) = pip_fix("/usr/bin/python3", None, None);
+    assert!(cmd.contains("pip install --user -U pip") && cmd.contains("global.cert") && !auto, "{cmd}");
+}
+
+/// With global.cert set, the file it names is judged and the vendored
+/// bundle, which pip no longer reads, isn't.
+#[test]
+fn check_judges_pips_configured_cert_instead_of_its_vendored_bundle() {
+    let Some(_) = which("openssl") else { return };
+    if process::on_path::<&str>("python3", &[]).is_empty() || std::env::var("PIP_CERT").is_ok_and(|p| !p.is_empty()) {
+        return;
+    }
+    let d = TempDir::new("pipconf").unwrap();
+    let (conf, vendored) = (d.path().join("conf.pem"), d.path().join("vendored.pem"));
+    std::fs::write(&conf, ISSUERS).unwrap();
+    std::fs::write(&vendored, include_str!("../../../assets/distrusted-ca/roots.pem")).unwrap();
+    let (conf_s, vendored_s) = (conf.display().to_string(), vendored.display().to_string());
+    let (conf_r, vendored_r) = (conf_s.clone(), vendored_s.clone());
+    let recorded = move |argv: &[&OsStr]| -> String {
+        let joined = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        if joined.ends_with("pip config get global.cert") {
+            format!("{conf_r}\n")
+        } else if joined.contains("pip._vendor.certifi") {
+            format!("{vendored_r}\n")
+        } else {
+            String::new()
+        }
+    };
+    let stores = check_with(&recorded).unwrap();
+    let s = stores.iter().find(|s| s.shown == format!("global.cert={conf_s}")).expect("pip's configured cert");
+    assert!(!s.trusts && s.unchecked.is_none() && s.label == "pip", "{s:?}");
+    assert!(stores.iter().all(|s| s.shown != vendored_s), "the vendored bundle isn't pip's store");
+}
+
 #[test]
 fn splits_bundles_and_judges_stores() {
     let ints = certificates(INTERMEDIATES);
@@ -141,7 +210,14 @@ fn directories_and_unreadable_files_as_stores() {
     let p = c.store("x", "hashed", &hashed, "h").unwrap();
     assert_eq!(
         p.store,
-        Store { label: "x".into(), shown: "hashed".into(), trusts: false, unchecked: None, hint: "h".into() }
+        Store {
+            label: "x".into(),
+            shown: "hashed".into(),
+            trusts: false,
+            unchecked: None,
+            hint: "h".into(),
+            auto: false
+        }
     );
     assert_eq!(p.bundle, hashed);
     assert!(c.store("x", "hashed", &hashed, "").is_none(), "once");
@@ -212,7 +288,7 @@ fn check_finds_the_stores_the_tools_name() {
         assert!(!s.trusts && s.unchecked.is_none() && s.hint.contains("pip install -U certifi"), "{s:?}");
         if std::env::var("PIP_CERT").ok().filter(|p| !p.is_empty()).is_none() {
             let s = find("pip", &pipca_s).expect("pip's vendored bundle");
-            assert!(s.trusts && s.hint.contains("PIP_CERT"), "{s:?}");
+            assert!(s.trusts && s.hint.contains("pip config --user set global.cert"), "{s:?}");
         }
     }
     for (i, (node, _)) in process::on_path::<&str>("node", &[]).iter().enumerate() {
@@ -250,6 +326,7 @@ fn trust_stores_that_trust_a_distrusted_ca_fail() {
         trusts,
         unchecked: unchecked.map(str::to_string),
         hint: format!("fix {label}"),
+        auto: false,
     };
     ca_trust(
         &mut s,

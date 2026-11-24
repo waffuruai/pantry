@@ -27,7 +27,6 @@ pub const REPO: &str = "waffuruai/pantry";
 /// else is refused.
 pub const SIGNER_PIN: &str = "ps1_nhdt6s6bechkheqxxkkcy3womq";
 pub const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
-const DOWNLOAD: &str = "https://github.com/waffuruai/pantry/releases/download/v{version}/{asset}";
 /// A release binary is a few MB; anything bigger is not one.
 const MAX_ASSET: usize = 64 << 20;
 
@@ -81,6 +80,12 @@ pub fn latest(cache: &Cache, net: &dyn Net, offline: bool) -> Result<String> {
     releases::github_latest(cache, net, REPO, offline)
 }
 
+/// [`latest`] asked of GitHub now, for `wpantry update`: a release out
+/// since the day's copy is seen at once.
+pub fn latest_now(cache: &Cache, net: &dyn Net) -> Result<String> {
+    releases::github_latest_now(cache, net, REPO)
+}
+
 /// A release version as the tags name them: `X.Y.Z`, with an optional
 /// `-pre` or `+build` tail of version characters. Anything else never
 /// reaches a download URL or a command.
@@ -109,7 +114,7 @@ pub fn sum_for(sums: &str, asset: &str) -> Option<String> {
 }
 
 fn download(net: &dyn Net, version: &str, asset: &str) -> Result<Vec<u8>> {
-    let url = DOWNLOAD.replace("{version}", version).replace("{asset}", asset);
+    let url = crate::sources::file::url("wpantry-release").replace("{}", &format!("v{version}/{asset}"));
     let resp = net::request(net, &url, None, &[("Accept", "application/octet-stream")], None)?;
     if resp.status == 404 {
         return Err(Error::Offline(format!("{url}: not found")));

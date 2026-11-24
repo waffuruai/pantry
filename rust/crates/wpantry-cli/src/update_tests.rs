@@ -26,7 +26,23 @@ fn a_newer_release_is_reported_and_check_exits_10() {
     assert_eq!(run_with(u, &net, Path::new(SOURCE), Some(&db)).unwrap(), EXIT_UPDATE_AVAILABLE);
     // A checkout is never replaced: the step is to rebuild it.
     assert_eq!(run_with(update(None), &net, Path::new(SOURCE), Some(&db)).unwrap(), EXIT_UPDATE_AVAILABLE);
-    assert_eq!(net.requests().len(), 1, "the second run answers from the cache");
+    assert_eq!(net.requests().len(), 2, "each run asks GitHub");
+}
+
+#[test]
+fn a_release_out_since_the_days_copy_is_seen_and_offline_uses_that_copy() {
+    let d = TempDir::new("update").unwrap();
+    let db = d.path().join("w.db");
+    // The scan notice cached this version as the latest earlier today.
+    assert_eq!(notice_in(Cache::open(Some(&db)).unwrap(), &github(VERSION)), None);
+    let u = || Update { check: true, ..update(None) };
+    assert_eq!(run_with(u(), &github("v99.0.0"), Path::new(FILE), Some(&db)).unwrap(), EXIT_UPDATE_AVAILABLE);
+    // That answer is now the day's copy: offline and the notice both use it.
+    let offline = Update { offline: true, ..u() };
+    assert_eq!(run_with(offline, &Fake::offline(), Path::new(FILE), Some(&db)).unwrap(), EXIT_UPDATE_AVAILABLE);
+    assert!(notice_in(Cache::open(Some(&db)).unwrap(), &Fake::offline()).is_some());
+    // Online and unreachable: not checked, rather than the old copy as the answer.
+    assert_eq!(run_with(u(), &Fake::offline(), Path::new(FILE), Some(&db)).unwrap(), EXIT_OK);
 }
 
 #[test]

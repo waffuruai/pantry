@@ -189,24 +189,45 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
 /// Example: `{"tag_name": "v1.11.3", "published_at": "2026-08-28T10:00:00Z"}`
 /// gives `("1.11.3", <2026-08-28>)`.
 pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<(String, f64)> {
-    let fetch = || -> Result<Value> {
-        let headers = net::github_headers();
-        let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let data = fetch::get_json(net, "github-releases", &url("github-releases").replace("{}", repo), &h)?
-            .unwrap_or(Value::Null);
-        let tag = str_at(&data, "tag_name");
-        if tag.is_empty() {
-            return Err(Error::Offline(format!("{repo} has no latest release")));
-        }
-        let v =
-            if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
-        Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at"))}))
-    };
-    let v = fetch::memo(cache, "github-releases", &format!("github-latest:{repo}"), fetch, "", false, offline)?;
-    Ok(match &v {
+    let v = fetch::memo(cache, "github-releases", &github_key(repo), || github_fetch(net, repo), "", false, offline)?;
+    Ok(github_parts(&v))
+}
+
+/// [`github_latest`] asked of GitHub now, past the day's copy, which it
+/// replaces. Unlike the memo, an unreachable GitHub is an error here, never
+/// the last copy: it is for a command that must not answer from an old one.
+pub fn github_latest_now(cache: &Cache, net: &dyn Net, repo: &str) -> Result<String> {
+    fetch::on("github-releases")?;
+    let v = github_fetch(net, repo)?;
+    cache.put_run(&github_key(repo), "", &v)?;
+    cache.commit()?;
+    Ok(github_parts(&v).0)
+}
+
+fn github_key(repo: &str) -> String {
+    format!("github-latest:{repo}")
+}
+
+fn github_fetch(net: &dyn Net, repo: &str) -> Result<Value> {
+    let headers = net::github_headers();
+    let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let data = fetch::get_json(net, "github-releases", &url("github-releases").replace("{}", repo), &h)?
+        .unwrap_or(Value::Null);
+    let tag = str_at(&data, "tag_name");
+    if tag.is_empty() {
+        return Err(Error::Offline(format!("{repo} has no latest release")));
+    }
+    let v = if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
+    Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at"))}))
+}
+
+/// A cached answer as (version, published); a bare string is from before
+/// dates were kept.
+fn github_parts(v: &Value) -> (String, f64) {
+    match v {
         Value::String(s) => (s.clone(), 0.0),
         o => (str_at(o, "version").to_string(), o.get("published").and_then(Value::as_f64).unwrap_or(0.0)),
-    })
+    }
 }
 
 /// One row of PostgreSQL's security table.

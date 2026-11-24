@@ -99,7 +99,7 @@ Record the result (who verified, on what) as a comment on the release's tracking
 
 ## After the release
 
-- **ops**: a PR in `waffuruai/ops` that bumps the pinned version and its SHA-256 per platform (from `SHA256SUMS`), and verifies the attestation before install.
+- **ops**: a PR in `waffuruai/ops` that bumps `WPANTRY_VERSION` in `mise.toml`. `mise run wpantry` there installs it verified against the signed packslip (signer pinned), so there are no hashes to copy.
 - **wsentinel** and other embedders: bump the `=X.Y.Z` pin.
 - Close the release's tracking issue.
 

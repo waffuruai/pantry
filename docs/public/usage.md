@@ -272,6 +272,7 @@ wpantry scan --json --events 2>events.jsonl >report.json
 
 - `--events` never prompts (as `--no-input`) and draws no progress line. Check that `wpantry scan --help` lists it before passing it.
 - Ignore events and fields you don't know: new ones are added without changing `v`.
+- Inside a step, a line comes at least about once a second: when nothing else is sent, a `tally` with the same counts says the scan is still working (on a long read, or while it looks over a big tree before reading it).
 - A `finding` event is provisional: the report on stdout is the final word (an ignore file can still leave a finding out, and severities are filled in near the end).
 - Events carry what the report shows, never a file's contents or a secret.
 - If your program stops reading, the scan carries on and exits as it would have.

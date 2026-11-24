@@ -136,14 +136,15 @@ For a caller that runs the scanner as a child process (a script, a CI wrapper, a
 - A usage error comes before the first event, as plain text with exit 2: skip a line that isn't a JSON object.
 - Order: `start` is first and `done` last, once each. The steps run in the order `start` lists them, each `begin` before its `end`, `index` up by one each time. `at`, `tally` and `finding` lines fall between a step's `begin` and `end`.
 - Rate limits: `at` and `tally` are written at most every 100 ms (about 10 a second), and the `at` written is the newest path at that moment; the paths in between are dropped. `step`, `finding`, `note` and `done` are never dropped.
+- Heartbeat: inside a step, a stretch of 1 second with no line written gets a `tally` (the same counts again when none moved), so a step is never silent for much more than a second, whatever it is doing (a long read, a long look over a big tree, a slow lookup). Added 2026-11-24. Between steps nothing is written.
 - A reader that closes its end early, or stops reading, never stalls or fails the scan: lines it can't take are dropped, and the exit code and stdout are those of the same scan read to the end. At the end the scan waits at most 5 seconds for the reader to take the lines still queued.
 
 | event | fields | when |
 |---|---|---|
 | `start` | `version` (wpantry's), `steps` (`[{id, title}]`, in the order they run), `paths` (the folders in scope, absolute; `$HOME` without `--path`) | first |
 | `step` | `id`, `title`, `state: "begin"`, `index` (from 1), `of` (how many steps) | a step begins |
-| `at` | `step`, `path`, `kind` (`file`: being read; `dir`: being looked in) | what the scan is reading now (rate limited) |
-| `tally` | `repos` (in scope), `files` (read so far: a file whose cached result still holds isn't read again), `findings`, `unchecked` (finding events so far) | when the counts change (rate limited), and before each step's `end` |
+| `at` | `step`, `path`, `kind` (`file`: being read; `dir`: being looked in: a folder being listed or looked over, or the root whose plan or cached results the files pass is going through) | what the scan is doing now (rate limited) |
+| `tally` | `repos` (in scope), `files` (read so far: a file whose cached result still holds isn't read again), `findings`, `unchecked` (finding events so far), `listed` (files the folder walks have listed so far: what the files pass may read; added 2026-11-24) | when the counts change (rate limited), as the heartbeat, and before each step's `end` |
 | `finding` | `step`, `id` (the report's `F-…`), `kind`, `severity`, `status`, `title` (the note's first line, at most 200 characters, else `component vuln_id`), `component`, `location`, `vuln_id` | when the step has made it (below) |
 | `note` | `text` | a note the scan would have printed on stderr (a missing `--path`, the report written to a file, a newer release) |
 | `step` | `id`, `state: "end"`, `index`, `of`, `findings` (this step's finding events, `unchecked` ones not counted), `unchecked`, `ms` | a step ends |
@@ -170,7 +171,7 @@ The steps, by `id`, with their titles. `start` lists only the ones this run take
 | `rating` | Rating and saving the findings | always | none new |
 | `report` | Writing the report | always | none |
 
-The files pass, one read of each file for every content check and the malware scan, runs in the first step that needs it: `machine` on a machine scan, else `repo-files`. Its `at` lines name that step.
+The files pass, one read of each file for every content check and the malware scan, runs in the first step that needs it: `machine` on a machine scan, else `repo-files`. Its `at` lines name that step. Before it reads the first file it lists the folders not listed yet, looks over every file (its size and time) and looks each one up in the cache: those `at` lines have `kind: "dir"` (the folder of the file being looked over, then each root), and with a warm cache the pass may read no file at all. The `repos` step lists every repo's folders once (`at` lines with `kind: "dir"`, and `listed` growing).
 
 ## `scan --json`
 

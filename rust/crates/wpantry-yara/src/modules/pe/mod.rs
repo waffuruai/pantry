@@ -996,7 +996,7 @@ fn rich_count(c: &FnCtx, version: Option<&Value>, tool: Option<&Value>) -> Value
     };
     let (version, tool) = (version.and_then(Value::as_int), tool.and_then(Value::as_int));
     let mut total = 0i64;
-    for e in clear.get(16..).unwrap_or_default().chunks_exact(8) {
+    for e in clear.get(16..).unwrap_or_default().as_chunks::<8>().0 {
         let id = u32::from_le_bytes([e[0], e[1], e[2], e[3]]);
         let times = u32::from_le_bytes([e[4], e[5], e[6], e[7]]);
         let (build, prod) = (i64::from(id & 0xFFFF), i64::from(id >> 16));

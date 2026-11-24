@@ -293,10 +293,90 @@ fn the_indicator_lists_and_the_rules_package_never_panic() {
     });
 }
 
+/// Risk: a list or rules folder on this machine (`path = ...`) holds
+/// anything at all, and its stored fingerprint can be anything; a reader
+/// panics, or a pinned copy is replaced by a corrupted file. Oracle: every
+/// read returns; an unpinned copy is the file's bytes and loads without a
+/// panic; a pinned one keeps the good bytes it was pinned to.
+#[test]
+fn local_sources_never_panic_and_a_pinned_copy_stays_good() {
+    let (d, c) = cache();
+    let rules = d.path().join("rules");
+    let net = Fake::offline();
+    let source = |body: &str| crate::sources::file::merged(body).unwrap().into_iter().last().unwrap();
+    let set_time = |p: &std::path::Path, i: usize| {
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + i as u64)).unwrap();
+    };
+    let good = format!("# list\n{}\nbad-c2.example\n", crate::utils::sha256::hex(b"bad"));
+    let list = d.path().join("list.txt");
+    let open = source(&format!(
+        "[[source]]\nid = \"m-local-open\"\nkind = \"hashes\"\nformat = \"lines\"\npath = '{}'\n",
+        list.display()
+    ));
+    let pinned = source(&format!(
+        "[[source]]\nid = \"m-local-pinned\"\nkind = \"hosts\"\nformat = \"lines\"\npath = '{}'\nsha256 = \"{}\"\n",
+        list.display(),
+        crate::utils::sha256::hex(good.as_bytes())
+    ));
+    std::fs::write(&list, &good).unwrap();
+    let both = [open.clone(), pinned.clone()];
+    assert!(crate::sources::user::fetch_files(&c, &net, &rules, &both, &both, true).is_empty());
+    let pinned_copy = rules.join("iocs/user-m-local-pinned.hosts.txt");
+    let open_copy = rules.join("iocs/user-m-local-open.hashes.txt");
+    let mut i = 0;
+    each("local list", good.as_bytes(), 21, |m| {
+        i += 1;
+        std::fs::write(&list, m).unwrap();
+        set_time(&list, i);
+        let _ = crate::sources::user::fetch_files(&c, &net, &rules, &both, &both, true);
+        assert_eq!(std::fs::read(&open_copy).unwrap(), m, "an unpinned copy is the file");
+        assert_eq!(std::fs::read_to_string(&pinned_copy).unwrap(), good, "a pinned copy stays good");
+        let _ = crate::sources::indicator_lists::store(&rules.join("iocs"), &|_| true);
+    });
+    // A corrupted fingerprint is a changed file, never a panic.
+    each("local fingerprint", b"0123abcd 42", 22, |m| {
+        c.set("user:m-local-open_fp", &String::from_utf8_lossy(m)).unwrap();
+        let _ = crate::sources::fetch::file_of(&c, &net, &open, "user:m-local-open", true);
+    });
+    let folder = d.path().join("team-rules");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("a.yar"), "rule A { strings: $a = \"x\" condition: $a }\n").unwrap();
+    let yara = source(&format!(
+        "[[source]]\nid = \"m-local-rules\"\nkind = \"yara\"\nformat = \"yara\"\npath = '{}'\n",
+        folder.display()
+    ));
+    let one = std::slice::from_ref(&yara);
+    let good_rule = b"rule B { meta: os = \"any\" strings: $b = \"needle\" condition: $b }\n";
+    let mut j = 0;
+    each("local rules folder", good_rule, 23, |m| {
+        j += 1;
+        let f = folder.join("b.yar");
+        std::fs::write(&f, m).unwrap();
+        set_time(&f, j);
+        let _ = crate::sources::user::fetch_files(&c, &net, &rules, one, one, true);
+        let _ = crate::checks::malware::yara::load(&rules, false, &|_| true);
+    });
+}
+
 #[test]
 fn a_sources_file_never_panics() {
     let good = crate::defaults::SOURCES.as_bytes();
     each("sources file", &good[..good.len().min(2048)], 17, |m| {
         let _ = crate::sources::file::parse(&String::from_utf8_lossy(m));
+    });
+    // A file of the user's own with local sources: the path checks and the
+    // merge with an added file see anything at all.
+    let mine = "[[source]]\nid = \"team\"\nkind = \"yara\"\nformat = \"yara\"\npath = '~/rules/team'\n\n\
+                [[source]]\nid = \"list\"\nkind = \"hashes\"\nformat = \"lines\"\npath = 'C:\\lists\\h.txt'\n";
+    each("local sources file", mine.as_bytes(), 24, |m| {
+        let text = String::from_utf8_lossy(m).into_owned();
+        if let Ok(all) = crate::sources::file::merged(&text) {
+            for s in all.iter().filter(|s| s.transport == crate::sources::file::Transport::Local) {
+                let _ = crate::sources::file::local_path(s);
+            }
+        }
+        let added = crate::sources::file::added_name(std::path::Path::new("/a.toml"));
+        let _ = crate::sources::file::merged_files(&[(added, text.clone()), ("again".into(), text)]);
     });
 }

@@ -562,3 +562,146 @@ fn stale_metadata_with_no_records_is_cleaned_when_the_source_is_not_configured()
     assert!(keys_of(&c, "t-dir-stale").is_empty());
     assert_eq!(c.get("user:t-rules-other_fp").unwrap().as_deref(), Some("def 0"));
 }
+
+/// A record for the `acme-widget` npm package (every version from 0, to
+/// `fixed` when it has one) with `severity` as OSV's database label
+/// ("" for none), as a download from OSV would be.
+fn upstream(id: &str, severity: &str, fixed: Option<&str>) -> Value {
+    let mut events = vec![json!({"introduced": "0"})];
+    events.extend(fixed.map(|f| json!({"fixed": f})));
+    let mut r = json!({"id": id, "summary": format!("{id} upstream"),
+        "affected": [{"package": {"ecosystem": "npm", "name": "acme-widget"},
+                      "ranges": [{"type": "SEMVER", "events": events}]}]});
+    if !severity.is_empty() {
+        r["database_specific"] = json!({"severity": severity});
+    }
+    r
+}
+
+/// The same record as `osv_dir::matching` returns it: marked with its source.
+fn mine(mut r: Value) -> Value {
+    r[SOURCE_KEY] = json!("t-src");
+    r
+}
+
+fn aliased(mut r: Value, aliases: &[&str]) -> Value {
+    r["aliases"] = json!(aliases);
+    r
+}
+
+/// The findings (and the unfixed count) `Scan::advisories` makes of `recs`
+/// for `acme-widget` 1.0.0, grouped as every check groups them.
+fn advise(d: &TempDir, recs: &[Value]) -> (Vec<crate::finding::Finding>, i64) {
+    let net = Fake::offline();
+    let mut scan = crate::checks::Scan::new(crate::checks::Options::default(), cache_in_new(d), &net, &|_| {}, &|_| {});
+    let mut comp = crate::component::Component::new("project", "acme-widget", "1.0.0", "/w/package-lock.json");
+    comp.osv = Some(item("npm", "acme-widget", "1.0.0"));
+    scan.advisories(&comp, &[], None, "fail", Some(osv::group_by_alias(recs)));
+    (scan.findings, scan.unfixed)
+}
+
+/// Risk: a record from the user's folder that names an upstream advisory as
+/// an alias becomes the group's main record, so its empty severity fails the
+/// high-impact test and an unfixed upstream Critical drops to the unfixed
+/// count with no finding. Oracle: `Scan::advisories` (what every check
+/// calls): the finding is still there, with the upstream id, severity and
+/// status; the local record only adds its note.
+#[test]
+fn a_local_alias_cannot_lower_an_upstream_critical() {
+    let d = TempDir::new("osv-dir-peer").unwrap();
+    let up = upstream("GHSA-aaaa-bbbb-cccc", "CRITICAL", None);
+    let local = mine(aliased(upstream("TEAM-1", "", None), &["GHSA-aaaa-bbbb-cccc", "CVE-2026-1111"]));
+    let (findings, unfixed) = advise(&d, &[up, local]);
+    assert_eq!(unfixed, 1);
+    assert_eq!(findings.len(), 1, "an unfixed upstream Critical stays a finding: {findings:?}");
+    let f = &findings[0];
+    assert_eq!(
+        (f.vuln_id.as_str(), f.severity.as_str(), f.status.as_str()),
+        ("GHSA-aaaa-bbbb-cccc", "CRITICAL", "warn")
+    );
+    assert!(f.note.ends_with("(also in your source t-src)"), "{}", f.note);
+}
+
+/// Risk: a local record's `fixed` event wins the group's fix, so an
+/// upstream advisory with no fix is treated as repaired by a version nobody
+/// released. Oracle: the finding has no fix (the unfixed path, a warning),
+/// and no `fixed` version; nor does the local fix hide it when upstream does
+/// name one that is newer than the installed version.
+#[test]
+fn a_local_fixed_event_never_marks_an_upstream_advisory_fixed() {
+    let d = TempDir::new("osv-dir-fix").unwrap();
+    let up = upstream("GHSA-aaaa-bbbb-cccc", "CRITICAL", None);
+    let local = mine(aliased(upstream("TEAM-1", "", Some("999.0.0")), &["GHSA-aaaa-bbbb-cccc"]));
+    let (findings, unfixed) = advise(&d, &[up, local.clone()]);
+    assert_eq!((findings.len(), unfixed), (1, 1), "{findings:?}");
+    assert_eq!((findings[0].fixed.as_str(), findings[0].status.as_str()), ("", "warn"));
+    // Upstream's own fix is the one suggested, not the local record's.
+    let up = upstream("GHSA-aaaa-bbbb-cccc", "HIGH", Some("1.2.0"));
+    let (findings, _) = advise(&d, &[up, local]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!((findings[0].fixed.as_str(), findings[0].status.as_str()), ("1.2.0", "fail"), "{findings:?}");
+}
+
+/// Risk: a local record claims an upstream advisory is malicious (or is a
+/// stand-in that reads as one). Oracle: no MALICIOUS finding for a group
+/// that has an upstream record that isn't; a group of only local records is
+/// judged as ever (a local MAL- record is malicious).
+#[test]
+fn a_local_record_cannot_make_an_upstream_advisory_malicious() {
+    let d = TempDir::new("osv-dir-mal").unwrap();
+    let up = upstream("GHSA-aaaa-bbbb-cccc", "HIGH", Some("1.2.0"));
+    let local = mine(aliased(upstream("MAL-2026-1", "", None), &["GHSA-aaaa-bbbb-cccc"]));
+    let (findings, _) = advise(&d, &[up, local.clone()]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!((findings[0].severity.as_str(), findings[0].vuln_id.as_str()), ("HIGH", "GHSA-aaaa-bbbb-cccc"));
+    let (alone, _) = advise(&d, &[local]);
+    assert_eq!(alone.len(), 1);
+    assert_eq!(alone[0].severity, "MALICIOUS", "a local-only group behaves as before");
+}
+
+/// Oracle: a group of only local records behaves as it always did, and a
+/// local record may still add a finding for a package upstream says nothing
+/// of (adding is allowed): its own id, severity and fix are used.
+#[test]
+fn local_only_groups_are_judged_by_their_own_records() {
+    let d = TempDir::new("osv-dir-only").unwrap();
+    let fixed = mine(upstream("TEAM-2", "HIGH", Some("2.0.0")));
+    let (findings, _) = advise(&d, &[fixed]);
+    assert_eq!(findings.len(), 1);
+    let f = &findings[0];
+    assert_eq!(
+        (f.vuln_id.as_str(), f.severity.as_str(), f.fixed.as_str(), f.status.as_str()),
+        ("TEAM-2", "HIGH", "2.0.0", "fail")
+    );
+    assert!(f.note.contains("(from your source t-src"), "{}", f.note);
+    let open = mine(upstream("TEAM-3", "CRITICAL", None));
+    let (findings, unfixed) = advise(&d, &[open]);
+    assert_eq!((findings.len(), unfixed), (1, 1));
+    assert_eq!((findings[0].vuln_id.as_str(), findings[0].status.as_str()), ("TEAM-3", "warn"));
+}
+
+/// Risk: a local record that names two unrelated upstream advisories as
+/// aliases joins them into one group, and one of the two findings is
+/// deduplicated away (an upstream finding hidden). Oracle: the groups and
+/// the findings: two upstream advisories stay two, the local record is shown
+/// beside the first it names, and a local record naming only another local
+/// one follows it.
+#[test]
+fn a_local_record_cannot_join_two_upstream_advisories_into_one() {
+    let d = TempDir::new("osv-dir-bridge").unwrap();
+    let a = upstream("GHSA-aaaa-aaaa-aaaa", "CRITICAL", Some("1.5.0"));
+    let b = upstream("GHSA-bbbb-bbbb-bbbb", "HIGH", Some("1.6.0"));
+    let bridge = mine(aliased(upstream("TEAM-1", "", None), &["GHSA-aaaa-aaaa-aaaa", "GHSA-bbbb-bbbb-bbbb"]));
+    let follower = mine(aliased(upstream("TEAM-2", "", None), &["TEAM-1"]));
+    let recs = [follower.clone(), a.clone(), b.clone(), bridge.clone()];
+    let ids = |g: &Vec<Value>| g.iter().map(|r| str_at(r, "id").to_string()).collect::<Vec<_>>();
+    let groups = osv::group_by_alias(&recs);
+    assert_eq!(
+        groups.iter().map(ids).collect::<Vec<_>>(),
+        [vec!["TEAM-2", "GHSA-aaaa-aaaa-aaaa", "TEAM-1"], vec!["GHSA-bbbb-bbbb-bbbb"]]
+    );
+    let (findings, _) = advise(&d, &[a, b, bridge]);
+    let mut got: Vec<&str> = findings.iter().map(|f| f.vuln_id.as_str()).collect();
+    got.sort();
+    assert_eq!(got, ["GHSA-aaaa-aaaa-aaaa", "GHSA-bbbb-bbbb-bbbb"], "both upstream findings stay");
+}

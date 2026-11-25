@@ -654,8 +654,50 @@ pub fn ids_of(rec: &Value) -> Vec<String> {
 
 /// Records grouped by alias (id, aliases, upstream), so one vulnerability
 /// from two databases is one finding. Groups keep the records' order.
+///
+/// A record from a folder on this machine ([`crate::sources::osv_dir`])
+/// never joins two groups of the other records together: the upstream
+/// records are grouped among themselves first, and a local record is added
+/// to the first group it names an id of (so it is shown beside it), or
+/// grouped with other local records when it names none. A local record that
+/// aliased two unrelated upstream advisories would otherwise merge them into
+/// one finding and hide one.
 pub fn group_by_alias(recs: &[Value]) -> Vec<Vec<Value>> {
-    let mut parent: Vec<usize> = (0..recs.len()).collect();
+    let ids: Vec<Vec<String>> =
+        recs.iter().map(|r| ids_of(r).into_iter().filter(|id| !id.is_empty()).collect()).collect();
+    let (upstream, mut rest): (Vec<usize>, Vec<usize>) =
+        (0..recs.len()).partition(|&i| !crate::sources::osv_dir::is_local(&recs[i]));
+    let mut groups: Vec<Vec<usize>> = cluster(&upstream, &ids);
+    let mut named: Vec<BTreeSet<&str>> =
+        groups.iter().map(|g| g.iter().flat_map(|&i| ids[i].iter().map(String::as_str)).collect()).collect();
+    // A local record joins the first group it names; one that names only
+    // another local record's id may join once that one has.
+    loop {
+        let before = rest.len();
+        rest.retain(|&i| {
+            let Some(g) = named.iter().position(|n| ids[i].iter().any(|id| n.contains(id.as_str()))) else {
+                return true;
+            };
+            groups[g].push(i);
+            named[g].extend(ids[i].iter().map(String::as_str));
+            false
+        });
+        if rest.len() == before {
+            break;
+        }
+    }
+    groups.extend(cluster(&rest, &ids));
+    for g in &mut groups {
+        g.sort_unstable();
+    }
+    groups.sort_unstable_by_key(|g| g[0]);
+    groups.into_iter().map(|g| g.into_iter().map(|i| recs[i].clone()).collect()).collect()
+}
+
+/// `members` (indexes into `ids`) grouped so that records sharing an id are
+/// together, each group in index order and the groups by their first member.
+fn cluster(members: &[usize], ids: &[Vec<String>]) -> Vec<Vec<usize>> {
+    let mut parent: Vec<usize> = (0..members.len()).collect();
     fn root(p: &mut [usize], mut i: usize) -> usize {
         while p[i] != i {
             p[i] = p[p[i]];
@@ -663,24 +705,23 @@ pub fn group_by_alias(recs: &[Value]) -> Vec<Vec<Value>> {
         }
         i
     }
-    let mut owner: HashMap<String, usize> = HashMap::new();
-    for (i, r) in recs.iter().enumerate() {
-        for id in ids_of(r).into_iter().filter(|id| !id.is_empty()) {
-            match owner.get(&id) {
+    let mut owner: HashMap<&str, usize> = HashMap::new();
+    for (k, &i) in members.iter().enumerate() {
+        for id in &ids[i] {
+            match owner.get(id.as_str()) {
                 Some(&j) => {
-                    let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                    let (a, b) = (root(&mut parent, k), root(&mut parent, j));
                     parent[a.max(b)] = a.min(b);
                 }
                 None => {
-                    owner.insert(id, i);
+                    owner.insert(id.as_str(), k);
                 }
             }
         }
     }
-    let mut groups: BTreeMap<usize, Vec<Value>> = BTreeMap::new();
-    for (i, r) in recs.iter().enumerate() {
-        let g = root(&mut parent, i);
-        groups.entry(g).or_default().push(r.clone());
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (k, &i) in members.iter().enumerate() {
+        groups.entry(root(&mut parent, k)).or_default().push(i);
     }
     groups.into_values().collect()
 }

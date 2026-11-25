@@ -195,6 +195,19 @@ pub fn is_malicious(rec: &Value) -> bool {
     osv::ids_of(rec).iter().any(|i| i.starts_with("MAL-"))
 }
 
+/// The records of an alias group that decide what its finding says: the
+/// upstream ones when there are any, else all of them (a group of records
+/// from folders on this machine only is judged as it always was).
+///
+/// ```ignore
+/// // [upstream GHSA-x, local TEAM-1 aliasing it] -> [GHSA-x]
+/// // [local TEAM-1]                              -> [TEAM-1]
+/// ```
+fn deciding(group: &[Value]) -> Vec<&Value> {
+    let upstream: Vec<&Value> = group.iter().filter(|r| !crate::sources::osv_dir::is_local(r)).collect();
+    if upstream.is_empty() { group.iter().collect() } else { upstream }
+}
+
 /// The `Component::extra` key naming what a component's OSV release tags
 /// put before its version (`OTP-` for Erlang/OTP's `OTP-27.3.3`), taken off
 /// the fix version an advisory reports.
@@ -869,11 +882,17 @@ impl<'a> Scan<'a> {
         let mut failing = false;
         let mut seen = HashSet::new();
         for group in groups.iter().filter(|g| !g.is_empty()) {
-            let main = group.iter().find(|r| display_id(r).starts_with("CVE-")).unwrap_or(&group[0]);
+            // What the finding says comes from the upstream records when the
+            // group holds any: a record from a folder on this machine may be
+            // added to a group (its note, its link) but never decides its id,
+            // severity, fix or malicious status, so it cannot lower a severity,
+            // mark something fixed or hide an upstream finding.
+            let decide = deciding(group);
+            let main = *decide.iter().find(|r| display_id(r).starts_with("CVE-")).unwrap_or(&decide[0]);
             if !seen.insert(display_id(main)) {
                 continue; // the same CVE from two databases
             }
-            if let Some(bad) = group.iter().find(|r| is_malicious(r)) {
+            if let Some(bad) = decide.iter().find(|r| is_malicious(r)) {
                 failing = true;
                 let who = c.osv.as_ref().map(|o| o.1.as_str()).unwrap_or(&c.name);
                 let summary = str_at(bad, "summary");
@@ -895,7 +914,7 @@ impl<'a> Scan<'a> {
             // only the highest of them repairs the group: a distro's first,
             // incomplete update and its CVE record are aliases with different
             // fixes (Ubuntu's USN-8477-1 for tar, then UBUNTU-CVE-2026-5704).
-            let safe = group
+            let safe = decide
                 .iter()
                 .filter_map(|r| {
                     let fixes: Vec<String> = asked
@@ -911,7 +930,7 @@ impl<'a> Scan<'a> {
                 // High or exploited in the wild. A warning with the
                 // mitigation, and `wpantry watch` asks again often.
                 let severity = severity_of(main);
-                let kev = group.iter().any(|r| is_kev(r, &self.kev));
+                let kev = decide.iter().any(|r| is_kev(r, &self.kev));
                 if high_impact(&severity) || kev {
                     let id = display_id(main);
                     let step = mitigation(&id).unwrap_or_else(|| {
@@ -938,10 +957,10 @@ impl<'a> Scan<'a> {
                 continue;
             };
             failing = failing || status == "fail";
-            let kev = group.iter().any(|r| is_kev(r, &self.kev));
-            // The range the installed version fell in, from whichever record
-            // of the group names one.
-            let affected_range = group
+            let kev = decide.iter().any(|r| is_kev(r, &self.kev));
+            // The range the installed version fell in, from whichever
+            // deciding record of the group names one.
+            let affected_range = decide
                 .iter()
                 .flat_map(|r| asked.iter().map(move |(e, p, v)| (r, e, p, v)))
                 .map(|(r, e, p, v)| osv::affected_range(r, e, p, v, |a, b| order.cmp(a, b)))

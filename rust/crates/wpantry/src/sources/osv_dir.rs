@@ -343,6 +343,11 @@ pub fn link(rec: &Value) -> Option<String> {
     (clean && crate::utils::net::host_of(url).is_some()).then(|| url.to_string())
 }
 
+/// Whether `rec` came from a folder on this machine ([`SOURCE_KEY`] is set).
+pub fn is_local(rec: &Value) -> bool {
+    rec.get(SOURCE_KEY).is_some()
+}
+
 /// Takes [`SOURCE_KEY`] off a record that didn't come from here.
 pub fn strip(rec: &mut Value) {
     if let Some(o) = rec.as_object_mut() {

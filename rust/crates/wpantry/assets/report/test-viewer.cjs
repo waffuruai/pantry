@@ -441,6 +441,17 @@ assert(section('manual').includes('Grouped from the findings'));
   assert.equal(shown(),plain,'a deflated bundle renders as the plain one');
   load({pantry_deflated:fx.deflated.slice(0,40)}); await ctx.viewerTest.ready;
   assert(main().includes('is compressed'),'a corrupt stream says so');
+  // Risk: a fault in the page (start, unpack or render throwing) is reported
+  // as "your browser cannot unpack this report". Oracle: with a good stream
+  // and a render that throws, the error surfaces and that message is never set.
+  {
+    const m=el('main'), sets=[]; let first=true;
+    Object.defineProperty(m,'innerHTML',{configurable:true,enumerable:true,get(){return sets[sets.length-1]||''},set(v){if(first){first=false;throw new Error('render broke')} sets.push(v)}});
+    load({pantry_deflated:fx.deflated});
+    await ctx.viewerTest.ready.then(()=>assert.fail('a render error must not be swallowed'),e=>assert.equal(e.message,'render broke'));
+    assert(!sets.some(s=>s.includes('is compressed')),'a render error is not blamed on the compressed stream');
+    Object.defineProperty(m,'innerHTML',{value:'',writable:true,configurable:true,enumerable:true});
+  }
   delete ctx.DecompressionStream;
   load({pantry_deflated:fx.deflated}); await ctx.viewerTest.ready;
   assert(main().includes('is compressed') && main().includes('wpantry report --json'),'a browser without DecompressionStream says what to do');

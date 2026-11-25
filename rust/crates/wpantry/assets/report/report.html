@@ -1104,8 +1104,11 @@ function start(b){
 var ready=Promise.resolve();
 if(embedded&&typeof embedded.pantry_deflated==='string'){
   ready=(typeof DecompressionStream==='function'?inflate(embedded.pantry_deflated):Promise.reject(new Error('no DecompressionStream')))
-    .then(function(text){start(unpack(JSON.parse(text)))})
-    .catch(function(){$('main').innerHTML='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>This <em>report</em> is compressed</h1><p class="lede">It is a large scan, packed to keep the file small, and this browser can’t unpack it. Open it in Chrome or Edge 103, Firefox 113 or Safari 16.4 or later, or read the scan with <code>wpantry report --json</code>.</p></section>'});
+    // Only a stream that will not inflate or parse is "compressed and
+    // unreadable": an error from start(), unpack() or render() is a fault in
+    // the page and is left to surface as one, not blamed on the browser.
+    .then(function(text){return JSON.parse(text)})
+    .then(function(data){start(unpack(data))},function(){$('main').innerHTML='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>This <em>report</em> is compressed</h1><p class="lede">It is a large scan, packed to keep the file small, and this browser can’t unpack it. Open it in Chrome or Edge 103, Firefox 113 or Safari 16.4 or later, or read the scan with <code>wpantry report --json</code>.</p></section>'});
 } else start(unpack(embedded));
 })();
 </script>

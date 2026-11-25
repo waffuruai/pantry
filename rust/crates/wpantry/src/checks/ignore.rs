@@ -37,7 +37,7 @@ pub fn repo_cannot_skip(f: &Finding) -> bool {
         || PROTECTED_IDS.contains(&f.vuln_id.as_str())
 }
 /// The largest ignore file read.
-const MAX: u64 = 1 << 20;
+pub(crate) const MAX: u64 = 1 << 20;
 
 /// Your ignore file: `ignore` in [`crate::sources::file::config_dir`].
 pub fn user_file() -> PathBuf {
@@ -212,7 +212,7 @@ impl Pattern {
 }
 
 /// A file's text: None if there is none, an error if it can't be read.
-fn read(path: &Path) -> Option<std::result::Result<String, String>> {
+pub(crate) fn read(path: &Path) -> Option<std::result::Result<String, String>> {
     match read_capped(path, MAX) {
         Ok(text) => Some(Ok(text)),
         Err(_) if !path.exists() => None,
@@ -222,13 +222,25 @@ fn read(path: &Path) -> Option<std::result::Result<String, String>> {
 
 /// A section header's inside: `[kind]`, `[kind id]` or `[*]`. A line like
 /// `[Bb]uild/` is a pattern: a header is the whole line.
-fn header(line: &str) -> Option<&str> {
+pub(crate) fn header(line: &str) -> Option<&str> {
     let t = line.trim();
     let inner = t.strip_prefix('[')?.strip_suffix(']')?;
     (!inner.contains(['[', ']'])).then_some(inner)
 }
 
-fn section(inner: &str) -> std::result::Result<(Option<String>, Option<String>), String> {
+/// Whether a line (not blank, not a comment, not a header) is a pattern
+/// the file can use, as [`Ignore::parse`] reads it.
+pub(crate) fn is_pattern(line: &str) -> bool {
+    Pattern::parse(line.strip_suffix('\r').unwrap_or(line)).is_some()
+}
+
+/// Whether a line is a comment (a blank line or one starting with `#`).
+pub(crate) fn is_skippable(line: &str) -> bool {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    line.trim().is_empty() || line.starts_with('#')
+}
+
+pub(crate) fn section(inner: &str) -> std::result::Result<(Option<String>, Option<String>), String> {
     let mut words = inner.split_whitespace();
     let (Some(kind), id, None) = (words.next(), words.next(), words.next()) else {
         return Err(format!("`[{inner}]`: a section is `[check]` or `[check id]`"));
@@ -266,7 +278,7 @@ fn split(rel: &str) -> Vec<&str> {
 }
 
 /// Glob characters in a literal path, escaped.
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if matches!(c, '*' | '?' | '[' | '\\') {
@@ -377,7 +389,7 @@ fn class(p: &[char], c: Option<char>) -> Option<(bool, usize)> {
 
 /// A path a finding names, made absolute: `~/…` under your home, or as
 /// it is when it's absolute. Anything else (a line, a package name) isn't one.
-fn absolute(s: &str, home: &Path) -> Option<PathBuf> {
+pub(crate) fn absolute(s: &str, home: &Path) -> Option<PathBuf> {
     if s == "~" {
         return Some(home.to_path_buf());
     }
@@ -389,7 +401,7 @@ fn absolute(s: &str, home: &Path) -> Option<PathBuf> {
 }
 
 /// A path's parts, `/`-joined, with no root (a Windows drive is the first part).
-fn joined(p: &Path) -> String {
+pub(crate) fn joined(p: &Path) -> String {
     p.components()
         .filter_map(|c| match c {
             Part::Prefix(x) => Some(x.as_os_str().to_string_lossy().into_owned()),
@@ -401,10 +413,49 @@ fn joined(p: &Path) -> String {
 }
 
 /// One repo in scope, and its ignore file if it has one.
-struct InScope<'r> {
-    name: &'r str,
-    root: &'r Path,
-    ignore: Option<Ignore>,
+pub(crate) struct InScope<'r> {
+    pub(crate) name: &'r str,
+    pub(crate) root: &'r Path,
+    pub(crate) ignore: Option<std::borrow::Cow<'r, Ignore>>,
+}
+
+/// Which file left a finding out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Skip {
+    /// A repo's `.pantryignore`.
+    Repo,
+    /// Your ignore file.
+    User,
+}
+
+/// Whether the repo files in `repos` or your file `user` leave `f` out, and
+/// which one does: the one decision [`apply_with`] makes for every finding,
+/// shared with `wpantry ignore` so what it writes is checked by the filter
+/// that will read it. `repos` are innermost first.
+pub(crate) fn skipped_by(f: &Finding, repos: &[InScope], user: Option<&Ignore>, home: &Path) -> Option<Skip> {
+    if f.kind == "unchecked" {
+        return None;
+    }
+    let places = [f.component.as_str(), f.location.as_str()];
+    if !repo_cannot_skip(f) {
+        for place in places {
+            if let Some((r, rel)) = in_repo(repos, place, home)
+                && r.ignore.as_ref().is_some_and(|ig| ig.skips(&f.kind, &f.vuln_id, &rel))
+            {
+                return Some(Skip::Repo);
+            }
+        }
+    }
+    if let Some(u) = user {
+        for place in places {
+            if let Some(p) = absolute(place, home)
+                && u.skips(&f.kind, &f.vuln_id, &joined(&p))
+            {
+                return Some(Skip::User);
+            }
+        }
+    }
+    None
 }
 
 /// The repo a path is in, innermost first, and the path from its root.
@@ -519,7 +570,7 @@ pub(crate) fn apply_with(scan: &mut Scan, user_path: &Path) {
                         format!("Find out why the repo wants {kind} findings skipped. To skip them yourself, list the paths under [{kind}] in {user_name}"),
                     ));
                 }
-                r.ignore = Some(ig);
+                r.ignore = Some(std::borrow::Cow::Owned(ig));
             }
         }
     }
@@ -527,32 +578,16 @@ pub(crate) fn apply_with(scan: &mut Scan, user_path: &Path) {
     repos.sort_by_key(|r| std::cmp::Reverse(r.root.components().count()));
     let (mut by_repo, mut by_user) = (0, 0);
     if user.is_some() || repos.iter().any(|r| r.ignore.is_some()) {
-        scan.findings.retain(|f| {
-            if f.kind == "unchecked" {
-                return true;
+        scan.findings.retain(|f| match skipped_by(f, &repos, user.as_ref(), &home) {
+            Some(Skip::Repo) => {
+                by_repo += 1;
+                false
             }
-            let places = [f.component.as_str(), f.location.as_str()];
-            if !repo_cannot_skip(f) {
-                for place in places {
-                    if let Some((r, rel)) = in_repo(&repos, place, &home)
-                        && r.ignore.as_ref().is_some_and(|ig| ig.skips(&f.kind, &f.vuln_id, &rel))
-                    {
-                        by_repo += 1;
-                        return false;
-                    }
-                }
+            Some(Skip::User) => {
+                by_user += 1;
+                false
             }
-            if let Some(u) = &user {
-                for place in places {
-                    if let Some(p) = absolute(place, &home)
-                        && u.skips(&f.kind, &f.vuln_id, &joined(&p))
-                    {
-                        by_user += 1;
-                        return false;
-                    }
-                }
-            }
-            true
+            None => true,
         });
     }
     for n in notes {

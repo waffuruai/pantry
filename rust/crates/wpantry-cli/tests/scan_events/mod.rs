@@ -325,6 +325,39 @@ fn notes_become_events() {
     envelope(&read(&out));
 }
 
+/// An unwritable `-o` is a file error (exit 3), so it is reported inside
+/// the stream: `start`, then `done` with the error. Risk: a program that
+/// reads the stream sees no `start` and no `done` for a run that did start.
+/// Oracle: the order rules in [`order`] (every line an event, `start`
+/// first, `done` last), the exit code of the same run without `--events`
+/// (3), and the plain-text line that run prints.
+#[test]
+fn an_unwritable_report_path_is_reported_in_the_stream() {
+    let t = Ctx::new();
+    let dir = fixture(&t);
+    let out = t.tmp.join("no-such-folder").join("r.json");
+    let mut argv = scan_args(&dir);
+    argv.extend(["-o", s(&out)]);
+    let plain_run = t.run(&argv);
+    assert_eq!(plain_run.code, 3, "{}", plain_run.err);
+    argv.push("--events");
+    let r = t.run(&argv);
+    assert_eq!(r.code, 3, "same exit code as without --events: {}", r.err);
+    let lines = events(&r.err);
+    // No step ran, so the full order rules (every listed step begun) don't
+    // apply: the stream is exactly `start` then `done`.
+    let names: Vec<&str> = lines.iter().map(|l| l["event"].as_str().unwrap()).collect();
+    assert_eq!(names, ["start", "done"], "{lines:?}");
+    assert!(lines.iter().all(|l| l["v"] == 1), "{lines:?}");
+    let done = lines.last().unwrap();
+    assert_eq!(done["exit"], 3, "{done}");
+    assert!(done["findings"].is_null() && done["unchecked"].is_null() && done["scan"].is_null(), "{done}");
+    // The message is the one the run prints without --events.
+    let message = plain_run.err.trim().trim_start_matches("✗ wpantry: ");
+    assert_eq!(done["error"], message, "{done}");
+    assert!(!out.exists(), "nothing was written");
+}
+
 /// A tree to keep a scan busy: `repos` checkouts of `dirs` folders with
 /// `files` files each, the files hard links of three small seeds (quick to
 /// make, read like any other file). Returns the folder holding the repos.

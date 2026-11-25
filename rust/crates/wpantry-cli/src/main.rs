@@ -134,14 +134,6 @@ fn quiet(show: &Show) -> bool {
 }
 
 fn cmd_scan(a: Check) -> Result<i32> {
-    // A report file that can't be written fails now, before the scan.
-    if let Some(path) = &a.show.out {
-        drop(Output::new(path)?);
-    }
-    if !a.allow_sleep {
-        wpantry::utils::process::stay_awake();
-    }
-    let net = wpantry::utils::net::Http::new();
     let quiet = quiet(&a.show);
     let opts = Options {
         paths: a.path.clone(),
@@ -173,6 +165,16 @@ fn cmd_scan(a: Check) -> Result<i32> {
         let paths = opts.paths.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| vec![home]);
         events::start(wpantry::checks::watch::steps(&opts), &paths)
     });
+    // A report file that can't be written fails now, before the scan. After
+    // `start` (under --events), so the failure is `done`'s error, exit 3,
+    // and a program reading the stream sees a whole one.
+    if let Some(path) = &a.show.out {
+        drop(Output::new(path)?);
+    }
+    if !a.allow_sleep {
+        wpantry::utils::process::stay_awake();
+    }
+    let net = wpantry::utils::net::Http::new();
     let first = scan(opts.clone(), quiet, &net, ev.map(|e| e as &dyn wpantry::checks::watch::Watch))?;
     // The scan is done; what it found is shown as `wpantry report` shows it.
     if let Some(ev) = ev {

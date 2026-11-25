@@ -11,12 +11,30 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// PATH's directories, in order, split as the platform does (`:` on unix,
-/// `;` on Windows); an empty entry stays "" (the current directory).
+/// `;` on Windows); an empty entry stays "" (the current directory). A
+/// directory inside a folder the scan leaves out (`crate::utils::privacy`)
+/// is not among them: every PATH consumer (the tool inventory, the Python
+/// search, the browsers) goes through here, so none of them stats or lists
+/// it, which would raise the privacy prompt the flag exists to avoid.
 pub fn path_dirs() -> Vec<String> {
-    match std::env::var_os("PATH") {
-        Some(p) => std::env::split_paths(&p).map(|d| d.to_string_lossy().into_owned()).collect(),
+    path_dirs_of(std::env::var_os("PATH").as_deref())
+}
+
+/// [`path_dirs`] for the PATH value `path`.
+pub(crate) fn path_dirs_of(path: Option<&OsStr>) -> Vec<String> {
+    match path {
+        Some(p) => std::env::split_paths(p)
+            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .map(|d| d.to_string_lossy().into_owned())
+            .collect(),
         None => Vec::new(),
     }
+}
+
+/// `dirs` without the ones inside a folder the scan leaves out: for the
+/// extra directories a caller searches beside PATH.
+pub fn reachable(dirs: Vec<String>) -> Vec<String> {
+    dirs.into_iter().filter(|d| !crate::utils::privacy::is_left_out(d)).collect()
 }
 
 /// The first executable called `name` on PATH (Python: `shutil.which`), else
@@ -258,8 +276,13 @@ pub fn run<S: AsRef<OsStr>>(argv: &[S], timeout: Duration) -> String {
 /// Every distinct executable called `name` on PATH, then in the `extra`
 /// directory globs, as (shown path, real path).
 pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = path_dirs();
-    dirs.extend(expand(extra));
+    on_path_in(name, path_dirs(), extra)
+}
+
+/// [`on_path`] over `dirs` (PATH's) and then the `extra` globs, none of them
+/// inside a left-out folder.
+fn on_path_in<S: AsRef<str>>(name: &str, mut dirs: Vec<String>, extra: &[S]) -> Vec<(String, String)> {
+    dirs.extend(reachable(expand(extra)));
     let mut seen = Vec::new();
     let mut out = Vec::new();
     for d in dirs {

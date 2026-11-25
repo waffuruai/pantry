@@ -21,30 +21,15 @@ const FONTS: [(&str, &[u8]); 4] = [
 pub use super::HISTORY_DAYS;
 
 fn render(bundle: &J) -> String {
-    // JSON escaping alone does not protect an HTML script element's end tag.
-    let payload = bundle.dumps().replace('&', "\\u0026").replace('<', "\\u003c").replace('>', "\\u003e");
+    // Packed (`pack.rs`): a machine scan repeats the same advisory, note and
+    // fix command thousands of times. JSON escaping alone does not protect
+    // an HTML script element's end tag.
+    let payload = super::pack::write(bundle).replace('&', "\\u0026").replace('<', "\\u003c").replace('>', "\\u003e");
     let mut html = TEMPLATE.replacen(TOKEN, &payload, 1);
     for (token, bytes) in FONTS {
-        html = html.replacen(token, &base64(bytes), 1);
+        html = html.replacen(token, &crate::utils::base64::encode(bytes), 1);
     }
     html
-}
-
-/// Standard base64 with padding, for the `data:` URLs the fonts ride in.
-fn base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// What the cache remembers across scans, for the page's patched and

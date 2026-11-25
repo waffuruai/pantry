@@ -11,6 +11,7 @@ pub mod html;
 pub mod json;
 pub mod jsonl;
 pub mod md;
+pub mod pack;
 pub mod summary;
 pub mod view;
 pub mod yara;

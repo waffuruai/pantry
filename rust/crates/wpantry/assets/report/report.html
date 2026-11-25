@@ -364,8 +364,8 @@ td .badge{vertical-align:baseline}
 (function(){
 'use strict';
 
-var bundle = {runs:[]};
-try { bundle = JSON.parse(document.getElementById('pantry-bundle').textContent) || bundle; } catch(e){}
+var bundle = {runs:[]}, embedded = null;
+try { embedded = JSON.parse(document.getElementById('pantry-bundle').textContent); } catch(e){}
 var advInfo = Object.create(null);
 var runs = [];
 var PAGE_SIZES=[10,25,50,100];
@@ -1067,10 +1067,49 @@ function addText(text,name){
   render(); toast('Added '+name);
 }
 
-(Array.isArray(bundle.runs)?bundle.runs:[]).forEach(function(x){if(x && validReport(x.report) && typeof x.title==='string' && typeof x.file==='string') runs.push(normalize(x.report,{title:x.title,file:x.file,source:x.source}))});
-// open on the scan with the most to look at
-var best=0; runs.forEach(function(r,i){if(r.findings.length>runs[best].findings.length)best=i}); state.run=best;
-render();
+/* ---------- the embedded bundle (src/reporters/pack.rs) ---------- */
+// Packed: each repeated string once ("~" and its base-36 index in strings),
+// each list of alike objects as rows (["~", keys, values...]). Anything
+// else, such as a bundle written before packing, is taken as it is.
+function unpack(b){
+  if(!b||b.pantry_packed!==1||!Array.isArray(b.strings))return b;
+  var t=b.strings;
+  function s(x){return x.charAt(0)==='~'?t[parseInt(x.slice(1),36)]:x}
+  function put(o,k,v){if(k==='__proto__')Object.defineProperty(o,k,{value:v,enumerable:true,writable:true,configurable:true});else o[k]=v}
+  function v(x){
+    if(typeof x==='string')return s(x);
+    if(Array.isArray(x)){
+      if(x[0]!=='~')return x.map(v);
+      var keys=(x[1]||[]).map(s);
+      return x.slice(2).map(function(row){var o={};keys.forEach(function(k,i){put(o,k,v(row[i]))});return o});
+    }
+    if(x&&typeof x==='object'){var o={};Object.keys(x).forEach(function(k){put(o,s(k),v(x[k]))});return o}
+    return x;
+  }
+  return v(b.data);
+}
+// A large bundle is deflated as well: DecompressionStream, in Chrome and
+// Edge 103, Firefox 113 and Safari 16.4 or later, works from file:// too.
+function inflate(text){
+  var bytes=Uint8Array.from(atob(text),function(c){return c.charCodeAt(0)});
+  return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+}
+function start(b){
+  bundle=b&&typeof b==='object'?b:{runs:[]};
+  (Array.isArray(bundle.runs)?bundle.runs:[]).forEach(function(x){if(x && validReport(x.report) && typeof x.title==='string' && typeof x.file==='string') runs.push(normalize(x.report,{title:x.title,file:x.file,source:x.source}))});
+  // open on the scan with the most to look at
+  var best=0; runs.forEach(function(r,i){if(r.findings.length>runs[best].findings.length)best=i}); state.run=best;
+  render();
+}
+var ready=Promise.resolve();
+if(embedded&&typeof embedded.pantry_deflated==='string'){
+  ready=(typeof DecompressionStream==='function'?inflate(embedded.pantry_deflated):Promise.reject(new Error('no DecompressionStream')))
+    // Only a stream that will not inflate or parse is "compressed and
+    // unreadable": an error from start(), unpack() or render() is a fault in
+    // the page and is left to surface as one, not blamed on the browser.
+    .then(function(text){return JSON.parse(text)})
+    .then(function(data){start(unpack(data))},function(){$('main').innerHTML='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>This <em>report</em> is compressed</h1><p class="lede">It is a large scan, packed to keep the file small, and this browser can’t unpack it. Open it in Chrome or Edge 103, Firefox 113 or Safari 16.4 or later, or read the scan with <code>wpantry report --json</code>.</p></section>'});
+} else start(unpack(embedded));
 })();
 </script>
 </body>

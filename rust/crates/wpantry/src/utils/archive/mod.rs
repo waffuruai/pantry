@@ -1,6 +1,7 @@
 //! Archives the in-tree readers open: zip members and gzip files, inflated
 //! by [`deflate`], and the little-endian and search helpers they share.
 
+pub mod compress;
 pub mod deflate;
 pub mod gzip;
 pub mod zip;

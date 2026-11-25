@@ -97,3 +97,4 @@ Visual QA: a report of a real machine scan was opened in a browser at desktop an
 
 | 2026-10-31 | Add a restrained branded completion state for clear, scoped scans | Tom requested a happy finish without excessive celebration; incomplete evidence keeps cautious wording | Tom |
 | 2026-11-01 | Lay the page out as the four questions a run answers (scanned, at risk, patching, by hand) plus history, in the design language, with wpantry's own plan and the cache history in the bundle | Eric wants the report to be the visual summary of a run; the plan and the fix order live in the scanner, not twice | Eric |
+| 2026-11-21 | Pack the bundle (repeated strings once, alike objects as rows) and deflate it past 1 MiB, with an in-tree encoder | A machine scan with duplicate checkouts wrote a 46 MB page; packing keeps every field without naming any, the page decodes it offline, and no compression crate joins the supply chain | Tom |

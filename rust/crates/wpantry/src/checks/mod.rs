@@ -651,7 +651,18 @@ impl<'a> Scan<'a> {
         // project is still not touched.
         self.left_out = None;
         if self.opts.no_personal_files {
-            let mut named: Vec<PathBuf> = self.opts.paths.iter().flatten().map(|p| self.home_path(p)).collect();
+            let mut named: Vec<PathBuf> = Vec::new();
+            for p in self.opts.paths.iter().flatten() {
+                let typed = self.home_path(p);
+                // The search root is the canonical path (`repos::scan_scope`), so the
+                // exception is too: `--path .`, a symlink, `a/../b` or another letter
+                // case all name the folder the search then walks. Only the named path
+                // is resolved, and the search resolves it as well.
+                if let Ok(canon) = std::fs::canonicalize(&typed) {
+                    named.push(canon);
+                }
+                named.push(typed);
+            }
             // The same path in the home folder's other spelling (the
             // canonical one), as `privacy::folders` does for the folders.
             if let Ok(canon) = std::fs::canonicalize(&self.home)
@@ -665,7 +676,7 @@ impl<'a> Scan<'a> {
             // Only a named path inside a left-out folder is an exception:
             // `--path ~` names a folder that holds them, which must not
             // let them back in.
-            named.retain(|p| left.iter().any(|f| p.starts_with(f)));
+            named.retain(|p| left.iter().any(|f| crate::utils::privacy::within(p, f)));
             if !left.is_empty() {
                 note(&format!(
                     "· left out of this scan (--no-personal-files): {}; repos there are not scanned",
@@ -681,6 +692,7 @@ impl<'a> Scan<'a> {
         }
         self.repos =
             repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
+        self.flag_named_roots_left_out();
         // --no-personal-files keeps Downloads, Desktop and Documents out of
         // every walk, on any scan: a repo or --path root that holds them (a
         // home that is a git checkout, `--path ~` with no repo) is walked
@@ -688,6 +700,30 @@ impl<'a> Scan<'a> {
         for (_, root) in &self.repos {
             let dirs = if self.opts.no_personal_files { repos::personal_under(&self.home, root) } else { Vec::new() };
             crate::utils::walk::exclude_under(root, dirs);
+        }
+    }
+
+    /// A root the user named with `--path` that ended up left out is read as
+    /// nothing, so say it: a not-checked finding that names it, never a clean
+    /// scan of a folder nothing opened. It should not happen (the named path
+    /// is let in by its canonical spelling); this is what keeps a spelling
+    /// that slips through from reading as clean.
+    pub(crate) fn flag_named_roots_left_out(&mut self) {
+        if self.opts.paths.is_none() {
+            return;
+        }
+        let lost: Vec<String> = self
+            .repos
+            .iter()
+            .filter(|(_, root)| crate::utils::privacy::is_left_out(root))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in lost {
+            self.unchecked_until(
+                &format!("--path {name}"),
+                "it lies in a folder this scan leaves out (--no-personal-files), so nothing in it was read",
+                &format!("wpantry scan --path {name}"),
+            );
         }
     }
 

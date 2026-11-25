@@ -485,6 +485,119 @@ fn a_denied_folder_elsewhere_is_not_checked_and_fails_nothing() {
     drop(home);
 }
 
+/// A scan of `path` (`--path`) with `--no-personal-files`, its repos found.
+fn named_scan<'a>(net: &'a Fake, dir: &crate::utils::temp::TempDir, path: &Path) -> Scan<'a> {
+    let mut s = scan(net, dir);
+    s.opts.machine = false;
+    s.opts.no_malware = true;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![path.to_path_buf()]);
+    s.scope_repos();
+    s
+}
+
+/// Risk: the exception for a `--path` inside a personal folder was kept
+/// as typed, while the search root is canonical, so `--path .` from inside
+/// the project, a symlink to it, or `a/../b` left the exception empty: the
+/// root was then left out, the scan walked nothing and reported clean.
+/// Oracle: for each spelling of one project in `~/Documents`, the scan's
+/// root is that project (canonical), neither it nor what is under it is left
+/// out, a walk of it lists its files, the folder's other repo stays left out,
+/// and the scan carries no gap. `--path .` itself needs a working directory
+/// the tests cannot change in parallel, so the relative spelling goes up from
+/// the test's own directory to the project, which is the same unresolved
+/// shape (relative, with `..`).
+/// Known bad: `named` built from the typed path alone.
+#[cfg(unix)]
+#[test]
+fn a_named_path_in_any_spelling_is_scanned_and_never_left_out() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    repo_at(&h.join("Documents/other"));
+    std::fs::write(h.join("Documents/proj/a.txt"), "x").unwrap();
+    std::fs::create_dir_all(h.join("code")).unwrap();
+    std::os::unix::fs::symlink(h.join("Documents/proj"), h.join("code/link")).unwrap();
+    let proj = std::fs::canonicalize(h.join("Documents/proj")).unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    let relative = PathBuf::from(format!("{up}{}", proj.strip_prefix("/").unwrap().display()));
+    let net = Fake::offline();
+    for (what, spelled) in [
+        ("a relative path with ..", relative),
+        ("a symlink to it", h.join("code/link")),
+        ("~ and a ..", PathBuf::from("~/code/../Documents/proj")),
+        ("a trailing dot", h.join("Documents/proj/.")),
+        ("as typed", h.join("Documents/proj")),
+    ] {
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
+        let s = named_scan(&net, &dir, &spelled);
+        let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| r.clone()).collect();
+        assert_eq!(roots, std::slice::from_ref(&proj), "{what}: the search root");
+        assert!(!crate::utils::privacy::is_left_out(&proj), "{what}: the root was left out");
+        assert!(!crate::utils::privacy::is_left_out(proj.join("a.txt")), "{what}: its files were left out");
+        assert!(crate::utils::privacy::is_left_out(h.join("Documents/other")), "{what}: a sibling got in");
+        assert!(!crate::utils::walk::walk(&proj, 6).is_empty(), "{what}: nothing was read");
+        assert!(s.findings.iter().all(|f| !f.is_gap()), "{what}: {:?}", s.findings);
+    }
+    drop(home);
+}
+
+/// Oracle: the same on a volume that ignores case (macOS, Windows' NTFS):
+/// `--path ~/documents/proj` is the project in `Documents`, scanned, and the
+/// folder's other repo is left out in any case. Skipped, with the reason
+/// printed, on a case-sensitive file system, where `documents` is no folder.
+#[test]
+fn a_differently_cased_path_is_scanned_where_the_volume_ignores_case() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    repo_at(&h.join("Documents/other"));
+    std::fs::write(h.join("Documents/proj/a.txt"), "x").unwrap();
+    if !h.join("documents/proj").exists() {
+        println!("skipped: this file system is case-sensitive, so `documents` is another folder");
+        return;
+    }
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let s = named_scan(&net, &dir, &PathBuf::from("~/documents/proj"));
+    let roots: Vec<String> = s.repos.iter().map(|(_, r)| r.to_string_lossy().to_lowercase()).collect();
+    let want = std::fs::canonicalize(h.join("Documents/proj")).unwrap().to_string_lossy().to_lowercase();
+    assert_eq!(roots, [want]);
+    let root = &s.repos[0].1;
+    assert!(!crate::utils::privacy::is_left_out(root), "the root was left out");
+    assert!(!crate::utils::walk::walk(root, 6).is_empty(), "nothing was read");
+    assert!(crate::utils::privacy::is_left_out(h.join("documents/other")), "a sibling got in");
+    assert!(s.findings.iter().all(|f| !f.is_gap()), "{:?}", s.findings);
+    drop(home);
+}
+
+/// Risk: whatever the spelling, a `--path` root that ends up left out is
+/// read as nothing and the scan says clean. Oracle: the findings. A second
+/// guard (what a spelling the exception did not cover would amount to) leaves
+/// the named root out; the scan then carries exactly one not-checked finding
+/// that is a gap, names the path and gives the command that reads it, and a
+/// scan whose root is read carries none.
+/// Known bad: no check, and the findings are empty.
+#[test]
+fn a_named_root_that_ends_up_left_out_is_never_a_clean_scan() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = named_scan(&net, &dir, &h.join("Documents/proj"));
+    s.flag_named_roots_left_out();
+    assert!(s.findings.iter().all(|f| !f.is_gap()), "a root that is read is no gap: {:?}", s.findings);
+    let _other = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    s.flag_named_roots_left_out();
+    let gaps: Vec<&Finding> = s.findings.iter().filter(|f| f.is_gap()).collect();
+    assert_eq!(gaps.len(), 1, "{:?}", s.findings);
+    assert!(gaps[0].component.starts_with("--path ") && gaps[0].component.contains("proj"), "{:?}", gaps[0]);
+    assert!(gaps[0].fix_cmd.starts_with("wpantry scan --path ") && gaps[0].note.contains("nothing in it was read"));
+    drop(home);
+}
+
 fn kev_entry(cve: &str, added: &str, vendor: &str, product: &str) -> kev::Entry {
     kev::Entry { cve: cve.into(), added: added.into(), vendor: vendor.into(), product: product.into() }
 }

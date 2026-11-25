@@ -82,7 +82,19 @@ impl Ctx {
 
     /// A run with these variables set over the test's environment.
     pub fn run_env(&self, argv: &[&str], env: &[(&str, &str)]) -> Out {
+        self.run_at(None, argv, env)
+    }
+
+    /// A run with `cwd` as its working directory.
+    pub fn run_in(&self, cwd: &Path, argv: &[&str]) -> Out {
+        self.run_at(Some(cwd), argv, &[])
+    }
+
+    fn run_at(&self, cwd: Option<&Path>, argv: &[&str], env: &[(&str, &str)]) -> Out {
         let mut cmd = Command::new(BIN);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.args(argv)
             .env("HOME", &self.home)
             .env("WPANTRY_DB", &self.db)

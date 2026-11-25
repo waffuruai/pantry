@@ -505,6 +505,29 @@ assert(section('manual').includes('Grouped from the findings'));
   Object.assign(ctx,{atob,Blob,Response,DecompressionStream});
   load({pantry_deflated:fx.deflated}); await ctx.viewerTest.ready;
   assert.equal(shown(),plain,'a deflated bundle renders as the plain one');
+  // The fields a local finding links from survive the packer and the deflate: the same two findings, plain,
+  // packed (rows and a string table, as pack.rs writes them) and deflated (node's zlib stands in for the
+  // writer), give the same links. Oracle: the hrefs in the rendered page.
+  {
+    const own='https://advisories.example.com/TEAM-2026-0001';
+    const two=[
+      finding('project','acme-internal-widget','TEAM-2026-0001','fail',{fixed:'1.2.4',local_source:'team-advisories',local_link:own}),
+      finding('project','acme-crafted','GHSA-dddd-eeee-ffff','fail',{fixed:'4.0.0',note:'crafted (from your source x: https://evil.example/a)',local_source:'',local_link:''}),
+    ];
+    const data={...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:two}}],plan:[]};
+    const keys=Object.keys(two[0]);
+    const rows=two.map(f=>keys.map(k=>f[k]===own?'~0':f[k]));
+    const packed={pantry_packed:1,strings:[own],data:{...data,runs:[{...data.runs[0],report:{...report,findings:['~',keys,...rows]}}]}};
+    const links=()=>{two.forEach((f,i)=>click({open:String(i)}));return main()};
+    const check=(page,how)=>{
+      assert(page.includes('<a href="'+own+'"'),how+': the declared link');
+      assert(page.includes('href="https://github.com/advisories/GHSA-dddd-eeee-ffff"'),how+': a crafted summary keeps the advisory page');
+      assert(!page.includes('href="https://evil.example'),how+': no link out of a note');
+    };
+    load(data); check(links(),'plain');
+    load(packed); check(links(),'packed');
+    load({pantry_deflated:require('zlib').deflateRawSync(JSON.stringify(packed)).toString('base64')}); await ctx.viewerTest.ready; check(links(),'deflated');
+  }
   load({pantry_deflated:fx.deflated.slice(0,40)}); await ctx.viewerTest.ready;
   assert(main().includes('is compressed'),'a corrupt stream says so');
   // Risk: a fault in the page (start, unpack or render throwing) is reported

@@ -184,3 +184,57 @@ fn enrich_reads_each_advisorys_records_once_for_scores_and_text() {
     // The memo does not change what the findings get.
     assert_eq!(all[0].summary, "one");
 }
+
+const V98: &str = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
+const V50: &str = "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:L/I:L/A:L";
+
+/// A record of a source on this machine, as a load leaves it, with a CVSS
+/// vector and the package `x` the test findings are about.
+fn local_record(c: &Cache, source: &str, id: &str, vector: &str) {
+    let rec = serde_json::json!({"id": id, "severity": [{"type": "CVSS_V3", "score": vector}],
+        "affected": [{"package": {"ecosystem": "npm", "name": "x"}}]});
+    c.conn
+        .execute(
+            "INSERT INTO local_vulns VALUES (?, ?, 'a.json', '', '', ?)",
+            rusqlite::params![source, id, rec.to_string()],
+        )
+        .unwrap();
+    c.conn.execute("INSERT INTO local_vuln_names VALUES (?, ?, 'x')", rusqlite::params![source, id]).unwrap();
+}
+
+/// Risk (the same class as a local record deciding an OSV finding): a
+/// finding from a source on this machine goes without its CVSS score and
+/// version though its record carries a vector, or is rated from an OSV
+/// record that merely shares its id; or a local record moves an OSV
+/// finding's rating. Oracle: `enrich`'s cvss and version per finding: a local
+/// finding takes its own record's, an OSV finding keeps OSV's, whatever the
+/// local table holds for the same id.
+#[test]
+fn a_local_finding_is_rated_from_its_own_record_and_an_osv_one_from_osvs() {
+    let (_d, c) = cache();
+    c.conn
+        .execute(
+            "INSERT INTO vulns (id, aliases, record) VALUES ('CVE-2026-5', '', ?)",
+            [serde_json::json!({"id": "CVE-2026-5", "severity": [{"type": "CVSS_V3", "score": V98}]}).to_string()],
+        )
+        .unwrap();
+    local_record(&c, "t-src", "CVE-2026-5", V50);
+    local_record(&c, "t-src", "TEAM-1", V98);
+    local_record(&c, "t-src", "TEAM-2", "");
+    let local = |id: &str| Finding { local_source: "t-src".into(), ..finding("project", id, "fail", "") };
+    let mut all =
+        vec![local("TEAM-1"), local("CVE-2026-5"), finding("project", "CVE-2026-5", "fail", ""), local("TEAM-2")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
+    let got: Vec<(Option<f64>, &str, &str)> =
+        all.iter().map(|f| (f.cvss, f.cvss_version.as_str(), f.severity.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Some(9.8), "3.1", "CRITICAL"),
+            (Some(5.5), "3.1", "MEDIUM"),
+            (Some(9.8), "3.1", "CRITICAL"),
+            (None, "", "HIGH"),
+        ],
+        "own record for a local finding (not OSV's same id), OSV's for an OSV finding, none and wpantry's own rating for a record with no score"
+    );
+}

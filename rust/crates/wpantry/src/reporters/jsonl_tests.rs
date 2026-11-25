@@ -205,6 +205,7 @@ fn the_export_reads_each_advisorys_records_once_and_only_for_rows_it_keeps() {
     let taken = crate::checks::severity::lookups::taken();
     assert_eq!(taken, 3, "one read per distinct advisory id (3), not per row (8) or per exposure");
     c.close().unwrap();
+}
 
 /// A record of a folder on this machine as a load of it leaves it: the row
 /// and the package name it is found by.

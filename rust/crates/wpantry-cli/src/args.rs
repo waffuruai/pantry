@@ -59,6 +59,8 @@ pub struct Show {
     pub stdout: bool,
     /// `--since DAYS`: the logs' reach.
     pub since: i64,
+    /// `report --run ID`: that kept scan, not the latest.
+    pub run: Option<i64>,
 }
 
 impl Default for Show {
@@ -69,6 +71,7 @@ impl Default for Show {
             out: None,
             stdout: false,
             since: wpantry::reporters::HISTORY_DAYS,
+            run: None,
         }
     }
 }
@@ -170,6 +173,14 @@ pub enum Command {
     },
     /// `report`: the latest scan, shown.
     Report(Show),
+    /// `runs`: the scans whose findings are kept.
+    Runs {
+        json: bool,
+    },
+    /// `prune ID...`: forget those scans' findings.
+    Prune {
+        ids: Vec<i64>,
+    },
     Sync {
         refresh: bool,
         json: bool,
@@ -355,7 +366,20 @@ pub fn program() -> Cli {
                 .summary("The latest scan's report, a log, or the summary, in any format")
                 .arg(Arg::new("[part]", "what the report covers").choices(&Part::NAMES).default("findings"))
                 .opts(report_opts())
+                .option("--run <id>", "that scan instead of the latest: one wpantry runs lists")
                 .after_help("Parts:\n  findings     the latest scan's findings\n  history      the exposure, remediation and audit logs\n  exposure     what applied, from first seen to resolved\n  remediation  the fixes run: when, who, the result, the scan that verified them\n  audit        every scan and event\n  summary      one page for a CSO, an auditor or an insurer\n  all          the findings, then every log\n\nExit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3 internal error."),
+        )
+        .command(
+            Cli::new("runs")
+                .description("The scans whose findings are kept, the latest first: each one's number, when it finished, how long it took, what it covered and what it found. report shows the latest; report --run ID shows another, and prune ID forgets one. The latest 30 are kept.")
+                .summary("List the scans whose findings are kept (report --run ID shows one)")
+                .option("--json", "the scans as JSON"),
+        )
+        .command(
+            Cli::new("prune")
+                .description("Forget a scan's findings: one of the wrong directory, or one you didn't mean to keep. It leaves wpantry runs, and when it was the latest, report shows the scan before it again. The scan log (report audit) keeps its row, and the exposure log keeps what it saw. For the advisory cache, see cache prune.")
+                .summary("Forget one scan's findings (wpantry runs lists them)")
+                .argument("<id...>", "the scan's number, from wpantry runs"),
         )
         .command(
             Cli::new("search")
@@ -493,7 +517,8 @@ fn show(m: &Matches) -> Result<Show, Exit> {
     // A file gets plain text, never the terminal's colours.
     let format = if format == Shown::Tui && out.is_some() { Shown::Txt } else { format };
     let since = at_least_one::<i64>(m, "since", "a number of days")?.unwrap_or(wpantry::reporters::HISTORY_DAYS);
-    Ok(Show { part: Part::Findings, format, out, stdout, since })
+    let run = at_least_one::<i64>(m, "run", "a scan's number (wpantry runs lists them)")?;
+    Ok(Show { part: Part::Findings, format, out, stdout, since, run })
 }
 
 fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
@@ -639,6 +664,21 @@ fn command(m: &Matches) -> Result<Command, Exit> {
         ["report"] => {
             let part = Part::parse(m.arg("part").unwrap_or("findings")).expect("one of the choices");
             Command::Report(Show { part, ..show(m)? })
+        }
+        ["runs"] => Command::Runs { json: flag("json") },
+        ["prune"] => {
+            let mut ids = Vec::new();
+            for word in m.args("id") {
+                match word.trim_start_matches('#').parse::<i64>() {
+                    Ok(n) if n >= 1 => ids.push(n),
+                    _ => {
+                        return Err(m.error(&format!(
+                            "argument 'id' expects a scan's number (wpantry runs lists them), got '{word}'"
+                        )));
+                    }
+                }
+            }
+            Command::Prune { ids }
         }
         ["search"] => Command::Search {
             query: m.arg("query").unwrap_or_default().to_string(),

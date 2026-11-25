@@ -208,8 +208,8 @@ fn every_command_has_help() {
         assert_eq!(p(same), Parsed::Help(top.clone()), "{same:?}");
     }
     for cmd in [
-        "scan", "fix", "report", "search", "watch", "sync", "schedule", "rules", "sources", "breach", "cache",
-        "update", "version", "tools", "skill", "licenses",
+        "scan", "fix", "report", "runs", "prune", "search", "watch", "sync", "schedule", "rules", "sources", "breach",
+        "cache", "update", "version", "tools", "skill", "licenses",
     ] {
         let text = help(&[cmd]);
         assert!(top.contains(&format!("\n  {cmd}")), "{cmd} is listed");
@@ -318,7 +318,8 @@ fn report_options() {
             format: Shown::Csv,
             out: Some("r.csv".into()),
             stdout: false,
-            since: 30
+            since: 30,
+            run: None,
         }))
     );
     assert_eq!(
@@ -508,4 +509,25 @@ fn scan_project_is_one_directory_and_never_the_machine() {
         assert!(text.contains(&format!("\n  {kept}")), "{kept}");
     }
     assert!(help(&["scan"]).contains("\n  project [options] [dir]"));
+}
+
+#[test]
+fn runs_prune_and_one_run_reported() {
+    assert_eq!(p(&["runs"]), Parsed::Run(Command::Runs { json: false }));
+    assert_eq!(p(&["runs", "--json"]), Parsed::Run(Command::Runs { json: true }));
+    assert_eq!(p(&["prune", "61", "#62"]), Parsed::Run(Command::Prune { ids: vec![61, 62] }));
+    assert!(usage(&["prune"]).contains("missing required argument 'id'"), "{}", usage(&["prune"]));
+    for bad in ["latest", "0", "-3", "1.5"] {
+        let text = usage(&["prune", "--", bad]);
+        assert!(text.contains(&format!("expects a scan's number (wpantry runs lists them), got '{bad}'")), "{text}");
+    }
+    assert_eq!(
+        p(&["report", "--run", "61", "--md"]),
+        Parsed::Run(Command::Report(Show { run: Some(61), format: Shown::Md, ..Show::default() }))
+    );
+    assert!(usage(&["report", "--run", "last"]).contains("option '--run' expects a scan's number"));
+    // A scan reports itself: it takes no --run.
+    assert!(usage(&["scan", "--run", "3"]).contains("unknown option '--run'"));
+    assert!(help(&["report"]).contains("\n  --run <id>"));
+    assert!(help(&[]).contains("\n  runs [options]") && help(&[]).contains("\n  prune <id...>"));
 }

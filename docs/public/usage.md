@@ -148,6 +148,9 @@ wpantry report history --md                 # exposure, remediation and audit lo
 wpantry report exposure --csv --since 365   # what was exposed, and for how long, over a year
 wpantry report remediation --csv            # each fix: when, who, the result, the scan that verified it
 wpantry report audit --json                 # every scan and event
+wpantry runs                                # the scans whose findings are kept, the latest first
+wpantry report --run 41 --html              # an earlier scan instead of the latest
+wpantry prune 42                            # forget a scan's findings: report shows the one before it
 wpantry report all --md                     # the findings, then every log
 ```
 
@@ -176,6 +179,9 @@ wpantry cache prune                                # drop what no scan used in 9
 - `sync` keeps your `sources.toml` tiers: a source turned off isn't fetched. It never asks a source that needs your yes (breaches, hash lookups).
 - `schedule` uses launchd (macOS), a systemd user timer (Linux) or cron, at low priority. Each run writes `~/.local/state/wpantry/last.json` and a line in `schedule.log`.
 - A scheduled run never changes anything. Run `wpantry fix` yourself.
+- Each scan keeps its findings, the latest 30 of them: `wpantry runs` lists them with what each covered and found, `wpantry report --run N` shows one, and `wpantry prune N` forgets one (a run of the wrong directory, say). `report` shows the latest kept scan, whatever it covered: a project scan after a machine scan is the project's report, and `--run` brings the machine's back.
+- A scan saves its findings and its row together, at the end. One you interrupt (Ctrl-C, a closed terminal) saves nothing, and the next `scan`, `report` or `runs` says so once on stderr: `the scan of machine:~ started … didn't finish: nothing of it was saved, and wpantry report shows scan 41`. While another scan is still running, they say that instead.
+- Pruning a scan leaves its row in the scan log (`report audit`) and what it saw in the exposure log.
 - The cache is one SQLite file: `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds advisories for what's here, which versions were checked, every scan's findings, and the feeds; never a mirror of OSV.
 
 ```bash
@@ -315,6 +321,8 @@ Commands:
   fix [options] [target] [id]  Scan, run the unattended fixes and stopgaps, then re-check (list, or
                                one id)
   report [options] [part]      The latest scan's report, a log, or the summary, in any format
+  runs [options]               List the scans whose findings are kept (report --run ID shows one)
+  prune <id...>                Forget one scan's findings (wpantry runs lists them)
   search [options] <query>     Search the cached advisories (for agents)
   watch [options]              Re-check the advisories with no fix yet; exit 10 when one lands
   sync [options]               Refresh the cache for offline scans
@@ -558,6 +566,7 @@ Options:
                     pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
                     is a pipe or a file
   --since <days>    how far back the logs go (default: 14)
+  --run <id>        that scan instead of the latest: one wpantry runs lists
   -h, --help        print this help
 
 Parts:
@@ -571,6 +580,37 @@ all          the findings, then every log
 
 Exit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3
 internal error.
+```
+
+### runs
+
+```
+Usage: wpantry runs [options]
+
+The scans whose findings are kept, the latest first: each one's number, when it finished, how long
+it took, what it covered and what it found. report shows the latest; report --run ID shows another,
+and prune ID forgets one. The latest 30 are kept.
+
+Options:
+  --json      the scans as JSON
+  -h, --help  print this help
+```
+
+### prune
+
+```
+Usage: wpantry prune [options] <id...>
+
+Forget a scan's findings: one of the wrong directory, or one you didn't mean to keep. It leaves
+wpantry runs, and when it was the latest, report shows the scan before it again. The scan log
+(report audit) keeps its row, and the exposure log keeps what it saw. For the advisory cache, see
+cache prune.
+
+Arguments:
+  id  the scan's number, from wpantry runs
+
+Options:
+  -h, --help  print this help
 ```
 
 ### search

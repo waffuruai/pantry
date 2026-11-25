@@ -18,7 +18,7 @@ use crate::error::Result;
 use crate::finding::Finding;
 use crate::utils::dates::civil_from_days;
 use crate::utils::os::now;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 
 pub const SCHEMA: &str = "
@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS fixes (
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY, at REAL, kind TEXT, detail TEXT);
 ";
+
+/// How many scans keep their findings, the latest included: a month of
+/// daily scans. An older one keeps its row in the scan log only.
+pub const KEEP_RUNS: i64 = 30;
 
 /// The scope a scan covers, as a string two scans can be compared by:
 /// what it looked at, and what it looked for (`--licenses`, the policy
@@ -120,7 +124,7 @@ pub fn record_scan_totals(
     let options = crate::reporters::html::scope_json(opts).dumps();
     cache.conn.execute(
         "INSERT INTO scans (started_at, finished_at, host, user, version, scope, counts, fails, warns, unchecked, \
-         checked, unfixed, unknown_licenses, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         checked, unfixed, unknown_licenses, options, kept) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
         params![
             started_at,
             at,
@@ -139,6 +143,8 @@ pub fn record_scan_totals(
         ],
     )?;
     let id = cache.conn.last_insert_rowid();
+    cache.keep_findings(id, findings)?;
+    trim_runs(cache, KEEP_RUNS)?;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for f in findings.iter().filter(|f| f.kind != "unchecked") {
         let key = key_of(f);
@@ -294,7 +300,159 @@ pub fn tried_since(cache: &Cache, scan_id: i64) -> Result<std::collections::Hash
 }
 
 pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
-    Ok(cache.conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get::<_, Option<i64>>(0))?)
+    Ok(cache.conn.query_row("SELECT MAX(id) FROM scans WHERE kept = 1", [], |r| r.get::<_, Option<i64>>(0))?)
+}
+
+/// The cache key a running scan leaves under its process id until it ends.
+const RUNNING: &str = "scan_running:";
+
+/// A scan that began and never recorded its end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unfinished {
+    pub pid: u32,
+    pub started_at: f64,
+    pub scope: String,
+    /// Its process is still there: it may yet finish.
+    pub running: bool,
+}
+
+impl Unfinished {
+    /// One line for the user. An interrupted scan saved nothing (a scan
+    /// writes its findings and its row together, at the end); one still
+    /// running will become the latest when it finishes.
+    pub fn line(&self, latest: Option<i64>) -> String {
+        let what = format!("the scan of {} started {}", self.scope, stamp(self.started_at));
+        if self.running {
+            return format!("ℹ {what} is still running (pid {}): when it finishes, wpantry report shows it", self.pid);
+        }
+        match latest {
+            Some(id) => format!("ℹ {what} didn't finish: nothing of it was saved, and wpantry report shows scan {id}"),
+            None => format!("ℹ {what} didn't finish: nothing of it was saved"),
+        }
+    }
+}
+
+/// Note that this process began a scan, kept at once (whatever else the
+/// scan writes waits for its end): a scan that is interrupted can't say so
+/// itself, so the next command does ([`unfinished`]).
+pub fn scan_started(cache: &Cache, opts: &Options, started_at: f64) -> Result<()> {
+    let detail = json!({"started_at": started_at, "scope": scope_of(opts)}).to_string();
+    cache.set(&format!("{RUNNING}{}", std::process::id()), &detail)?;
+    cache.commit()
+}
+
+/// This process's scan ended, and recorded itself.
+pub fn scan_finished(cache: &Cache) -> Result<()> {
+    cache.conn.execute("DELETE FROM meta WHERE key = ?", [format!("{RUNNING}{}", std::process::id())])?;
+    Ok(())
+}
+
+/// The scans that began and didn't end, the oldest first; `alive` says
+/// whether a process is still there. One whose process is gone is
+/// forgotten here: it is told once.
+pub fn unfinished(cache: &Cache, alive: &dyn Fn(u32) -> bool) -> Result<Vec<Unfinished>> {
+    let mut stmt = cache.conn.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?1) = ?2")?;
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map(params![RUNNING.len() as i64, RUNNING], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for (key, value) in rows {
+        let detail: Value = value.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(Value::Null);
+        let pid = key[RUNNING.len()..].parse::<u32>().unwrap_or(0);
+        let running = pid != 0 && pid != std::process::id() && alive(pid);
+        if !running {
+            cache.conn.execute("DELETE FROM meta WHERE key = ?", [&key])?;
+        }
+        out.push(Unfinished {
+            pid,
+            started_at: detail["started_at"].as_f64().unwrap_or(0.0),
+            scope: detail["scope"].as_str().unwrap_or("").to_string(),
+            running,
+        });
+    }
+    out.sort_by(|a, b| a.started_at.total_cmp(&b.started_at));
+    Ok(out)
+}
+
+/// A scan whose findings are kept (`wpantry runs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Run {
+    pub row: ScanRow,
+    /// How many findings it keeps.
+    pub findings: i64,
+    /// The one `report` shows.
+    pub latest: bool,
+}
+
+impl Run {
+    pub fn to_json(&self) -> Value {
+        json!({"scan": self.row.id, "started": stamp(self.row.started_at), "finished": stamp(self.row.finished_at),
+               "seconds": (self.row.finished_at - self.row.started_at).max(0.0).round() as i64,
+               "host": self.row.host, "user": self.row.user, "version": self.row.version, "scope": self.row.scope,
+               "fails": self.row.fails, "warns": self.row.warns, "unchecked": self.row.unchecked,
+               "findings": self.findings, "latest": self.latest})
+    }
+}
+
+/// `runs --json`: `{"keeps": N, "runs": [run…]}`, the latest first.
+pub fn runs_json(runs: &[Run]) -> String {
+    json!({"keeps": KEEP_RUNS, "runs": runs.iter().map(Run::to_json).collect::<Vec<_>>()}).to_string()
+}
+
+/// The scans whose findings are kept, the latest first.
+pub fn runs(cache: &Cache) -> Result<Vec<Run>> {
+    let latest = latest_scan(cache)?;
+    let mut out = Vec::new();
+    for row in scans(cache, f64::MIN)?.into_iter().rev() {
+        let (kept, findings): (Option<i64>, i64) = cache.conn.query_row(
+            "SELECT kept, (SELECT COUNT(*) FROM run_findings WHERE scan_id = scans.id) FROM scans WHERE id = ?",
+            [row.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if kept == Some(1) {
+            out.push(Run { latest: Some(row.id) == latest, row, findings });
+        }
+    }
+    Ok(out)
+}
+
+/// Whether scan `id` keeps its findings.
+pub fn is_kept(cache: &Cache, id: i64) -> Result<bool> {
+    let kept: Option<Option<i64>> =
+        cache.conn.query_row("SELECT kept FROM scans WHERE id = ?", [id], |r| r.get(0)).optional()?;
+    Ok(kept.flatten() == Some(1))
+}
+
+/// Forget the findings of every kept scan but the newest `keep`.
+fn trim_runs(cache: &Cache, keep: i64) -> Result<()> {
+    let mut stmt = cache.conn.prepare("SELECT id FROM scans WHERE kept = 1 ORDER BY id DESC LIMIT -1 OFFSET ?")?;
+    let old: Vec<i64> = stmt.query_map([keep], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for id in old {
+        cache.drop_findings(id)?;
+        cache.conn.execute("UPDATE scans SET kept = 0 WHERE id = ?", [id])?;
+    }
+    Ok(())
+}
+
+/// Forget scan `id`'s findings (`wpantry prune ID`): it leaves `wpantry
+/// runs`, and when it was the latest, `report` shows the kept scan before
+/// it again. Its row stays in the scan log, and the exposure and
+/// remediation logs keep what they recorded, as a `prune` event says.
+/// Returns its row and how many findings went; `None` when no such scan
+/// keeps findings.
+pub fn prune_run(cache: &Cache, id: i64) -> Result<Option<(ScanRow, usize)>> {
+    if !is_kept(cache, id)? {
+        return Ok(None);
+    }
+    let Some(row) = scans(cache, f64::MIN)?.into_iter().find(|s| s.id == id) else { return Ok(None) };
+    let was_latest = latest_scan(cache)? == Some(id);
+    let gone = cache.drop_findings(id)?;
+    cache.conn.execute("UPDATE scans SET kept = 0 WHERE id = ?", [id])?;
+    if was_latest {
+        cache.restore_findings(latest_scan(cache)?)?;
+    }
+    event(cache, "prune", &json!({"scan": id, "findings": gone, "user": user(), "host": host()}))?;
+    Ok(Some((row, gone)))
 }
 
 fn host() -> String {

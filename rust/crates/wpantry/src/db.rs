@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS findings (
   kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
   status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
   fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT);
+CREATE TABLE IF NOT EXISTS run_findings (
+  scan_id INTEGER, kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
+  status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
+  fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT, cvss REAL,
+  cvss_version TEXT, epss REAL, epss_percentile REAL, epss_date TEXT, epss_model TEXT);
+CREATE INDEX IF NOT EXISTS run_findings_scan ON run_findings (scan_id);
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, added TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS eol (
   product TEXT, cycle TEXT, eol TEXT, latest TEXT, PRIMARY KEY (product, cycle));
@@ -78,7 +84,11 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("kev", "vendor", "TEXT"),
     ("kev", "product", "TEXT"),
     ("eol", "released", "TEXT"),
+    ("scans", "kept", "INTEGER"),
 ];
+
+/// A finding's columns, in `findings` and in `run_findings`.
+pub const FINDING_COLUMNS: &str = "kind, component, version, location, vuln_id, status, fixed, kev, severity, note,      fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile,      epss_date, epss_model";
 
 fn migrate(conn: &Connection) -> Result<()> {
     for (table, column, kind) in ADDED {
@@ -88,6 +98,17 @@ fn migrate(conn: &Connection) -> Result<()> {
         if !have.iter().any(|c| c == column) {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
         }
+    }
+    // A cache from before scans kept their findings: `findings` is its
+    // latest scan's, which becomes the one kept scan.
+    let kept: i64 = conn.query_row("SELECT COUNT(*) FROM scans WHERE kept IS NOT NULL", [], |r| r.get(0))?;
+    let latest: Option<i64> = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0))?;
+    if let (0, Some(id)) = (kept, latest) {
+        conn.execute(
+            &format!("INSERT INTO run_findings (scan_id, {FINDING_COLUMNS}) SELECT ?, {FINDING_COLUMNS} FROM findings"),
+            [id],
+        )?;
+        conn.execute("UPDATE scans SET kept = 1 WHERE id = ?", [id])?;
     }
     Ok(())
 }
@@ -463,38 +484,78 @@ impl Cache {
 
     // findings --------------------------------------------------------------
 
+    /// The latest scan's findings: what every report reads.
     pub fn replace_findings(&self, findings: &[Finding]) -> Result<()> {
         self.conn.execute("DELETE FROM findings", [])?;
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
-             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, \
-             epss_date, epss_model) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )?;
+        self.insert_findings("findings", None, findings)
+    }
+
+    /// Scan `scan_id`'s findings, kept beside the latest for `report --run`.
+    pub fn keep_findings(&self, scan_id: i64, findings: &[Finding]) -> Result<()> {
+        self.insert_findings("run_findings", Some(scan_id), findings)
+    }
+
+    /// Forget scan `scan_id`'s kept findings; returns how many there were.
+    pub fn drop_findings(&self, scan_id: i64) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM run_findings WHERE scan_id = ?", [scan_id])?)
+    }
+
+    /// Make scan `scan_id`'s kept findings the latest again (none: no findings).
+    pub fn restore_findings(&self, scan_id: Option<i64>) -> Result<()> {
+        self.conn.execute("DELETE FROM findings", [])?;
+        if let Some(id) = scan_id {
+            self.conn.execute(
+                &format!("INSERT INTO findings ({FINDING_COLUMNS}) SELECT {FINDING_COLUMNS} FROM run_findings WHERE scan_id = ?"),
+                [id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Read scan `scan_id`'s kept findings wherever this connection reads
+    /// `findings`, until it closes: a temporary view of that name stands
+    /// before the table. Nothing in the cache changes.
+    pub fn show_findings_of(&self, scan_id: i64) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "DROP VIEW IF EXISTS temp.findings; \
+             CREATE TEMP VIEW findings AS SELECT {FINDING_COLUMNS} FROM main.run_findings WHERE scan_id = {scan_id}"
+        ))?;
+        Ok(())
+    }
+
+    fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {
+        let mut stmt = self.conn.prepare(&format!(
+            "INSERT INTO {table} ({FINDING_COLUMNS}{}) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{})",
+            if scan_id.is_some() { ", scan_id" } else { "" },
+            if scan_id.is_some() { ", ?" } else { "" },
+        ))?;
         for f in findings {
-            stmt.execute(params![
-                f.kind,
-                f.component,
-                f.version,
-                f.location,
-                f.vuln_id,
-                f.status,
-                f.fixed,
-                f.kev as i64,
-                f.severity,
-                f.note,
-                f.fix_cmd,
-                f.fix_auto as i64,
-                f.dep_scope,
-                f.dep_direct.map(i64::from),
-                f.affected_range,
-                f.cvss,
-                f.cvss_version,
-                f.epss,
-                f.epss_percentile,
-                f.epss_date,
-                f.epss_model
-            ])?;
+            let mut row: Vec<rusqlite::types::Value> = vec![
+                f.kind.clone().into(),
+                f.component.clone().into(),
+                f.version.clone().into(),
+                f.location.clone().into(),
+                f.vuln_id.clone().into(),
+                f.status.clone().into(),
+                f.fixed.clone().into(),
+                (f.kev as i64).into(),
+                f.severity.clone().into(),
+                f.note.clone().into(),
+                f.fix_cmd.clone().into(),
+                (f.fix_auto as i64).into(),
+                f.dep_scope.clone().into(),
+                f.dep_direct.map(i64::from).into(),
+                f.affected_range.clone().into(),
+                f.cvss.into(),
+                f.cvss_version.clone().into(),
+                f.epss.into(),
+                f.epss_percentile.into(),
+                f.epss_date.clone().into(),
+                f.epss_model.clone().into(),
+            ];
+            row.extend(scan_id.map(rusqlite::types::Value::from));
+            stmt.execute(rusqlite::params_from_iter(row))?;
         }
         Ok(())
     }

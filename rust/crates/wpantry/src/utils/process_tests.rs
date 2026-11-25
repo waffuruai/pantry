@@ -89,3 +89,12 @@ fn a_pipe_hands_over_each_line_and_ends_at_its_deadline() {
         pipe_lines(&[OsStr::new("/no/such/program")], &[OsStr::new("cat")], Duration::from_secs(1), |_| {}).is_err()
     );
 }
+
+#[test]
+fn a_process_is_alive_while_it_runs() {
+    assert!(alive(std::process::id()));
+    let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    assert!(!alive(pid), "reaped: gone");
+}

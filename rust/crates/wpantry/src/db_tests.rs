@@ -55,6 +55,9 @@ fn older_caches_gain_the_added_columns() {
     assert!(scan_cols.iter().any(|c| c == "unchecked"), "{scan_cols:?}");
     crate::history::record_scan(&c, 1.0, &[], &[], &crate::checks::Options::default())
         .expect("a scan records on the migrated table");
+    // No scan had run on that cache: its findings belong to none, and are kept by none.
+    let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM run_findings WHERE scan_id != 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, 0);
     let cols: Vec<String> = c
         .conn
         .prepare("PRAGMA table_info(findings)")
@@ -213,4 +216,37 @@ fn cache_location() {
         path_from(&env(&[("XDG_CACHE_HOME", ""), ("HOME", "/h")])),
         PathBuf::from("/h/.cache/wpantry/wpantry.db")
     );
+}
+
+/// A cache from before each scan kept its findings (0.8.0): the latest
+/// scan's are in `findings`, and become the one kept scan's.
+#[test]
+fn an_older_caches_latest_scan_becomes_the_one_kept() {
+    let d = crate::utils::temp::TempDir::new("migrate").unwrap();
+    let file = d.path().join("old.db");
+    let conn = Connection::open(&file).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE findings (kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT, status TEXT, \
+             fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT, fix_auto INTEGER); \
+             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1); \
+             CREATE TABLE scans (id INTEGER PRIMARY KEY, started_at REAL, finished_at REAL, host TEXT, user TEXT, \
+             version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER); \
+             INSERT INTO scans VALUES (6, 1.0, 2.0, 'h', 'u', '0.8.0', 'machine:~', '{}', 0, 0); \
+             INSERT INTO scans VALUES (7, 3.0, 4.0, 'h', 'u', '0.8.0', 'repos:/r', '{}', 1, 0);",
+    )
+    .unwrap();
+    conn.close().unwrap();
+    let c = Cache::open(Some(&file)).unwrap();
+    let runs = crate::history::runs(&c).unwrap();
+    assert_eq!(runs.iter().map(|r| (r.row.id, r.findings, r.latest)).collect::<Vec<_>>(), [(7, 1, true)]);
+    assert_eq!(crate::history::latest_scan(&c).unwrap(), Some(7));
+    c.close().unwrap();
+    // Opened again, nothing is kept twice.
+    let c = Cache::open(Some(&file)).unwrap();
+    assert_eq!(crate::history::runs(&c).unwrap()[0].findings, 1);
+    // That scan reads back through the view as it does from the table.
+    c.show_findings_of(7).unwrap();
+    assert_eq!(crate::reporters::jsonl::findings(&c).unwrap()[0].vuln_id, "CVE-1");
+    c.show_findings_of(6).unwrap();
+    assert!(crate::reporters::jsonl::findings(&c).unwrap().is_empty());
 }

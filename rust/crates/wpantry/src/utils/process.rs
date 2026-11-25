@@ -256,6 +256,19 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
 
 /// Keep the machine from sleeping while this process runs: a first scan
 /// can take an hour, and a Mac left alone sleeps through it. macOS's
+/// Whether process `pid` is running. Unix asks `kill -0` (no signal is
+/// sent); elsewhere there is no cheap way to ask, and the answer is no.
+pub fn alive(pid: u32) -> bool {
+    cfg!(unix)
+        && Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
 /// `caffeinate` holds the assertion and ends with us (`-w`); elsewhere,
 /// and when it can't start, nothing happens.
 pub fn stay_awake() {

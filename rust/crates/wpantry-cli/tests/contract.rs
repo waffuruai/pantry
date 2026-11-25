@@ -1550,6 +1550,85 @@ fn scan_project_covers_one_directory_and_its_runtimes() {
     assert_eq!(t.run(&["scan", "project", s(&t.home.join("missing"))]).code, 2);
 }
 
+/// `runs`, `report --run ID` and `prune ID`: each scan keeps its findings,
+/// an earlier one can be shown, and pruning the latest shows the one before.
+#[test]
+fn runs_are_listed_reported_and_pruned() {
+    let t = Ctx::new();
+    assert_eq!(t.run(&["runs"]).out, "no scan yet: run wpantry scan\n");
+    let a = git_repo(&t.home.join("a"), false);
+    let b = git_repo(&t.home.join("b"), false);
+    let scan = |dir: &Path| t.run(&["scan", "project", s(dir), "--offline", "--json", "--no-input"]);
+    let first = envelope(&scan(&a).out);
+    write(&b.join(".ruby-version"), "3.1.4\n");
+    let second = envelope(&scan(&b).out);
+    assert!(
+        arr(&second["findings"]).len() > arr(&first["findings"]).len(),
+        "b has a runtime that can't be checked offline"
+    );
+    let listed = t.run(&["runs", "--json"]).json();
+    assert_eq!(listed["keeps"], 30);
+    let runs = arr(&listed["runs"]);
+    assert_eq!(
+        (runs.len(), &runs[0]["scan"], &runs[0]["latest"], &runs[1]["scan"], &runs[1]["latest"]),
+        (2, &json!(2), &json!(true), &json!(1), &json!(false))
+    );
+    assert_eq!(runs[0]["findings"], arr(&second["findings"]).len());
+    assert!(str_(&runs[1]["scope"]).starts_with("project:") && str_(&runs[1]["scope"]).ends_with("/a"));
+    let table = t.run(&["runs"]).out;
+    assert!(table.starts_with("scan  finished") && table.contains("\n2 *  ") && table.contains("\n1    "), "{table}");
+    // The latest by default; an earlier one by its number, byte for byte what its scan printed.
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), second);
+    assert_eq!(envelope(&t.run(&["report", "--run", "1", "--json"]).out), first);
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), second, "showing one changes nothing");
+    let none = t.run(&["report", "--run", "9"]);
+    assert_eq!(none.code, 1);
+    assert!(none.err.contains("no scan 9 with its findings kept: wpantry runs lists them"), "{}", none.err);
+    // Pruning the latest: report is the scan before it again.
+    let pruned = t.run(&["prune", "2"]);
+    assert_eq!(pruned.code, 0, "{}", pruned.err);
+    assert!(
+        pruned.out.starts_with("pruned scan 2 (project:") && pruned.out.ends_with("wpantry report now shows scan 1\n"),
+        "{}",
+        pruned.out
+    );
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), first);
+    assert_eq!(arr(&t.run(&["runs", "--json"]).json()["runs"]).len(), 1);
+    let again = t.run(&["prune", "2"]);
+    assert_eq!(again.code, 1);
+    assert!(again.err.contains("no scan 2 with its findings kept"), "{}", again.err);
+    assert_eq!(t.run(&["prune", "two"]).code, 2);
+    // The scan log keeps both.
+    let audit = t.run(&["report", "audit", "--json"]).json();
+    assert_eq!(arr(&audit["scans"]).len(), 2);
+    assert!(arr(&audit["events"]).iter().any(|e| e["kind"] == "prune" && e["detail"]["scan"] == 2), "{audit}");
+    t.run(&["prune", "1"]);
+    assert_eq!(t.run(&["report"]).code, 1, "no scan left to report");
+}
+
+/// A scan that was interrupted saved nothing, and the next command says so, once.
+#[test]
+fn an_interrupted_scan_is_told_by_the_next_command() {
+    let t = Ctx::new();
+    t.project_run("scan", &["--json"]);
+    assert!(!t.run(&["runs"]).err.contains("didn't finish"), "a scan that ended leaves no note");
+    // What a scan killed mid-way leaves: its start, under a process id that is gone.
+    t.conn()
+        .execute(
+            "INSERT INTO meta VALUES ('scan_running:2147483646', '{\"started_at\": 86400.0, \"scope\": \"machine:~\"}')",
+            [],
+        )
+        .unwrap();
+    let r = t.run(&["report", "--json"]);
+    assert!(
+        r.err.contains("the scan of machine:~ started 1970-01-02 00:00 UTC didn't finish: nothing of it was saved, and wpantry report shows scan 1"),
+        "{}",
+        r.err
+    );
+    assert_eq!(envelope(&r.out)["schema"], 1, "stdout is still the report alone");
+    assert!(!t.run(&["report", "--json"]).err.contains("didn't finish"), "told once");
+}
+
 #[test]
 fn explicit_worktree_counts() {
     let t = Ctx::new();

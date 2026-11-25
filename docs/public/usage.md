@@ -85,6 +85,7 @@ wpantry scan
 - A policy never silences a failure it isn't for. A hook that runs a file kept in the repo fails whatever the hooks policy says.
 - A file that isn't TOML is a usage error (exit 2), whether Pantry found it or an option named it.
 - `ignore` in the same folder, and a repo's `.pantryignore`, leave paths out of the findings, for every check or one ([ignore.md](ignore.md)). They are gitignore patterns, not TOML.
+- `wpantry ignore add F-… [--scope user|repo] [--reason TEXT]` writes the rule for a finding into one of those files for you, `ignore list` shows them and `ignore remove` takes a rule out again ([ignore.md](ignore.md#ignoring-a-finding-from-the-command-line)). It never prompts, so a program driving wpantry can use it: `wpantry ignore add F-3fa9c01b2e --scope repo --reason "test key, revoked" --json`.
 - `secrets.yar` in the same folder adds secret rules of your own (`--secret-rules`): YARA, in pantry-rules' form (a `$secret` regex, an `id` and `category = "secret"` meta). They must compile beside the bundled ones.
 
 ## Reading the report
@@ -316,6 +317,7 @@ Commands:
   schedule <command>         Run sync and scan on a schedule
   rules [options] [command]  The malware scan's YARA rules; gen writes one from samples
   sources [options]          Every outside source, when it was last fetched and what went wrong
+  ignore <command>           Dismiss a finding: write, list and remove ignore rules
   breach [options]           Show or set consent for the email breach check
   cache <command>            Maintain the cache
   update [options]           Install a newer release, verified
@@ -638,6 +640,94 @@ Options:
   --json            the sources as JSON
   --sources <file>  your sources file (default: ~/.config/wpantry/sources.toml when it exists)
   -h, --help        print this help
+```
+
+### ignore
+
+```
+Usage: wpantry ignore [options] <command>
+
+Leave a finding out of future scans: write the rule for it into your ignore file or a repo's
+.pantryignore, list the rules in them, or take one out. It never prompts.
+
+Options:
+  -h, --help  print this help
+
+Commands:
+  add [options] <finding>  Leave one finding out of future scans
+  list [options]           The rules in your ignore file and a repo's
+  remove [options] <id>    Take a rule out, so the finding is reported again
+  help [command]           Print a command's help
+```
+
+One short example, with the ids `wpantry fix list` shows:
+
+```bash
+wpantry ignore add F-3fa9c01b2e --scope repo --reason "test key, revoked in 2025"
+wpantry ignore list --path ~/code/app
+wpantry ignore remove F-3fa9c01b2e        # the next scan reports it again
+```
+
+### ignore add
+
+```
+Usage: wpantry ignore add [options] <finding>
+
+Write the narrowest rule that leaves one finding out of the next scan: its path, under the section
+for its check and its rule or advisory. The finding is read from the latest scan, so add a finding
+that scan listed (wpantry fix list shows the ids). Adding it again changes nothing.
+
+Arguments:
+  finding  a finding id from the latest scan (F-…)
+
+Options:
+  --scope <scope>  user: your ignore file (the default; creates it, private, when missing). repo:
+                   the finding's repo's .pantryignore (a finding inside a repo, and not one that
+                   protects you from the repo) (choices: user, repo; default: user)
+  --reason <text>  why, kept in a comment under the rule and in the audit log (one line)
+  --all-places     one rule for each place the same rule or advisory was found for the same package,
+                   not only this one
+  --no-input       never prompt (this command never does)
+  --json           the result as JSON
+  -h, --help       print this help
+
+Exit codes: 0 done or already done, 1 refused (nothing changed) or not found, 2 usage error, 3
+internal error.
+```
+
+### ignore list
+
+```
+Usage: wpantry ignore list [options]
+
+Every rule in your ignore file and, with --path, in a repo's .pantryignore: its id, section and
+pattern, and for a rule `ignore add` wrote the finding it came from, when and why. A rule the log
+says was added and the file no longer holds is shown as removed by hand.
+
+Options:
+  --path <dir>  also list this repo's .pantryignore (the repo at or above DIR)
+  --json        as JSON
+  -h, --help    print this help
+```
+
+### ignore remove
+
+```
+Usage: wpantry ignore remove [options] <id>
+
+Take a rule out: R-… (any rule `list` shows, hand-written ones too) or F-… (every rule `ignore add`
+wrote for that finding). Only those lines go; the next scan reports the finding again.
+
+Arguments:
+  id  a rule id (R-…) or a finding id (F-…)
+
+Options:
+  --path <dir>  also look in this repo's .pantryignore (needed for a hand-written rule of a repo's)
+  --no-input    never prompt (this command never does)
+  --json        the result as JSON
+  -h, --help    print this help
+
+Exit codes: 0 done or already gone, 1 nothing matches, 2 usage error, 3 internal error.
 ```
 
 ### breach

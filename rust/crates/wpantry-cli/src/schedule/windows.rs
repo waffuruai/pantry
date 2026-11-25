@@ -116,15 +116,17 @@ pub(super) fn launcher(program: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-pub(super) fn install(program: &Path, every: Every, at: (u32, u32), run: Run) -> Result<()> {
+/// Register the task running `launcher` (the caller's one [`launcher`]
+/// lookup, so what `install` reports is what it registers) or, with none,
+/// `program`.
+pub(super) fn install(program: &Path, launcher: Option<&Path>, every: Every, at: (u32, u32), run: Run) -> Result<()> {
     let sid = user_sid(run)?;
     let name = task(&sid);
     let tmp = TempDir::new("windows-schedule")?;
     let xml = tmp.path().join("task.xml");
     // schtasks reads an XML file as UTF-16LE. Keep the textual dry run UTF-8.
-    let launcher = launcher(program);
     let definition =
-        definition(program, launcher.as_deref(), every, at, &sid).replace("encoding=\"UTF-8\"", "encoding=\"UTF-16\"");
+        definition(program, launcher, every, at, &sid).replace("encoding=\"UTF-8\"", "encoding=\"UTF-16\"");
     let encoded =
         std::iter::once(0xfeff).chain(definition.encode_utf16()).flat_map(u16::to_le_bytes).collect::<Vec<_>>();
     std::fs::write(&xml, encoded)?;

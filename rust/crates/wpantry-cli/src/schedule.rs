@@ -189,13 +189,25 @@ fn runnable(path: &Path) -> bool {
 /// `install` for the scanner at `program`. Re-running it rewrites the job,
 /// so a launcher that appeared or went since the last install is picked up.
 fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, backend: Backend, run: Run) -> Result<i32> {
+    install_lines(program, every, at, dry_run, backend, run)?.iter().for_each(|line| say(line));
+    Ok(EXIT_OK)
+}
+
+/// What `install_for` does, returning the lines it then prints: the dry
+/// run's job text, or the line naming the scheduler and [`install_summary`].
+fn install_lines(
+    program: &Path,
+    every: Every,
+    at: (u32, u32),
+    dry_run: bool,
+    backend: Backend,
+    run: Run,
+) -> Result<Vec<String>> {
+    let mut said = Vec::new();
     let p = paths();
     let program = program.to_path_buf();
     let (hour, minute) = at;
-    let launcher = match backend {
-        Backend::Windows => None,
-        _ => launcher(&program),
-    };
+    let launcher = job_launcher(backend, &program);
     let launcher = launcher.as_deref();
     if matches!(backend, Backend::Systemd | Backend::Cron)
         && [Some(program.as_path()), launcher, Some(p.state.as_path())]
@@ -212,18 +224,17 @@ fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, back
             format!("# wpantry.service\n{service}\n# wpantry.timer\n{timer}")
         }
         Backend::Cron => cron_line(&program, launcher, every, hour, minute, &p),
-        Backend::Windows => windows::definition(&program, windows::launcher(&program).as_deref(), every, at, ""),
+        Backend::Windows => windows::definition(&program, launcher, every, at, ""),
     };
     if dry_run {
         // Line by line: `say` drops control characters, newlines included.
-        text.lines().for_each(say);
-        return Ok(EXIT_OK);
+        return Ok(text.lines().map(str::to_owned).collect());
     }
     std::fs::create_dir_all(&p.state)?;
     match backend {
         Backend::Windows => {
-            windows::install(&program, every, at, run)?;
-            say(&format!("✓ scheduled {} with Windows Task Scheduler", calendar::description(every, at)));
+            windows::install(&program, launcher, every, at, run)?;
+            said.push(format!("✓ scheduled {} with Windows Task Scheduler", calendar::description(every, at)));
         }
         Backend::Launchd => {
             let plist_file = plist_path();
@@ -241,7 +252,7 @@ fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, back
             if out.code != Some(0) {
                 return Err(Error::Failed(format!("launchctl bootstrap failed: {}", out.stderr.trim())));
             }
-            say(&format!(
+            said.push(format!(
                 "✓ scheduled {} at {hour:02}:{minute:02} with launchd ({})",
                 word(every),
                 plist_file.display()
@@ -265,7 +276,7 @@ fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, back
                     )));
                 }
             }
-            say(&format!(
+            said.push(format!(
                 "✓ scheduled {} at {hour:02}:{minute:02} with a systemd user timer ({})",
                 word(every),
                 dir.display()
@@ -281,21 +292,44 @@ fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, back
             new.push_str(&text);
             new.push('\n');
             set_crontab(&new, run)?;
-            say(&format!("✓ scheduled {} at {hour:02}:{minute:02} with cron", word(every)));
+            said.push(format!("✓ scheduled {} at {hour:02}:{minute:02} with cron", word(every)));
         }
     }
-    match launcher {
-        Some(launcher) => {
-            say(&format!("  It runs {} --scheduled-run, the launcher beside the scanner.", launcher.display()))
-        }
-        None => say(&format!(
-            "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
-            p.last.display(),
-            p.log.display()
-        )),
+    said.extend(install_summary(launcher, &p));
+    Ok(said)
+}
+
+/// The launcher the job for `backend` runs instead of the scanner, if one
+/// sits beside it ([`launcher`] on macOS and Linux, [`windows::launcher`] on
+/// Windows). `install` makes this one lookup and uses it both for the job it
+/// registers and for what it says the job runs.
+fn job_launcher(backend: Backend, program: &Path) -> Option<PathBuf> {
+    match backend {
+        Backend::Windows => windows::launcher(program),
+        _ => launcher(program),
     }
-    say("  It never fixes anything: run `wpantry fix` yourself.");
-    Ok(EXIT_OK)
+}
+
+/// What `install` says the job runs, after the line naming the scheduler.
+///
+/// ```ignore
+/// install_summary(Some(Path::new("/opt/x/wpantry-desktop")), &paths())[0]
+///     == "  It runs /opt/x/wpantry-desktop --scheduled-run, the launcher beside the scanner."
+/// ```
+fn install_summary(launcher: Option<&Path>, p: &Paths) -> [String; 2] {
+    [
+        match launcher {
+            Some(launcher) => {
+                format!("  It runs {} --scheduled-run, the launcher beside the scanner.", launcher.display())
+            }
+            None => format!(
+                "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
+                p.last.display(),
+                p.log.display()
+            ),
+        },
+        "  It never fixes anything: run `wpantry fix` yourself.".to_string(),
+    ]
 }
 
 /// Whether launchd has the job loaded: `launchctl print` answers 0 only

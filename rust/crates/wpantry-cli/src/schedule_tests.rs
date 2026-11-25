@@ -624,7 +624,7 @@ fn windows_installs_only_the_current_users_scan_and_checks_its_state() {
     };
     assert!(windows::query(&run).unwrap().is_none());
     let path = Path::new(r"\\?\C:\Pantry & tools\wpantry.exe");
-    windows::install(path, Every::Week, (8, 25), &run).unwrap();
+    windows::install(path, windows::launcher(path).as_deref(), Every::Week, (8, 25), &run).unwrap();
     let definition = windows::query(&run).unwrap().unwrap();
     assert!(windows::disabled(&definition));
     assert!(windows::uninstall(&run).unwrap());
@@ -736,11 +736,69 @@ fn windows_task_runs_the_windowless_launcher_when_one_sits_beside_the_scanner() 
             other => panic!("unexpected command {other:?}"),
         }
     };
-    windows::install(&scanner, Every::Hour, (0, 15), &run).unwrap();
+    windows::install(&scanner, windows::launcher(&scanner).as_deref(), Every::Hour, (0, 15), &run).unwrap();
     let text = windows::query(&run).unwrap().unwrap();
     assert!(text.contains("<Arguments>--scheduled-run</Arguments>"), "{text}");
     assert_eq!(calendar::read_cadence(Backend::Windows, &text), Some((Every::Hour, (0, 15))));
     assert_eq!(status_with(Backend::Windows, &run, true).unwrap(), EXIT_OK);
+}
+
+/// Oracle: on Windows `install` reports what it registers. With
+/// `wpantry-desktop.exe` beside the scanner the task's `<Command>` is that
+/// launcher and the summary says "It runs <launcher> --scheduled-run"; with
+/// none both name the scanner's sync and scan. Both come from one lookup
+/// ([`job_launcher`]). Known bad: the summary's lookup said no launcher on
+/// Windows while the registration found one, so the install output said
+/// "It runs `wpantry sync`, then `wpantry scan`" for a task that ran the
+/// launcher.
+#[test]
+fn windows_install_reports_the_launcher_it_registers() {
+    let _home = test_home();
+    for with_launcher in [true, false] {
+        let dir = wpantry::utils::temp::TempDir::new("windows-bundle").unwrap();
+        let scanner = dir.path().join("wpantry.exe");
+        let beside = dir.path().join("wpantry-desktop.exe");
+        std::fs::write(&scanner, b"").unwrap();
+        if with_launcher {
+            std::fs::write(&beside, b"").unwrap();
+        }
+        let registered = Mutex::new(None::<String>);
+        let run = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+            let args = argv.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>();
+            match (args[0].as_ref(), args.get(1).map(|a| a.as_ref())) {
+                ("whoami.exe", _) => ok("\"fixture\\user\",\"S-1-5-21-123\"\r\n"),
+                ("schtasks.exe", Some("/create")) => {
+                    let bytes = std::fs::read(argv[5]).unwrap();
+                    let units =
+                        bytes[2..].as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes(*p)).collect::<Vec<_>>();
+                    *registered.lock().unwrap() = Some(String::from_utf16(&units).unwrap());
+                    ok("")
+                }
+                other => panic!("unexpected command {other:?}"),
+            }
+        };
+        let found = job_launcher(Backend::Windows, &scanner);
+        assert_eq!(found.as_deref(), with_launcher.then_some(beside.as_path()), "the lookup");
+        let lines = install_lines(&scanner, Every::Day, (9, 30), false, Backend::Windows, &run).unwrap();
+        let task = registered.lock().unwrap().clone().expect("a task was registered");
+        let command = program::read(Backend::Windows, &task).unwrap();
+        assert!(lines[0].starts_with("✓ scheduled "), "{lines:?}");
+        let said = lines[1].clone();
+        // The dry run prints the same task.
+        let dry = install_lines(&scanner, Every::Day, (9, 30), true, Backend::Windows, &run).unwrap().join("\n");
+        assert_eq!(program::read(Backend::Windows, &dry).as_deref(), Some(command.as_path()), "{dry}");
+        if with_launcher {
+            assert_eq!(command, beside, "{task}");
+            assert!(task.contains("<Arguments>--scheduled-run</Arguments>"), "{task}");
+            assert_eq!(
+                said,
+                format!("  It runs {} --scheduled-run, the launcher beside the scanner.", beside.display())
+            );
+        } else {
+            assert_eq!(command, scanner, "{task}");
+            assert!(said.starts_with("  It runs `wpantry sync`, then `wpantry scan`"), "{said}");
+        }
+    }
 }
 
 /// Oracle: each definition this crate writes reads back to the very program

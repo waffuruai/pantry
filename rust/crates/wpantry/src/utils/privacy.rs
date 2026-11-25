@@ -18,8 +18,9 @@
 //! use std::path::Path;
 //! use wpantry::utils::privacy::{folders, is_left_out, leave_out};
 //! let home = Path::new("/nonexistent-home-for-doctest");
-//! let guard = leave_out(folders(home, false));
+//! let guard = leave_out(folders(home, false), vec![home.join("Documents/named")]);
 //! assert!(is_left_out(&home.join("Documents/repo/.git")));
+//! assert!(!is_left_out(&home.join("Documents/named/.git")));
 //! assert!(!is_left_out(&home.join("code/repo")));
 //! drop(guard);
 //! assert!(!is_left_out(&home.join("Documents/repo/.git")));
@@ -68,8 +69,12 @@ pub fn folders(home: &Path, mac: bool) -> Vec<PathBuf> {
     bases.iter().flat_map(|b| names.iter().map(move |n| b.join(n))).collect()
 }
 
-/// The folders left out now, one list per [`Guard`] alive.
-static LEFT_OUT: RwLock<Vec<(u64, Vec<PathBuf>)>> = RwLock::new(Vec::new());
+/// What one [`Guard`] leaves out: the folders, and the paths the user named
+/// that stay in even when they lie inside one.
+type Entry = (u64, Vec<PathBuf>, Vec<PathBuf>);
+
+/// The folders left out now, one entry per [`Guard`] alive.
+static LEFT_OUT: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
 static NEXT: Mutex<u64> = Mutex::new(0);
 
 /// Keeps its folders left out until dropped. Several can be alive at once
@@ -78,29 +83,34 @@ static NEXT: Mutex<u64> = Mutex::new(0);
 #[derive(Debug)]
 pub struct Guard(u64);
 
-/// Leave `dirs` and everything under them out until the guard is dropped.
-pub fn leave_out(dirs: Vec<PathBuf>) -> Guard {
+/// Leave `dirs` and everything under them out until the guard is dropped,
+/// except the paths in `named` and what lies under them: a path the user
+/// named is scanned as asked, and only that subtree, so its siblings in the
+/// same personal folder stay out for every pass.
+pub fn leave_out(dirs: Vec<PathBuf>, named: Vec<PathBuf>) -> Guard {
     let id = {
         let mut n = NEXT.lock().expect("lock");
         *n += 1;
         *n
     };
-    LEFT_OUT.write().expect("lock").push((id, dirs));
+    LEFT_OUT.write().expect("lock").push((id, dirs, named));
     Guard(id)
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        LEFT_OUT.write().expect("lock").retain(|(id, _)| *id != self.0);
+        LEFT_OUT.write().expect("lock").retain(|(id, ..)| *id != self.0);
     }
 }
 
 /// Whether `path` is a left-out folder or lies inside one, by its
-/// spelling: nothing is opened or resolved to answer.
+/// spelling: nothing is opened or resolved to answer. A path at or under
+/// one the user named is not left out by that guard.
 pub fn is_left_out(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
     let held = LEFT_OUT.read().expect("lock");
-    held.iter().any(|(_, dirs)| dirs.iter().any(|d| path.starts_with(d)))
+    held.iter()
+        .any(|(_, dirs, named)| dirs.iter().any(|d| path.starts_with(d)) && !named.iter().any(|n| path.starts_with(n)))
 }
 
 /// Whether the symlink at `link` points into a left-out folder, read from

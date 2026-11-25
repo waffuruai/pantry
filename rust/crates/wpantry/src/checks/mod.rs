@@ -645,15 +645,27 @@ impl<'a> Scan<'a> {
         // --no-personal-files: the folders macOS guards with a prompt are
         // left out by path before anything lists them, for the whole scan
         // (the repo search, every walk, the persistence checks, PATH
-        // lookups). A --path inside one of them is scanned as asked, so its
-        // folder stays in.
+        // lookups). A --path inside one of them is scanned as asked, but
+        // only that path and its subtree: the folder stays left out for
+        // every other pass, so a persistence or PATH entry beside the named
+        // project is still not touched.
         self.left_out = None;
         if self.opts.no_personal_files {
-            let named: Vec<PathBuf> = self.opts.paths.iter().flatten().map(|p| self.home_path(p)).collect();
-            let left: Vec<PathBuf> = crate::utils::privacy::folders(&self.home, cfg!(target_os = "macos"))
-                .into_iter()
-                .filter(|f| !named.iter().any(|p| p.starts_with(f)))
-                .collect();
+            let mut named: Vec<PathBuf> = self.opts.paths.iter().flatten().map(|p| self.home_path(p)).collect();
+            // The same path in the home folder's other spelling (the
+            // canonical one), as `privacy::folders` does for the folders.
+            if let Ok(canon) = std::fs::canonicalize(&self.home)
+                && canon != self.home
+            {
+                let more: Vec<PathBuf> =
+                    named.iter().filter_map(|p| p.strip_prefix(&self.home).ok().map(|rest| canon.join(rest))).collect();
+                named.extend(more);
+            }
+            let left = crate::utils::privacy::folders(&self.home, cfg!(target_os = "macos"));
+            // Only a named path inside a left-out folder is an exception:
+            // `--path ~` names a folder that holds them, which must not
+            // let them back in.
+            named.retain(|p| left.iter().any(|f| p.starts_with(f)));
             if !left.is_empty() {
                 note(&format!(
                     "· left out of this scan (--no-personal-files): {}; repos there are not scanned",
@@ -665,7 +677,7 @@ impl<'a> Scan<'a> {
                     "Repos under Downloads, Desktop and Documents (and on macOS the other folders it asks permission for) were not looked for. Scan without --no-personal-files, or name one with --path, to check them.",
                 );
             }
-            self.left_out = Some(crate::utils::privacy::leave_out(left));
+            self.left_out = Some(crate::utils::privacy::leave_out(left, named));
         }
         self.repos =
             repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);

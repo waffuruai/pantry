@@ -376,6 +376,78 @@ fn a_named_path_inside_a_personal_folder_is_still_scanned() {
     drop(home);
 }
 
+/// Risk: naming one project in a personal folder lifts the whole folder
+/// off the exclusion list, so the persistence and PATH checks (which ask
+/// the same `is_left_out` gate) and every other walk may open unrelated
+/// paths beside it, which raises the privacy prompt the flag exists to
+/// avoid. Oracle: with `--path ~/Documents/proj` the project (and its
+/// subfolders) is scanned, while a persistence program, a PATH folder, a
+/// sibling repo and a sibling whose name only starts like the project's, all
+/// in the same Documents, are left out exactly as when no project is named
+/// (the gate says so and a walk of them lists nothing).
+/// Known bad: the exception that drops the whole containing folder.
+#[test]
+fn a_named_project_does_not_open_its_personal_folder_for_other_passes() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    repo_at(&h.join("Documents/other"));
+    for f in ["Documents/proj/src/a.txt", "Documents/other/agent", "Documents/bin/tool", "Documents/proj2/b.txt"] {
+        std::fs::create_dir_all(h.join(f).parent().unwrap()).unwrap();
+        std::fs::write(h.join(f), "x").unwrap();
+    }
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![PathBuf::from("~/Documents/proj")]);
+    s.scope_repos();
+    let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| std::fs::canonicalize(r).unwrap()).collect();
+    assert_eq!(roots, [std::fs::canonicalize(h.join("Documents/proj")).unwrap()]);
+    let left = crate::utils::privacy::is_left_out;
+    assert!(!left(h.join("Documents/proj")) && !left(h.join("Documents/proj/src/a.txt")), "the named project is in");
+    for (what, p) in [
+        ("a persistence program", "Documents/other/agent"),
+        ("a PATH folder", "Documents/bin"),
+        ("a PATH tool", "Documents/bin/tool"),
+        ("a sibling repo", "Documents/other"),
+        ("a sibling named like the project", "Documents/proj2/b.txt"),
+        ("the folder itself", "Documents"),
+        ("another personal folder", "Desktop/y"),
+    ] {
+        assert!(left(h.join(p)), "{what} ({p}) must stay left out");
+    }
+    let walked = |d: &str| crate::utils::walk::walk(&h.join(d), 6).len();
+    assert!(walked("Documents/proj") > 0, "the named project is walked");
+    for d in ["Documents/other", "Documents/bin", "Documents/proj2"] {
+        assert_eq!(walked(d), 0, "{d} was walked");
+    }
+    // Without the flag the guard ends and nothing is left out.
+    s.opts.no_personal_files = false;
+    s.scope_repos();
+    assert!(!left(h.join("Documents/bin/tool")), "the guard ends with the flag");
+    drop(home);
+}
+
+/// Oracle: `--path ~` names a folder that holds the personal folders; it
+/// does not name anything inside them, so they stay left out.
+#[test]
+fn naming_the_home_folder_does_not_let_the_personal_folders_back_in() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/x"));
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![PathBuf::from("~")]);
+    s.scope_repos();
+    assert!(crate::utils::privacy::is_left_out(h.join("Documents/x")));
+    drop(home);
+}
+
 /// Oracle: a folder the system won't let the scan list, outside the
 /// personal folders, is not checked, quietly: the repo search goes on past
 /// it, the walk records it once as unreadable (what the report lists as

@@ -7,7 +7,7 @@ use super::*;
 fn a_guard_leaves_its_folders_out_until_dropped() {
     let home = Path::new("/no-such-home-privacy-test");
     assert!(!is_left_out(home.join("Documents/x")));
-    let mac = leave_out(folders(home, true));
+    let mac = leave_out(folders(home, true), Vec::new());
     for inside in ["Documents", "Desktop/a.txt", "Downloads/r/.git", "Library/Mobile Documents/x", "Pictures/p.jpg"] {
         assert!(is_left_out(home.join(inside)), "{inside}");
     }
@@ -15,7 +15,7 @@ fn a_guard_leaves_its_folders_out_until_dropped() {
         assert!(!is_left_out(home.join(outside)), "{outside}");
     }
     let other = Path::new("/no-such-other-home");
-    let plain = leave_out(folders(other, false));
+    let plain = leave_out(folders(other, false), Vec::new());
     assert!(is_left_out(other.join("Desktop")));
     assert!(!is_left_out(other.join("Pictures")), "the macOS list only on macOS");
     drop(mac);

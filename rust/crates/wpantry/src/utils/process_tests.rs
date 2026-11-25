@@ -226,3 +226,27 @@ fn no_path_consumer_looks_inside_a_left_out_folder() {
     drop(guard);
     assert_eq!(path_dirs_of(Some(&path)).len(), 2, "the folder is back once the guard ends");
 }
+
+/// Risk: after `which`, `resolve` and the spawns share one `lookup`, a
+/// filter on only one of them would let another still stat a left-out PATH
+/// folder. Oracle: what each returns. With a tool in a left-out PATH folder
+/// and a copy in a system folder, both give the system copy once the folder
+/// is left out (the system folder is never filtered), and the PATH copy when
+/// nothing is. Known bad: no filter in `lookup`.
+#[cfg(unix)]
+#[test]
+fn which_and_resolve_skip_a_left_out_path_folder_but_not_the_system_folders() {
+    let _home = test_home();
+    let h = home();
+    let name = "wpantry-no-such-tool-lookup";
+    let (shut, sys) = (h.join("Documents/bin"), h.join("sysbin"));
+    executable(&shut.join(name), "#!/bin/sh\n");
+    executable(&sys.join(name), "#!/bin/sh\n");
+    let path = std::env::join_paths([&shut]).unwrap();
+    let system = [sys.to_str().unwrap()];
+    assert_eq!(which_with(name, Some(&path), &system), Some(shut.join(name)), "the witness: it looks there");
+    let guard = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    assert_eq!(which_with(name, Some(&path), &system), Some(sys.join(name)));
+    assert_eq!(resolve_with(OsStr::new(name), Some(&path), &system), sys.join(name));
+    drop(guard);
+}

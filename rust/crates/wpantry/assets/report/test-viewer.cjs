@@ -425,6 +425,35 @@ load({...bundle,plan:[{command:'rm -rf /',mode:'auto',findings:[999]}]});
 assert(!main().includes('rm -rf'));
 assert(section('manual').includes('Grouped from the findings'));
 
+
+// Risk: an area the user left out on purpose (`excluded`) counted as a coverage gap, so the page
+// said "not checked: coverage is incomplete" about a scope the user chose. Oracle: the Rust rule
+// Finding::is_gap(): an `unchecked` finding is a gap unless it is `excluded`. Known bad: count
+// every `unchecked` finding (the page then says 2 things and lists the excluded area as one).
+{
+  const left=finding('unchecked','Personal documents and images','UNCHECKED','warn',{note:'Skipped by your choice (--no-personal-files). Include personal folders to check it.',excluded:true,location:'',version:''});
+  const real=finding('unchecked','CISA KEV','UNREACHABLE','warn',{note:'offline and not cached',location:'',version:''});
+  const run=(findings)=>({...bundle,plan:[],history:null,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,unfixed:0,unknown_licenses:0,findings}}]});
+  load(run([left,real]));
+  assert.equal(ctx.viewerTest.cur().counts.unchecked,1,'one gap, not two');
+  const s=section('scanned');
+  assert(s.includes('1 thing could not be checked') && !s.includes('2 things could not be checked'),'the gap count');
+  assert(s.includes('<b>CISA KEV</b>') && !s.includes('<div class="gap"><span class="badge gap">Not checked</span><b>Personal documents and images</b>'),'only the real gap is listed as one');
+  assert(s.includes('Left out by your choice, so not read: Personal documents and images.'),'the excluded area is said, as a scope');
+  assert(main().includes('1 thing not checked: coverage is incomplete.'));
+  assert.equal(wellFormed(main()),null);
+  // Only an excluded area: no gap, no "incomplete" line, and the page does not say a source failed.
+  load(run([left]));
+  assert.equal(ctx.viewerTest.cur().counts.unchecked,0);
+  assert(!/coverage is incomplete|could not be checked/.test(main()),'a chosen scope is not a gap');
+  assert(section('scanned').includes('Every source answered: no coverage gaps were recorded for this scan.'));
+  // An older report with no `excluded` key keeps every unchecked finding a gap.
+  const old={...left}; delete old.excluded;
+  load(run([old]));
+  assert.equal(ctx.viewerTest.cur().counts.unchecked,1);
+}
+
+
 /* ---------- the packed and deflated bundle src/reporters/pack.rs writes ---------- */
 // pack-fixture.json is that module's output byte for byte (its Rust test
 // checks), so the page decodes exactly what a report carries.

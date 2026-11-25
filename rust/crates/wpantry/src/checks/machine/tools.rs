@@ -97,6 +97,18 @@ pub fn embedded(path: &str, prefix: &str) -> String {
 
 /// Components for one catalog tool.
 pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
+    find_owned(t, extra_dirs, false)
+}
+
+/// Every copy of one catalog tool, whoever installed it: PATH first, then
+/// the version managers' folders. A project scan asks this: it runs no
+/// `brew vulns` or OS update check to leave the vouched-for copies to.
+pub fn find_any(t: &Tool) -> Vec<Component> {
+    find_owned(t, &[], true)
+}
+
+/// [`find`]; with `any`, the copies something else vouches for as well.
+fn find_owned(t: &Tool, extra_dirs: &[String], any: bool) -> Vec<Component> {
     let re = Regex::with_flags(t.pattern, "m");
     let mut dirs: Vec<String> = t.paths.iter().map(|p| p.to_string()).collect();
     dirs.extend(extra_dirs.iter().cloned());
@@ -104,7 +116,7 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
     for b in t.bins {
         for (shown, real) in on_path(b, &dirs) {
             let who = owner(&real);
-            if !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
+            if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
                 continue;
             }
             let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {

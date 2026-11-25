@@ -18,6 +18,7 @@ pub mod ignore;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
+pub mod project;
 pub mod secrets;
 pub mod severity;
 pub mod supply_chain;
@@ -194,6 +195,9 @@ pub struct Options {
     pub paths: Option<Vec<PathBuf>>,
     /// Run the machine inventory, not only the repo checks.
     pub machine: bool,
+    /// `scan project`: the repo checks over `paths`, and of the machine
+    /// only the runtimes the project uses ([`project`]). Never with `machine`.
+    pub project: bool,
     /// Skip the machine's security settings (`--no-posture`); they run
     /// with the machine inventory otherwise.
     pub no_posture: bool,
@@ -584,7 +588,13 @@ impl<'a> Scan<'a> {
         self.count("git repos", git);
         self.status("Listing the repos' files");
         crate::utils::walk::prewalk(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>());
-        let found: Vec<Component> = if self.opts.machine { machine::run(&mut self)? } else { Vec::new() };
+        let found: Vec<Component> = if self.opts.machine {
+            machine::run(&mut self)?
+        } else if self.opts.project {
+            project::run(&mut self)?
+        } else {
+            Vec::new()
+        };
         supply_chain::run(&mut self, &found)?;
         if !self.opts.no_malware {
             crate::checks::malware::run(&mut self);

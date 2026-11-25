@@ -90,6 +90,8 @@ fn an_incomplete_recheck_resolves_nothing() {
 fn scope_includes_what_the_scan_looked_for() {
     let repos = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
     assert_eq!(scope_of(&repos), "repos:/r");
+    // A project scan's runtimes make it another scope than the repo checks alone.
+    assert_eq!(scope_of(&Options { project: true, ..repos.clone() }), "project:/r");
     let licenses = Options { licenses: true, ..repos.clone() };
     assert_eq!(scope_of(&licenses), "repos:/r+licenses");
     let policy = Options {

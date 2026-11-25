@@ -159,6 +159,12 @@ fn find_checks_brew_and_app_copies_when_nobody_else_does() {
     let manual = Tool { always: true, fix: "Update it by hand", ..FAKE };
     let found = find(&manual, &dirs);
     assert!(found.iter().all(|c| c.fix == "Update it by hand" && !c.auto), "{found:?}");
+    // Left to brew vulns and the app check on a machine scan; a project
+    // scan runs neither, and takes every copy.
+    assert_eq!(find(&FAKE, &dirs), []);
+    let any: Vec<String> = find_owned(&FAKE, &dirs, true).into_iter().map(|c| c.version).collect();
+    assert_eq!(any, ["1.2.4", "1.2.5"]);
+    assert_eq!(find_any(&Tool { bins: &["wpantry-no-such-tool"], ..FAKE }), []);
 }
 
 #[cfg(unix)]

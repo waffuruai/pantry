@@ -1525,6 +1525,31 @@ fn path_scopes_and_skips_missing_dirs() {
     assert!(r.err.contains("missing"));
 }
 
+/// `scan project DIR`: that directory's repos and the runtimes it pins, as
+/// its own scope; nothing of the machine.
+#[test]
+fn scan_project_covers_one_directory_and_its_runtimes() {
+    let t = Ctx::new();
+    let app = git_repo(&t.home.join("app"), false);
+    write(&app.join(".ruby-version"), "3.1.4\n");
+    git_repo(&t.home.join("elsewhere"), false);
+    let r = t.run(&["scan", "project", s(&app), "--offline", "--json", "--no-input"]);
+    let env = envelope(&r.out);
+    assert_eq!(env["checked"]["git repos"], 1, "{}", r.err);
+    assert_eq!(env["checked"]["project runtimes"], 1);
+    assert!(env["checked"].get("tools, runtimes and packages").is_none(), "no machine inventory");
+    // Offline with an empty cache, the pinned Ruby can't be asked about: not checked, never clean.
+    assert!(arr(&env["findings"]).iter().any(|f| f["kind"] == "unchecked"), "{}", r.out);
+    let scope: String =
+        t.conn().query_row("SELECT scope FROM scans ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(scope, format!("project:{}", s(&std::fs::canonicalize(&app).unwrap())));
+    // A directory after `scan` alone says how one is scanned.
+    let bare = t.run(&["scan", s(&app)]);
+    assert_eq!(bare.code, 2);
+    assert!(bare.err.contains("wpantry scan project DIR"), "{}", bare.err);
+    assert_eq!(t.run(&["scan", "project", s(&t.home.join("missing"))]).code, 2);
+}
+
 #[test]
 fn explicit_worktree_counts() {
     let t = Ctx::new();

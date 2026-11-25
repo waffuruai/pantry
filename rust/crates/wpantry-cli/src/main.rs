@@ -123,6 +123,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
+        project: a.project,
         no_posture: a.no_posture,
         no_malware: a.no_malware,
         deep: a.deep,

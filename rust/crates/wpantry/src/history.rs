@@ -48,7 +48,13 @@ pub fn scope_of(opts: &Options) -> String {
     paths.sort();
     let mut scope = format!(
         "{}:{}",
-        if opts.machine { "machine" } else { "repos" },
+        if opts.machine {
+            "machine"
+        } else if opts.project {
+            "project"
+        } else {
+            "repos"
+        },
         if paths.is_empty() { "~".into() } else { paths.join(",") }
     );
     if opts.licenses {

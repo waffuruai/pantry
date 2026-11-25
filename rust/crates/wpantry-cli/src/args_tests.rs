@@ -97,7 +97,16 @@ fn no_arguments_print_the_help_and_the_version_is_one_flag() {
     let c = scan(&["scan", "--path", "/a", "--path=/b", "--no-machine", "--json"]);
     assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
     assert!(c.no_machine && c.show.format == Shown::Json && !c.offline && !c.check_licenses);
-    assert!(usage(&["scan", "--path", "/a", "/b"]).contains("too many arguments for 'scan'"), "one directory a --path");
+    // A bare directory isn't a scope: the error says how to scan one.
+    let bare = usage(&["scan", "--path", "/a", "/b"]);
+    assert!(bare.contains("unknown command '/b'"), "one directory a --path: {bare}");
+    assert!(
+        bare.ends_with(
+            "To scan one directory: wpantry scan project DIR (or scan --path DIR, which keeps the machine inventory)\n"
+        ),
+        "{bare}"
+    );
+    assert!(!usage(&["report", "nothing"]).contains("To scan one directory"));
     let c = scan(&["scan", "--licenses", "--json"]);
     assert!(c.check_licenses && c.licenses.is_none(), "--licenses alone uses the bundled allowlist");
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
@@ -131,7 +140,7 @@ fn usage_errors_name_the_closest_spelling() {
     let msg = usage(&["scan", "--no-machin"]);
     assert!(
         msg.starts_with(
-            "Usage: wpantry scan [options]\nerror: unknown option '--no-machin'\n(Did you mean --no-machine?)"
+            "Usage: wpantry scan [options] [command]\nerror: unknown option '--no-machin'\n(Did you mean --no-machine?)"
         ),
         "{msg}"
     );
@@ -185,7 +194,7 @@ fn scan_and_fix() {
     assert_eq!(p(&["fix", "--dry-run", "--yes"]), fix(true, true));
     assert!(usage(&["scan", "--dry-run"]).contains("unknown option '--dry-run'"), "scan changes nothing");
     let text = help(&["scan"]);
-    assert!(text.starts_with("Usage: wpantry scan [options]\n") && text.contains("Exit codes:"), "{text}");
+    assert!(text.starts_with("Usage: wpantry scan [options] [command]\n") && text.contains("Exit codes:"), "{text}");
     let text = help(&["fix"]);
     assert!(text.starts_with("Usage: wpantry fix [options] [target] [id]\n") && text.contains("--dry-run"), "{text}");
 }
@@ -212,6 +221,7 @@ fn every_command_has_help() {
         }
     }
     assert_eq!(p(&["help", "schedule", "install"]), Parsed::Help(help(&["schedule", "install"])));
+    assert_eq!(p(&["help", "scan", "project"]), Parsed::Help(help(&["scan", "project"])));
     assert!(root.help_for(&["check"]).is_none());
     assert!(usage(&["help", "scna"]).contains("unknown command 'scna'"));
 }
@@ -244,7 +254,7 @@ fn check_options_and_their_errors() {
     assert_eq!(expand("~"), wpantry::utils::files::home());
     assert_eq!(expand("/x"), PathBuf::from("/x"));
     for (bad, msg) in [
-        (&["scan", "extra"][..], "too many arguments for 'scan'. Expected 0 arguments but got 1: extra"),
+        (&["scan", "extra"][..], "unknown command 'extra'"),
         (&["scan", "--jobs", "0"], "option '--jobs' expects a number of 1 or more, got '0'"),
         (&["scan", "--jobs", "many"], "option '--jobs' expects a number of 1 or more, got 'many'"),
         (&["scan", "--repo-hooks", "~/missing.txt"], "option '--repo-hooks': no such file: ~/missing.txt"),
@@ -468,4 +478,34 @@ fn policy_files_come_from_the_config_folder_unless_an_option_names_one() {
         text.contains("option '--posture-policy'") && text.contains("posture.toml: not a TOML policy file"),
         "{text}"
     );
+}
+
+#[test]
+fn scan_project_is_one_directory_and_never_the_machine() {
+    let _home = wpantry::utils::files::test_home();
+    let dir = wpantry::utils::files::home().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    let whole = std::fs::canonicalize(&dir).unwrap();
+    let c = scan(&["scan", "project", "~/app", "--offline", "--json"]);
+    assert_eq!(c.path, Some(vec![whole.clone()]));
+    assert!(c.project && c.no_machine && c.offline && !c.fix);
+    assert_eq!(c.show.format, Shown::Json);
+    // No directory: here, by its whole path.
+    let here = scan(&["scan", "project"]);
+    assert_eq!(here.path, Some(vec![std::fs::canonicalize(".").unwrap()]));
+    // A plain scan isn't one.
+    assert!(!scan(&["scan", "--path", "~/app", "--no-machine"]).project);
+    assert!(usage(&["scan", "project", "~/nowhere"]).contains("argument 'dir': no such directory: ~/nowhere"));
+    assert!(usage(&["scan", "project", "--path", "~/app"]).contains("takes its directory as an argument, not --path"));
+    assert!(usage(&["scan", "project", "~/app", "~/app"]).contains("too many arguments"));
+    // Its help offers the scan's options, without the machine's.
+    let text = help(&["scan", "project"]);
+    assert!(text.starts_with("Usage: wpantry scan project [options] [dir]\n"), "{text}");
+    for gone in ["--path", "--no-machine", "--no-posture", "--posture-policy", "--no-personal-files"] {
+        assert!(!text.contains(&format!("\n  {gone}")), "{gone}");
+    }
+    for kept in ["--deep", "--licenses [file]", "--json", "--offline", "--no-malware"] {
+        assert!(text.contains(&format!("\n  {kept}")), "{kept}");
+    }
+    assert!(help(&["scan"]).contains("\n  project [options] [dir]"));
 }

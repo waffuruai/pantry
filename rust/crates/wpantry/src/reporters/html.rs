@@ -71,6 +71,7 @@ pub fn scope_json(opts: &Options) -> J {
     let strings = |xs: Vec<String>| J::Arr(xs.into_iter().map(J::from).collect());
     obj([
         ("machine", opts.machine.into()),
+        ("project", opts.project.into()),
         ("offline", opts.offline.into()),
         ("licenses", opts.licenses.into()),
         ("posture", (opts.machine && !opts.no_posture).into()),

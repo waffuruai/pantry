@@ -78,6 +78,9 @@ impl Default for Show {
 pub struct Check {
     pub path: Option<Vec<PathBuf>>,
     pub no_machine: bool,
+    /// `scan project`: one project (`path`) and the runtimes it uses,
+    /// nothing else of the machine.
+    pub project: bool,
     /// `fix`: the unattended fixes and the stopgaps, then a re-check.
     pub fix: bool,
     /// `fix --yes`: run and write without asking.
@@ -300,6 +303,15 @@ fn scan_opts() -> Vec<Opt> {
     opts
 }
 
+/// What a project scan never looks at, so `scan project` has no option for it.
+const NOT_FOR_PROJECT: [&str; 6] =
+    ["path", "no-machine", "no-posture", "posture-policy", "no-personal-files", "gitleaks-config"];
+
+/// `scan project`'s options: the scan's, without the machine's.
+fn project_opts() -> Vec<Opt> {
+    scan_opts().into_iter().filter(|o| !NOT_FOR_PROJECT.contains(&o.name().as_str())).collect()
+}
+
 /// The whole command line.
 pub fn program() -> Cli {
     Cli::new("wpantry")
@@ -310,6 +322,14 @@ pub fn program() -> Cli {
             Cli::new("scan")
                 .description("Scan this computer and its repos, then show the report. Changes nothing.")
                 .opts(scan_opts())
+                .command(
+                    Cli::new("project")
+                        .description("Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware, and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc, rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer is read: no other runtime, app, setting or folder. Changes nothing.")
+                        .summary("Scan one project and the runtimes it uses, nothing else of this computer")
+                        .arg(Arg::new("[dir]", "the project's directory").default("."))
+                        .opts(project_opts())
+                        .after_help(EXIT_CODES),
+                )
                 .after_help(EXIT_CODES),
         )
         .command(
@@ -547,6 +567,24 @@ fn command(m: &Matches) -> Result<Command, Exit> {
     let flag = |n: &str| m.flag(n);
     Ok(match m.path().as_slice() {
         ["scan"] => Command::Scan(check(m, false)?),
+        ["scan", "project"] => {
+            let mut c = check(m, false)?;
+            if c.path.is_some() {
+                return Err(
+                    m.error("scan project takes its directory as an argument, not --path: wpantry scan project DIR")
+                );
+            }
+            let given = m.arg("dir").unwrap_or(".");
+            let dir = expand(given);
+            // The whole path: the scope a project's scans are compared by.
+            let Some(dir) = std::fs::canonicalize(&dir).ok().filter(|d| d.is_dir()) else {
+                return Err(m.error(&format!("argument 'dir': no such directory: {given}")));
+            };
+            c.path = Some(vec![dir]);
+            c.no_machine = true;
+            c.project = true;
+            Command::Scan(c)
+        }
         ["fix"] => match m.arg("target").unwrap_or("all") {
             "all" => {
                 if m.flag("undo") {
@@ -660,6 +698,12 @@ pub fn parse(argv: &[String]) -> Parsed {
     match program().parse(argv).and_then(|m| command(&m)) {
         Ok(c) => Parsed::Run(c),
         Err(Exit::Help(t) | Exit::Version(t)) => Parsed::Help(t),
+        // `wpantry scan ~/code/app`: say how one directory is scanned.
+        Err(Exit::Error(t)) if argv.first().is_some_and(|w| w == "scan") && t.contains("error: unknown command '") => {
+            Parsed::Usage(format!(
+                "{t}To scan one directory: wpantry scan project DIR (or scan --path DIR, which keeps the machine inventory)\n"
+            ))
+        }
         Err(Exit::Error(t)) => Parsed::Usage(t),
     }
 }

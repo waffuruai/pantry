@@ -6,10 +6,16 @@
 //! (`scan --events`). Stdout is untouched.
 //!
 //! The scan's thread never writes: it queues lines for a writer thread,
-//! so a reader that is slow or gone never holds the scan up. `step`,
-//! `finding`, `note` and `done` are always queued; `at` and `tally` are
-//! state the writer samples at most every [`TICK`], so they are the only
-//! lines rate limiting drops, and the one written is the newest. A step
+//! so a reader that is slow or gone never holds the scan up. `step` and
+//! `done` are always queued (a handful of short lines, one pair per step).
+//! `finding` and `note` lines are queued up to [`MAX_PENDING`] lines and
+//! [`MAX_PENDING_BYTES`] bytes at a time: while the reader is stalled, the
+//! ones that would go past either cap are dropped and counted, and the
+//! writer says how many in one `dropped` event as soon as it has caught up
+//! (and before the next `step` line), and `done` carries the run's total.
+//! The saved report keeps every finding. `at` and `tally` are
+//! state the writer samples at most every [`TICK`], so rate limiting drops
+//! them too, and the one written is the newest. A step
 //! that goes [`BEAT`] without a line gets the tally again (a heartbeat), so
 //! a long read or a long look over a big tree is never silent.
 //!
@@ -19,11 +25,12 @@
 //! {"v":1,"event":"step","id":"secrets","state":"end","index":4,"of":10,"findings":1,"unchecked":0,"ms":812}
 //! ```
 
+use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wpantry::checks::watch::{At, Step, Watch};
@@ -45,9 +52,19 @@ pub const REPORT: Step = Step { id: "report", title: "Writing the report" };
 /// The most of a finding's note its event's title keeps.
 const TITLE: usize = 200;
 
+/// The most `finding` and `note` lines waiting for the writer; more are
+/// dropped and counted (`dropped` event), so a stalled reader holds at most
+/// this many lines, however many findings the scan makes.
+pub const MAX_PENDING: usize = 4096;
+/// The most bytes of `finding` and `note` lines waiting for the writer.
+pub const MAX_PENDING_BYTES: usize = 4 << 20;
+
 /// A line for the writer thread.
 enum Msg {
+    /// A line that is never dropped: `start`.
     Line(String),
+    /// A `finding` or a `note`: dropped when the backlog is at a cap.
+    Event(String),
     /// A step's `begin` (its 1-based index): `at` lines for it may follow.
     Begin(usize, String),
     /// A step's `end`: the tally first, when it changed, and the newest
@@ -55,6 +72,112 @@ enum Msg {
     End(usize, String),
     /// The last line: written, then the writer stops.
     Done(String),
+}
+
+#[derive(Default)]
+struct QState {
+    items: VecDeque<Msg>,
+    /// Droppable lines waiting, and their bytes: what the caps bound.
+    events: usize,
+    bytes: usize,
+    /// Dropped since the writer last said so, and over the run.
+    dropped: u64,
+    dropped_total: u64,
+    closed: bool,
+    /// The most droppable lines, and bytes, that ever waited (tests).
+    #[cfg(test)]
+    peak: (usize, usize),
+}
+
+/// What the scan hands the writer: a queue that never blocks the sender and
+/// holds at most `max_events` droppable lines and `max_bytes` of them.
+struct Queue {
+    state: Mutex<QState>,
+    ready: Condvar,
+    max_events: usize,
+    max_bytes: usize,
+}
+
+enum Next {
+    Msg(Msg),
+    Idle,
+    Closed,
+}
+
+impl Queue {
+    fn new(max_events: usize, max_bytes: usize) -> Queue {
+        Queue { state: Mutex::default(), ready: Condvar::new(), max_events, max_bytes }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, QState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Queue `m`, or count it as dropped when it is droppable and a cap is
+    /// reached. Never waits on the writer.
+    fn push(&self, m: Msg) {
+        let mut q = self.lock();
+        if q.closed {
+            return;
+        }
+        if let Msg::Event(l) = &m {
+            if q.events >= self.max_events || q.bytes + l.len() > self.max_bytes {
+                q.dropped += 1;
+                q.dropped_total += 1;
+                return;
+            }
+            q.events += 1;
+            q.bytes += l.len();
+            #[cfg(test)]
+            {
+                q.peak = (q.peak.0.max(q.events), q.peak.1.max(q.bytes));
+            }
+        }
+        q.items.push_back(m);
+        self.ready.notify_one();
+    }
+
+    /// The next line, waiting up to `wait` for one.
+    fn pop(&self, wait: Duration) -> Next {
+        let deadline = Instant::now() + wait;
+        let mut q = self.lock();
+        loop {
+            if let Some(m) = q.items.pop_front() {
+                if let Msg::Event(l) = &m {
+                    q.events -= 1;
+                    q.bytes -= l.len();
+                }
+                return Next::Msg(m);
+            }
+            if q.closed {
+                return Next::Closed;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Next::Idle;
+            }
+            q = self.ready.wait_timeout(q, left).unwrap_or_else(|p| p.into_inner()).0;
+        }
+    }
+
+    /// No more lines will be queued; the writer stops when it has the rest.
+    fn close(&self) {
+        self.lock().closed = true;
+        self.ready.notify_all();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lock().items.is_empty()
+    }
+
+    /// The count dropped since the last call.
+    fn take_dropped(&self) -> u64 {
+        std::mem::take(&mut self.lock().dropped)
+    }
+
+    fn dropped_total(&self) -> u64 {
+        self.lock().dropped_total
+    }
 }
 
 /// What the writer samples: the newest `at`, and the counts.
@@ -98,7 +221,7 @@ struct Steps {
 }
 
 pub struct Events {
-    tx: Mutex<Option<Sender<Msg>>>,
+    queue: Arc<Queue>,
     shared: Arc<Shared>,
     steps: Mutex<Steps>,
     writer: Mutex<Option<JoinHandle<()>>>,
@@ -197,11 +320,17 @@ fn tally_line(t: [u64; 5]) -> String {
     line("tally", vec![("repos", n(0)), ("files", n(1)), ("findings", n(2)), ("unchecked", n(3)), ("listed", n(4))])
 }
 
+/// The `dropped` event: `count` finding and note lines were left out of
+/// the stream because the reader had fallen behind (the report has them).
+fn dropped_line(count: u64) -> String {
+    line("dropped", vec![("count", J::Int(count as i64))])
+}
+
 /// The writer thread: queued lines in order, and every [`TICK`] the
 /// newest `at` and the tally when they changed, or when a step has gone
 /// [`BEAT`] without a line. A write that fails (the reader closed its end)
 /// stops the writing, never the scan.
-fn write_all(mut out: Box<dyn Write + Send>, rx: Receiver<Msg>, shared: Arc<Shared>, stopped: Sender<()>) {
+fn write_all(mut out: Box<dyn Write + Send>, queue: Arc<Queue>, shared: Arc<Shared>, stopped: Sender<()>) {
     let mut broken = false;
     // When the last line was written, for the heartbeat.
     let wrote = std::cell::Cell::new(Instant::now());
@@ -225,14 +354,29 @@ fn write_all(mut out: Box<dyn Write + Send>, rx: Receiver<Msg>, shared: Arc<Shar
         let mut p = shared.pending.lock().unwrap_or_else(|p| p.into_inner());
         if p.as_ref().is_some_and(|(step, _, _)| *step == open && open != 0) { p.take() } else { None }
     };
+    // Say how many lines were dropped since the last time, if any.
+    macro_rules! catch_up {
+        () => {
+            let n = queue.take_dropped();
+            if n > 0 {
+                put(&dropped_line(n));
+            }
+        };
+    }
     loop {
-        match rx.recv_timeout(TICK) {
-            Ok(Msg::Line(l)) => put(&l),
-            Ok(Msg::Begin(i, l)) => {
+        match queue.pop(TICK) {
+            Next::Msg(Msg::Event(l)) => put(&l),
+            Next::Msg(Msg::Line(l)) => {
+                catch_up!();
+                put(&l);
+            }
+            Next::Msg(Msg::Begin(i, l)) => {
+                catch_up!();
                 put(&l);
                 open = i;
             }
-            Ok(Msg::End(i, l)) => {
+            Next::Msg(Msg::End(i, l)) => {
+                catch_up!();
                 // A short step still says where it was, within the rate.
                 if last_at.elapsed() >= TICK
                     && let Some((step, path, what)) = take_at(i)
@@ -248,12 +392,17 @@ fn write_all(mut out: Box<dyn Write + Send>, rx: Receiver<Msg>, shared: Arc<Shar
                 put(&l);
                 open = 0;
             }
-            Ok(Msg::Done(l)) => {
+            Next::Msg(Msg::Done(l)) => {
+                catch_up!();
                 put(&l);
                 break;
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Next::Idle => {}
+            Next::Closed => break,
+        }
+        // Caught up: the reader has everything queued, so say what was dropped.
+        if queue.is_empty() {
+            catch_up!();
         }
         if tick.elapsed() >= TICK {
             tick = Instant::now();
@@ -282,11 +431,22 @@ fn at_line(shared: &Shared, step: usize, path: &Path, what: At) -> String {
 
 impl Events {
     /// Events written to `out`: the `start` line now, the rest as they come.
-    pub fn new(out: Box<dyn Write + Send>, mut list: Vec<Step>, paths: &[PathBuf]) -> Events {
+    pub fn new(out: Box<dyn Write + Send>, list: Vec<Step>, paths: &[PathBuf]) -> Events {
+        Events::with_limits(out, list, paths, MAX_PENDING, MAX_PENDING_BYTES)
+    }
+
+    /// As [`Events::new`], with the backlog caps given (lines, bytes).
+    fn with_limits(
+        out: Box<dyn Write + Send>,
+        mut list: Vec<Step>,
+        paths: &[PathBuf],
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Events {
         if !list.contains(&REPORT) {
             list.push(REPORT);
         }
-        let (tx, rx) = mpsc::channel();
+        let queue = Arc::new(Queue::new(max_events, max_bytes));
         let (stop_tx, stop_rx) = mpsc::channel();
         let shared = Arc::new(Shared { names: list.iter().map(|s| s.id).collect(), ..Default::default() });
         let first = line(
@@ -300,11 +460,12 @@ impl Events {
                 ),
             ],
         );
-        let _ = tx.send(Msg::Line(first));
+        queue.push(Msg::Line(first));
         let s = shared.clone();
-        let writer = std::thread::spawn(move || write_all(out, rx, s, stop_tx));
+        let q = queue.clone();
+        let writer = std::thread::spawn(move || write_all(out, q, s, stop_tx));
         Events {
-            tx: Mutex::new(Some(tx)),
+            queue,
             shared,
             steps: Mutex::new(Steps {
                 list,
@@ -323,9 +484,14 @@ impl Events {
     }
 
     fn send(&self, m: Msg) {
-        if let Some(tx) = self.tx.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            let _ = tx.send(m);
-        }
+        self.queue.push(m);
+    }
+
+    /// The most `finding` and `note` lines, and bytes of them, that ever
+    /// waited for the writer (tests: the backlog's high-water mark).
+    #[cfg(test)]
+    fn backlog_peak(&self) -> (usize, usize) {
+        self.queue.lock().peak
     }
 
     fn steps(&self) -> std::sync::MutexGuard<'_, Steps> {
@@ -371,7 +537,7 @@ impl Events {
         if self.steps().done {
             return;
         }
-        self.send(Msg::Line(line("note", vec![("text", text.into())])));
+        self.send(Msg::Event(line("note", vec![("text", text.into())])));
     }
 
     /// The last line: the open step ended, then `done` with the exit code
@@ -393,6 +559,8 @@ impl Events {
             fields.push(("ms", J::Int(self.started.elapsed().as_millis() as i64)));
             // The scan's id (the `scan` of `fix list --json`): null when it didn't finish.
             fields.push(("scan", s.outcome.map_or(J::Null, |(_, _, id)| J::Int(id))));
+            // Finding and note lines left out of the stream, in all.
+            fields.push(("dropped", J::Int(self.queue.dropped_total() as i64)));
             let error = error.map(str::to_string).or_else(|| s.panic.clone()).filter(|_| exit != 0);
             if let Some(e) = error {
                 fields.push(("error", e.as_str().into()));
@@ -400,7 +568,7 @@ impl Events {
             line("done", fields)
         };
         self.send(Msg::Done(done));
-        self.tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+        self.queue.close();
         let stopped = self.stopped.lock().unwrap_or_else(|p| p.into_inner()).take();
         if stopped.is_some_and(|rx| rx.recv_timeout(DRAIN).is_ok())
             && let Some(w) = self.writer.lock().unwrap_or_else(|p| p.into_inner()).take()
@@ -475,7 +643,7 @@ impl Watch for Events {
             s.findings += 1;
             self.shared.findings.fetch_add(1, Ordering::Relaxed);
         }
-        self.send(Msg::Line(finding_line(s.list[i].id, f)));
+        self.send(Msg::Event(finding_line(s.list[i].id, f)));
     }
 }
 

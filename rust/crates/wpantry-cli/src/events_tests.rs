@@ -9,6 +9,8 @@
 //!   the last path told, and every queued line counted;
 //! - a long read leaves a follower with nothing: the heartbeat tallies
 //!   written while a step is told nothing, and how far apart they are;
+//! - a stalled reader makes the backlog grow without bound: the peak backlog
+//!   against the caps, and written + dropped against what was sent;
 //! - a reader that closes early or stops reading holds the scan up: the
 //!   time the scan's calls take while the writer can't write.
 
@@ -212,7 +214,7 @@ fn every_event_has_its_fields() {
     );
     assert_eq!(of("note")[0]["text"], "a note");
     let done = &of("done")[0];
-    assert_eq!(keys(done), sorted(&["v", "event", "exit", "findings", "unchecked", "ms", "scan"]));
+    assert_eq!(keys(done), sorted(&["v", "event", "exit", "findings", "unchecked", "ms", "scan", "dropped"]));
     assert_eq!(pick(done, &["exit", "findings", "unchecked", "scan"]), serde_json::json!([1, 1, 0, 42]));
 }
 
@@ -435,4 +437,142 @@ fn a_quiet_step_still_beats() {
     assert!(in_a.len() >= 3, "{in_a:?}");
     assert!(in_a.len() <= 5, "faster than once a BEAT: {in_a:?}");
     assert!(in_a.iter().all(|l| l["listed"] == 7 && l["files"] == 0), "{in_a:?}");
+}
+
+/// A reader that blocks every write until [`Gated::release`]: a stalled
+/// stderr pipe that later drains.
+#[derive(Clone)]
+struct Gated {
+    kept: Kept,
+    open: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Gated {
+    fn new() -> Gated {
+        Gated { kept: Kept::default(), open: Arc::new((Mutex::new(false), std::sync::Condvar::new())) }
+    }
+    fn release(&self) {
+        *self.open.0.lock().unwrap() = true;
+        self.open.1.notify_all();
+    }
+}
+
+impl Write for Gated {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let mut open = self.open.0.lock().unwrap();
+        while !*open {
+            open = self.open.1.wait(open).unwrap();
+        }
+        drop(open);
+        self.kept.write(b)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What a flood left in the stream: (finding + note lines written, the sum
+/// of the `dropped` events' counts, the `dropped` events themselves).
+fn tally_flood(lines: &[Value]) -> (u64, u64, Vec<&Value>) {
+    let written = lines.iter().filter(|l| l["event"] == "finding" || l["event"] == "note").count() as u64;
+    let events: Vec<&Value> = lines.iter().filter(|l| l["event"] == "dropped").collect();
+    let counted = events.iter().map(|l| l["count"].as_u64().unwrap()).sum();
+    (written, counted, events)
+}
+
+/// Risk: while the reader is stalled the backlog keeps every finding (the
+/// five-second drain limit does not bound the scan's own memory). Oracle:
+/// the backlog's high-water mark against [`MAX_PENDING`] and
+/// [`MAX_PENDING_BYTES`]; once the reader drains, the stream is valid
+/// JSON Lines in the documented order, `dropped` events account for every
+/// line left out (written + dropped = sent), `done` totals them, and the
+/// scan's own counts still include the dropped findings. Known bad: with
+/// the caps removed the peak is the whole flood and the first assert fails.
+#[test]
+fn a_stalled_reader_bounds_the_backlog_and_says_what_was_dropped() {
+    let gate = Gated::new();
+    let ev = Events::new(Box::new(gate.clone()), vec![A, B], &[]);
+    let sent_findings = MAX_PENDING * 100;
+    let began = Instant::now();
+    ev.step("a");
+    for i in 0..sent_findings {
+        ev.finding(&Finding { kind: "project".into(), component: format!("c{i}"), ..Default::default() });
+    }
+    ev.note("while stalled");
+    // A step boundary while stalled: its structure is queued, not dropped.
+    ev.step("b");
+    ev.finding(&secret_finding());
+    let sent = sent_findings as u64 + 2;
+    assert!(began.elapsed() < Duration::from_secs(60), "the scan waited: {:?}", began.elapsed());
+    let (events, bytes) = ev.backlog_peak();
+    assert!(events <= MAX_PENDING && bytes <= MAX_PENDING_BYTES, "backlog {events} lines, {bytes} bytes");
+    assert_eq!(events, MAX_PENDING, "the flood never reached the cap, so the test proved nothing");
+    gate.release();
+    ev.step(REPORT.id);
+    ev.outcome(&[secret_finding()], 7);
+    ev.finish(0, None);
+    let lines = gate.kept.lines();
+    let names = order(&lines);
+    let (written, counted, events) = tally_flood(&lines);
+    assert!(!events.is_empty() && counted > 0, "no dropped event: {} lines", lines.len());
+    assert_eq!(written + counted, sent, "written {written} + dropped {counted} != sent {sent}");
+    for e in &events {
+        assert_eq!(keys(e), sorted(&["v", "event", "count"]));
+        assert!(e["count"].as_u64().unwrap() > 0);
+    }
+    assert_eq!(names.iter().filter(|n| *n == "step").count(), 6, "every step's begin and end: {names:?}");
+    let done = lines.last().unwrap();
+    assert_eq!((done["event"].as_str(), done["dropped"].as_u64()), (Some("done"), Some(counted)));
+    let end_a = lines.iter().find(|l| l["event"] == "step" && l["state"] == "end" && l["id"] == "a").unwrap();
+    assert_eq!(end_a["findings"], sent_findings, "the step counts what the scan found, not what was written");
+    // The tally the stream ends on is the scan's, whatever was dropped.
+    let tally = lines.iter().rfind(|l| l["event"] == "tally").unwrap();
+    assert_eq!(tally["findings"], sent_findings as u64 + 1);
+}
+
+/// Risk: the line cap alone leaves a few huge lines (notes) holding
+/// megabytes. Oracle: the byte high-water mark against
+/// [`MAX_PENDING_BYTES`] with notes far bigger than the cap divided by the
+/// line cap; written + dropped = sent.
+#[test]
+fn a_stalled_reader_is_bounded_in_bytes_too() {
+    let gate = Gated::new();
+    let ev = Events::new(Box::new(gate.clone()), vec![A], &[]);
+    let big = "n".repeat(8 << 10);
+    let sent = 5000u64;
+    ev.step("a");
+    for _ in 0..sent {
+        ev.note(&big);
+    }
+    let (events, bytes) = ev.backlog_peak();
+    assert!(bytes <= MAX_PENDING_BYTES, "backlog {bytes} bytes");
+    assert!(events < MAX_PENDING, "the line cap was hit first: {events}");
+    assert!(bytes > MAX_PENDING_BYTES - (16 << 10), "the byte cap was never reached: {bytes}");
+    gate.release();
+    ev.finish(0, None);
+    let lines = gate.kept.lines();
+    order(&lines);
+    let (written, counted, _) = tally_flood(&lines);
+    assert_eq!(written + counted, sent);
+    assert_eq!(lines.last().unwrap()["dropped"], counted);
+}
+
+/// Risk: the cap drops lines from a reader that keeps up, or the new
+/// event and field appear without an overflow. Oracle: a run well under the
+/// cap and read live has every finding, no `dropped` event, and `done`
+/// says 0.
+#[test]
+fn a_reader_that_keeps_up_loses_nothing_and_sees_no_dropped_event() {
+    let kept = Kept::default();
+    let ev = Events::new(Box::new(kept.clone()), vec![A], &[]);
+    ev.step("a");
+    for i in 0..200 {
+        ev.finding(&Finding { kind: "project".into(), component: format!("c{i}"), ..Default::default() });
+    }
+    ev.finish(0, None);
+    let lines = kept.lines();
+    order(&lines);
+    assert_eq!(lines.iter().filter(|l| l["event"] == "finding").count(), 200);
+    assert!(lines.iter().all(|l| l["event"] != "dropped"));
+    assert_eq!(lines.last().unwrap()["dropped"], 0);
 }

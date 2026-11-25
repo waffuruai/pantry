@@ -267,13 +267,14 @@ wpantry scan --json --events 2>events.jsonl >report.json
 {"v": 1, "event": "at", "step": "dependencies", "path": "/home/me/code/app/Cargo.lock", "kind": "file"}
 {"v": 1, "event": "finding", "step": "dependencies", "id": "F-3fa9c01b2e", "kind": "project", "severity": "CRITICAL", "status": "fail", "title": "…", "component": "smallvec", "location": "/home/me/code/app/Cargo.lock", "vuln_id": "CVE-2021-25900", "fix_cmd": "…", "fix_auto": false, "fix_provisional": true}
 {"v": 1, "event": "step", "id": "dependencies", "state": "end", "index": 3, "of": 11, "findings": 1, "unchecked": 0, "ms": 812}
-{"v": 1, "event": "done", "exit": 1, "findings": 1, "unchecked": 0, "ms": 9120, "scan": 42}
+{"v": 1, "event": "done", "exit": 1, "findings": 1, "unchecked": 0, "ms": 9120, "scan": 42, "dropped": 0}
 ```
 
 - `--events` never prompts (as `--no-input`) and draws no progress line. Check that `wpantry scan --help` lists it before passing it.
 - Ignore events and fields you don't know: new ones are added without changing `v`.
 - Inside a step, a line comes at least about once a second: when nothing else is sent, a `tally` with the same counts says the scan is still working (on a long read, or while it looks over a big tree before reading it).
 - A `finding` event is provisional: the report on stdout is the final word (an ignore file can still leave a finding out, and severities are filled in near the end).
+- A reader that falls behind never slows the scan: at most 4096 `finding` and `note` lines (4 MiB) wait for it, and the ones past that are left out of the stream and counted in a `dropped` event (`count`) once it catches up, and in `done.dropped`. The report has every finding.
 - A finding with a fix carries it: `fix_cmd` (the command or manual steps), `fix_auto` (whether `wpantry fix` runs it unattended) and `fix_provisional`. A provisional command can still change: at the end the plan takes one command per component, at the highest fixed version of all its findings, so act on those after `done` from `wpantry fix list --json` (its `scan` is `done.scan`). Manual steps that are not provisional can be shown at once.
 - Events carry what the report shows, never a file's contents or a secret.
 - If your program stops reading, the scan carries on and exits as it would have.

@@ -547,14 +547,14 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
 }
 
-fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, json: bool) -> Result<i32> {
     match action {
         "install" => {
             let every = schedule::Every::parse(every).expect("validated");
             let (h, m) = at.split_once(':').expect("validated");
             schedule::install(every, (h.parse().expect("validated"), m.parse().expect("validated")), dry_run)
         }
-        "status" => schedule::status(),
+        "status" => schedule::status(json),
         "uninstall" => schedule::uninstall(),
         _ => schedule::run(),
     }
@@ -634,7 +634,9 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 /// What `fix ID` does: the dry run, the yes, whether it may ask, the undo,
 /// and what a stopgap is told (`--bundle`, `--hours`).
 struct FixOne {
+    from_scan: Option<i64>,
     dry_run: bool,
+    json: bool,
     yes: bool,
     no_input: bool,
     undo: bool,
@@ -647,9 +649,21 @@ struct FixOne {
 /// need a person printed. Exit 1 when a step is left, a fix failed, or
 /// nothing is known for the id here.
 fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
-    let FixOne { dry_run, yes, no_input, undo, ref settings } = o;
+    let FixOne { from_scan, dry_run, json, yes, no_input, undo, ref settings } = o;
     use wpantry::remediation::mitigate::{self, Done, Mode};
+    // with no terminal to ask on, a --from-scan fix needs --yes (the
+    // parser already refuses --no-input without it). Usage error, exit 2,
+    // before the cache is read or anything runs.
+    if from_scan.is_some() && !yes && !dry_run && !std::io::stdin().is_terminal() {
+        eprintln!("wpantry: error: {}", args::FROM_SCAN_NEEDS_YES);
+        return Ok(EXIT_USAGE);
+    }
     let cache = Cache::open(None)?;
+    if let Some(expected) = from_scan
+        && wpantry::history::latest_scan(&cache)? != Some(expected)
+    {
+        return Err(wpantry::Error::Failed("A newer scan is available. Refresh and preview the fix again.".into()));
+    }
     // the id, its aliases, and the records that list it as one
     let mut ids: Vec<String> = vec![id.to_string()];
     {
@@ -679,6 +693,27 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
             }
         })
         .collect();
+    if from_scan.is_some()
+        && (findings.len() != 1
+            || !findings[0].fix_auto
+            || findings[0].fix_cmd.is_empty()
+            || findings[0].kind == "secret")
+    {
+        return Err(wpantry::Error::Failed("This finding has no automatic fix in the selected scan.".into()));
+    }
+    if let Some(scan) = from_scan
+        && dry_run
+        && json
+    {
+        let (commands, _, _) = remediation::plan(&findings);
+        let [command] = commands.as_slice() else {
+            return Err(wpantry::Error::Failed("This finding has no automatic fix in the selected scan.".into()));
+        };
+        // serde_json is only a dev-dependency here: the bin builds its JSON with J.
+        say(&obj([("schema", J::Int(SCHEMA)), ("scan", J::Int(scan)), ("command", command.as_str().into())]).dumps());
+        cache.close()?;
+        return Ok(EXIT_OK);
+    }
     // A committed secret is fixed at a terminal, step by step.
     if by_finding && findings.first().is_some_and(|f| f.kind == "secret") {
         cache.close()?;
@@ -726,7 +761,7 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
         for (cmd, ok) in &applied.ran {
             let targets: Vec<String> =
                 auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
-            wpantry::history::record_fix(&cache, None, cmd, "mitigate", *ok, &targets)?;
+            wpantry::history::record_fix(&cache, from_scan, cmd, "mitigate", *ok, &targets)?;
         }
         did_something = dry_run || !applied.ran.is_empty();
         if applied.status != 0 {
@@ -1371,19 +1406,21 @@ fn dispatch(cmd: Command) -> Result<i32> {
         },
         Command::Report(show) => cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now())),
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
-        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
+        Command::Schedule { action, every, at, dry_run, json } => cmd_schedule(&action, &every, &at, dry_run, json),
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
-        Command::Update { check, yes, no_input, offline, version } => {
-            update::run(update::Update { check, yes, no_input, offline, version })
+        Command::Update { check, json, yes, no_input, offline, version } => {
+            update::run(update::Update { check, json, yes, no_input, offline, version })
         }
-        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json } => match target {
+        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json, from_scan } => match target {
             Target::List => cmd_fix_list(json),
             Target::Next => cmd_fix_next(json),
             Target::Secret(id) => cmd_fix_secret(&id, dry_run, no_input),
             Target::Id(id) => cmd_mitigate(
                 &id,
                 FixOne {
+                    from_scan,
                     dry_run,
+                    json,
                     yes,
                     no_input,
                     undo,

@@ -210,6 +210,56 @@ fn excluding_personal_files_keeps_their_folders_out_of_the_file_pass() {
     drop(home);
 }
 
+/// Oracle: `scan --no-machine --no-personal-files` keeps
+/// Downloads, Desktop and Documents out of every walk: no repo under them
+/// is in scope, and a root that holds them (a home that is a git checkout)
+/// is walked without them, so no files-pass job reads a file there. Without
+/// the flag both are read. Known bad: before the fix the repo walk applied
+/// the flag only with the machine inventory, so the Documents repo was
+/// scanned.
+#[test]
+fn no_personal_files_keeps_documents_out_of_a_repo_only_scan() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    // A `.git` with a HEAD: an empty `.git` is not a repo.
+    let git = |d: &Path| {
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    };
+    for d in ["code/a", "Documents/b"] {
+        git(&h.join(d));
+    }
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.opts.no_malware = true;
+    s.opts.no_personal_files = true;
+    s.scope_repos();
+    let docs = h.join("Documents");
+    assert!(s.repos.iter().all(|(_, r)| !r.starts_with(&docs)), "{:?}", s.repos);
+    assert_eq!(s.repos.len(), 1, "{:?}", s.repos);
+    s.opts.no_personal_files = false;
+    s.scope_repos();
+    assert_eq!(s.repos.len(), 2, "without the flag Documents is walked: {:?}", s.repos);
+
+    // A home that is itself a checkout: one root, walked without Documents.
+    git(&h);
+    std::fs::write(docs.join("b/notes.txt"), "x").unwrap();
+    s.opts.no_personal_files = true;
+    s.scope_repos();
+    let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| r.clone()).collect();
+    assert_eq!(roots, std::slice::from_ref(&h));
+    let walked = |root: &Path| crate::utils::walk::walk(root, 6).into_iter().any(|(d, _)| d.starts_with(&docs));
+    assert!(!walked(&h), "Documents walked under --no-personal-files");
+    assert!(s.file_jobs().iter().all(|j| !j.root.starts_with(&docs)));
+    s.opts.no_personal_files = false;
+    s.scope_repos();
+    assert!(walked(&h), "the flag off walks it again");
+    crate::utils::walk::exclude_under(&h, Vec::new());
+    drop(home);
+}
+
 fn kev_entry(cve: &str, added: &str, vendor: &str, product: &str) -> kev::Entry {
     kev::Entry { cve: cve.into(), added: added.into(), vendor: vendor.into(), product: product.into() }
 }

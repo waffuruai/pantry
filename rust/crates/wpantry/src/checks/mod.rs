@@ -551,6 +551,29 @@ impl<'a> Scan<'a> {
         });
     }
 
+    /// An area the user chose to leave out of this scan (a scope flag such
+    /// as `--no-personal-files`): reported `unchecked` so it is never read
+    /// as clean, but marked `excluded`, so it doesn't count as a source
+    /// that failed. The note says it was skipped by the user's choice.
+    ///
+    /// ```ignore
+    /// scan.excluded("Safari settings", "--no-personal-files", "Include personal folders to check it.");
+    /// ```
+    pub fn excluded(&mut self, what: &str, flag: &str, how_to_include: &str) {
+        if self.findings.iter().any(|f| f.kind == "unchecked" && f.component == what) {
+            return;
+        }
+        self.add(Finding {
+            kind: "unchecked".into(),
+            component: what.into(),
+            vuln_id: "UNCHECKED".into(),
+            status: "warn".into(),
+            note: format!("Skipped by your choice ({flag}). {how_to_include}"),
+            excluded: true,
+            ..Default::default()
+        });
+    }
+
     /// `r`'s value, or `default` with the source reported unchecked; only
     /// an internal error (the cache, the filesystem) passes through.
     pub fn guard<T>(&mut self, what: &str, r: Result<T>, default: T) -> Result<T> {
@@ -611,6 +634,22 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
+    /// The repos in scope ([`repos::scan_scope`]), each walked without the
+    /// personal folders under `--no-personal-files`.
+    pub(crate) fn scope_repos(&mut self) {
+        let (log, note, status) = (self.log, self.note, self.status);
+        self.repos =
+            repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
+        // --no-personal-files keeps Downloads, Desktop and Documents out of
+        // every walk, on any scan: a repo or --path root that holds them (a
+        // home that is a git checkout, `--path ~` with no repo) is walked
+        // without them, so no files-pass, lockfile or malware job opens them.
+        for (_, root) in &self.repos {
+            let dirs = if self.opts.no_personal_files { repos::personal_under(&self.home, root) } else { Vec::new() };
+            crate::utils::walk::exclude_under(root, dirs);
+        }
+    }
+
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
         crate::utils::walk::forget_walks();
@@ -621,12 +660,11 @@ impl<'a> Scan<'a> {
         let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
         self.guard("EPSS (exploit predictions)", epss, 0)?;
         self.step(watch::REPOS);
-        let (log, note, status) = (self.log, self.note, self.status);
         match self.opts.paths.as_deref() {
             Some(paths) => paths.iter().for_each(|p| self.at(p, watch::At::Dir)),
             None => self.at(&self.home, watch::At::Dir),
         }
-        self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
+        self.scope_repos();
         self.watch.repos(self.repos.len());
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);

@@ -49,5 +49,8 @@ fn personal_files_are_explicitly_unchecked_in_background_mode() {
     assert_eq!(s.findings.len(), 1);
     assert_eq!(s.findings[0].kind, "unchecked");
     assert!(s.findings[0].note.contains("--no-personal-files"));
+    // The user's choice, not a failed source: it doesn't hold history back.
+    assert!(s.findings[0].excluded && !s.findings[0].is_gap(), "{:?}", s.findings[0]);
+    assert!(s.findings[0].note.starts_with("Skipped by your choice"), "{}", s.findings[0].note);
     assert!(s.counts.is_empty());
 }

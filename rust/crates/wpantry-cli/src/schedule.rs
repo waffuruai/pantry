@@ -1,7 +1,7 @@
 //! `wpantry schedule`: a `sync` and `scan` once a day (or an hour, week,
 //! month, quarter or year, each at the start of the period) run by
 //! the user's own scheduler, launchd on macOS, a systemd user timer on
-//! Linux, cron where there is no systemd. Never `fix`: a scheduled run
+//! Linux, cron where there is no systemd, or Windows Task Scheduler. Never `fix`: a scheduled run
 //! only refreshes the cache and records what it found
 //! (`$XDG_STATE_HOME/wpantry/last.json`, `schedule.log`), so `scan
 //! --offline` and the next interactive run have fresh answers.
@@ -15,6 +15,10 @@ use wpantry::utils::files::home;
 use wpantry::utils::process::Output;
 use wpantry::utils::process::exec;
 use wpantry::utils::process::which;
+
+mod calendar;
+mod program;
+mod windows;
 
 pub const LABEL: &str = "ai.waffuru.wpantry";
 
@@ -43,6 +47,17 @@ impl Every {
             "quarter" => Some(Every::Quarter),
             "year" => Some(Every::Year),
             _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Quarter => "quarter",
+            Self::Year => "year",
         }
     }
 
@@ -82,10 +97,13 @@ enum Backend {
     Launchd,
     Systemd,
     Cron,
+    Windows,
 }
 
 fn backend() -> Backend {
-    if cfg!(target_os = "macos") {
+    if cfg!(windows) {
+        Backend::Windows
+    } else if cfg!(target_os = "macos") {
         Backend::Launchd
     } else if which("systemctl").is_some() && std::env::var_os("XDG_RUNTIME_DIR").is_some() {
         Backend::Systemd
@@ -131,24 +149,93 @@ pub fn install(every: Every, at: (u32, u32), dry_run: bool) -> Result<i32> {
 }
 
 fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, run: Run) -> Result<i32> {
+    install_for(&program()?, every, at, dry_run, backend, run)
+}
+
+/// The launcher the launchd, systemd and cron jobs run instead of the
+/// scanner, when one sits beside it: an executable `wpantry-desktop` (a
+/// regular file or a link to one) in the scanner's folder, or in the folder
+/// of the file a `wpantry` link points at. A caller that ships the scanner
+/// puts it there to run the scheduled scan on its behalf: the job then runs
+/// `wpantry-desktop --scheduled-run` and nothing else. Without that file the
+/// job runs the scanner's `schedule run`. The Windows task has the same rule
+/// with `wpantry-desktop.exe` ([`windows::launcher`]).
+///
+/// ```ignore
+/// // /Applications/Some App.app/Contents/MacOS/wpantry, with wpantry-desktop beside it
+/// launcher(program) == Some("/Applications/Some App.app/Contents/MacOS/wpantry-desktop".into())
+/// ```
+fn launcher(program: &Path) -> Option<PathBuf> {
+    let real = program.canonicalize().unwrap_or_else(|_| program.to_path_buf());
+    [program, real.as_path()]
+        .into_iter()
+        .filter_map(|path| Some(path.parent()?.join("wpantry-desktop")))
+        .find(|path| runnable(path))
+}
+
+/// A file (links followed) with an execute bit set, the test PATH lookups use.
+fn runnable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// `install` for the scanner at `program`. Re-running it rewrites the job,
+/// so a launcher that appeared or went since the last install is picked up.
+fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, backend: Backend, run: Run) -> Result<i32> {
+    install_lines(program, every, at, dry_run, backend, run)?.iter().for_each(|line| say(line));
+    Ok(EXIT_OK)
+}
+
+/// What `install_for` does, returning the lines it then prints: the dry
+/// run's job text, or the line naming the scheduler and [`install_summary`].
+fn install_lines(
+    program: &Path,
+    every: Every,
+    at: (u32, u32),
+    dry_run: bool,
+    backend: Backend,
+    run: Run,
+) -> Result<Vec<String>> {
+    let mut said = Vec::new();
     let p = paths();
-    let program = program()?;
+    let program = program.to_path_buf();
     let (hour, minute) = at;
+    let launcher = job_launcher(backend, &program);
+    let launcher = launcher.as_deref();
+    if matches!(backend, Backend::Systemd | Backend::Cron)
+        && [Some(program.as_path()), launcher, Some(p.state.as_path())]
+            .into_iter()
+            .flatten()
+            .any(|path| path.to_string_lossy().contains(['\n', '\r']))
+    {
+        return Err(Error::Failed("A schedule path contains a line break.".into()));
+    }
     let text = match backend {
-        Backend::Launchd => plist(&program, every, hour, minute, &p),
+        Backend::Launchd => plist(&program, launcher, every, hour, minute, &p),
         Backend::Systemd => {
-            let (service, timer) = unit(&program, every, hour, minute, &p);
+            let (service, timer) = unit(&program, launcher, every, hour, minute, &p);
             format!("# wpantry.service\n{service}\n# wpantry.timer\n{timer}")
         }
-        Backend::Cron => cron_line(&program, every, hour, minute, &p),
+        Backend::Cron => cron_line(&program, launcher, every, hour, minute, &p),
+        Backend::Windows => windows::definition(&program, launcher, every, at, ""),
     };
     if dry_run {
         // Line by line: `say` drops control characters, newlines included.
-        text.lines().for_each(say);
-        return Ok(EXIT_OK);
+        return Ok(text.lines().map(str::to_owned).collect());
     }
     std::fs::create_dir_all(&p.state)?;
     match backend {
+        Backend::Windows => {
+            windows::install(&program, launcher, every, at, run)?;
+            said.push(format!("✓ scheduled {} with Windows Task Scheduler", calendar::description(every, at)));
+        }
         Backend::Launchd => {
             let plist_file = plist_path();
             std::fs::create_dir_all(plist_file.parent().expect("LaunchAgents has a parent"))?;
@@ -165,7 +252,7 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
             if out.code != Some(0) {
                 return Err(Error::Failed(format!("launchctl bootstrap failed: {}", out.stderr.trim())));
             }
-            say(&format!(
+            said.push(format!(
                 "✓ scheduled {} at {hour:02}:{minute:02} with launchd ({})",
                 word(every),
                 plist_file.display()
@@ -174,7 +261,7 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
         Backend::Systemd => {
             let dir = unit_dir();
             std::fs::create_dir_all(&dir)?;
-            let (service, timer) = unit(&program, every, hour, minute, &p);
+            let (service, timer) = unit(&program, launcher, every, hour, minute, &p);
             std::fs::write(dir.join("wpantry.service"), service)?;
             std::fs::write(dir.join("wpantry.timer"), timer)?;
             for args in [vec!["daemon-reload"], vec!["enable", "--now", "wpantry.timer"]] {
@@ -189,7 +276,7 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
                     )));
                 }
             }
-            say(&format!(
+            said.push(format!(
                 "✓ scheduled {} at {hour:02}:{minute:02} with a systemd user timer ({})",
                 word(every),
                 dir.display()
@@ -197,7 +284,7 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
         }
         Backend::Cron => {
             let current = crontab(run);
-            let kept: Vec<&str> = current.lines().filter(|l| !l.contains(CRON_MARK)).collect();
+            let kept: Vec<&str> = current.lines().filter(|l| !ours(l)).collect();
             let mut new = kept.join("\n");
             if !new.is_empty() {
                 new.push('\n');
@@ -205,33 +292,102 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
             new.push_str(&text);
             new.push('\n');
             set_crontab(&new, run)?;
-            say(&format!("✓ scheduled {} at {hour:02}:{minute:02} with cron", word(every)));
+            said.push(format!("✓ scheduled {} at {hour:02}:{minute:02} with cron", word(every)));
         }
     }
-    say(&format!(
-        "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
-        p.last.display(),
-        p.log.display()
-    ));
-    say("  It never fixes anything: run `wpantry fix` yourself.");
-    Ok(EXIT_OK)
+    said.extend(install_summary(launcher, &p));
+    Ok(said)
+}
+
+/// The launcher the job for `backend` runs instead of the scanner, if one
+/// sits beside it ([`launcher`] on macOS and Linux, [`windows::launcher`] on
+/// Windows). `install` makes this one lookup and uses it both for the job it
+/// registers and for what it says the job runs.
+fn job_launcher(backend: Backend, program: &Path) -> Option<PathBuf> {
+    match backend {
+        Backend::Windows => windows::launcher(program),
+        _ => launcher(program),
+    }
+}
+
+/// What `install` says the job runs, after the line naming the scheduler.
+///
+/// ```ignore
+/// install_summary(Some(Path::new("/opt/x/wpantry-desktop")), &paths())[0]
+///     == "  It runs /opt/x/wpantry-desktop --scheduled-run, the launcher beside the scanner."
+/// ```
+fn install_summary(launcher: Option<&Path>, p: &Paths) -> [String; 2] {
+    [
+        match launcher {
+            Some(launcher) => {
+                format!("  It runs {} --scheduled-run, the launcher beside the scanner.", launcher.display())
+            }
+            None => format!(
+                "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
+                p.last.display(),
+                p.log.display()
+            ),
+        },
+        "  It never fixes anything: run `wpantry fix` yourself.".to_string(),
+    ]
+}
+
+/// Whether launchd has the job loaded: `launchctl print` answers 0 only
+/// while it does. None when launchctl could not be asked, which is not
+/// proof either way.
+fn launchd_loaded(run: Run, target: &str) -> Option<bool> {
+    run(&["launchctl", "print", target].map(OsStr::new), Duration::from_secs(10)).ok().map(|out| out.code == Some(0))
 }
 
 pub fn uninstall() -> Result<i32> {
     uninstall_with(backend(), &real_run)
 }
 
+/// Remove the job, then check it is gone before saying so.
+///
+/// Oracle: "removed" is printed only when the scheduler's own state
+/// shows nothing left: the plist or unit files no longer exist, systemd
+/// no longer reports the timer active, the crontab no longer carries our
+/// mark, Windows no longer lists the task. Otherwise each leftover is named
+/// on stderr and the exit is 1, so a program that drives wpantry never treats
+/// a job that still runs as uninstalled.
 fn uninstall_with(backend: Backend, run: Run) -> Result<i32> {
-    match backend {
+    // What is still there after the removal, one line each.
+    let mut left: Vec<String> = Vec::new();
+    let what = match backend {
+        Backend::Windows => {
+            let removed = windows::uninstall(run)?;
+            if windows::query(run)?.is_some() {
+                left.push("the Windows task is still registered (schtasks /query lists it)".into());
+            }
+            removed.then_some("the Windows task")
+        }
         Backend::Launchd => {
-            let _ = run(
-                &[OsStr::new("launchctl"), OsStr::new("bootout"), OsStr::new(&format!("gui/{}/{LABEL}", uid(run)))],
-                Duration::from_secs(30),
-            );
+            let target = format!("gui/{}/{LABEL}", uid(run));
+            let _ =
+                run(&[OsStr::new("launchctl"), OsStr::new("bootout"), OsStr::new(&target)], Duration::from_secs(30));
             let f = plist_path();
             let was = f.exists();
-            let _ = std::fs::remove_file(&f);
-            say(if was { "✓ removed the launchd job" } else { "nothing scheduled" });
+            // The plist goes even when the bootout failed: launchd loads
+            // every plist in LaunchAgents at login, so one left behind would
+            // bring the job back after the log out this message suggests.
+            // `schedule status` asks launchd too, so the loaded job is still
+            // reported.
+            let removed = std::fs::remove_file(&f);
+            if f.exists() {
+                let why = removed.err().map(|e| format!(": {e}")).unwrap_or_default();
+                left.push(format!("{} is still there{why}", f.display()));
+            }
+            match launchd_loaded(run, &target) {
+                Some(false) => {}
+                Some(true) => left.push(format!(
+                    "launchd still has the job loaded. Log out and back in, or run `launchctl bootout {target}`, then run `wpantry schedule uninstall` again"
+                )),
+                None => left.push(format!(
+                    "could not ask launchd whether the job is gone. Run `launchctl print {target}`: if it lists the job, run `launchctl bootout {target}`"
+                )),
+            }
+            was.then_some("the launchd job")
         }
         Backend::Systemd => {
             let _ = run(
@@ -245,14 +401,28 @@ fn uninstall_with(backend: Backend, run: Run) -> Result<i32> {
                 Duration::from_secs(30),
             );
             let dir = unit_dir();
-            let was = dir.join("wpantry.timer").exists();
-            let _ = std::fs::remove_file(dir.join("wpantry.timer"));
-            let _ = std::fs::remove_file(dir.join("wpantry.service"));
-            say(if was { "✓ removed the systemd user timer" } else { "nothing scheduled" });
+            let was = dir.join("wpantry.timer").exists() || dir.join("wpantry.service").exists();
+            for name in ["wpantry.timer", "wpantry.service"] {
+                let f = dir.join(name);
+                let removed = std::fs::remove_file(&f);
+                if f.exists() {
+                    let why = removed.err().map(|e| format!(": {e}")).unwrap_or_default();
+                    left.push(format!("{} is still there{why}", f.display()));
+                }
+            }
+            let active = run(
+                &["systemctl", "--user", "is-active", "--quiet", "wpantry.timer"].map(OsStr::new),
+                Duration::from_secs(10),
+            )
+            .is_ok_and(|o| o.code == Some(0));
+            if active {
+                left.push("systemd still reports wpantry.timer active".into());
+            }
+            was.then_some("the systemd user timer")
         }
         Backend::Cron => {
             let current = crontab(run);
-            let kept: Vec<&str> = current.lines().filter(|l| !l.contains(CRON_MARK)).collect();
+            let kept: Vec<&str> = current.lines().filter(|l| !ours(l)).collect();
             let was = kept.len() != current.lines().count();
             if was {
                 let mut new = kept.join("\n");
@@ -260,25 +430,87 @@ fn uninstall_with(backend: Backend, run: Run) -> Result<i32> {
                     new.push('\n');
                 }
                 set_crontab(&new, run)?;
+                if crontab(run).lines().any(ours) {
+                    left.push("the crontab still has the wpantry line (crontab -l)".into());
+                }
             }
-            say(if was { "✓ removed the cron entry" } else { "nothing scheduled" });
+            was.then_some("the cron entry")
         }
+    };
+    if !left.is_empty() {
+        for l in &left {
+            eprintln!("{}", crate::style::clean(&format!("✗ not removed: {l}")));
+        }
+        return Ok(EXIT_FAIL);
     }
+    say(&what.map_or_else(|| "nothing scheduled".to_string(), |w| format!("✓ removed {w}")));
     Ok(EXIT_OK)
 }
 
-pub fn status() -> Result<i32> {
-    status_with(backend(), &real_run)
+pub fn status(json: bool) -> Result<i32> {
+    status_with(backend(), &real_run, json)
 }
 
-fn status_with(backend: Backend, run: Run) -> Result<i32> {
-    let p = paths();
-    let installed = match backend {
-        Backend::Launchd => plist_path().exists(),
-        Backend::Systemd => unit_dir().join("wpantry.timer").exists(),
-        Backend::Cron => crontab(run).contains(CRON_MARK),
+/// What the scheduler holds now: the job's definition (plist, timer unit,
+/// crontab line or task) and, on macOS, whether launchd has it loaded.
+fn current(backend: Backend, run: Run) -> Result<(Option<String>, Option<bool>)> {
+    let definition = match backend {
+        Backend::Launchd => calendar::read(&plist_path())?,
+        Backend::Systemd => calendar::read(&unit_dir().join("wpantry.timer"))?,
+        Backend::Cron => crontab(run).lines().find(|l| ours(l)).map(str::to_owned),
+        Backend::Windows => windows::query(run)?,
     };
-    say(&format!("scheduled: {}", if installed { "yes" } else { "no (wpantry schedule install)" }));
+    // launchd can hold a job whose plist is gone (an uninstall whose
+    // bootout failed): ask it, so "not installed" never hides a job that
+    // still runs.
+    let loaded = match backend {
+        Backend::Launchd => launchd_loaded(run, &format!("gui/{}/{LABEL}", uid(run))),
+        _ => None,
+    };
+    Ok((definition, loaded))
+}
+
+/// The executable the registered job runs, read from the job itself (the
+/// plist, `wpantry.service`, the crontab line or the task), never from
+/// [`program`]: another copy of `wpantry` may have
+/// registered it. `None` with no job, or when its program cannot be read.
+///
+/// ```ignore
+/// // A job another copy of wpantry registered, asked from this one:
+/// assert_eq!(job_program(Backend::Launchd, Some(&plist_text)), Some("/u/.local/bin/wpantry".into()));
+/// ```
+fn job_program(backend: Backend, definition: Option<&str>) -> Option<PathBuf> {
+    let definition = definition?;
+    match backend {
+        // The definition `current` reads is the timer; the program is in
+        // the service beside it.
+        Backend::Systemd => calendar::read(&unit_dir().join("wpantry.service"))
+            .ok()
+            .flatten()
+            .and_then(|text| program::read(backend, &text)),
+        _ => program::read(backend, definition),
+    }
+}
+
+fn status_with(backend: Backend, run: Run, json: bool) -> Result<i32> {
+    if json {
+        crate::emit(&status_json(backend, run)?);
+        return Ok(EXIT_OK);
+    }
+    let p = paths();
+    let (definition, loaded) = current(backend, run)?;
+    let installed = definition.is_some();
+    say(&format!(
+        "scheduled: {}",
+        match (installed, loaded) {
+            (true, _) => "yes",
+            (false, Some(true)) => "no, but launchd still has the job loaded (wpantry schedule uninstall)",
+            (false, _) => "no (wpantry schedule install)",
+        }
+    ));
+    if let Some(program) = job_program(backend, definition.as_deref()) {
+        say(&format!("runs: {}", program.display()));
+    }
     match std::fs::metadata(&p.last) {
         Ok(m) => {
             let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
@@ -305,6 +537,76 @@ fn status_with(backend: Backend, run: Run) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
+/// `schedule status --json`, as one JSON document.
+fn status_json(backend: Backend, run: Run) -> Result<String> {
+    let p = paths();
+    let (definition, loaded) = current(backend, run)?;
+    let definition = definition.as_deref();
+    let installed = definition.is_some();
+    let cadence = definition.and_then(|text| calendar::read_cadence(backend, text));
+    let last_run = calendar::read(&p.last)?
+        .and_then(|text| wpantry::utils::json::parse(text.as_bytes(), wpantry::utils::json::MAX_DOCUMENT).ok())
+        .filter(|report| report.get("findings").and_then(|value| value.as_array()).is_some())
+        .and_then(|_| std::fs::metadata(&p.last).ok()?.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|time| wpantry::history::stamp(time.as_secs_f64()));
+    // A scheduler tool that cannot be run makes `enabled` unknown (null),
+    // never a failed status: the same rule `loaded` follows.
+    let enabled = match (backend, definition) {
+        (_, None) => None,
+        (Backend::Windows, Some(text)) => Some(!windows::disabled(text)),
+        // The one `launchctl print` that `current` made: a second query
+        // could see a different answer, or fail where the first did not.
+        (Backend::Launchd, Some(_)) => loaded,
+        (Backend::Systemd, Some(_)) => run(
+            &["systemctl", "--user", "is-active", "--quiet", "wpantry.timer"].map(OsStr::new),
+            Duration::from_secs(5),
+        )
+        .ok()
+        .map(|out| out.code == Some(0)),
+        (Backend::Cron, Some(_)) => Some(true),
+    };
+    use wpantry::utils::json::{J, obj};
+    let string = |value: Option<String>| value.map_or(J::Null, J::from);
+    Ok(obj([
+        ("schema", J::Int(wpantry::SCHEMA)),
+        ("installed", installed.into()),
+        ("enabled", enabled.map_or(J::Null, J::from)),
+        ("loaded", loaded.map_or(J::Null, J::from)),
+        (
+            "backend",
+            match backend {
+                Backend::Launchd => "launchd",
+                Backend::Systemd => "systemd",
+                Backend::Cron => "cron",
+                Backend::Windows => "windows",
+            }
+            .into(),
+        ),
+        (
+            "interval",
+            string(cadence.map(|(every, at)| {
+                if every == Every::Hour && matches!(backend, Backend::Cron | Backend::Windows) {
+                    format!("Every hour at :{:02}", at.1)
+                } else {
+                    calendar::description(every, at)
+                }
+            })),
+        ),
+        ("every", string(cadence.map(|(every, _)| every.name().to_owned()))),
+        (
+            "at",
+            string(cadence.and_then(|(every, (h, m))| {
+                (every != Every::Hour || matches!(backend, Backend::Cron | Backend::Windows))
+                    .then(|| format!("{h:02}:{m:02}"))
+            })),
+        ),
+        ("last_run", string(last_run)),
+        ("program", string(job_program(backend, definition).map(|path| path.to_string_lossy().into_owned()))),
+    ])
+    .dumps())
+}
+
 /// What the scheduler runs: a sync, then a scan whose JSON goes to
 /// last.json and whose outcome goes to the log. One at a time.
 pub fn run() -> Result<i32> {
@@ -313,6 +615,26 @@ pub fn run() -> Result<i32> {
     let _lock = Lock::take(&p.lock)?;
     let program = program()?;
     run_with(&p, &program)
+}
+
+/// The scan a scheduled run makes. On macOS it adds `--no-personal-files`:
+/// an unattended run must not open Downloads, Desktop and Documents (that
+/// raises a privacy prompt nobody is there to answer), and it then records
+/// the same history scope as any machine scan with `--no-personal-files`
+/// (`machine:~;no-personal-files`). That scope also resolves the open
+/// `machine:~` exposures outside the personal folders that it no longer
+/// lists (what an earlier full scan recorded), and never one inside them
+/// (`wpantry::history`). Linux and Windows have no such prompt and keep the full scan.
+///
+/// ```ignore
+/// assert_eq!(scan_args(), ["scan", "--json", "--no-input", "--no-personal-files"]); // macOS
+/// ```
+pub(crate) fn scan_args() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["scan", "--json", "--no-input", "--no-personal-files"]
+    } else {
+        &["scan", "--json", "--no-input"]
+    }
 }
 
 /// `run` with the lock held: `program` is the wpantry to run.
@@ -327,11 +649,9 @@ fn run_with(p: &Paths, program: &Path) -> Result<i32> {
         &[("WPANTRY_NO_UPDATE_CHECK", "1")],
         Duration::from_secs(60 * 60),
     )?;
-    let check = exec(
-        &[program.as_os_str(), OsStr::new("scan"), OsStr::new("--json"), OsStr::new("--no-input")],
-        &[("WPANTRY_NO_UPDATE_CHECK", "1")],
-        Duration::from_secs(3 * 60 * 60),
-    )?;
+    let mut argv = vec![program.as_os_str()];
+    argv.extend(scan_args().iter().map(OsStr::new));
+    let check = exec(&argv, &[("WPANTRY_NO_UPDATE_CHECK", "1")], Duration::from_secs(3 * 60 * 60))?;
     let tmp = p.state.join(".last.json.tmp");
     std::fs::write(&tmp, &check.stdout)?;
     std::fs::rename(&tmp, &p.last)?;
@@ -445,8 +765,18 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// What a job runs: `launcher --scheduled-run` when there is one, else
+/// `program schedule run`.
+fn command<'a>(program: &'a Path, launcher: Option<&'a Path>) -> (&'a Path, &'static [&'static str]) {
+    match launcher {
+        Some(launcher) => (launcher, &["--scheduled-run"]),
+        None => (program, &["schedule", "run"]),
+    }
+}
+
 /// The launchd job: a calendar start, low priority, its output in the log.
-pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
+/// `ProgramArguments` is an array, so no shell reads the path.
+pub fn plist(program: &Path, launcher: Option<&Path>, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
     let when = if every == Every::Hour {
         "    <key>StartInterval</key>\n    <integer>3600</integer>\n".to_string()
     } else {
@@ -474,13 +804,18 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
         }
     };
     let out = xml_escape(&p.state.join("launchd.log").to_string_lossy());
+    let (run, args) = command(program, launcher);
+    let arguments: String = std::iter::once(run.to_string_lossy().into_owned())
+        .chain(args.iter().map(|a| a.to_string()))
+        .map(|a| format!("      <string>{}</string>\n", xml_escape(&a)))
+        .collect();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n\
 <dict>\n\
     <key>Label</key>\n    <string>{LABEL}</string>\n\
-    <key>ProgramArguments</key>\n    <array>\n      <string>{}</string>\n      <string>schedule</string>\n      <string>run</string>\n    </array>\n\
+    <key>ProgramArguments</key>\n    <array>\n{arguments}    </array>\n\
 {when}\
     <key>RunAtLoad</key>\n    <false/>\n\
     <key>ProcessType</key>\n    <string>Background</string>\n\
@@ -491,13 +826,22 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
     <key>EnvironmentVariables</key>\n    <dict>\n      <key>PATH</key>\n      <string>{}</string>\n    </dict>\n\
 </dict>\n\
 </plist>\n",
-        xml_escape(&program.to_string_lossy()),
         xml_escape(&std::env::var("PATH").unwrap_or_default()),
     )
 }
 
-/// The systemd user service and timer.
-pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> (String, String) {
+/// The systemd user service and timer. `ExecStart`'s program is one word:
+/// in double quotes when it has a space, a quote or a backslash, with `%%`
+/// for `%` and `$$` for `$`.
+pub fn unit(
+    program: &Path,
+    launcher: Option<&Path>,
+    every: Every,
+    hour: u32,
+    minute: u32,
+    p: &Paths,
+) -> (String, String) {
+    let (run, args) = command(program, launcher);
     let time = format!("{hour:02}:{minute:02}:00");
     let calendar = match every {
         Every::Hour => "hourly".to_string(),
@@ -508,11 +852,12 @@ pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> 
         Every::Year => format!("*-01-01 {time}"),
     };
     let service = format!(
-        "[Unit]\nDescription=wpantry: refresh the advisory cache and scan\n\n[Service]\nType=oneshot\nExecStart={} schedule run\nNice=10\nIOSchedulingClass=idle\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n",
-        program.display(),
-        std::env::var("PATH").unwrap_or_default(),
-        p.state.join("systemd.log").display(),
-        p.state.join("systemd.log").display(),
+        "[Unit]\nDescription=wpantry: refresh the advisory cache and scan\n\n[Service]\nType=oneshot\nExecStart={} {}\nNice=10\nIOSchedulingClass=idle\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n",
+        unit_word(&run.to_string_lossy().replace('$', "$$")),
+        args.join(" "),
+        unit_word(&std::env::var("PATH").unwrap_or_default()),
+        p.state.join("systemd.log").to_string_lossy().replace('%', "%%"),
+        p.state.join("systemd.log").to_string_lossy().replace('%', "%%"),
     );
     let timer = format!(
         "[Unit]\nDescription=wpantry {}\n\n[Timer]\nOnCalendar={calendar}\nPersistent=true\nRandomizedDelaySec=10m\n\n[Install]\nWantedBy=timers.target\n",
@@ -521,9 +866,46 @@ pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> 
     (service, timer)
 }
 
+fn unit_word(word: &str) -> String {
+    let word = word.replace('%', "%%");
+    if word.contains(|c: char| c.is_whitespace() || matches!(c, '"' | '\\' | '\'')) {
+        let escaped = word.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
+        format!("\"{escaped}\"")
+    } else {
+        word
+    }
+}
+
+fn cron_word(word: &str) -> String {
+    let escaped = if word.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"/-._".contains(&byte)) {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    };
+    // Cron processes % before handing the line to the shell, even inside quotes.
+    escaped.replace('%', r"\%")
+}
+
 const CRON_MARK: &str = "# wpantry schedule";
 
-pub fn cron_line(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
+/// Whether a crontab line is ours: it ends with [`CRON_MARK`] as its own
+/// word, as [`cron_line`] writes it. A line that only contains the mark's
+/// text (in a quoted argument, or as the start of a longer word such as
+/// `# wpantry schedules`) is the user's, and install, uninstall and status
+/// all leave it alone.
+///
+/// ```ignore
+/// assert!(ours("5 5 * * * nice -n 10 wpantry schedule run >> log 2>&1 # wpantry schedule"));
+/// assert!(!ours("0 2 * * * backup # wpantry schedules"));
+/// ```
+fn ours(line: &str) -> bool {
+    let line = line.trim_end();
+    line.strip_suffix(CRON_MARK).is_some_and(|before| before.is_empty() || before.ends_with(char::is_whitespace))
+}
+
+/// The crontab line; the shell reads it, so each path is a quoted word.
+pub fn cron_line(program: &Path, launcher: Option<&Path>, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
+    let (run, args) = command(program, launcher);
     let when = match every {
         Every::Hour => format!("{minute} * * * *"),
         Every::Day => format!("{minute} {hour} * * *"),
@@ -533,9 +915,10 @@ pub fn cron_line(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths
         Every::Year => format!("{minute} {hour} 1 1 *"),
     };
     format!(
-        "{when} nice -n 10 {} schedule run >> {} 2>&1 {CRON_MARK}",
-        program.display(),
-        p.state.join("cron.log").display()
+        "{when} nice -n 10 {} {} >> {} 2>&1 {CRON_MARK}",
+        cron_word(&run.to_string_lossy()),
+        args.join(" "),
+        cron_word(&p.state.join("cron.log").to_string_lossy())
     )
 }
 

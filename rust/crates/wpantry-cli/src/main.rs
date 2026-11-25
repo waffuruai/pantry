@@ -176,7 +176,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
     let first = scan(opts.clone(), quiet, &net, ev.map(|e| e as &dyn wpantry::checks::watch::Watch))?;
     // The scan is done; what it found is shown as `wpantry report` shows it.
     if let Some(ev) = ev {
-        ev.outcome(&first.findings);
+        ev.outcome(&first.findings, first.scan_id);
         wpantry::checks::watch::Watch::step(ev, events::REPORT.id);
     }
     let status = cmd_report(&a.show)?;

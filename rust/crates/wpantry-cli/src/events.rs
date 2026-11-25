@@ -28,6 +28,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use wpantry::checks::watch::{At, Step, Watch};
 use wpantry::finding::Finding;
+use wpantry::remediation;
 use wpantry::utils::json::{J, obj};
 
 /// The event format's version, `v` on every line.
@@ -89,8 +90,9 @@ struct Steps {
     unchecked: u64,
     /// `done` was queued: nothing more is.
     done: bool,
-    /// The final counts, once the scan has an outcome.
-    outcome: Option<(u64, u64)>,
+    /// The final counts and the scan's id (its row in the history, what
+    /// the `scan` that `fix list --json` reports), once the scan has an outcome.
+    outcome: Option<(u64, u64, i64)>,
     /// A panic's message, for `done`.
     panic: Option<String>,
 }
@@ -151,21 +153,43 @@ pub fn title(f: &Finding) -> String {
 
 /// A finding's event: only what the report shows of it (no file contents,
 /// no secret: a secret finding names its rule, file and line).
+///
+/// With a fix, also the step the plan would take for this finding alone
+/// (`fix_cmd`, the text the report's finding carries, mise's rule applied as
+/// [`remediation::steps`] applies it), whether `wpantry fix` runs it
+/// unattended (`fix_auto`), and `fix_provisional`: true when the plan made
+/// at the scan's end can replace it, which it does for a finding about a
+/// component version (one command per component, at the highest fixed
+/// version of all its findings, so an early finding's command can upgrade to
+/// less) and for a secret (one script per file, for all its hits). Without
+/// a fix the three fields are left out.
+///
+/// ```ignore
+/// // {"event": "finding", ..., "fix_cmd": "cargo update -p rustls --precise 0.23.18",
+/// //  "fix_auto": false, "fix_provisional": true}
+/// ```
 pub fn finding_line(step: &str, f: &Finding) -> String {
-    line(
-        "finding",
-        vec![
-            ("step", step.into()),
-            ("id", f.id().into()),
-            ("kind", f.kind.as_str().into()),
-            ("severity", f.severity.as_str().into()),
-            ("status", f.status.as_str().into()),
-            ("title", title(f).into()),
-            ("component", f.component.as_str().into()),
-            ("location", f.location.as_str().into()),
-            ("vuln_id", f.vuln_id.as_str().into()),
-        ],
-    )
+    let mut fields = vec![
+        ("step", step.into()),
+        ("id", f.id().into()),
+        ("kind", f.kind.as_str().into()),
+        ("severity", f.severity.as_str().into()),
+        ("status", f.status.as_str().into()),
+        ("title", title(f).into()),
+        ("component", f.component.as_str().into()),
+        ("location", f.location.as_str().into()),
+        ("vuln_id", f.vuln_id.as_str().into()),
+    ];
+    // The plan for this finding alone: no step when it has no fix.
+    if let Some(plan) = remediation::steps(std::slice::from_ref(f)).into_iter().next() {
+        let provisional = f.kind == "secret" || (!f.version.is_empty() && f.kind != "unchecked");
+        fields.extend([
+            ("fix_cmd", plan.cmd.as_str().into()),
+            ("fix_auto", plan.unattended.into()),
+            ("fix_provisional", provisional.into()),
+        ]);
+    }
+    line("finding", fields)
 }
 
 fn tally_line(t: [u64; 5]) -> String {
@@ -331,10 +355,15 @@ impl Events {
     }
 
     /// The scan's final counts (its findings after the ignore files,
-    /// and what couldn't be checked), for `done`.
-    pub fn outcome(&self, findings: &[Finding]) {
+    /// and what couldn't be checked) and its id in the history (`scan_id`,
+    /// the `scan` that `wpantry fix list --json` reports), for `done`.
+    ///
+    /// ```ignore
+    /// ev.outcome(&outcome.findings, outcome.scan_id); // done: {"findings": .., "unchecked": .., "scan": 42}
+    /// ```
+    pub fn outcome(&self, findings: &[Finding], scan_id: i64) {
         let unchecked = findings.iter().filter(|f| f.kind == "unchecked").count() as u64;
-        self.steps().outcome = Some((findings.len() as u64 - unchecked, unchecked));
+        self.steps().outcome = Some((findings.len() as u64 - unchecked, unchecked, scan_id));
     }
 
     /// A one-line note the scan would have printed on stderr.
@@ -358,10 +387,12 @@ impl Events {
             s.done = true;
             let mut fields = vec![("exit", J::Int(exit as i64))];
             match s.outcome {
-                Some((f, u)) => fields.extend([("findings", J::Int(f as i64)), ("unchecked", J::Int(u as i64))]),
+                Some((f, u, _)) => fields.extend([("findings", J::Int(f as i64)), ("unchecked", J::Int(u as i64))]),
                 None => fields.extend([("findings", J::Null), ("unchecked", J::Null)]),
             }
             fields.push(("ms", J::Int(self.started.elapsed().as_millis() as i64)));
+            // The scan's id (the `scan` of `fix list --json`): null when it didn't finish.
+            fields.push(("scan", s.outcome.map_or(J::Null, |(_, _, id)| J::Int(id))));
             let error = error.map(str::to_string).or_else(|| s.panic.clone()).filter(|_| exit != 0);
             if let Some(e) = error {
                 fields.push(("error", e.as_str().into()));

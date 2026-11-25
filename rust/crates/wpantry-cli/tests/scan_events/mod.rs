@@ -132,6 +132,27 @@ fn the_stream_follows_the_scan_and_agrees_with_the_report() {
     let secret = lines.iter().find(|l| l["event"] == "finding" && l["kind"] == "secret").expect("the token is found");
     assert_eq!(secret["step"], "file-secrets");
     assert_eq!(secret["status"], "fail");
+    // Each finding's fix is the report's: its command and whether `fix`
+    // runs it unattended, or no fix fields when the report has no command.
+    let by_id = |id: &Value| arr(&env["findings"]).iter().find(|f| f["id"] == *id).cloned().expect("reported");
+    let mut fixes = 0;
+    for told in lines.iter().filter(|l| l["event"] == "finding") {
+        let f = by_id(&told["id"]);
+        match told.get("fix_cmd") {
+            Some(cmd) => {
+                fixes += 1;
+                assert_eq!((cmd, &told["fix_auto"]), (&f["fix_cmd"], &f["fix_auto"]), "{told}");
+                assert!(told["fix_provisional"].is_boolean(), "{told}");
+            }
+            None => assert_eq!(f["fix_cmd"], "", "{told}"),
+        }
+    }
+    assert!(fixes > 0 && secret["fix_provisional"] == true, "the fixture has fixes to tell: {secret}");
+    // `done` names the scan the plan is read from: the one `fix list` reads.
+    let listed = t.run(&["fix", "list", "--json"]);
+    let plan: Value = serde_json::from_str(&listed.out).unwrap_or_else(|e| panic!("{e}: {}", listed.out));
+    assert!(done["scan"].as_i64().is_some_and(|id| id > 0), "{done}");
+    assert_eq!(done["scan"], plan["scan"], "{done}");
 
     // What it read is inside the folder, as absolute paths.
     let at: Vec<&Value> = lines.iter().filter(|l| l["event"] == "at").collect();
@@ -211,6 +232,10 @@ fn no_secret_reaches_the_events() {
     order(&lines);
     let told = lines.iter().filter(|l| l["event"] == "finding" && l["kind"] == "secret").count();
     assert!(told >= 40, "the scan found the secrets ({told} of {}): the check isn't vacuous", texts.len());
+    // Their fixes are in the stream too, so the check below covers `fix_cmd`.
+    let with_fix =
+        lines.iter().filter(|l| l["event"] == "finding" && l["kind"] == "secret" && l["fix_cmd"].is_string()).count();
+    assert_eq!(with_fix, told, "every secret event carries its fix");
     // Secret-shaped runs: 12 or more letters, digits and token punctuation,
     // with a digit and a letter in them.
     let mut leaked = Vec::new();

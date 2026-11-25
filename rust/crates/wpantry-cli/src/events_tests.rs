@@ -93,7 +93,7 @@ fn run(out: Box<dyn Write + Send>) -> Events {
     ev.at(Path::new("/scan/here"), At::Dir);
     std::thread::sleep(TICK * 2);
     ev.step(REPORT.id);
-    ev.outcome(&[secret_finding()]);
+    ev.outcome(&[secret_finding()], 42);
     ev.finish(1, None);
     ev
 }
@@ -192,16 +192,82 @@ fn every_event_has_its_fields() {
             "title",
             "component",
             "location",
-            "vuln_id"
+            "vuln_id",
+            "fix_cmd",
+            "fix_auto",
+            "fix_provisional"
         ])
     );
     assert_eq!(finding["id"], secret_finding().id());
     assert_eq!(finding["title"], "GitHub personal access token, in a file on this machine");
-    assert_eq!(of("finding")[1]["kind"], "unchecked");
+    assert_eq!(
+        pick(finding, &["fix_cmd", "fix_auto", "fix_provisional"]),
+        serde_json::json!(["Rotate it where it was issued", false, true])
+    );
+    let unchecked = &of("finding")[1];
+    assert_eq!(unchecked["kind"], "unchecked");
+    assert!(
+        unchecked.get("fix_cmd").is_none() && unchecked.get("fix_auto").is_none(),
+        "no fix, no fields: {unchecked}"
+    );
     assert_eq!(of("note")[0]["text"], "a note");
     let done = &of("done")[0];
-    assert_eq!(keys(done), sorted(&["v", "event", "exit", "findings", "unchecked", "ms"]));
-    assert_eq!(pick(done, &["exit", "findings", "unchecked"]), serde_json::json!([1, 1, 0]));
+    assert_eq!(keys(done), sorted(&["v", "event", "exit", "findings", "unchecked", "ms", "scan"]));
+    assert_eq!(pick(done, &["exit", "findings", "unchecked", "scan"]), serde_json::json!([1, 1, 0, 42]));
+}
+
+/// Oracle: a finding's `fix_cmd` and `fix_auto` are the step the plan
+/// (`remediation::steps`) gives that finding alone, so a caller acting on
+/// the event does what `wpantry fix` would for it: its own command, mise's
+/// manual rule instead of an upgrade of mise, nothing for a finding with no
+/// fix. `fix_provisional` is true exactly where the plan at the scan's end
+/// can replace the command: a component version (the highest fixed version
+/// of all its findings wins) and a secret (one script per file). Known bad:
+/// fields copied straight from the finding report mise's `brew upgrade mise`
+/// as unattended, which `wpantry fix` never runs.
+#[test]
+fn a_findings_fix_is_the_plans_step_for_it() {
+    let of = |f: &Finding| -> Value { serde_json::from_str(&finding_line("dependencies", f)).unwrap() };
+    let upgrade = Finding {
+        kind: "dependency".into(),
+        component: "rustls".into(),
+        version: "0.23.1".into(),
+        vuln_id: "GHSA-aaaa-bbbb-cccc".into(),
+        fixed: "0.23.18".into(),
+        fix_cmd: "cargo update -p rustls --precise 0.23.18".into(),
+        fix_auto: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        pick(&of(&upgrade), &["fix_cmd", "fix_auto", "fix_provisional"]),
+        serde_json::json!(["cargo update -p rustls --precise 0.23.18", true, true])
+    );
+    let mise = Finding {
+        kind: "component".into(),
+        component: "mise".into(),
+        version: "2026.1.0".into(),
+        fix_cmd: "brew upgrade mise".into(),
+        fix_auto: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        pick(&of(&mise), &["fix_cmd", "fix_auto"]),
+        serde_json::json!([wpantry::remediation::MISE_FIX, false]),
+        "only a person updates mise"
+    );
+    let setting = Finding {
+        kind: "setting".into(),
+        component: "Firewall".into(),
+        fix_cmd: "System Settings → Network → Firewall: turn it on".into(),
+        ..Default::default()
+    };
+    assert_eq!(pick(&of(&setting), &["fix_auto", "fix_provisional"]), serde_json::json!([false, false]));
+    let nothing = Finding { kind: "setting".into(), component: "Gatekeeper".into(), ..Default::default() };
+    let line = of(&nothing);
+    assert!(["fix_cmd", "fix_auto", "fix_provisional"].iter().all(|k| line.get(*k).is_none()), "{line}");
+    // The event is ASCII, so the arrow arrives escaped and reads back whole.
+    assert!(finding_line("machine", &setting).is_ascii());
+    assert_eq!(of(&setting)["fix_cmd"], "System Settings → Network → Firewall: turn it on");
 }
 
 /// Mutation guard: nothing is written after `done`, and a second
@@ -232,7 +298,7 @@ fn done_carries_the_error_and_no_counts_without_an_outcome() {
     order(&lines);
     let done = lines.last().unwrap();
     assert_eq!(done["error"], "the cache can't be opened");
-    assert!(done["findings"].is_null() && done["unchecked"].is_null());
+    assert!(done["findings"].is_null() && done["unchecked"].is_null() && done["scan"].is_null(), "{done}");
     // An error isn't reported on a run that exits 0.
     let kept = Kept::default();
     let ev = Events::new(Box::new(kept.clone()), vec![A], &[]);

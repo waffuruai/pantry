@@ -10,9 +10,15 @@
 //!
 //! [`folders`] says which folders; [`leave_out`] makes them off limits for
 //! the rest of a scan, to every walk, the repo search, the persistence
-//! checks and the PATH lookup ([`is_left_out`]). Paths are compared as
-//! spelled (and against the home folder's canonical spelling), never
-//! resolved: resolving would open them.
+//! checks and the PATH lookup ([`is_left_out`]). Paths are compared by
+//! their spelling (and against the home folder's canonical spelling), never
+//! resolved: resolving would open them. The spelling is normalised first:
+//! `.` and `..` are folded (`/h/Library/../Documents/x` is `/h/Documents/x`),
+//! and on macOS and Windows, whose volumes ignore case by default, names
+//! are compared without regard to case (`/h/documents/x` is in `Documents`).
+//! On Linux they are compared exactly: its file systems are case-sensitive,
+//! so `documents` is another folder than `Documents`. Unicode normalisation
+//! is not folded.
 //!
 //! ```
 //! use std::path::Path;
@@ -70,8 +76,8 @@ pub fn folders(home: &Path, mac: bool) -> Vec<PathBuf> {
 }
 
 /// What one [`Guard`] leaves out: the folders, and the paths the user named
-/// that stay in even when they lie inside one.
-type Entry = (u64, Vec<PathBuf>, Vec<PathBuf>);
+/// that stay in even when they lie inside one, each as its [`names`].
+type Entry = (u64, Vec<Vec<String>>, Vec<Vec<String>>);
 
 /// The folders left out now, one entry per [`Guard`] alive.
 static LEFT_OUT: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
@@ -93,7 +99,8 @@ pub fn leave_out(dirs: Vec<PathBuf>, named: Vec<PathBuf>) -> Guard {
         *n += 1;
         *n
     };
-    LEFT_OUT.write().expect("lock").push((id, dirs, named));
+    let norm = |paths: Vec<PathBuf>| paths.iter().map(|p| names(p)).collect::<Vec<_>>();
+    LEFT_OUT.write().expect("lock").push((id, norm(dirs), norm(named)));
     Guard(id)
 }
 
@@ -104,13 +111,24 @@ impl Drop for Guard {
 }
 
 /// Whether `path` is a left-out folder or lies inside one, by its
-/// spelling: nothing is opened or resolved to answer. A path at or under
-/// one the user named is not left out by that guard.
+/// spelling (see the module docs: `..` folded, case ignored on macOS and
+/// Windows): nothing is opened or resolved to answer. A path at or under one
+/// the user named is not left out by that guard.
 pub fn is_left_out(path: impl AsRef<Path>) -> bool {
-    let path = path.as_ref();
     let held = LEFT_OUT.read().expect("lock");
+    if held.is_empty() {
+        return false;
+    }
+    let path = names(path.as_ref());
     held.iter()
         .any(|(_, dirs, named)| dirs.iter().any(|d| path.starts_with(d)) && !named.iter().any(|n| path.starts_with(n)))
+}
+
+/// Whether `path` is `dir` or lies under it, compared the way
+/// [`is_left_out`] does: by spelling, `.` and `..` folded, and without
+/// regard to case on macOS and Windows.
+pub fn within(path: impl AsRef<Path>, dir: impl AsRef<Path>) -> bool {
+    names(path.as_ref()).starts_with(&names(dir.as_ref()))
 }
 
 /// Whether the symlink at `link` points into a left-out folder, read from
@@ -122,22 +140,27 @@ pub fn link_left_out(link: &Path) -> bool {
     }
     std::fs::read_link(link).is_ok_and(|target| {
         let target = if target.is_absolute() { target } else { link.parent().unwrap_or(link).join(target) };
-        is_left_out(lexical(&target))
+        is_left_out(target)
     })
 }
 
-/// `path` with `.` and `..` folded by spelling (`/h/code/../Documents` is
-/// `/h/Documents`), without asking the file system.
-fn lexical(path: &Path) -> PathBuf {
+/// The names in `path`, `.` and `..` folded by spelling (`/h/code/../Documents`
+/// is `/h/Documents`) without asking the file system, and lower-cased where the
+/// volumes ignore case (macOS, Windows): two spellings of one place give the
+/// same list, and a folder holds a path when its list starts the path's.
+fn names(path: &Path) -> Vec<String> {
     use std::path::Component;
-    let mut out = PathBuf::new();
+    let mut out: Vec<String> = Vec::new();
     for c in path.components() {
         match c {
             Component::CurDir => {}
             Component::ParentDir => {
                 out.pop();
             }
-            other => out.push(other),
+            other => {
+                let name = other.as_os_str().to_string_lossy();
+                out.push(if cfg!(any(target_os = "macos", windows)) { name.to_lowercase() } else { name.into_owned() });
+            }
         }
     }
     out

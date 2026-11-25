@@ -277,24 +277,35 @@ fn a_fix_program_that_is_not_found_says_where_wpantry_looked() {
     // mise and brew name their installers' places too.
     let m = run::run_bounded(&["wpantry-never-a-tool".to_string()], std::time::Duration::from_secs(1));
     assert!(m.exit_code.is_none() && !m.ok);
-    let places = crate::utils::process::tool_places("mise", std::path::Path::new("/h"), &|_| None);
-    assert_eq!(
-        places.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        ["/h/.local/bin/mise", "/opt/homebrew/bin/mise", "/usr/local/bin/mise", "/home/linuxbrew/.linuxbrew/bin/mise"]
-    );
+    // Per platform, compared as paths (the separator is the host's): the
+    // Unix places on Unix, and on Windows only what its installer sets.
+    use crate::utils::process::tool_places_on;
+    use std::path::{Path, PathBuf};
+    let h = Path::new("/h");
+    let at = |prefix: &str, name: &str| Path::new(prefix).join("bin").join(name);
+    let unix = |name: &str| -> Vec<PathBuf> {
+        ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"].iter().map(|p| at(p, name)).collect()
+    };
+    let none = |_: &str| None;
     let env = |k: &str| match k {
         "MISE_INSTALL_PATH" => Some("/opt/m/mise".into()),
         "HOMEBREW_PREFIX" => Some("/brew".into()),
         _ => None,
     };
-    let places = crate::utils::process::tool_places("mise", std::path::Path::new("/h"), &env);
-    assert_eq!(places[0].display().to_string(), "/opt/m/mise");
-    let brew = crate::utils::process::tool_places("brew", std::path::Path::new("/h"), &env);
-    assert_eq!(
-        brew.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        ["/brew/bin/brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew", "/home/linuxbrew/.linuxbrew/bin/brew"]
-    );
-    assert!(crate::utils::process::tool_places("jq", std::path::Path::new("/h"), &env).is_empty());
+    let mut want = vec![h.join(".local/bin/mise")];
+    want.extend(unix("mise"));
+    assert_eq!(tool_places_on(false, "mise", h, &none), want);
+    assert_eq!(tool_places_on(false, "mise", h, &env)[0], PathBuf::from("/opt/m/mise"));
+    let mut want = vec![Path::new("/brew").join("bin/brew")];
+    want.extend(unix("brew"));
+    assert_eq!(tool_places_on(false, "brew", h, &env), want);
+    assert!(tool_places_on(false, "jq", h, &env).is_empty());
+    // Windows: no Unix prefixes, no Homebrew, no ~/.local/bin.
+    assert!(tool_places_on(true, "mise", h, &none).is_empty());
+    assert_eq!(tool_places_on(true, "mise", h, &env), [PathBuf::from("/opt/m/mise")]);
+    assert!(tool_places_on(true, "brew", h, &env).is_empty());
+    // The host's own list is its platform's.
+    assert_eq!(crate::utils::process::tool_places("brew", h, &env), tool_places_on(cfg!(windows), "brew", h, &env));
 }
 
 /// A program only in an installer's place is found there when PATH lacks it:

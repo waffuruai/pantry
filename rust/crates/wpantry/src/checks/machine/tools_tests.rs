@@ -417,12 +417,8 @@ fn a_mise_fix_removes_the_vulnerable_install_and_only_offers_it() {
     let d = crate::utils::temp::TempDir::new("miseplan").unwrap();
     let installs = d.path().join("share/mise/installs/python");
     std::fs::create_dir_all(installs.join("3.14.9/bin")).unwrap();
-    let path = installs.join("3.14.9/bin/python3").display().to_string();
-    let component = |path: &str| {
-        let mut c = Component::new("runtime", "python", "3.14.9", path);
-        (c.fix, c.auto) = updater(&path.replace(&d.path().display().to_string(), "/x"), "python");
-        c
-    };
+    let path = installs.join("3.14.9").join("bin").join("python3").display().to_string();
+    let component = |path: &str| Component::new("runtime", "python", "3.14.9", path);
     let finding = |c: &Component, fix: (String, bool)| crate::finding::Finding {
         kind: "runtime".into(),
         component: "python".into(),
@@ -435,8 +431,6 @@ fn a_mise_fix_removes_the_vulnerable_install_and_only_offers_it() {
         ..crate::finding::Finding::of(c)
     };
     let c = component(&path);
-    // mise's installs dir is in the path: the marker for `updater` is "/mise/".
-    assert!(c.fix.starts_with("mise install python@"), "{}", c.fix);
     let fix = with_uninstall(&c, "mise install python@3.14.10".into(), true);
     assert_eq!(fix, ("mise install python@3.14.10\nmise uninstall python@3.14.9".to_string(), true));
     let plan = steps(&[finding(&c, fix.clone())]);

@@ -187,7 +187,24 @@ fn is_executable(p: &Path) -> bool {
 /// `/opt/homebrew/bin/brew`, `/usr/local/bin/brew` and
 /// `/home/linuxbrew/.linuxbrew/bin/brew`.
 pub fn tool_places(name: &str, home: &Path, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    tool_places_on(cfg!(windows), name, home, env)
+}
+
+/// [`tool_places`] for Windows (`windows`) or the Unixes. On Windows only
+/// `$MISE_INSTALL_PATH` is named: the Unix prefixes and `~/.local/bin` mean
+/// nothing there, there is no Homebrew, and mise's own Windows install
+/// locations are not documented well enough to guess (winget and scoop put
+/// it on PATH).
+pub fn tool_places_on(
+    windows: bool,
+    name: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
     let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if windows {
+        return if name == "mise" { set("MISE_INSTALL_PATH").into_iter().collect() } else { Vec::new() };
+    }
     let prefixes = ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
     let mut out = Vec::new();
     match name {

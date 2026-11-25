@@ -86,9 +86,11 @@ pub fn with_uninstall(c: &Component, cmd: String, auto: bool) -> (String, bool) 
         return (cmd, auto);
     };
     let marker = format!("/installs/{name}/");
-    let Some(at) = c.path.find(&marker).filter(|_| c.path.contains("/mise/")) else { return (cmd, auto) };
-    let dir = &c.path[..at + marker.len()];
-    let old = c.path[at + marker.len()..].split('/').next().unwrap_or("");
+    // Forward slashes whatever the platform wrote the path with.
+    let path = c.path.replace('\\', "/");
+    let Some(at) = path.find(&marker).filter(|_| path.contains("/mise/")) else { return (cmd, auto) };
+    let dir = &path[..at + marker.len()];
+    let old = path[at + marker.len()..].split('/').next().unwrap_or("");
     if old.is_empty() || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
         return (cmd, auto);
     }

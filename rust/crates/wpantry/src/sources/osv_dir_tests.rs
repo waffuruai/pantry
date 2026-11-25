@@ -705,3 +705,69 @@ fn a_local_record_cannot_join_two_upstream_advisories_into_one() {
     got.sort();
     assert_eq!(got, ["GHSA-aaaa-aaaa-aaaa", "GHSA-bbbb-bbbb-bbbb"], "both upstream findings stay");
 }
+
+/// The query plan SQLite gives `sql` with two bound parameters, as text.
+fn plan(c: &Cache, sql: &str) -> String {
+    let mut stmt = c.conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    let rows: Vec<String> =
+        stmt.query_map(["s", "i"], |r| r.get::<_, String>(3)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    rows.join(" | ")
+}
+
+/// Risk: the delete that runs once per record scans `local_vuln_names`,
+/// whose only index is on `name`, so a load is quadratic (measured by the
+/// reviewer: 5k records 1.5 s, 40k 82 s). Oracle: the plan SQLite gives the
+/// statement the load runs names the `(source, id)` index and does not scan
+/// the table; the plan is deterministic where a timing is not. The same
+/// index serves the join in `matching` and the delete in `forget`.
+#[test]
+fn the_per_record_delete_uses_the_source_and_id_index() {
+    let (_d, c) = cache();
+    let p = plan(&c, DELETE_NAMES);
+    assert!(p.contains("local_vuln_names_source_id"), "the (source, id) index is used: {p}");
+    assert!(!p.contains("SCAN"), "and the table is not scanned: {p}");
+    let join = plan(
+        &c,
+        "SELECT DISTINCT v.source, v.id, v.record FROM local_vuln_names n \
+         JOIN local_vulns v ON v.source = n.source AND v.id = n.id WHERE n.name = ? AND ? IS NOT NULL",
+    );
+    assert!(join.contains("local_vuln_names_name"), "a lookup by name keeps its own index: {join}");
+}
+
+/// Risk: a cache an earlier release made (the table and the name index, no
+/// `(source, id)` index) is left slow, because only a new database gets the
+/// index. Oracle: opening that file with the current build adds the index
+/// (the schema statements are `IF NOT EXISTS`, run on every open), keeps the
+/// rows, and the delete's plan then names it.
+#[test]
+fn a_cache_from_an_earlier_release_gains_the_index_and_keeps_its_rows() {
+    let d = TempDir::new("osv-dir-upgrade").unwrap();
+    let file = d.path().join("old.db");
+    {
+        let old = rusqlite::Connection::open(&file).unwrap();
+        old.execute_batch(
+            "CREATE TABLE local_vulns (source TEXT, id TEXT, file TEXT, aliases TEXT, url TEXT, record TEXT,
+               PRIMARY KEY (source, id));
+             CREATE TABLE local_vuln_names (source TEXT, id TEXT, name TEXT);
+             CREATE INDEX local_vuln_names_name ON local_vuln_names (name);
+             INSERT INTO local_vuln_names VALUES ('t-old', 'TEAM-1', 'acme-widget');",
+        )
+        .unwrap();
+        let before: i64 = old
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'local_vuln_names_source_id'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 0, "the fixture is the old shape");
+    }
+    let c = Cache::open(Some(&file)).unwrap();
+    let after: i64 = c
+        .conn
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'local_vuln_names_source_id'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, 1, "the index is added to an existing database");
+    let kept: String = c
+        .conn
+        .query_row("SELECT name FROM local_vuln_names WHERE source = 't-old' AND id = 'TEAM-1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "acme-widget");
+    assert!(plan(&c, DELETE_NAMES).contains("local_vuln_names_source_id"));
+}

@@ -43,7 +43,14 @@ CREATE TABLE IF NOT EXISTS local_vulns (
   PRIMARY KEY (source, id));
 CREATE TABLE IF NOT EXISTS local_vuln_names (source TEXT, id TEXT, name TEXT);
 CREATE INDEX IF NOT EXISTS local_vuln_names_name ON local_vuln_names (name);
+CREATE INDEX IF NOT EXISTS local_vuln_names_source_id ON local_vuln_names (source, id);
 ";
+
+/// Drops one record's names before it is stored again (a later file of the
+/// same id replaces an earlier one). It runs once per record, so it must be
+/// an index lookup on `local_vuln_names (source, id)`, not a scan of the
+/// table: a load of N records would cost N times the table.
+pub(crate) const DELETE_NAMES: &str = "DELETE FROM local_vuln_names WHERE source = ? AND id = ?";
 
 /// The most `*.json` files one source may have.
 pub const MAX_FILES: usize = 100_000;
@@ -228,7 +235,7 @@ fn replace(
         };
         drop(body);
         let id = str_at(&rec, "id");
-        cache.conn.execute("DELETE FROM local_vuln_names WHERE source = ? AND id = ?", params![s.id, id])?;
+        cache.conn.execute(DELETE_NAMES, params![s.id, id])?;
         cache.conn.execute(
             "INSERT OR REPLACE INTO local_vulns VALUES (?, ?, ?, ?, ?, ?)",
             params![

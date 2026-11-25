@@ -312,6 +312,16 @@ Usage: wpantry [options] [command]
 The vulnerabilities, malware and risky settings that apply to this computer and its repos. See
 README.md.
 
+Examples:
+  wpantry scan                this computer and every git repo under ~
+  wpantry scan project        the project in this directory and the runtimes it uses
+  wpantry scan project ~/app  the same, for another directory
+  wpantry scan --path ~/code  only the repos under a directory, with the machine inventory
+  wpantry report --html       the latest scan as one offline page
+  wpantry runs                the scans kept; report --run N shows one, prune N forgets one
+  wpantry fix --dry-run       what would be fixed; changes nothing
+  wpantry help scan           a command's options
+
 Options:
   -V, --version  print the version
   -h, --help     print this help
@@ -339,16 +349,6 @@ Commands:
   licenses                     Print the third-party licences built into wpantry
   help [command]               Print a command's help
 
-Examples:
-wpantry scan                     this computer and every git repo under ~
-wpantry scan project             the project in this directory and the runtimes it uses
-wpantry scan project ~/code/app  the same, for another directory
-wpantry scan --path ~/code       only the repos under a directory, with the machine inventory
-wpantry report --html            the latest scan as one offline page
-wpantry runs                     the scans kept; report --run N shows one, prune N forgets one
-wpantry fix --dry-run            what would be fixed; changes nothing
-wpantry help scan                a command's options
-
 Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 ```
 
@@ -361,31 +361,43 @@ Scan this computer and its repos, then show the report. Changes nothing.
 For one project and nothing else, wpantry scan project DIR. --path DIR narrows the repo checks to a
 directory and keeps the machine inventory; --no-machine leaves that out.
 
-Options:
-  --path <dir>              check only the repos and files at or under this directory, not
-                            Downloads, Desktop, Documents or temp; repeat it for more (default:
-                            every git repo under ~). The machine inventory still runs: for one
-                            project alone, scan project DIR
-  --no-machine              skip the machine inventory: repo checks only
-  --refresh                 ignore cached answers and ask every source again
-  --offline                 use only the local cache
-  --txt                     the report as plain text, without colour
-  --json                    the findings as JSON (schema 1)
-  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
-                            fix
-  --csv                     one table: the findings, or the log asked for
-  --md                      Markdown
-  --html                    one offline HTML page
-  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
-                            when it is a pipe or a file
-  --since <days>            how far back the logs go (default: 14)
-  --no-input                never prompt
-  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+Examples:
+  wpantry scan                    this computer and every git repo under ~
+  wpantry scan project ~/app      one project and the runtimes it uses, nothing else
+  wpantry scan --path ~/code      only the repos under a directory, with the machine inventory
+  wpantry scan --json --no-input  the findings as JSON, for tools and agents
+
+Scope options:
+  --path <dir>         check only the repos and files at or under this directory, not Downloads,
+                       Desktop, Documents or temp; repeat it for more (default: every git repo under
+                       ~). The machine inventory still runs: for one project alone, scan project DIR
+  --no-machine         skip the machine inventory: repo checks only
+  --licenses [file]    also check dependency licenses, against the file (default: licenses.toml in
+                       ~/.config/wpantry, else the bundled one)
+  --no-posture         skip the machine's security settings (FileVault, firewall, sharing, …)
+  --no-malware         skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                       and repo programs)
+  --deep               read everything in scope (slower): every file of the computer this user can
+                       read, ~ first (or each --path), for malware with every system's rules and for
+                       secrets; git history's files up to 256 MB with no time limit
+  --no-personal-files  leave Downloads, Desktop and Documents out of the document and malware
+                       passes, reported as not checked (for unattended runs)
+
+Report options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+
+Policy options:
   --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
                             secrets.yar in ~/.config/wpantry)
-  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
-                            in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
                             ~/.config/wpantry, else the bundled one)
   --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
@@ -394,24 +406,21 @@ Options:
                             ~/.config/wpantry)
   --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
                             suspect.toml in ~/.config/wpantry)
-  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
   --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
                             ~/.config/wpantry)
-  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
-                            items and repo programs)
-  --deep                    read everything in scope (slower): every file of the computer this user
-                            can read, ~ first (or each --path), for malware with every system's
-                            rules and for secrets; git history's files up to 256 MB with no time
-                            limit
-  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
-                            passes, reported as not checked (for unattended runs)
-  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
-                            MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
-  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
-                            WPANTRY_ALLOW_SLEEP=1)
-  -h, --help                print this help
+
+Options:
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Commands:
   project [options] [dir]  Scan one project and the runtimes it uses, nothing else of this computer
@@ -433,26 +442,21 @@ is read: no other runtime, app, setting or folder. Changes nothing.
 Arguments:
   dir  the project's directory (default: .)
 
-Options:
-  --refresh                 ignore cached answers and ask every source again
-  --offline                 use only the local cache
-  --txt                     the report as plain text, without colour
-  --json                    the findings as JSON (schema 1)
-  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
-                            fix
-  --csv                     one table: the findings, or the log asked for
-  --md                      Markdown
-  --html                    one offline HTML page
-  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
-                            when it is a pipe or a file
-  --since <days>            how far back the logs go (default: 14)
-  --no-input                never prompt
-  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+Report options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+
+Policy options:
   --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
                             secrets.yar in ~/.config/wpantry)
-  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
-                            in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
                             ~/.config/wpantry, else the bundled one)
   --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
@@ -461,19 +465,28 @@ Options:
                             ~/.config/wpantry)
   --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
                             suspect.toml in ~/.config/wpantry)
-  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
-                            items and repo programs)
-  --deep                    read everything in scope (slower): every file of the computer this user
-                            can read, ~ first (or each --path), for malware with every system's
-                            rules and for secrets; git history's files up to 256 MB with no time
-                            limit
-  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
-                            MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
-  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
-                            WPANTRY_ALLOW_SLEEP=1)
-  -h, --help                print this help
+
+Scope options:
+  --licenses [file]  also check dependency licenses, against the file (default: licenses.toml in
+                     ~/.config/wpantry, else the bundled one)
+  --no-malware       skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                     and repo programs)
+  --deep             read everything in scope (slower): every file of the computer this user can
+                     read, ~ first (or each --path), for malware with every system's rules and for
+                     secrets; git history's files up to 256 MB with no time limit
+
+Options:
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ```
@@ -498,36 +511,37 @@ Arguments:
           cve-2026-98432 (default: all)
   id      with secret: the finding id (F-…) of a committed secret
 
-Options:
-  --dry-run                 print what would run or be written; change nothing
-  --yes                     run the fixes and write the stopgaps without asking
-  --undo                    with an id: take wpantry's stopgap away once the real fix is installed
-  --bundle <file>           ca-trust: rewrite this PEM bundle instead of the system trust store
-  --hours <n>               extension-cooldown: the cooldown (default: 72)
-  --path <dir>              check only the repos and files at or under this directory, not
-                            Downloads, Desktop, Documents or temp; repeat it for more (default:
-                            every git repo under ~). The machine inventory still runs: for one
-                            project alone, scan project DIR
-  --no-machine              skip the machine inventory: repo checks only
-  --refresh                 ignore cached answers and ask every source again
-  --offline                 use only the local cache
-  --txt                     the report as plain text, without colour
-  --json                    the findings as JSON (schema 1)
-  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
-                            fix
-  --csv                     one table: the findings, or the log asked for
-  --md                      Markdown
-  --html                    one offline HTML page
-  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
-                            when it is a pipe or a file
-  --since <days>            how far back the logs go (default: 14)
-  --no-input                never prompt
-  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+Scope options:
+  --path <dir>         check only the repos and files at or under this directory, not Downloads,
+                       Desktop, Documents or temp; repeat it for more (default: every git repo under
+                       ~). The machine inventory still runs: for one project alone, scan project DIR
+  --no-machine         skip the machine inventory: repo checks only
+  --licenses [file]    also check dependency licenses, against the file (default: licenses.toml in
+                       ~/.config/wpantry, else the bundled one)
+  --no-posture         skip the machine's security settings (FileVault, firewall, sharing, …)
+  --no-malware         skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                       and repo programs)
+  --deep               read everything in scope (slower): every file of the computer this user can
+                       read, ~ first (or each --path), for malware with every system's rules and for
+                       secrets; git history's files up to 256 MB with no time limit
+  --no-personal-files  leave Downloads, Desktop and Documents out of the document and malware
+                       passes, reported as not checked (for unattended runs)
+
+Report options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+
+Policy options:
   --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
                             secrets.yar in ~/.config/wpantry)
-  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
-                            in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
                             ~/.config/wpantry, else the bundled one)
   --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
@@ -536,24 +550,26 @@ Options:
                             ~/.config/wpantry)
   --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
                             suspect.toml in ~/.config/wpantry)
-  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
   --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
                             ~/.config/wpantry)
-  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
-                            items and repo programs)
-  --deep                    read everything in scope (slower): every file of the computer this user
-                            can read, ~ first (or each --path), for malware with every system's
-                            rules and for secrets; git history's files up to 256 MB with no time
-                            limit
-  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
-                            passes, reported as not checked (for unattended runs)
-  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
-                            MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
-  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
-                            WPANTRY_ALLOW_SLEEP=1)
-  -h, --help                print this help
+
+Options:
+  --dry-run         print what would run or be written; change nothing
+  --yes             run the fixes and write the stopgaps without asking
+  --undo            with an id: take wpantry's stopgap away once the real fix is installed
+  --bundle <file>   ca-trust: rewrite this PEM bundle instead of the system trust store
+  --hours <n>       extension-cooldown: the cooldown (default: 72)
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage
 error, 3 internal error.
@@ -585,13 +601,13 @@ Options:
   -h, --help        print this help
 
 Parts:
-findings     the latest scan's findings
-history      the exposure, remediation and audit logs
-exposure     what applied, from first seen to resolved
-remediation  the fixes run: when, who, the result, the scan that verified them
-audit        every scan and event
-summary      one page for a CSO, an auditor or an insurer
-all          the findings, then every log
+  findings     the latest scan's findings
+  history      the exposure, remediation and audit logs
+  exposure     what applied, from first seen to resolved
+  remediation  the fixes run: when, who, the result, the scan that verified them
+  audit        every scan and event
+  summary      one page for a CSO, an auditor or an insurer
+  all          the findings, then every log
 
 Exit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3
 internal error.

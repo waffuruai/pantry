@@ -246,17 +246,37 @@ pub enum Parsed {
     Usage(String),
 }
 
-/// The commands most people came for, under the top-level help: what
-/// scans what, in the words someone would type.
-const EXAMPLES: &str = "Examples:
-wpantry scan                     this computer and every git repo under ~
-wpantry scan project             the project in this directory and the runtimes it uses
-wpantry scan project ~/code/app  the same, for another directory
-wpantry scan --path ~/code       only the repos under a directory, with the machine inventory
-wpantry report --html            the latest scan as one offline page
-wpantry runs                     the scans kept; report --run N shows one, prune N forgets one
-wpantry fix --dry-run            what would be fixed; changes nothing
-wpantry help scan                a command's options";
+/// The commands most people came for, first in the top-level help: what
+/// scans what, as lines to copy.
+const EXAMPLES: [(&str, &str); 8] = [
+    ("wpantry scan", "this computer and every git repo under ~"),
+    ("wpantry scan project", "the project in this directory and the runtimes it uses"),
+    ("wpantry scan project ~/app", "the same, for another directory"),
+    ("wpantry scan --path ~/code", "only the repos under a directory, with the machine inventory"),
+    ("wpantry report --html", "the latest scan as one offline page"),
+    ("wpantry runs", "the scans kept; report --run N shows one, prune N forgets one"),
+    ("wpantry fix --dry-run", "what would be fixed; changes nothing"),
+    ("wpantry help scan", "a command's options"),
+];
+
+/// The scan's options by what they are for, as the help groups them; the
+/// rest (how the run behaves) stay under `Options:`.
+const GROUPS: [(&str, &[&str]); 3] = [
+    ("Scope", &["path", "no-machine", "deep", "no-personal-files", "no-posture", "no-malware", "licenses"]),
+    ("Report", &["txt", "json", "jsonl", "csv", "md", "html", "out", "since"]),
+    (
+        "Policy",
+        &[
+            "secret-rules",
+            "install-scripts",
+            "repo-hooks",
+            "hooks-policy",
+            "suspect-policy",
+            "posture-policy",
+            "sources",
+        ],
+    ),
+];
 
 const EXIT_CODES: &str = "Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.";
 
@@ -323,7 +343,12 @@ fn scan_opts() -> Vec<Opt> {
         ),
         Opt::new("--allow-sleep", "let the Mac idle-sleep during the scan (kept awake otherwise; or WPANTRY_ALLOW_SLEEP=1)"),
     ]);
-    opts
+    opts.into_iter()
+        .map(|o| match GROUPS.iter().find(|(_, names)| names.contains(&o.name().as_str())) {
+            Some((group, _)) => o.group(group),
+            None => o,
+        })
+        .collect()
 }
 
 /// What a project scan never looks at, so `scan project` has no option for it.
@@ -337,12 +362,20 @@ fn project_opts() -> Vec<Opt> {
 
 /// The whole command line.
 pub fn program() -> Cli {
+    EXAMPLES.iter().fold(commands(), |cli, (command, what)| cli.example(command, what))
+}
+
+fn commands() -> Cli {
     Cli::new("wpantry")
         .version(wpantry::VERSION)
         .description("The vulnerabilities, malware and risky settings that apply to this computer and its repos. See README.md.")
-        .after_help(&format!("{EXAMPLES}\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."))
+        .after_help("Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.")
         .command(
             Cli::new("scan")
+                .example("wpantry scan", "this computer and every git repo under ~")
+                .example("wpantry scan project ~/app", "one project and the runtimes it uses, nothing else")
+                .example("wpantry scan --path ~/code", "only the repos under a directory, with the machine inventory")
+                .example("wpantry scan --json --no-input", "the findings as JSON, for tools and agents")
                 .description("Scan this computer and its repos, then show the report. Changes nothing.\nFor one project and nothing else, wpantry scan project DIR. --path DIR narrows the repo checks to a directory and keeps the machine inventory; --no-machine leaves that out.")
                 .summary("Scan this computer and its repos, or one project (scan project DIR), then show the report")
                 .opts(scan_opts())

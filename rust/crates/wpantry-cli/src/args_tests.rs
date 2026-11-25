@@ -535,23 +535,53 @@ fn runs_prune_and_one_run_reported() {
 #[test]
 fn the_top_level_help_says_how_one_directory_is_scanned() {
     let top = help(&[]);
-    // In the command list, and again as commands to copy, at the end where a terminal leaves them.
+    // In the command list, and first of all as commands to copy.
     assert!(top.contains("or one project (scan project DIR)"), "{top}");
-    let examples = top.split("\nExamples:\n").nth(1).expect("an Examples section");
-    for line in ["wpantry scan project ", "wpantry scan --path ~/code ", "wpantry runs ", "wpantry scan  "] {
+    let examples = top.split("\nExamples:\n").nth(1).expect("an Examples section").split("\n\n").next().unwrap();
+    assert!(top.find("\nExamples:\n") < top.find("\nCommands:\n"), "before the commands");
+    for line in ["  wpantry scan project ", "  wpantry scan --path ~/code ", "  wpantry runs ", "  wpantry scan  "] {
         assert!(examples.lines().any(|l| l.starts_with(line)), "{line}: {examples}");
     }
     assert!(top.trim_end().ends_with("3 internal error."), "the exit codes close it");
-    // Every example is a command line wpantry takes.
-    for line in examples.lines().take_while(|l| l.starts_with("wpantry ")) {
-        let words: Vec<&str> = line.split("  ").next().unwrap().split_whitespace().skip(1).collect();
+    // Every example is a command line wpantry takes, here and under scan.
+    let scan = help(&["scan"]);
+    let scans = scan.split("\nExamples:\n").nth(1).expect("scan's examples").split("\n\n").next().unwrap();
+    for line in examples.lines().chain(scans.lines()).filter(|l| l.starts_with("  wpantry ")) {
+        let words: Vec<&str> = line.trim_start().split("  ").next().unwrap().split_whitespace().skip(1).collect();
         match p(&words) {
             Parsed::Run(_) | Parsed::Help(_) => {}
             Parsed::Usage(text) if text.contains("no such directory") => {}
             other => panic!("{line}: {other:?}"),
         }
     }
-    let scan = help(&["scan"]);
     assert!(scan.contains("For one project and nothing else, wpantry scan project DIR."), "{scan}");
     assert!(scan.contains("The machine inventory still runs: for one"), "{scan}");
+}
+
+#[test]
+fn the_scans_options_read_by_what_they_are_for() {
+    let scan = help(&["scan"]);
+    let at = |title: &str| scan.find(&format!("\n{title}:\n")).unwrap_or_else(|| panic!("{title}: {scan}"));
+    let (scope, report, policy, rest) =
+        (at("Scope options"), at("Report options"), at("Policy options"), at("Options"));
+    assert!(scope < report && report < policy && policy < rest, "{scan}");
+    let under = |from: usize, to: usize, flag: &str| scan[from..to].contains(&format!("\n  {flag}"));
+    assert!(
+        under(scope, report, "--path <dir>") && under(scope, report, "--deep") && under(scope, report, "--no-machine")
+    );
+    assert!(under(report, policy, "--json") && under(report, policy, "-o, --out <file>"));
+    assert!(under(policy, rest, "--secret-rules <file>") && under(policy, rest, "--sources <file>"));
+    assert!(under(rest, scan.len(), "--offline") && under(rest, scan.len(), "-h, --help"));
+    // Every group names options the scan has, and a project scan keeps the groups it has options for.
+    let names: Vec<String> = scan_opts().iter().map(|o| o.name()).collect();
+    for (group, of) in GROUPS {
+        for name in of {
+            assert!(names.iter().any(|n| n == name), "{group}: {name}");
+        }
+    }
+    let project = help(&["scan", "project"]);
+    assert!(project.contains("\nScope options:\n") && !project.contains("--no-machine"), "{project}");
+    // report has the same formats, as plain options: it has nothing else to tell them from.
+    assert!(!help(&["report"]).contains("Report options"));
+    assert!(help(&["report"]).contains("\nParts:\n  findings     the latest scan's findings\n"));
 }

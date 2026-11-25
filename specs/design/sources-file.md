@@ -100,6 +100,7 @@ A source of the user's own may give `path = "..."` in place of `url`. It is read
    - A regular file is read up to the source's `max_bytes`.
    - For `yara` only, the path may be a folder. Its `*.yar` files are joined in byte-wise name order, each followed by a newline, as Elastic's rules are. `max_bytes` applies to the joined text.
    - In a folder, only regular files directly inside it are read: no subfolders, no symlinks followed, nothing outside the folder. A folder with no `*.yar` file is refused.
+   - YARA rules are read as UTF-8 text. A `.yar` file that is not UTF-8 (Latin-1, UTF-16) fails the source, naming the file, and the scan reports the source `unchecked`; nothing of the folder is used. A leading UTF-8 byte order mark is dropped.
    - A folder for any other kind is refused.
    - A `path` that is itself a symlink is resolved once; what it names must be a regular file or a folder.
 4. **The same guards as a download.**

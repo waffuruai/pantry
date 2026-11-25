@@ -154,7 +154,10 @@ fn fingerprint(s: &Source, found: &Found) -> String {
 /// Elastic's rules are joined, [`crate::checks::malware::yara`]).
 fn read(s: &Source, found: &Found) -> std::result::Result<Vec<u8>, String> {
     match found {
-        Found::File(f) => crate::utils::files::read_capped_bytes(f, s.max_bytes).map_err(|e| e.to_string()),
+        Found::File(f) => {
+            let body = crate::utils::files::read_capped_bytes(f, s.max_bytes).map_err(|e| e.to_string())?;
+            if s.kind == "yara" { rules_text(f, body) } else { Ok(body) }
+        }
         Found::Folder(dir, rules) => {
             let mut out = Vec::new();
             for f in rules {
@@ -172,12 +175,31 @@ fn read(s: &Source, found: &Found) -> std::result::Result<Vec<u8>, String> {
                     return Err(over(format!("{} is over the cap with the newline after it", f.display())));
                 };
                 let body = read_entry(f, room).map_err(over)?;
+                let body = rules_text(f, body).map_err(|e| format!("{}: {e}", dir.display()))?;
                 out.extend_from_slice(&body);
                 out.push(b'\n');
             }
             Ok(out)
         }
     }
+}
+
+/// A YARA rules file's bytes as the rules loader reads them, which is as
+/// UTF-8 text: a file that isn't (Latin-1, UTF-16) makes the whole joined
+/// copy unreadable, so its source would add no rules and say nothing. It is
+/// refused here, by name, so the source fails and is reported `unchecked`.
+/// A leading UTF-8 byte order mark (what some Windows editors write) is
+/// valid UTF-8 but is not YARA: the joined copy would carry it mid-file, so
+/// it is dropped.
+fn rules_text(f: &Path, body: Vec<u8>) -> std::result::Result<Vec<u8>, String> {
+    if let Err(e) = std::str::from_utf8(&body) {
+        return Err(format!(
+            "{} is not UTF-8 text (invalid byte at offset {}): YARA rules are read as UTF-8, so re-save it as UTF-8",
+            f.display(),
+            e.valid_up_to()
+        ));
+    }
+    Ok(body.strip_prefix(b"\xEF\xBB\xBF").map(<[u8]>::to_vec).unwrap_or(body))
 }
 
 /// One rule file of a folder, at most `max` bytes, refused when it is no

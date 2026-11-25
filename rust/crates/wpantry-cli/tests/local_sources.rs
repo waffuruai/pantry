@@ -235,3 +235,23 @@ fn an_added_file_cannot_turn_a_bundled_source_off_but_the_persons_own_can() {
         .map(|s| str_(&s["tier"]).to_string());
     assert_eq!(tier.as_deref(), Some("off"), "the person's own file keeps its power");
 }
+
+/// Risk: one Latin-1 rules file in the folder silently turns the whole
+/// source into zero rules, with the source looking checked. Oracle: the
+/// scan's JSON has an `unchecked` finding for the source naming the bad
+/// file, and the good file's rule found nothing (the source was not used).
+#[test]
+fn a_rules_folder_with_a_latin1_file_is_reported_unchecked_naming_the_file() {
+    let x = setup();
+    write(&x.rules.join("zz-latin1.yar"), b"rule Cafe { strings: $a = \"caf\xE9\" condition: $a }\n".as_slice());
+    let mine = x.t.home.join("mine.toml");
+    write(&mine, entry("team-rules", "yara", "yara", &x.rules, ""));
+    let r = scan(&x, &["--sources", s(&mine)]);
+    let env = r.json();
+    let missed = unchecked(&env);
+    assert!(
+        missed.iter().any(|m| m.contains("team-rules") && m.contains("zz-latin1.yar") && m.contains("UTF-8")),
+        "{missed:?}"
+    );
+    assert!(!marked(&hits(&env)), "the folder is not used at all, not half used");
+}

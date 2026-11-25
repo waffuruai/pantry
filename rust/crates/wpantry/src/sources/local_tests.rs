@@ -294,3 +294,79 @@ fn a_joined_folder_is_never_over_its_cap() {
         }
     }
 }
+
+/// Risk: one Latin-1 or UTF-16 `.yar` file in a folder makes the joined
+/// copy invalid UTF-8, the rules loader skips the whole copy, and the source
+/// contributes no rules with no error and nothing reported unchecked.
+/// Oracle: the source's outcome through `fetch_files` (what the scan turns
+/// into an `unchecked` finding): it fails naming the bad file, and no copy
+/// of the good file is left behind to look like a checked source.
+#[test]
+fn a_folder_with_a_latin1_or_utf16_rules_file_fails_naming_the_file() {
+    let bad: [(&str, &[u8]); 2] = [
+        ("latin1.yar", b"rule L { strings: $a = \"caf\xE9\" condition: $a }\n"),
+        // UTF-16LE with its byte order mark, as a Windows editor writes it.
+        ("utf16.yar", b"\xFF\xFEr\0u\0l\0e\0 \0U\0 \0{\0 \0c\0o\0n\0d\0i\0t\0i\0o\0n\0:\0 \0t\0r\0u\0e\0 \0}\0"),
+    ];
+    for (name, bytes) in bad {
+        let (d, c) = cache();
+        let rules = d.path().join("rules");
+        let folder = d.path().join("team");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a-good.yar"), "rule Good { condition: true }").unwrap();
+        std::fs::write(folder.join(name), bytes).unwrap();
+        let s = local(&format!("t-local-enc-{}", &name[..4]), "yara", "yara", &folder, "");
+        let failed =
+            fetch_files(&c, &Fake::offline(), &rules, std::slice::from_ref(&s), std::slice::from_ref(&s), true);
+        assert_eq!(failed.len(), 1, "{name}: the source is reported failed, not silently empty: {failed:?}");
+        assert_eq!(failed[0].0, s.id);
+        assert!(failed[0].1.contains(name) && failed[0].1.contains("UTF-8"), "{name}: {}", failed[0].1);
+        assert!(!rules.join(format!("user-{}.yar", s.id)).exists(), "{name}: no copy of the good file alone");
+    }
+}
+
+/// Risk: the same check missed for a single `.yar` file as the source.
+/// Oracle: the source fails naming the file; a non-YARA list is untouched
+/// (the check is for rules, which the rules loader reads as text).
+#[test]
+fn a_single_latin1_rules_file_fails_and_a_hosts_list_is_not_checked() {
+    let (d, c) = cache();
+    let rules = d.path().join("rules");
+    let file = d.path().join("one.yar");
+    std::fs::write(&file, b"rule L { strings: $a = \"caf\xE9\" condition: $a }").unwrap();
+    let s = local("t-local-enc-file", "yara", "yara", &file, "");
+    let failed = fetch_files(&c, &Fake::offline(), &rules, std::slice::from_ref(&s), std::slice::from_ref(&s), true);
+    assert!(failed.len() == 1 && failed[0].1.contains("one.yar"), "{failed:?}");
+    let list = d.path().join("hosts.txt");
+    std::fs::write(&list, b"caf\xE9.example\n").unwrap();
+    let h = local("t-local-enc-hosts", "hosts", "lines", &list, "");
+    assert!(
+        fetch_files(&c, &Fake::offline(), &rules, std::slice::from_ref(&h), std::slice::from_ref(&h), true).is_empty()
+    );
+}
+
+/// Decision (what the YARA loader tolerates): a UTF-8 byte order mark is
+/// valid UTF-8 but not YARA syntax,
+/// and in a joined folder it would sit mid-file. A file that starts with
+/// one is accepted and the mark dropped, so its rules compile.
+/// Oracle: the copy's bytes carry no mark, and the compiled rules of the
+/// copy (loaded the way a scan loads them) include the BOM file's rule.
+#[test]
+fn a_utf8_bom_rules_file_is_accepted_with_the_mark_dropped_and_compiles() {
+    let (d, c) = cache();
+    let rules = d.path().join("rules");
+    let folder = d.path().join("team");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("a.yar"), b"\xEF\xBB\xBFrule Bom_A { strings: $a = \"aaa\" condition: $a }").unwrap();
+    std::fs::write(folder.join("b.yar"), b"\xEF\xBB\xBFrule Bom_B { strings: $a = \"bbb\" condition: $a }").unwrap();
+    let s = local("t-local-bom", "yara", "yara", &folder, "");
+    assert!(
+        fetch_files(&c, &Fake::offline(), &rules, std::slice::from_ref(&s), std::slice::from_ref(&s), true).is_empty()
+    );
+    let copy = std::fs::read(rules.join("user-t-local-bom.yar")).unwrap();
+    assert!(!copy.windows(3).any(|w| w == b"\xEF\xBB\xBF"), "no byte order mark left in the copy");
+    let loaded = crate::checks::malware::yara::load(&rules, false, &|_: &str| true);
+    let names: Vec<&str> = loaded.rules.rules().iter().map(|r| r.name.as_str()).collect();
+    assert!(names.contains(&"Bom_A") && names.contains(&"Bom_B"), "both files' rules compile: {names:?}");
+    assert!(loaded.skipped.is_empty());
+}

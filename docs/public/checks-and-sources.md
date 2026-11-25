@@ -123,7 +123,7 @@ A source of yours on a host Pantry doesn't already ask, or one that sends anythi
 
 A source of yours may read a file or folder on this machine with `path` instead of `url`: rules copied to an offline machine, a team's own rule repository checked out next to your code, or lists a program that runs `wpantry` has already downloaded and checked. It works for YARA rules and for hash, host, file-name and indicator lists. A local source sends nothing and reaches no host, so it is used without asking, with `--no-input` and `--offline` too. Its `tier` still holds.
 
-A folder of YARA rules: every `.yar` file directly in it, joined in name order. Subfolders and symlinks inside it are not read.
+A folder of YARA rules: every `.yar` file directly in it, joined in name order. Subfolders and symlinks inside it are not read. Rules must be UTF-8 text: a file in another encoding (Latin-1, UTF-16) fails the source, which the scan reports as unchecked, naming the file.
 
 ```toml
 [[source]]

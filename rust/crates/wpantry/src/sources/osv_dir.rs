@@ -92,11 +92,7 @@ pub(crate) fn load_with(
     limits: Limits,
 ) -> Result<Vec<(String, String)>> {
     let keep: BTreeSet<&str> = declared.iter().filter(|s| is_osv_dir(s)).map(|s| s.id.as_str()).collect();
-    let held: Vec<String> = {
-        let mut stmt = cache.conn.prepare("SELECT DISTINCT source FROM local_vulns")?;
-        stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?
-    };
-    for gone in held.iter().filter(|h| !keep.contains(h.as_str())) {
+    for gone in loaded(cache)?.iter().filter(|h| !keep.contains(h.as_str())) {
         forget(cache, gone)?;
     }
     let mut failed = Vec::new();
@@ -118,6 +114,26 @@ fn fp_key(id: &str) -> String {
 
 fn counts_key(id: &str) -> String {
     format!("user:{id}_osv")
+}
+
+/// The ids of every source with anything left here: those with a record,
+/// and those with a counts key, which every successful load writes, a load
+/// of no valid records included (and a database an older build wrote may
+/// hold either without the other). The fingerprint key is not listed: rules
+/// folders write the same suffix.
+fn loaded(cache: &Cache) -> Result<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+    let mut stmt = cache.conn.prepare("SELECT DISTINCT source FROM local_vulns")?;
+    for id in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        ids.insert(id?);
+    }
+    let mut stmt = cache.conn.prepare("SELECT key FROM meta WHERE key LIKE 'user:%\\_osv' ESCAPE '\\'")?;
+    for key in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        if let Some(id) = key?.strip_prefix("user:").and_then(|k| k.strip_suffix("_osv")) {
+            ids.insert(id.to_string());
+        }
+    }
+    Ok(ids)
 }
 
 /// A source's records, its fingerprint and its counts, gone.

@@ -477,3 +477,88 @@ fn a_missing_folder_or_a_file_keeps_the_last_good_load() {
     assert_eq!(failed.len(), 1);
     assert!(failed[0].1.contains("not a folder"), "{failed:?}");
 }
+
+/// Every meta key a source's load leaves behind.
+fn keys_of(c: &Cache, id: &str) -> Vec<String> {
+    let mut stmt = c.conn.prepare("SELECT key FROM meta WHERE key LIKE ? ORDER BY key").unwrap();
+    stmt.query_map([format!("user:{id}_%")], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+}
+
+/// Risk: a source whose load succeeded with no valid records keeps its
+/// fingerprint and counts after it is taken out of the sources file,
+/// because removal only finds sources that hold a record. Oracle: after
+/// removal no meta key and no row for the id is left, read straight from
+/// the store; the other source's keys stay.
+#[test]
+fn removing_a_source_that_loaded_no_records_leaves_no_metadata() {
+    let (d, c) = cache();
+    let (empty, full) = (d.path().join("empty"), d.path().join("full"));
+    put(&empty, "junk.json", "{\"not\": \"an advisory\"}");
+    put(&full, "a.json", rec("FULL-1", "npm", "a", "1.0.1").to_string());
+    let (e, f) = (dir_source("t-dir-empty", &empty, ""), dir_source("t-dir-full", &full, ""));
+    let both = [e.clone(), f.clone()];
+    assert!(load(&c, &both, &both).unwrap().is_empty());
+    assert_eq!(counts(&c, "t-dir-empty").unwrap(), Some((0, 1)));
+    assert!(held(&c, "t-dir-empty").is_empty());
+    assert!(!keys_of(&c, "t-dir-empty").is_empty(), "a load with no records still writes keys");
+    assert!(load(&c, std::slice::from_ref(&f), std::slice::from_ref(&f)).unwrap().is_empty());
+    assert_eq!(keys_of(&c, "t-dir-empty"), Vec::<String>::new());
+    assert!(c.get("user:t-dir-empty_fp").unwrap().is_none());
+    assert!(c.get("user:t-dir-empty_osv").unwrap().is_none());
+    assert!(!keys_of(&c, "t-dir-full").is_empty());
+}
+
+/// Risk: the same id added again with its folder gone is treated as having
+/// a last good copy (a stale fingerprint), so the user is not told it
+/// could not be checked. Oracle: after removing an empty source and adding
+/// the id back with a missing folder, the load reports the id as failed
+/// with a reason, and records the error.
+#[test]
+fn an_empty_source_removed_and_added_again_with_its_folder_gone_is_reported() {
+    let (d, c) = cache();
+    let dir = d.path().join("advisories");
+    put(&dir, "junk.json", "[]");
+    let s = dir_source("t-dir-readd-empty", &dir, "");
+    assert!(run(&c, &s).is_empty());
+    assert!(load(&c, &[], &[]).unwrap().is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+    let failed = run(&c, &s);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].0, "t-dir-readd-empty");
+    assert!(fetch::last_error(&s.id).is_some());
+}
+
+/// Risk: the fix breaks the ordinary case. Oracle: a source with records,
+/// removed and added again with its folder gone, is reported and holds no
+/// records, where before the removal it was kept as the last good load.
+#[test]
+fn a_source_with_records_removed_and_added_again_with_its_folder_gone_is_reported() {
+    let (d, c) = cache();
+    let dir = d.path().join("advisories");
+    put(&dir, "a.json", rec("TEAM-1", "npm", "a", "1.0.1").to_string());
+    let s = dir_source("t-dir-readd-full", &dir, "");
+    assert!(run(&c, &s).is_empty());
+    assert_eq!(held(&c, "t-dir-readd-full"), ["TEAM-1"]);
+    assert!(load(&c, &[], &[]).unwrap().is_empty());
+    assert!(held(&c, "t-dir-readd-full").is_empty());
+    assert!(keys_of(&c, "t-dir-readd-full").is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+    let failed = run(&c, &s);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(held(&c, "t-dir-readd-full").is_empty());
+}
+
+/// Risk: a database an earlier build wrote (metadata for an empty load, no
+/// records) is never cleaned. Oracle: with those keys written directly and
+/// the source not configured, a load deletes them, and a rules folder's
+/// fingerprint key for another id is untouched.
+#[test]
+fn stale_metadata_with_no_records_is_cleaned_when_the_source_is_not_configured() {
+    let (_d, c) = cache();
+    c.set("user:t-dir-stale_fp", "abc 0").unwrap();
+    c.set("user:t-dir-stale_osv", "0 0").unwrap();
+    c.set("user:t-rules-other_fp", "def 0").unwrap();
+    assert!(load(&c, &[], &[]).unwrap().is_empty());
+    assert!(keys_of(&c, "t-dir-stale").is_empty());
+    assert_eq!(c.get("user:t-rules-other_fp").unwrap().as_deref(), Some("def 0"));
+}

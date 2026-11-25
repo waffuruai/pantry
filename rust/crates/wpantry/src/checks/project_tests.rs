@@ -272,7 +272,8 @@ fn a_project_scan_checks_the_runtimes_it_uses_and_no_other() {
     assert!(s.counts.contains(&("project runtimes".to_string(), 2)));
     let mut got = testing::kinds(&s);
     got.sort();
-    let node18 = format!("node 18 ({})", crate::utils::files::short(&root.join("web/.nvmrc").to_string_lossy()));
+    let node18 =
+        format!("node 18 ({})", crate::utils::files::short(&root.join("web").join(".nvmrc").to_string_lossy()));
     assert_eq!(
         got,
         [

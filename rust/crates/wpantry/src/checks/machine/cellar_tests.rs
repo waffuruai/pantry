@@ -89,6 +89,8 @@ fn a_cellar_go_is_also_its_toolchain() {
 /// someone would type, and the one tool that owns each copy: mise's brew:
 /// engine leaves an `installs/brew-<formula>` folder; Homebrew's own prefix
 /// has `bin/brew`. Nothing runs: only files are laid out in a temp dir.
+// Homebrew runs on macOS and Linux only.
+#[cfg(unix)]
 #[test]
 fn the_step_says_what_to_run_and_who_owns_the_copy() {
     let d = crate::utils::temp::TempDir::new("step").unwrap();
@@ -128,6 +130,8 @@ fn the_step_says_what_to_run_and_who_owns_the_copy() {
 
 /// The Cellar scan's components carry the step: an inventory with `bin/brew`
 /// beside the Cellar is fixed with that brew, automatically.
+// Homebrew runs on macOS and Linux only.
+#[cfg(unix)]
 #[test]
 fn a_cellar_formula_beside_its_brew_is_an_automatic_fix() {
     let d = crate::utils::temp::TempDir::new("cellar-brew").unwrap();
@@ -145,6 +149,8 @@ fn a_cellar_formula_beside_its_brew_is_an_automatic_fix() {
 /// own receipt. A keg whose `INSTALL_RECEIPT.json` names a `homebrew_version`
 /// is Homebrew's, whatever PATH this scan had and whatever mise has beside it;
 /// one with no such version (mise's engine writes none) is not claimed.
+// Homebrew runs on macOS and Linux only.
+#[cfg(unix)]
 #[test]
 fn a_keg_with_a_homebrew_receipt_is_never_poured_without_brew() {
     let d = crate::utils::temp::TempDir::new("receipt").unwrap();
@@ -172,4 +178,23 @@ fn a_keg_with_a_homebrew_receipt_is_never_poured_without_brew() {
     let ssl = inv.components.iter().find(|c| c.name == "openssl").unwrap();
     assert_eq!(ssl.fix, format!("{} upgrade openssl@3", brew.display()));
     assert!(ssl.auto);
+}
+
+/// Homebrew has no Windows build, and the Windows scan never reads a Cellar.
+/// Even so, nothing here may offer a Windows path as its `brew`: there is no
+/// Cellar there (whatever HOMEBREW_CELLAR says), and the step never names a
+/// `bin/brew` beside one. Runs on every platform; it asserts only on Windows.
+#[test]
+fn windows_has_no_cellar_and_never_a_brew_step() {
+    if cfg!(windows) {
+        assert_eq!(find_cellar(), None);
+        assert!(inventory().is_none());
+        let d = crate::utils::temp::TempDir::new("winbrew").unwrap();
+        let cellar = d.path().join("prefix").join("Cellar");
+        std::fs::create_dir_all(cellar.join("openssl@3").join("3.5.9")).unwrap();
+        std::fs::create_dir_all(d.path().join("prefix").join("bin")).unwrap();
+        std::fs::write(d.path().join("prefix").join("bin").join("brew"), "").unwrap();
+        let (step, auto) = upgrade_step("openssl@3", &cellar, &d.path().join("mise"));
+        assert!(!auto && !step.contains("bin/brew") && !step.contains("bin\\brew"), "{step}");
+    }
 }

@@ -61,6 +61,10 @@ pub fn version_of(dir: &str) -> &str {
 /// The Cellar to read: HOMEBREW_CELLAR, else HOMEBREW_PREFIX's, else the
 /// first of the standard prefixes that has one.
 pub fn find_cellar() -> Option<PathBuf> {
+    // Homebrew runs on macOS and Linux only; a stray HOMEBREW_CELLAR is not a Cellar on Windows.
+    if cfg!(windows) {
+        return None;
+    }
     find_cellar_from(std::env::var_os("HOMEBREW_CELLAR"), std::env::var_os("HOMEBREW_PREFIX"), STANDARD_CELLARS)
 }
 
@@ -189,7 +193,8 @@ pub fn upgrade_step(formula: &str, cellar: &Path, mise_installs: &Path) -> (Stri
     if !receipt && mise_installs.join(format!("brew-{formula}")).is_dir() {
         return (format!("mise upgrade brew:{formula}"), false);
     }
-    let brew = cellar.parent().map(|p| p.join("bin/brew")).filter(|b| b.is_file());
+    // Homebrew runs on macOS and Linux only: no Windows path is ever offered as its brew.
+    let brew = cellar.parent().map(|p| p.join("bin/brew")).filter(|b| !cfg!(windows) && b.is_file());
     if let Some(brew) = brew {
         let brew = brew.to_string_lossy().into_owned();
         let plain = brew.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@".contains(c));

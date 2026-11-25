@@ -2400,7 +2400,7 @@ fn ignore_in_a_repo_leaves_out_one_finding_and_remove_brings_it_back() {
         json!(["repo", "not reachable", target])
     );
     assert_eq!(events[0]["detail"]["finding"]["vuln_id"], "CVE-2026-7");
-    assert!(str_(&events[0]["detail"]["file"]).ends_with("/app/.pantryignore"));
+    assert!(Path::new(str_(&events[0]["detail"]["file"])).ends_with("app/.pantryignore"));
     assert!(t.run(&["report", "audit", "--md"]).out.contains("| ignore |"), "the Markdown audit lists them too");
 }
 

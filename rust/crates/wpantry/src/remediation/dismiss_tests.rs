@@ -291,7 +291,7 @@ fn every_action_is_logged_with_the_finding_scope_file_and_reason() {
         (a["scope"].clone(), a["reason"].clone(), a["finding_id"].clone()),
         ("repo".into(), "not reachable".into(), f.id().into())
     );
-    assert!(a["file"].as_str().unwrap().ends_with("/app/.pantryignore"), "{}", a["file"]);
+    assert!(Path::new(a["file"].as_str().unwrap()).ends_with("app/.pantryignore"), "{}", a["file"]);
     assert_eq!(r["rules"], a["rules"], "the remove names the rules the add wrote");
     assert_eq!((r["scope"].clone(), r["file"].clone()), (a["scope"].clone(), a["file"].clone()));
     // The audit report carries them, with the scans.

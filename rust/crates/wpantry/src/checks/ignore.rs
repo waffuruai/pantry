@@ -468,7 +468,11 @@ fn in_repo<'a, 'r>(repos: &'a [InScope<'r>], place: &str, home: &Path) -> Option
         }
     }
     let p = absolute(place, home)?;
-    repos.iter().find_map(|r| p.strip_prefix(r.root).ok().map(|rel| (r, joined(rel))))
+    // A verbatim (`\\?\`) root, as a canonical Windows path has, names the same folder.
+    repos.iter().find_map(|r| {
+        let root = PathBuf::from(crate::utils::files::strip_verbatim(&r.root.to_string_lossy()));
+        p.strip_prefix(&root).ok().map(|rel| (r, joined(rel)))
+    })
 }
 
 /// A note about an ignore file, in the Configuration area.

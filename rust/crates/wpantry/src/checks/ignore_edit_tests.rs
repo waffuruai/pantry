@@ -101,10 +101,15 @@ fn a_file_with_no_final_newline_gains_only_that_newline() {
 fn a_new_user_file_is_private_and_so_is_its_folder() {
     let d = TempDir::new("ie-private").unwrap();
     let e = env(&d);
-    let f = found("malware", "/srv/quarantine/x.bin", "", "EICAR");
+    let quarantine = d.path().join("quarantine/x.bin");
+    let f = found("malware", &quarantine.to_string_lossy(), "", "EICAR");
     let (t, ..) = wrote(add(&req(&f, std::slice::from_ref(&f), Scope::User), &e).unwrap());
     assert_eq!(t.file, e.user_file);
-    assert!(text(&t).starts_with("[malware EICAR]\n/srv/quarantine/x.bin\n# wpantry ignore: "), "{}", text(&t));
+    assert!(
+        text(&t).starts_with(&format!("[malware EICAR]\n{}\n# wpantry ignore: ", abs_pattern(&quarantine))),
+        "{}",
+        text(&t)
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -169,7 +174,7 @@ fn the_rule_names_one_file_and_neighbours_stay_reported() {
     assert_eq!(rules[0].pattern, "/pkg/package-lock.json");
     let ig = Ignore::parse(&text(&t));
     let skips = |f: &Finding| {
-        let rel = f.location.strip_prefix(&format!("{}/", root.to_string_lossy())).unwrap().to_string();
+        let rel = ignore::joined(Path::new(&f.location).strip_prefix(&root).unwrap());
         ig.skips(&f.kind, &f.vuln_id, &rel)
     };
     assert!(skips(&a));
@@ -301,12 +306,13 @@ fn your_file_names_paths_under_your_home_with_a_tilde() {
     let d = TempDir::new("ie-home").unwrap();
     let e = env(&d);
     let inside = found("secret", &e.home.join("code/app/.env").to_string_lossy(), "line 1", "jwt");
-    let outside = found("secret", "/srv/app/.env", "line 1", "jwt");
+    let elsewhere = d.path().join("srv/app/.env");
+    let outside = found("secret", &elsewhere.to_string_lossy(), "line 1", "jwt");
     let all = [inside.clone(), outside.clone()];
     let (t, rules, _) = wrote(add(&req(&inside, &all, Scope::User), &e).unwrap());
     assert_eq!(rules[0].pattern, "~/code/app/.env", "no home directory in the file");
     let (_, rules, _) = wrote(add(&req(&outside, &all, Scope::User), &e).unwrap());
-    assert_eq!(rules[0].pattern, "/srv/app/.env");
+    assert_eq!(rules[0].pattern, abs_pattern(&elsewhere));
     let ig = Ignore::parse_user(&text(&t), &e.home);
     assert!(ig.problems.is_empty(), "{:?}", ig.problems);
 }
@@ -338,7 +344,7 @@ fn a_link_that_leaves_the_folder_is_never_written_through() {
     std::fs::write(&outside, "keep me\n").unwrap();
     std::fs::create_dir_all(e.user_file.parent().unwrap()).unwrap();
     symlink(&outside, &e.user_file).unwrap();
-    let f = found("malware", "/srv/q/x.bin", "", "EICAR");
+    let f = found("malware", &d.path().join("q/x.bin").to_string_lossy(), "", "EICAR");
     let r = refused(add(&req(&f, std::slice::from_ref(&f), Scope::User), &e));
     assert_eq!(r.code, "unsafe-file");
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me\n");
@@ -505,4 +511,10 @@ fn scopes_and_marks_parse() {
     assert_eq!(eol("a\r\nb\r\n"), "\r\n");
     assert_eq!(eol("a\nb"), "\n");
     assert_eq!(eol(""), "\n");
+}
+
+/// A path outside your home as your file spells it: from the root, with `/`.
+fn abs_pattern(p: &Path) -> String {
+    let j = ignore::joined(p);
+    if cfg!(windows) { j } else { format!("/{j}") }
 }

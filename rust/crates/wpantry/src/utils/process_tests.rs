@@ -89,3 +89,105 @@ fn a_pipe_hands_over_each_line_and_ends_at_its_deadline() {
         pipe_lines(&[OsStr::new("/no/such/program")], &[OsStr::new("cat")], Duration::from_secs(1), |_| {}).is_err()
     );
 }
+
+/// Risk: wpantry started with a PATH that leaves out the `sbin` folders
+/// runs `spctl`, `scutil` and the other system tools by name and gets
+/// nothing, so posture checks say they couldn't tell. Oracle: the tool's
+/// own copy in a system folder, and PATH still winning when it has one.
+#[cfg(unix)]
+#[test]
+fn a_system_tool_runs_from_its_folder_when_path_leaves_it_out() {
+    let d = TempDir::new("resolve").unwrap();
+    // `sysctl` is in /usr/sbin or /sbin on every Unix CI runs on.
+    let in_system = |p: &Path| SYSTEM_DIRS.iter().any(|dir| p == Path::new(dir).join("sysctl"));
+    let tool = resolve(OsStr::new("sysctl"), Some(d.path().as_os_str()));
+    assert!(in_system(&tool), "{}", tool.display());
+    let tool = resolve(OsStr::new("sysctl"), None);
+    assert!(in_system(&tool), "no PATH at all: {}", tool.display());
+    // PATH has its own: the spawn finds it there, so the name stays.
+    executable(&d.path().join("sysctl"), "#!/bin/sh\necho mine\n");
+    assert_eq!(resolve(OsStr::new("sysctl"), Some(d.path().as_os_str())), PathBuf::from("sysctl"));
+    // A path, or a name no folder has, is left as it is; so is a tool of
+    // the bin folders, which the spawn's own search already covers.
+    assert_eq!(resolve(OsStr::new("./sysctl"), None), PathBuf::from("./sysctl"));
+    let missing = "wpantry-no-such-tool";
+    assert_eq!(resolve(OsStr::new(missing), Some(d.path().as_os_str())), PathBuf::from(missing));
+    assert_eq!(resolve(OsStr::new("sh"), Some(d.path().as_os_str())), PathBuf::from("sh"));
+}
+
+/// Risk: `which` and `resolve` look in different places, so a check that
+/// asks `which` whether a tool is there says "unknown" about one `exec` would
+/// run (or the reverse). Oracle: for each case the answer is fixed by the
+/// folders laid out below, not by running either function twice: a tool on
+/// PATH is found there (and PATH wins over the system folder), a tool only in
+/// a system folder is found there by both, a file that isn't executable and a
+/// missing name are found by neither.
+#[cfg(unix)]
+#[test]
+fn which_and_resolve_agree_on_where_a_tool_is() {
+    let d = TempDir::new("lookup").unwrap();
+    let (bin, sbin) = (d.path().join("bin"), d.path().join("sbin"));
+    executable(&bin.join("on-path-only"), "#!/bin/sh\n");
+    executable(&sbin.join("sbin-only"), "#!/bin/sh\n");
+    executable(&bin.join("in-both"), "#!/bin/sh\n");
+    executable(&sbin.join("in-both"), "#!/bin/sh\n");
+    std::fs::write(sbin.join("not-executable"), "data").unwrap();
+    let system = [sbin.to_str().unwrap()];
+    let path = bin.as_os_str();
+    // (name, `which`, `resolve`): `resolve` keeps the bare name when the
+    // spawn finds the tool by itself (PATH) or can't find it at all.
+    let on_path = |n: &str| (Some(bin.join(n)), PathBuf::from(n));
+    let in_sbin = |n: &str| (Some(sbin.join(n)), sbin.join(n));
+    let nowhere = |n: &str| (None, PathBuf::from(n));
+    for (name, (which, resolved)) in [
+        ("on-path-only", on_path("on-path-only")),
+        ("sbin-only", in_sbin("sbin-only")),
+        ("in-both", on_path("in-both")),
+        ("not-executable", nowhere("not-executable")),
+        ("no-such-tool", nowhere("no-such-tool")),
+    ] {
+        assert_eq!(which_with(name, Some(path), &system), which, "which({name})");
+        assert_eq!(resolve_with(OsStr::new(name), Some(path), &system), resolved, "resolve({name})");
+        // The invariant itself: when `resolve` turns a name into a path, that
+        // is the path `which` reports; when it keeps the name, `which` has
+        // it on PATH or not at all.
+        let w = which_with(name, Some(path), &system);
+        if resolved.is_absolute() {
+            assert_eq!(w, Some(resolved), "{name}");
+        } else {
+            assert!(w.is_none_or(|p| p.starts_with(&bin)), "{name}");
+        }
+    }
+    // No PATH at all: the system folder still answers, for both.
+    assert_eq!(which_with("sbin-only", None, &system), Some(sbin.join("sbin-only")));
+    assert_eq!(resolve_with(OsStr::new("sbin-only"), None, &system), sbin.join("sbin-only"));
+    // The real folders: `sysctl` is in /usr/sbin or /sbin on every Unix CI
+    // runs on, and PATH here has neither.
+    let nope = Some(OsStr::new("/nowhere"));
+    let found = which_in("sysctl", nope).expect("sysctl is in a system folder");
+    assert_eq!(found, resolve(OsStr::new("sysctl"), nope));
+    assert!(SYSTEM_DIRS.iter().any(|dir| found == Path::new(dir).join("sysctl")), "{}", found.display());
+    assert_eq!(which_in("wpantry-no-such-tool", nope), None);
+}
+
+/// Risk: a spawn as root takes the bare name, so a tool the probe found in a
+/// system folder fails to start (the rule file is written, nothing loads it).
+/// Oracle: the program the command would start is the one `resolve` names for
+/// the same PATH; through sudo the whole argv goes to sudo untouched.
+#[cfg(unix)]
+#[test]
+fn a_root_command_runs_the_program_the_probe_resolved() {
+    let nope = Some(OsStr::new("/nowhere"));
+    let argv = [OsStr::new("sysctl"), OsStr::new("-n"), OsStr::new("kern.ostype")];
+    let direct = root_command(&argv, true, nope);
+    assert_eq!(Path::new(direct.get_program()), resolve(OsStr::new("sysctl"), nope), "resolved, not the bare name");
+    assert!(Path::new(direct.get_program()).is_absolute());
+    assert_eq!(direct.get_args().collect::<Vec<_>>(), [OsStr::new("-n"), OsStr::new("kern.ostype")]);
+    let sudo = root_command(&argv, false, nope);
+    assert_eq!(sudo.get_program(), "sudo");
+    assert_eq!(sudo.get_args().collect::<Vec<_>>(), argv);
+    // A tool PATH has is left to the spawn's own search.
+    let d = TempDir::new("rootcmd").unwrap();
+    executable(&d.path().join("sysctl"), "#!/bin/sh\n");
+    assert_eq!(root_command(&argv, true, Some(d.path().as_os_str())).get_program(), "sysctl");
+}

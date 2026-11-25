@@ -531,3 +531,27 @@ fn runs_prune_and_one_run_reported() {
     assert!(help(&["report"]).contains("\n  --run <id>"));
     assert!(help(&[]).contains("\n  runs [options]") && help(&[]).contains("\n  prune <id...>"));
 }
+
+#[test]
+fn the_top_level_help_says_how_one_directory_is_scanned() {
+    let top = help(&[]);
+    // In the command list, and again as commands to copy, at the end where a terminal leaves them.
+    assert!(top.contains("or one project (scan project DIR)"), "{top}");
+    let examples = top.split("\nExamples:\n").nth(1).expect("an Examples section");
+    for line in ["wpantry scan project ", "wpantry scan --path ~/code ", "wpantry runs ", "wpantry scan  "] {
+        assert!(examples.lines().any(|l| l.starts_with(line)), "{line}: {examples}");
+    }
+    assert!(top.trim_end().ends_with("3 internal error."), "the exit codes close it");
+    // Every example is a command line wpantry takes.
+    for line in examples.lines().take_while(|l| l.starts_with("wpantry ")) {
+        let words: Vec<&str> = line.split("  ").next().unwrap().split_whitespace().skip(1).collect();
+        match p(&words) {
+            Parsed::Run(_) | Parsed::Help(_) => {}
+            Parsed::Usage(text) if text.contains("no such directory") => {}
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+    let scan = help(&["scan"]);
+    assert!(scan.contains("For one project and nothing else, wpantry scan project DIR."), "{scan}");
+    assert!(scan.contains("The machine inventory still runs: for one"), "{scan}");
+}

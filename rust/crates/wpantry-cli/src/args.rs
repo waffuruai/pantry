@@ -246,6 +246,18 @@ pub enum Parsed {
     Usage(String),
 }
 
+/// The commands most people came for, under the top-level help: what
+/// scans what, in the words someone would type.
+const EXAMPLES: &str = "Examples:
+wpantry scan                     this computer and every git repo under ~
+wpantry scan project             the project in this directory and the runtimes it uses
+wpantry scan project ~/code/app  the same, for another directory
+wpantry scan --path ~/code       only the repos under a directory, with the machine inventory
+wpantry report --html            the latest scan as one offline page
+wpantry runs                     the scans kept; report --run N shows one, prune N forgets one
+wpantry fix --dry-run            what would be fixed; changes nothing
+wpantry help scan                a command's options";
+
 const EXIT_CODES: &str = "Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.";
 
 /// `--txt` … `--html`, at most one; `-o`; `--since`.
@@ -271,7 +283,7 @@ fn scan_opts() -> Vec<Opt> {
     let mut opts = vec![
         Opt::new(
             "--path <dir>",
-            "check only the repos and files at or under this directory, not Downloads, Desktop, Documents or temp; repeat it for more (default: every git repo under ~)",
+            "check only the repos and files at or under this directory, not Downloads, Desktop, Documents or temp; repeat it for more (default: every git repo under ~). The machine inventory still runs: for one project alone, scan project DIR",
         ),
         Opt::new("--no-machine", "skip the machine inventory: repo checks only"),
         Opt::new("--refresh", "ignore cached answers and ask every source again"),
@@ -328,10 +340,11 @@ pub fn program() -> Cli {
     Cli::new("wpantry")
         .version(wpantry::VERSION)
         .description("The vulnerabilities, malware and risky settings that apply to this computer and its repos. See README.md.")
-        .after_help("Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.")
+        .after_help(&format!("{EXAMPLES}\n\nExit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error."))
         .command(
             Cli::new("scan")
-                .description("Scan this computer and its repos, then show the report. Changes nothing.")
+                .description("Scan this computer and its repos, then show the report. Changes nothing.\nFor one project and nothing else, wpantry scan project DIR. --path DIR narrows the repo checks to a directory and keeps the machine inventory; --no-machine leaves that out.")
+                .summary("Scan this computer and its repos, or one project (scan project DIR), then show the report")
                 .opts(scan_opts())
                 .command(
                     Cli::new("project")

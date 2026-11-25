@@ -317,7 +317,8 @@ Options:
   -h, --help     print this help
 
 Commands:
-  scan [options] [command]     Scan this computer and its repos, then show the report
+  scan [options] [command]     Scan this computer and its repos, or one project (scan project DIR),
+                               then show the report
   fix [options] [target] [id]  Scan, run the unattended fixes and stopgaps, then re-check (list, or
                                one id)
   report [options] [part]      The latest scan's report, a log, or the summary, in any format
@@ -338,6 +339,16 @@ Commands:
   licenses                     Print the third-party licences built into wpantry
   help [command]               Print a command's help
 
+Examples:
+wpantry scan                     this computer and every git repo under ~
+wpantry scan project             the project in this directory and the runtimes it uses
+wpantry scan project ~/code/app  the same, for another directory
+wpantry scan --path ~/code       only the repos under a directory, with the machine inventory
+wpantry report --html            the latest scan as one offline page
+wpantry runs                     the scans kept; report --run N shows one, prune N forgets one
+wpantry fix --dry-run            what would be fixed; changes nothing
+wpantry help scan                a command's options
+
 Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 ```
 
@@ -347,11 +358,14 @@ Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 Usage: wpantry scan [options] [command]
 
 Scan this computer and its repos, then show the report. Changes nothing.
+For one project and nothing else, wpantry scan project DIR. --path DIR narrows the repo checks to a
+directory and keeps the machine inventory; --no-machine leaves that out.
 
 Options:
   --path <dir>              check only the repos and files at or under this directory, not
                             Downloads, Desktop, Documents or temp; repeat it for more (default:
-                            every git repo under ~)
+                            every git repo under ~). The machine inventory still runs: for one
+                            project alone, scan project DIR
   --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache
@@ -492,7 +506,8 @@ Options:
   --hours <n>               extension-cooldown: the cooldown (default: 72)
   --path <dir>              check only the repos and files at or under this directory, not
                             Downloads, Desktop, Documents or temp; repeat it for more (default:
-                            every git repo under ~)
+                            every git repo under ~). The machine inventory still runs: for one
+                            project alone, scan project DIR
   --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache

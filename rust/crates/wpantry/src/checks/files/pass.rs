@@ -9,6 +9,7 @@ use crate::checks::malware::yara::Loaded;
 use crate::checks::secrets::files::{self as secret_files, Engine};
 use crate::checks::supply_chain::mptcp::{self, Exposure};
 use crate::checks::suspects::{self, Kind, Suspect};
+use crate::checks::watch::{At, Watch};
 use crate::db::Cache;
 use crate::utils::parallel;
 use std::collections::HashMap;
@@ -253,6 +254,15 @@ pub fn run_cached(jobs: &[Job], cache: Option<&Cache>, rules: Option<Arc<Loaded>
 
 /// [`run_cached`], with every engine the checks use.
 pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Results {
+    run_watched(jobs, cache, engines, &crate::checks::watch::Quiet)
+}
+
+/// [`run_with`], telling `watch` what the pass is doing, from the threads
+/// that do it: each file as it is read (one whose cached result still
+/// holds isn't read, nor told), and before that the folders it walks and
+/// looks over (`At::Dir`, with [`Watch::listed`] for the files a walk
+/// lists) and the root whose plan or cached results it is going through.
+pub fn run_watched(jobs: &[Job], cache: Option<&Cache>, engines: &Engines, watch: &dyn Watch) -> Results {
     let salts = engines.salts();
     let started = crate::utils::os::now();
     let mut uniq: Vec<Job> = Vec::new();
@@ -262,7 +272,11 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
         }
     }
     let jobs = uniq;
-    let walks: Vec<Walk> = jobs.iter().map(|j| crate::utils::walk::walk(&j.root, j.depth)).collect();
+    let seen = |dir: &Path, files: usize| {
+        watch.at(dir, At::Dir);
+        watch.listed(files);
+    };
+    let walks: Vec<Walk> = jobs.iter().map(|j| crate::utils::walk::walk_seen(&j.root, j.depth, &seen)).collect();
     let unreadable: HashMap<PathBuf, Vec<PathBuf>> =
         jobs.iter().map(|j| (j.root.clone(), crate::utils::walk::unreadable(&j.root))).collect();
     // One view per file, from each root's deepest walk (the others are
@@ -290,7 +304,11 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
             }
         }
     }
-    parallel::par_map(&views, parallel::cores(), |v| v.stat());
+    // Looking over every file before any is read: say in which folder.
+    parallel::par_map(&views, parallel::cores(), |v| {
+        watch.at(v.path.parent().unwrap_or(&v.path), At::Dir);
+        v.stat()
+    });
     let plans: Vec<Plan> = {
         let stat = |p: &Path| -> Option<Stat> {
             match index.get(p) {
@@ -301,7 +319,10 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
         // Side by side: a plan stats nothing new, but names every file, and
         // the dependency check lists node_modules.
         let items: Vec<(&Job, &Walk)> = jobs.iter().zip(&walks).collect();
-        parallel::par_map(&items, parallel::cores(), |(j, w)| plan(j, w, &stat, engines))
+        parallel::par_map(&items, parallel::cores(), |(j, w)| {
+            watch.at(&j.root, At::Dir);
+            plan(j, w, &stat, engines)
+        })
     };
     // Each read's view, found once.
     let mut users: Vec<Vec<(usize, usize)>> = vec![Vec::new(); views.len()];
@@ -326,6 +347,7 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
     let mut hits: HashMap<&Path, usize> = HashMap::new();
     if let Some(s) = &store {
         for (j, p) in plans.iter().enumerate() {
+            watch.at(&jobs[j].root, At::Dir);
             for (r, read) in p.reads().iter().enumerate() {
                 if let Some(st) = stat_of(j, r) {
                     outs[j][r] = s.get(&jobs[j], read, &st);
@@ -340,6 +362,7 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
     let todo: Vec<usize> = (0..views.len()).filter(|&i| !users[i].is_empty()).collect();
     let done: Vec<Vec<(usize, usize, Out)>> = parallel::par_map(&todo, parallel::cores(), |&i| {
         let v = &views[i];
+        watch.at(&v.path, At::File);
         let reads: Vec<(usize, usize, &Read)> = users[i].iter().map(|&(j, r)| (j, r, &plans[j].reads()[r])).collect();
         let cap = |when| reads.iter().filter(|(_, _, r)| r.when == when).map(|(_, _, r)| r.cap).max().unwrap_or(0);
         let (head, bytes) = v.load(cap(When::Always), cap(When::Program), targets::looks_executable);
@@ -371,6 +394,7 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
             s.unchanged(root);
         }
         for (j, p) in plans.iter().enumerate() {
+            watch.at(&jobs[j].root, At::Dir);
             if unchanged.contains(jobs[j].root.as_path()) {
                 continue;
             }
@@ -385,7 +409,10 @@ pub fn run_with(jobs: &[Job], cache: Option<&Cache>, engines: &Engines) -> Resul
     let items: Vec<(&Job, &Plan, &Vec<Option<Out>>)> =
         jobs.iter().zip(&plans).zip(&outs).map(|((j, p), o)| (j, p, o)).collect();
     // Finishing a hidden-text job runs git for the commit messages.
-    let found = parallel::par_map(&items, parallel::PROBES, |(j, p, o)| finish(j, p, o));
+    let found = parallel::par_map(&items, parallel::PROBES, |(j, p, o)| {
+        watch.at(&j.root, At::Dir);
+        finish(j, p, o)
+    });
     Results { found: jobs.into_iter().zip(found).collect(), engines: engines.clone(), unreadable }
 }
 

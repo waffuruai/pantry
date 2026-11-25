@@ -465,6 +465,12 @@ fn blob_key(b: &Blob) -> String {
 /// redacted hits, how many files weren't checked, and the new blobs'
 /// results (`new`, for [`finish`] to keep).
 pub fn run_job(job: &Job, scanner: &Scanner) -> Result<Value> {
+    run_job_at(job, scanner, &|_| {})
+}
+
+/// [`run_job`], saying which repo's history it is reading.
+pub fn run_job_at(job: &Job, scanner: &Scanner, at: &(dyn Fn(&std::path::Path) + Sync)) -> Result<Value> {
+    at(&job.repo);
     let (all, missing) = blobs(&job.repo)?;
     let mut too_big = 0;
     let mut todo: Vec<&Blob> = Vec::new();

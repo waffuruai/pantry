@@ -7,6 +7,7 @@
 //!     cargo test -p wpantry-cli --test contract [--release]
 
 mod common;
+mod scan_events;
 
 use common::*;
 use rusqlite::types::Value as Sql;

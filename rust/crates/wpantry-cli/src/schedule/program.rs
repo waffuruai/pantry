@@ -3,10 +3,10 @@
 //! `ExecStart` word, the cron line's command word or the task's `Command`.
 //! It undoes the quoting `plist`, `unit`, `cron_line` and
 //! `windows::definition` apply, so a job another copy of `wpantry` (or the
-//! Windows launcher) registered reports that program, not this binary.
+//! launcher beside the scanner) registered reports that program, not this binary.
 //!
 //! ```ignore
-//! let text = plist(Path::new("/opt/Pantry tools/wpantry"), Every::Day, 9, 30, &paths());
+//! let text = plist(Path::new("/opt/Pantry tools/wpantry"), None, Every::Day, 9, 30, &paths());
 //! assert_eq!(read(Backend::Launchd, &text), Some(PathBuf::from("/opt/Pantry tools/wpantry")));
 //! ```
 

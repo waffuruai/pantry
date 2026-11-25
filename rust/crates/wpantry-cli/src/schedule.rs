@@ -149,21 +149,69 @@ pub fn install(every: Every, at: (u32, u32), dry_run: bool) -> Result<i32> {
 }
 
 fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, run: Run) -> Result<i32> {
+    install_for(&program()?, every, at, dry_run, backend, run)
+}
+
+/// The launcher the launchd, systemd and cron jobs run instead of the
+/// scanner, when one sits beside it: an executable `wpantry-desktop` (a
+/// regular file or a link to one) in the scanner's folder, or in the folder
+/// of the file a `wpantry` link points at. A caller that ships the scanner
+/// puts it there to run the scheduled scan on its behalf: the job then runs
+/// `wpantry-desktop --scheduled-run` and nothing else. Without that file the
+/// job runs the scanner's `schedule run`. The Windows task has the same rule
+/// with `wpantry-desktop.exe` ([`windows::launcher`]).
+///
+/// ```ignore
+/// // /Applications/Some App.app/Contents/MacOS/wpantry, with wpantry-desktop beside it
+/// launcher(program) == Some("/Applications/Some App.app/Contents/MacOS/wpantry-desktop".into())
+/// ```
+fn launcher(program: &Path) -> Option<PathBuf> {
+    let real = program.canonicalize().unwrap_or_else(|_| program.to_path_buf());
+    [program, real.as_path()]
+        .into_iter()
+        .filter_map(|path| Some(path.parent()?.join("wpantry-desktop")))
+        .find(|path| runnable(path))
+}
+
+/// A file (links followed) with an execute bit set, the test PATH lookups use.
+fn runnable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// `install` for the scanner at `program`. Re-running it rewrites the job,
+/// so a launcher that appeared or went since the last install is picked up.
+fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, backend: Backend, run: Run) -> Result<i32> {
     let p = paths();
-    let program = program()?;
+    let program = program.to_path_buf();
     let (hour, minute) = at;
+    let launcher = match backend {
+        Backend::Windows => None,
+        _ => launcher(&program),
+    };
+    let launcher = launcher.as_deref();
     if matches!(backend, Backend::Systemd | Backend::Cron)
-        && [program.as_path(), p.state.as_path()].into_iter().any(|path| path.to_string_lossy().contains(['\n', '\r']))
+        && [Some(program.as_path()), launcher, Some(p.state.as_path())]
+            .into_iter()
+            .flatten()
+            .any(|path| path.to_string_lossy().contains(['\n', '\r']))
     {
         return Err(Error::Failed("A schedule path contains a line break.".into()));
     }
     let text = match backend {
-        Backend::Launchd => plist(&program, every, hour, minute, &p),
+        Backend::Launchd => plist(&program, launcher, every, hour, minute, &p),
         Backend::Systemd => {
-            let (service, timer) = unit(&program, every, hour, minute, &p);
+            let (service, timer) = unit(&program, launcher, every, hour, minute, &p);
             format!("# wpantry.service\n{service}\n# wpantry.timer\n{timer}")
         }
-        Backend::Cron => cron_line(&program, every, hour, minute, &p),
+        Backend::Cron => cron_line(&program, launcher, every, hour, minute, &p),
         Backend::Windows => windows::definition(&program, windows::launcher(&program).as_deref(), every, at, ""),
     };
     if dry_run {
@@ -202,7 +250,7 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
         Backend::Systemd => {
             let dir = unit_dir();
             std::fs::create_dir_all(&dir)?;
-            let (service, timer) = unit(&program, every, hour, minute, &p);
+            let (service, timer) = unit(&program, launcher, every, hour, minute, &p);
             std::fs::write(dir.join("wpantry.service"), service)?;
             std::fs::write(dir.join("wpantry.timer"), timer)?;
             for args in [vec!["daemon-reload"], vec!["enable", "--now", "wpantry.timer"]] {
@@ -236,11 +284,16 @@ fn install_with(every: Every, at: (u32, u32), dry_run: bool, backend: Backend, r
             say(&format!("✓ scheduled {} at {hour:02}:{minute:02} with cron", word(every)));
         }
     }
-    say(&format!(
-        "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
-        p.last.display(),
-        p.log.display()
-    ));
+    match launcher {
+        Some(launcher) => {
+            say(&format!("  It runs {} --scheduled-run, the launcher beside the scanner.", launcher.display()))
+        }
+        None => say(&format!(
+            "  It runs `wpantry sync`, then `wpantry scan`, and writes {} and {}.",
+            p.last.display(),
+            p.log.display()
+        )),
+    }
     say("  It never fixes anything: run `wpantry fix` yourself.");
     Ok(EXIT_OK)
 }
@@ -678,8 +731,18 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// What a job runs: `launcher --scheduled-run` when there is one, else
+/// `program schedule run`.
+fn command<'a>(program: &'a Path, launcher: Option<&'a Path>) -> (&'a Path, &'static [&'static str]) {
+    match launcher {
+        Some(launcher) => (launcher, &["--scheduled-run"]),
+        None => (program, &["schedule", "run"]),
+    }
+}
+
 /// The launchd job: a calendar start, low priority, its output in the log.
-pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
+/// `ProgramArguments` is an array, so no shell reads the path.
+pub fn plist(program: &Path, launcher: Option<&Path>, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
     let when = if every == Every::Hour {
         "    <key>StartInterval</key>\n    <integer>3600</integer>\n".to_string()
     } else {
@@ -707,13 +770,18 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
         }
     };
     let out = xml_escape(&p.state.join("launchd.log").to_string_lossy());
+    let (run, args) = command(program, launcher);
+    let arguments: String = std::iter::once(run.to_string_lossy().into_owned())
+        .chain(args.iter().map(|a| a.to_string()))
+        .map(|a| format!("      <string>{}</string>\n", xml_escape(&a)))
+        .collect();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n\
 <dict>\n\
     <key>Label</key>\n    <string>{LABEL}</string>\n\
-    <key>ProgramArguments</key>\n    <array>\n      <string>{}</string>\n      <string>schedule</string>\n      <string>run</string>\n    </array>\n\
+    <key>ProgramArguments</key>\n    <array>\n{arguments}    </array>\n\
 {when}\
     <key>RunAtLoad</key>\n    <false/>\n\
     <key>ProcessType</key>\n    <string>Background</string>\n\
@@ -724,13 +792,22 @@ pub fn plist(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) ->
     <key>EnvironmentVariables</key>\n    <dict>\n      <key>PATH</key>\n      <string>{}</string>\n    </dict>\n\
 </dict>\n\
 </plist>\n",
-        xml_escape(&program.to_string_lossy()),
         xml_escape(&std::env::var("PATH").unwrap_or_default()),
     )
 }
 
-/// The systemd user service and timer.
-pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> (String, String) {
+/// The systemd user service and timer. `ExecStart`'s program is one word:
+/// in double quotes when it has a space, a quote or a backslash, with `%%`
+/// for `%` and `$$` for `$`.
+pub fn unit(
+    program: &Path,
+    launcher: Option<&Path>,
+    every: Every,
+    hour: u32,
+    minute: u32,
+    p: &Paths,
+) -> (String, String) {
+    let (run, args) = command(program, launcher);
     let time = format!("{hour:02}:{minute:02}:00");
     let calendar = match every {
         Every::Hour => "hourly".to_string(),
@@ -741,8 +818,9 @@ pub fn unit(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> 
         Every::Year => format!("*-01-01 {time}"),
     };
     let service = format!(
-        "[Unit]\nDescription=wpantry: refresh the advisory cache and scan\n\n[Service]\nType=oneshot\nExecStart={} schedule run\nNice=10\nIOSchedulingClass=idle\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n",
-        unit_word(&program.to_string_lossy().replace('$', "$$")),
+        "[Unit]\nDescription=wpantry: refresh the advisory cache and scan\n\n[Service]\nType=oneshot\nExecStart={} {}\nNice=10\nIOSchedulingClass=idle\nEnvironment=PATH={}\nStandardOutput=append:{}\nStandardError=append:{}\n",
+        unit_word(&run.to_string_lossy().replace('$', "$$")),
+        args.join(" "),
         unit_word(&std::env::var("PATH").unwrap_or_default()),
         p.state.join("systemd.log").to_string_lossy().replace('%', "%%"),
         p.state.join("systemd.log").to_string_lossy().replace('%', "%%"),
@@ -776,7 +854,9 @@ fn cron_word(word: &str) -> String {
 
 const CRON_MARK: &str = "# wpantry schedule";
 
-pub fn cron_line(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
+/// The crontab line; the shell reads it, so each path is a quoted word.
+pub fn cron_line(program: &Path, launcher: Option<&Path>, every: Every, hour: u32, minute: u32, p: &Paths) -> String {
+    let (run, args) = command(program, launcher);
     let when = match every {
         Every::Hour => format!("{minute} * * * *"),
         Every::Day => format!("{minute} {hour} * * *"),
@@ -786,8 +866,9 @@ pub fn cron_line(program: &Path, every: Every, hour: u32, minute: u32, p: &Paths
         Every::Year => format!("{minute} {hour} 1 1 *"),
     };
     format!(
-        "{when} nice -n 10 {} schedule run >> {} 2>&1 {CRON_MARK}",
-        cron_word(&program.to_string_lossy()),
+        "{when} nice -n 10 {} {} >> {} 2>&1 {CRON_MARK}",
+        cron_word(&run.to_string_lossy()),
+        args.join(" "),
         cron_word(&p.state.join("cron.log").to_string_lossy())
     )
 }

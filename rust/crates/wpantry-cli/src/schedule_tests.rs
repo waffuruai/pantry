@@ -11,31 +11,31 @@ fn p() -> Paths {
 
 #[test]
 fn launchd_plist_names_the_program_and_the_time() {
-    let text = plist(Path::new("/u/.local/bin/wpantry"), Every::Day, 9, 30, &p());
+    let text = plist(Path::new("/u/.local/bin/wpantry"), None, Every::Day, 9, 30, &p());
     assert!(text.contains("<string>/u/.local/bin/wpantry</string>"));
     assert!(text.contains("<key>Hour</key>\n      <integer>9</integer>"));
     assert!(text.contains("<key>Minute</key>\n      <integer>30</integer>"));
     assert!(text.contains("<string>schedule</string>\n      <string>run</string>"));
     assert!(text.contains("<key>Nice</key>"));
-    let hourly = plist(Path::new("/x"), Every::Hour, 0, 0, &p());
+    let hourly = plist(Path::new("/x"), None, Every::Hour, 0, 0, &p());
     assert!(hourly.contains("<key>StartInterval</key>\n    <integer>3600</integer>"));
-    let weekly = plist(Path::new("/x"), Every::Week, 7, 5, &p());
+    let weekly = plist(Path::new("/x"), None, Every::Week, 7, 5, &p());
     assert!(weekly.contains("<key>Weekday</key>\n      <integer>1</integer>"));
-    let odd = plist(Path::new("/a&b/<w>"), Every::Day, 0, 0, &p());
+    let odd = plist(Path::new("/a&b/<w>"), None, Every::Day, 0, 0, &p());
     assert!(odd.contains("/a&amp;b/&lt;w&gt;"));
 }
 
 #[test]
 fn systemd_and_cron_entries() {
-    let (service, timer) = unit(Path::new("/u/bin/wpantry"), Every::Week, 6, 15, &p());
+    let (service, timer) = unit(Path::new("/u/bin/wpantry"), None, Every::Week, 6, 15, &p());
     assert!(service.contains("ExecStart=/u/bin/wpantry schedule run"));
     assert!(timer.contains("OnCalendar=Mon *-*-* 06:15:00"));
     assert!(timer.contains("Persistent=true"));
-    assert!(unit(Path::new("/x"), Every::Hour, 0, 0, &p()).1.contains("OnCalendar=hourly"));
-    let line = cron_line(Path::new("/u/bin/wpantry"), Every::Day, 9, 30, &p());
+    assert!(unit(Path::new("/x"), None, Every::Hour, 0, 0, &p()).1.contains("OnCalendar=hourly"));
+    let line = cron_line(Path::new("/u/bin/wpantry"), None, Every::Day, 9, 30, &p());
     assert!(line.starts_with("30 9 * * * nice -n 10 /u/bin/wpantry schedule run"));
     assert!(line.ends_with(CRON_MARK));
-    assert!(cron_line(Path::new("/x"), Every::Week, 1, 2, &p()).starts_with("2 1 * * 1 "));
+    assert!(cron_line(Path::new("/x"), None, Every::Week, 1, 2, &p()).starts_with("2 1 * * 1 "));
 }
 
 #[test]
@@ -74,10 +74,10 @@ fn words_escapes_and_every_spelling() {
     assert_eq!(ago(89), "89 s");
     assert_eq!(ago(90), "1 min");
     assert_eq!(ago(36 * 3600), "1 days");
-    let (service, timer) = unit(Path::new("/x"), Every::Day, 9, 5, &p());
+    let (service, timer) = unit(Path::new("/x"), None, Every::Day, 9, 5, &p());
     assert!(service.contains("StandardOutput=append:/s/wpantry/systemd.log"));
     assert!(timer.contains("OnCalendar=*-*-* 09:05:00"));
-    assert!(cron_line(Path::new("/x"), Every::Hour, 9, 15, &p()).starts_with("15 * * * * "));
+    assert!(cron_line(Path::new("/x"), None, Every::Hour, 9, 15, &p()).starts_with("15 * * * * "));
 }
 
 #[test]
@@ -438,22 +438,22 @@ fn a_scheduled_run_records_the_check_and_logs_one_line() {
 
 #[test]
 fn a_month_quarter_and_year_start_at_the_period_start() {
-    let month = plist(Path::new("/x"), Every::Month, 7, 0, &p());
+    let month = plist(Path::new("/x"), None, Every::Month, 7, 0, &p());
     assert!(month.contains("<key>Day</key>\n      <integer>1</integer>"));
-    let quarter = plist(Path::new("/x"), Every::Quarter, 7, 0, &p());
+    let quarter = plist(Path::new("/x"), None, Every::Quarter, 7, 0, &p());
     assert!(quarter.contains("<key>StartCalendarInterval</key>\n    <array>"));
     assert_eq!(quarter.matches("<key>Month</key>").count(), 4);
     assert!(quarter.contains("<key>Month</key>\n      <integer>10</integer>"));
-    let year = plist(Path::new("/x"), Every::Year, 7, 0, &p());
+    let year = plist(Path::new("/x"), None, Every::Year, 7, 0, &p());
     assert!(
         year.contains("<key>Month</key>\n      <integer>1</integer>\n      <key>Day</key>\n      <integer>1</integer>")
     );
-    assert!(unit(Path::new("/x"), Every::Month, 7, 0, &p()).1.contains("OnCalendar=*-*-01 07:00:00"));
-    assert!(unit(Path::new("/x"), Every::Quarter, 7, 0, &p()).1.contains("OnCalendar=*-01,04,07,10-01 07:00:00"));
-    assert!(unit(Path::new("/x"), Every::Year, 7, 0, &p()).1.contains("OnCalendar=*-01-01 07:00:00"));
-    assert!(cron_line(Path::new("/x"), Every::Month, 7, 0, &p()).starts_with("0 7 1 * * "));
-    assert!(cron_line(Path::new("/x"), Every::Quarter, 7, 0, &p()).starts_with("0 7 1 1,4,7,10 * "));
-    assert!(cron_line(Path::new("/x"), Every::Year, 7, 0, &p()).starts_with("0 7 1 1 * "));
+    assert!(unit(Path::new("/x"), None, Every::Month, 7, 0, &p()).1.contains("OnCalendar=*-*-01 07:00:00"));
+    assert!(unit(Path::new("/x"), None, Every::Quarter, 7, 0, &p()).1.contains("OnCalendar=*-01,04,07,10-01 07:00:00"));
+    assert!(unit(Path::new("/x"), None, Every::Year, 7, 0, &p()).1.contains("OnCalendar=*-01-01 07:00:00"));
+    assert!(cron_line(Path::new("/x"), None, Every::Month, 7, 0, &p()).starts_with("0 7 1 * * "));
+    assert!(cron_line(Path::new("/x"), None, Every::Quarter, 7, 0, &p()).starts_with("0 7 1 1,4,7,10 * "));
+    assert!(cron_line(Path::new("/x"), None, Every::Year, 7, 0, &p()).starts_with("0 7 1 1 * "));
     assert_eq!(Every::NAMES.map(|n| Every::parse(n).is_some()), [true; 6]);
     assert_eq!(word(Every::Quarter), "every quarter (1 January, April, July, October)");
 }
@@ -467,9 +467,15 @@ fn reporting_identifies_all_the_intervals_the_schedulers_write() {
         let at = (8, 25);
         let unix_at = if period == Every::Hour { (0, 0) } else { at };
         let minute_at = if period == Every::Hour { (0, at.1) } else { at };
-        assert_eq!(read_cadence(Backend::Launchd, &plist(program, period, 8, 25, &p())), Some((period, unix_at)));
-        assert_eq!(read_cadence(Backend::Systemd, &unit(program, period, 8, 25, &p()).1), Some((period, unix_at)));
-        assert_eq!(read_cadence(Backend::Cron, &cron_line(program, period, 8, 25, &p())), Some((period, minute_at)));
+        assert_eq!(read_cadence(Backend::Launchd, &plist(program, None, period, 8, 25, &p())), Some((period, unix_at)));
+        assert_eq!(
+            read_cadence(Backend::Systemd, &unit(program, None, period, 8, 25, &p()).1),
+            Some((period, unix_at))
+        );
+        assert_eq!(
+            read_cadence(Backend::Cron, &cron_line(program, None, period, 8, 25, &p())),
+            Some((period, minute_at))
+        );
         assert_eq!(
             read_cadence(Backend::Windows, &windows::definition(program, None, period, at, "S-1-5-21-123")),
             Some((period, at))
@@ -483,8 +489,12 @@ fn reporting_identifies_all_the_intervals_the_schedulers_write() {
     }
     assert_eq!(read_cadence(Backend::Systemd, "OnCalendar=Mon,Wed 14:09"), None);
     assert_eq!(read_cadence(Backend::Cron, "*/5 * * * * true"), None);
-    assert!(unit(program, Every::Day, 8, 25, &p()).0.contains(r#"ExecStart="/opt/Pantry tools/wpantry" schedule run"#));
-    assert!(cron_line(program, Every::Day, 8, 25, &p()).contains("'/opt/Pantry tools/wpantry' schedule run"));
+    assert!(
+        unit(program, None, Every::Day, 8, 25, &p())
+            .0
+            .contains(r#"ExecStart="/opt/Pantry tools/wpantry" schedule run"#)
+    );
+    assert!(cron_line(program, None, Every::Day, 8, 25, &p()).contains("'/opt/Pantry tools/wpantry' schedule run"));
 }
 
 #[test]
@@ -604,10 +614,10 @@ fn the_program_reads_back_from_every_definition() {
     for path in odd {
         let program = Path::new(path);
         let want = Some(program.to_path_buf());
-        assert_eq!(read(Backend::Launchd, &plist(program, Every::Day, 9, 30, &p())), want, "{path}");
-        assert_eq!(read(Backend::Launchd, &plist(program, Every::Quarter, 9, 30, &p())), want, "{path}");
-        assert_eq!(read(Backend::Systemd, &unit(program, Every::Week, 9, 30, &p()).0), want, "{path}");
-        assert_eq!(read(Backend::Cron, &cron_line(program, Every::Hour, 9, 30, &p())), want, "{path}");
+        assert_eq!(read(Backend::Launchd, &plist(program, None, Every::Day, 9, 30, &p())), want, "{path}");
+        assert_eq!(read(Backend::Launchd, &plist(program, None, Every::Quarter, 9, 30, &p())), want, "{path}");
+        assert_eq!(read(Backend::Systemd, &unit(program, None, Every::Week, 9, 30, &p()).0), want, "{path}");
+        assert_eq!(read(Backend::Cron, &cron_line(program, None, Every::Hour, 9, 30, &p())), want, "{path}");
         let task = windows::definition(program, None, Every::Day, (9, 30), "S-1");
         assert_eq!(read(Backend::Windows, &task), want, "{path}");
     }
@@ -645,7 +655,7 @@ fn status_json_reports_the_program_another_wpantry_registered() {
     assert_eq!(program_in(&status_json(Backend::Launchd, &quiet).unwrap()), None);
     let plist_file = plist_path();
     std::fs::create_dir_all(plist_file.parent().unwrap()).unwrap();
-    std::fs::write(&plist_file, plist(other, Every::Day, 6, 10, &p())).unwrap();
+    std::fs::write(&plist_file, plist(other, None, Every::Day, 6, 10, &p())).unwrap();
     assert_eq!(program_in(&status_json(Backend::Launchd, &quiet).unwrap()).as_deref(), Some("/opt/standalone/wpantry"));
     // A plist with no ProgramArguments: installed, program unknown.
     std::fs::write(&plist_file, "<plist><dict></dict></plist>").unwrap();
@@ -653,7 +663,7 @@ fn status_json_reports_the_program_another_wpantry_registered() {
     assert!(doc.contains(r#""installed": true"#), "{doc}");
     assert_eq!(program_in(&doc), None);
 
-    let table = Mutex::new(Some(format!("0 0 * * * other\n{}\n", cron_line(other, Every::Day, 6, 10, &p()))));
+    let table = Mutex::new(Some(format!("0 0 * * * other\n{}\n", cron_line(other, None, Every::Day, 6, 10, &p()))));
     assert_eq!(
         program_in(&status_json(Backend::Cron, &crontab_of(&table)).unwrap()).as_deref(),
         Some(other.to_str().unwrap())
@@ -677,7 +687,7 @@ fn status_json_reports_the_program_another_wpantry_registered() {
     if hermetic() {
         let dir = unit_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let (service, timer) = unit(other, Every::Day, 6, 10, &p());
+        let (service, timer) = unit(other, None, Every::Day, 6, 10, &p());
         std::fs::write(dir.join("wpantry.timer"), timer).unwrap();
         let systemd = |_: &[&OsStr], _: Duration| ok("");
         // The timer alone names no program.
@@ -687,5 +697,284 @@ fn status_json_reports_the_program_another_wpantry_registered() {
             program_in(&status_json(Backend::Systemd, &systemd).unwrap()).as_deref(),
             Some(other.to_str().unwrap())
         );
+    }
+}
+
+/// A scanner in a folder named like an app bundle's (spaces, parentheses),
+/// with `wpantry-desktop` beside it when `with_launcher`.
+#[cfg(unix)]
+fn bundle(with_launcher: bool) -> (TempDir, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new("bundle").unwrap();
+    let macos = dir.path().join("Some App (test).app/Contents/MacOS");
+    std::fs::create_dir_all(&macos).unwrap();
+    let scanner = macos.join("wpantry");
+    let launcher = macos.join("wpantry-desktop");
+    for f in [&scanner].into_iter().chain(with_launcher.then_some(&launcher)) {
+        std::fs::write(f, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    (dir, scanner, launcher)
+}
+
+/// Oracle: the launchd, systemd and cron jobs name the launcher only when an
+/// executable `wpantry-desktop` (a file or a link to one) sits beside the
+/// scanner or beside the file a `wpantry` link points at. A plain file
+/// without an execute bit, a folder, a dangling link or a launcher elsewhere
+/// is no launcher.
+#[cfg(unix)]
+#[test]
+fn a_unix_launcher_is_an_executable_beside_the_scanner() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let (_dir, scanner, launcher_path) = bundle(false);
+    assert_eq!(launcher(&scanner), None, "nothing beside it");
+    std::fs::write(&launcher_path, b"").unwrap();
+    std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(launcher(&scanner), None, "not executable");
+    std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(launcher(&scanner), Some(launcher_path.clone()));
+    std::fs::remove_file(&launcher_path).unwrap();
+    std::fs::create_dir(&launcher_path).unwrap();
+    assert_eq!(launcher(&scanner), None, "a folder");
+    std::fs::remove_dir(&launcher_path).unwrap();
+
+    // A link to an executable counts; a dangling link does not.
+    let elsewhere = TempDir::new("elsewhere").unwrap();
+    let real = elsewhere.path().join("the-launcher");
+    std::fs::write(&real, b"").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&real, &launcher_path).unwrap();
+    assert_eq!(launcher(&scanner), Some(launcher_path.clone()));
+    std::fs::remove_file(&real).unwrap();
+    assert_eq!(launcher(&scanner), None, "a dangling link");
+    std::fs::remove_file(&launcher_path).unwrap();
+
+    // A `wpantry` link on PATH into the bundle finds the launcher beside the
+    // file it points at, as on Windows.
+    let (_bundle, scanner, launcher_path) = bundle(true);
+    let bin = TempDir::new("bin").unwrap();
+    let link = bin.path().join("wpantry");
+    symlink(&scanner, &link).unwrap();
+    assert_eq!(launcher(&link).map(|l| l.canonicalize().unwrap()), Some(launcher_path.canonicalize().unwrap()));
+}
+
+/// The paths the quoting tests write: an app bundle's (spaces, parentheses)
+/// and one with every character the three formats treat specially.
+const NASTY: [&str; 2] = [
+    "/Applications/Some App (test).app/Contents/MacOS/wpantry-desktop",
+    "/opt/it's \"q\" 100% $HOME & <co>/wpantry-desktop",
+];
+
+/// Oracle: with a launcher the job runs `<launcher> --scheduled-run` and
+/// nothing else, written as each format wants it (exact text below); without
+/// one it runs `<scanner> schedule run`. Everything else in the job is the
+/// same either way. Known bad: before this change all three ran the scanner.
+#[test]
+fn unix_jobs_run_the_launcher_with_scheduled_run_and_quote_it() {
+    let scanner = Path::new("/opt/x/wpantry");
+    let [app, odd] = NASTY.map(Path::new);
+    let plain = plist(scanner, None, Every::Day, 9, 30, &p());
+    let text = plist(scanner, Some(app), Every::Day, 9, 30, &p());
+    assert!(
+        text.contains(
+            "<key>ProgramArguments</key>\n    <array>\n      <string>/Applications/Some App (test).app/Contents/MacOS/wpantry-desktop</string>\n      <string>--scheduled-run</string>\n    </array>\n"
+        ),
+        "{text}"
+    );
+    let odd_plist = plist(scanner, Some(odd), Every::Day, 9, 30, &p());
+    assert!(
+        odd_plist.contains("<string>/opt/it's \"q\" 100% $HOME &amp; &lt;co&gt;/wpantry-desktop</string>\n      <string>--scheduled-run</string>\n    </array>"),
+        "{odd_plist}"
+    );
+    // Only the arguments differ.
+    let args =
+        |t: &str| t.split_once("<key>ProgramArguments</key>").unwrap().1.split_once("</array>").unwrap().1.to_owned();
+    assert_eq!(args(&text), args(&plain));
+
+    let (service, timer) = unit(scanner, Some(app), Every::Day, 9, 30, &p());
+    assert!(
+        service.contains(
+            "\nExecStart=\"/Applications/Some App (test).app/Contents/MacOS/wpantry-desktop\" --scheduled-run\n"
+        ),
+        "{service}"
+    );
+    let (odd_service, _) = unit(scanner, Some(odd), Every::Day, 9, 30, &p());
+    assert!(
+        odd_service
+            .contains("\nExecStart=\"/opt/it's \\\"q\\\" 100%% $$HOME & <co>/wpantry-desktop\" --scheduled-run\n"),
+        "{odd_service}"
+    );
+    let (plain_service, plain_timer) = unit(scanner, None, Every::Day, 9, 30, &p());
+    assert!(plain_service.contains("\nExecStart=/opt/x/wpantry schedule run\n"), "{plain_service}");
+    assert_eq!(timer, plain_timer);
+    let rest = |t: &str| t.lines().filter(|l| !l.starts_with("ExecStart=")).collect::<Vec<_>>().join("\n");
+    assert_eq!(rest(&service), rest(&plain_service));
+
+    let line = cron_line(scanner, Some(app), Every::Day, 9, 30, &p());
+    assert_eq!(
+        line,
+        "30 9 * * * nice -n 10 '/Applications/Some App (test).app/Contents/MacOS/wpantry-desktop' --scheduled-run >> /s/wpantry/cron.log 2>&1 # wpantry schedule"
+    );
+    let odd_line = cron_line(scanner, Some(odd), Every::Day, 9, 30, &p());
+    assert!(
+        odd_line.contains(r#" nice -n 10 '/opt/it'\''s "q" 100\% $HOME & <co>/wpantry-desktop' --scheduled-run >> "#),
+        "{odd_line}"
+    );
+    assert_eq!(
+        cron_line(scanner, None, Every::Day, 9, 30, &p()),
+        "30 9 * * * nice -n 10 /opt/x/wpantry schedule run >> /s/wpantry/cron.log 2>&1 # wpantry schedule"
+    );
+
+    // Each reads back to the launcher, quoting undone.
+    for path in NASTY.map(Path::new) {
+        let want = Some(path.to_path_buf());
+        assert_eq!(program::read(Backend::Launchd, &plist(scanner, Some(path), Every::Week, 1, 2, &p())), want);
+        assert_eq!(program::read(Backend::Systemd, &unit(scanner, Some(path), Every::Week, 1, 2, &p()).0), want);
+        assert_eq!(program::read(Backend::Cron, &cron_line(scanner, Some(path), Every::Week, 1, 2, &p())), want);
+    }
+}
+
+/// Oracle: the shell, not our own reader, splits the cron command into
+/// exactly the launcher's path and `--scheduled-run` (cron first turns `\%`
+/// back into `%`); on macOS `plutil` reads the plist's `ProgramArguments`
+/// as exactly those two strings.
+#[cfg(unix)]
+#[test]
+fn the_shell_and_plutil_read_the_launcher_as_one_argument() {
+    let scanner = Path::new("/opt/x/wpantry");
+    for path in NASTY {
+        let line = cron_line(scanner, Some(Path::new(path)), Every::Day, 9, 30, &p());
+        let command = line.split_once(" nice -n 10 ").unwrap().1.split_once(" >> ").unwrap().0.replace(r"\%", "%");
+        let out = exec(
+            &[OsStr::new("/bin/sh"), OsStr::new("-c"), OsStr::new(&format!("printf '%s\\n' {command}"))],
+            &[],
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(out.stdout, format!("{path}\n--scheduled-run\n"), "{line}");
+    }
+    let plutil = Path::new("/usr/bin/plutil");
+    if cfg!(target_os = "macos") && plutil.is_file() {
+        let dir = TempDir::new("plist").unwrap();
+        for path in NASTY {
+            let file = dir.path().join("job.plist");
+            std::fs::write(&file, plist(scanner, Some(Path::new(path)), Every::Day, 9, 30, &p())).unwrap();
+            let out = exec(
+                &[
+                    plutil.as_os_str(),
+                    OsStr::new("-extract"),
+                    OsStr::new("ProgramArguments"),
+                    OsStr::new("json"),
+                    OsStr::new("-o"),
+                    OsStr::new("-"),
+                    file.as_os_str(),
+                ],
+                &[],
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            let args = wpantry::utils::json::parse(out.stdout.as_bytes(), 1 << 20).unwrap();
+            let args: Vec<&str> = args.as_array().unwrap().iter().filter_map(|a| a.as_str()).collect();
+            assert_eq!(args, [path, "--scheduled-run"], "{}", out.stdout);
+        }
+    }
+}
+
+/// Oracle, per Unix backend, with the scheduler faked: installing with a
+/// launcher beside the scanner writes a job that runs it, and `status
+/// --json` reports it as `program`; when the launcher goes, status still
+/// reports what the job runs (the launcher's path) until `install` is run
+/// again, which rewrites the job to run the scanner; a launcher that appears
+/// later is picked up the same way; `uninstall` removes either job.
+#[cfg(unix)]
+#[test]
+fn reinstalling_follows_the_launcher_and_uninstall_removes_either_job() {
+    let (_dir, scanner, launcher_path) = bundle(true);
+    let launcher_s = launcher_path.to_string_lossy().into_owned();
+    let scanner_s = scanner.to_string_lossy().into_owned();
+    let toggle = |on: bool| {
+        if on {
+            std::fs::copy(&scanner, &launcher_path).unwrap();
+        } else {
+            std::fs::remove_file(&launcher_path).unwrap();
+        }
+    };
+
+    // launchd
+    let _home = test_home();
+    let calls = Mutex::new(Vec::new());
+    let run = recorder(&calls, |cmd| {
+        if cmd.starts_with("launchctl print") {
+            failed("Could not find service")
+        } else {
+            ok(if cmd == "id -u" { "777\n" } else { "" })
+        }
+    });
+    let job = || std::fs::read_to_string(plist_path()).unwrap();
+    assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert!(
+        job()
+            .contains(&format!("<string>{}</string>\n      <string>--scheduled-run</string>", xml_escape(&launcher_s))),
+        "{}",
+        job()
+    );
+    assert!(calls.lock().unwrap().iter().any(|c| c.starts_with("launchctl bootstrap gui/777 ")));
+    assert_eq!(program_in(&status_json(Backend::Launchd, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+    toggle(false);
+    assert_eq!(
+        program_in(&status_json(Backend::Launchd, &run).unwrap()).as_deref(),
+        Some(launcher_s.as_str()),
+        "the job still names the launcher"
+    );
+    assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert!(job().contains("<string>schedule</string>\n      <string>run</string>"), "{}", job());
+    assert_eq!(program_in(&status_json(Backend::Launchd, &run).unwrap()).as_deref(), Some(scanner_s.as_str()));
+    toggle(true);
+    assert_eq!(install_for(&scanner, Every::Week, (7, 5), false, Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert_eq!(program_in(&status_json(Backend::Launchd, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+    assert_eq!(calendar::read_cadence(Backend::Launchd, &job()), Some((Every::Week, (7, 5))));
+    assert_eq!(uninstall_with(Backend::Launchd, &run).unwrap(), EXIT_OK);
+    assert!(!plist_path().exists());
+    assert_eq!(program_in(&status_json(Backend::Launchd, &run).unwrap()), None);
+
+    // cron
+    let table = Mutex::new(Some("0 0 * * * other\n".to_string()));
+    let run = crontab_of(&table);
+    let ours = || table.lock().unwrap().clone().unwrap_or_default();
+    assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert!(ours().contains(&format!("{} --scheduled-run >> ", cron_word(&launcher_s))), "{}", ours());
+    assert_eq!(program_in(&status_json(Backend::Cron, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+    toggle(false);
+    assert_eq!(program_in(&status_json(Backend::Cron, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+    assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert!(ours().contains(&format!("{} schedule run >> ", cron_word(&scanner_s))), "{}", ours());
+    assert_eq!(ours().lines().count(), 2, "one line of ours, the other kept: {}", ours());
+    toggle(true);
+    assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(ours().lines().count(), 2, "{}", ours());
+    assert_eq!(uninstall_with(Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(ours(), "0 0 * * * other\n");
+
+    // systemd
+    if hermetic() {
+        let calls = Mutex::new(Vec::new());
+        let run = recorder(&calls, |cmd| if cmd.contains("is-active") { failed("") } else { ok("") });
+        let service = || std::fs::read_to_string(unit_dir().join("wpantry.service")).unwrap();
+        assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
+        assert!(
+            service().contains(&format!("\nExecStart={} --scheduled-run\n", unit_word(&launcher_s))),
+            "{}",
+            service()
+        );
+        assert_eq!(program_in(&status_json(Backend::Systemd, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+        toggle(false);
+        assert_eq!(program_in(&status_json(Backend::Systemd, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+        assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
+        assert!(service().contains(&format!("\nExecStart={} schedule run\n", unit_word(&scanner_s))), "{}", service());
+        toggle(true);
+        assert_eq!(install_for(&scanner, Every::Day, (9, 30), false, Backend::Systemd, &run).unwrap(), EXIT_OK);
+        assert_eq!(program_in(&status_json(Backend::Systemd, &run).unwrap()).as_deref(), Some(launcher_s.as_str()));
+        assert_eq!(uninstall_with(Backend::Systemd, &run).unwrap(), EXIT_OK);
+        assert!(!unit_dir().join("wpantry.service").exists() && !unit_dir().join("wpantry.timer").exists());
     }
 }

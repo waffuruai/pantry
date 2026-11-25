@@ -48,10 +48,43 @@ fn query_task(name: &str, run: Run) -> Result<Option<String>> {
         return Ok(Some(out.stdout.replace('\0', "")));
     }
     let listing = checked(call(run, &["/query", "/fo", "csv", "/nh"].map(OsStr::new))?)?;
-    if listing.replace('\0', "").contains(name) {
+    if listed(&listing.replace('\0', ""), name) {
         return checked(out).map(Some);
     }
     Ok(None)
+}
+
+/// The fields of one CSV line as `schtasks /fo csv` writes it: each field
+/// may be in double quotes, a quoted field may hold commas, and `""` inside
+/// quotes is one `"`.
+///
+/// ```ignore
+/// assert_eq!(csv_fields(r#""\Task, one","N/A","Ready""#), [r"\Task, one", "N/A", "Ready"]);
+/// ```
+pub(super) fn csv_fields(line: &str) -> Vec<String> {
+    let mut fields = vec![String::new()];
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        let field = fields.last_mut().expect("one field at least");
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                field.push('"');
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => fields.push(String::new()),
+            c => field.push(c),
+        }
+    }
+    fields
+}
+
+/// Whether the listing has a row for the task `name` at the root folder:
+/// its first field, the task's full name, is exactly `\name`.
+fn listed(listing: &str, name: &str) -> bool {
+    let full = format!("\\{name}");
+    listing.lines().any(|line| csv_fields(line.trim_end_matches('\r')).first().is_some_and(|field| *field == full))
 }
 
 pub(super) fn query(run: Run) -> Result<Option<String>> {

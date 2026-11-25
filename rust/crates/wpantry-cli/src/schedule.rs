@@ -273,7 +273,7 @@ fn install_for(program: &Path, every: Every, at: (u32, u32), dry_run: bool, back
         }
         Backend::Cron => {
             let current = crontab(run);
-            let kept: Vec<&str> = current.lines().filter(|l| !l.contains(CRON_MARK)).collect();
+            let kept: Vec<&str> = current.lines().filter(|l| !ours(l)).collect();
             let mut new = kept.join("\n");
             if !new.is_empty() {
                 new.push('\n');
@@ -388,7 +388,7 @@ fn uninstall_with(backend: Backend, run: Run) -> Result<i32> {
         }
         Backend::Cron => {
             let current = crontab(run);
-            let kept: Vec<&str> = current.lines().filter(|l| !l.contains(CRON_MARK)).collect();
+            let kept: Vec<&str> = current.lines().filter(|l| !ours(l)).collect();
             let was = kept.len() != current.lines().count();
             if was {
                 let mut new = kept.join("\n");
@@ -396,7 +396,7 @@ fn uninstall_with(backend: Backend, run: Run) -> Result<i32> {
                     new.push('\n');
                 }
                 set_crontab(&new, run)?;
-                if crontab(run).lines().any(|l| l.contains(CRON_MARK)) {
+                if crontab(run).lines().any(ours) {
                     left.push("the crontab still has the wpantry line (crontab -l)".into());
                 }
             }
@@ -423,7 +423,7 @@ fn current(backend: Backend, run: Run) -> Result<(Option<String>, Option<bool>)>
     let definition = match backend {
         Backend::Launchd => calendar::read(&plist_path())?,
         Backend::Systemd => calendar::read(&unit_dir().join("wpantry.timer"))?,
-        Backend::Cron => crontab(run).lines().find(|l| l.ends_with(CRON_MARK)).map(str::to_owned),
+        Backend::Cron => crontab(run).lines().find(|l| ours(l)).map(str::to_owned),
         Backend::Windows => windows::query(run)?,
     };
     // launchd can hold a job whose plist is gone (an uninstall whose
@@ -851,6 +851,21 @@ fn cron_word(word: &str) -> String {
 }
 
 const CRON_MARK: &str = "# wpantry schedule";
+
+/// Whether a crontab line is ours: it ends with [`CRON_MARK`] as its own
+/// word, as [`cron_line`] writes it. A line that only contains the mark's
+/// text (in a quoted argument, or as the start of a longer word such as
+/// `# wpantry schedules`) is the user's, and install, uninstall and status
+/// all leave it alone.
+///
+/// ```ignore
+/// assert!(ours("5 5 * * * nice -n 10 wpantry schedule run >> log 2>&1 # wpantry schedule"));
+/// assert!(!ours("0 2 * * * backup # wpantry schedules"));
+/// ```
+fn ours(line: &str) -> bool {
+    let line = line.trim_end();
+    line.strip_suffix(CRON_MARK).is_some_and(|before| before.is_empty() || before.ends_with(char::is_whitespace))
+}
 
 /// The crontab line; the shell reads it, so each path is a quoted word.
 pub fn cron_line(program: &Path, launcher: Option<&Path>, every: Every, hour: u32, minute: u32, p: &Paths) -> String {

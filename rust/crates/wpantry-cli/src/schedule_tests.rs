@@ -418,6 +418,35 @@ fn cron_install_replaces_its_own_line_and_keeps_the_rest() {
     assert_eq!(status_with(Backend::Cron, &run, false).unwrap(), EXIT_OK);
 }
 
+/// Oracle: our cron line is the one that ends with the mark as its own
+/// word (` # wpantry schedule`). A user's line that only contains the mark's
+/// text, or a longer word starting with it, is theirs: install keeps it,
+/// uninstall leaves it and says nothing was scheduled, status does not read
+/// it. Known bad: install and uninstall matched any line containing the
+/// mark, so they deleted the user's lines below, while status (which
+/// matched the end of the line) disagreed with them.
+#[test]
+fn cron_keeps_a_users_line_that_only_contains_the_marks_text() {
+    let _home = test_home();
+    let theirs = [
+        format!("0 1 * * * echo '{CRON_MARK}' > /tmp/note"),
+        format!("0 2 * * * backup {CRON_MARK}s"),
+        format!("0 3 * * * backup {CRON_MARK}-old"),
+    ];
+    let table = Mutex::new(Some(format!("{}\n", theirs.join("\n"))));
+    let run = crontab_of(&table);
+    assert!(status_json(Backend::Cron, &run).unwrap().contains(r#""installed": false"#));
+    assert_eq!(uninstall_with(Backend::Cron, &run).unwrap(), EXIT_OK, "nothing scheduled");
+    assert_eq!(table.lock().unwrap().as_deref(), Some(format!("{}\n", theirs.join("\n")).as_str()), "untouched");
+    assert_eq!(install_with(Every::Day, (9, 30), false, Backend::Cron, &run).unwrap(), EXIT_OK);
+    let now = table.lock().unwrap().clone().unwrap();
+    let lines: Vec<&str> = now.lines().collect();
+    assert_eq!(lines[..3], theirs.iter().map(String::as_str).collect::<Vec<_>>()[..], "{now}");
+    assert_eq!(lines.len(), 4, "{now}");
+    assert_eq!(uninstall_with(Backend::Cron, &run).unwrap(), EXIT_OK);
+    assert_eq!(table.lock().unwrap().as_deref(), Some(format!("{}\n", theirs.join("\n")).as_str()));
+}
+
 #[test]
 fn an_empty_crontab_gets_only_our_line_and_a_refusal_is_an_error() {
     let _home = test_home();
@@ -600,6 +629,58 @@ fn windows_installs_only_the_current_users_scan_and_checks_its_state() {
     assert!(windows::disabled(&definition));
     assert!(windows::uninstall(&run).unwrap());
     assert!(!windows::uninstall(&run).unwrap());
+}
+
+/// The Task Scheduler listing `schtasks /query /fo csv /nh` prints, with our
+/// task's own `/query /tn ... /xml` failing as for a task that is not there.
+fn windows_listing(listing: &'static str) -> impl Fn(&[&OsStr], Duration) -> Result<Output> {
+    move |argv, _| {
+        let args = argv.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        match (args[0].as_str(), args.get(1).map(String::as_str), args.get(2).map(String::as_str)) {
+            ("whoami.exe", ..) => ok("\"fixture\\user\",\"S-1-5-21-123\"\r\n"),
+            ("schtasks.exe", Some("/query"), Some("/fo")) => ok(listing),
+            ("schtasks.exe", Some("/query"), Some("/tn")) => {
+                failed("ERROR: The system cannot find the file specified.\r\n")
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
+
+/// Oracle: our task is the listing row whose first CSV field is exactly
+/// `\Waffuru-Pantry-<sid>`. Another task whose name only starts with ours,
+/// one in a subfolder, or one that has our name inside a quoted field with
+/// commas, is not ours: status reads no task and uninstall removes nothing,
+/// with no error. Known bad: a substring match over the whole listing took
+/// each of those rows for our task and turned the failed `/tn` query into a
+/// status and uninstall error.
+#[test]
+fn windows_matches_the_exact_task_name_in_the_listing() {
+    for listing in [
+        "\"\\Waffuru-Pantry-S-1-5-21-1234\",\"N/A\",\"Ready\"\r\n",
+        "\"\\Waffuru-Pantry-S-1-5-21-123-old\",\"N/A\",\"Ready\"\r\n",
+        "\"\\Backup\\Waffuru-Pantry-S-1-5-21-123\",\"N/A\",\"Ready\"\r\n",
+        "\"\\Other, \"\"Waffuru-Pantry-S-1-5-21-123\"\"\",\"N/A\",\"Ready\"\r\n",
+        "\"\\Other\",\"N/A\",\"\\Waffuru-Pantry-S-1-5-21-123\"\r\n",
+    ] {
+        let run = windows_listing(listing);
+        assert_eq!(windows::query(&run).unwrap(), None, "{listing}");
+        assert!(!windows::uninstall(&run).unwrap(), "{listing}");
+        assert!(status_json(Backend::Windows, &run).unwrap().contains(r#""installed": false"#), "{listing}");
+    }
+    // Our own row (UTF-16 NULs and all) with a `/tn` query that fails is
+    // still an error: the task is there and could not be read.
+    let ours = windows_listing("\"\\Waffuru-Pantry-S-1-5-21-123\",\"N/A\",\"Ready\"\r\n");
+    assert!(windows::query(&ours).is_err());
+    let wide = windows_listing("\"\0\\\0W\0affuru-Pantry-S-1-5-21-123\0\",\"N/A\",\"Ready\"\r\n");
+    assert!(windows::query(&wide).is_err());
+}
+
+#[test]
+fn csv_fields_follow_quotes_and_doubled_quotes() {
+    assert_eq!(windows::csv_fields(r#""a","b, c","d ""q"" e",f"#), ["a", "b, c", r#"d "q" e"#, "f"]);
+    assert_eq!(windows::csv_fields(""), [""]);
+    assert_eq!(windows::csv_fields(r#""\T",,"x""#), [r"\T", "", "x"]);
 }
 
 /// Oracle: the task names the windowless launcher only when it sits

@@ -16,7 +16,7 @@ The user's file can add a source, or change the `tier` of a bundled one (for exa
 An added file follows the same rules as the user's file. Its sources come after the user's, in the order the files are given. In addition:
 
 - An `id` names one source across all the files. A source defined in the user's file or an earlier added file can't be defined again; the error names the `id` and both files.
-- Any file may still set only the `tier` of a bundled source, and the last one to set it wins. Any other setting for a bundled `id` is refused, as in the user's file.
+- Any file may set only the `tier` of a bundled source, and the last one to set it wins. The user's own file may set any tier. An added file may only turn a bundled source up, towards more checking (`off` to `deep` or `default`, `deep` to `default`), judged against the tier in effect when that file is read; it can never turn one down or off, because a flag that adds sources must not make a run check less. An entry that would is an error (exit 2) naming the file, the `id` and the rule, and nothing from that file is applied (a file is used whole or not at all). Any other setting for a bundled `id` is refused, as in the user's file.
 - An added file that is missing or can't be read is an error (exit 2), as is one that can't be used. Only the user's default file may be missing.
 - `sync` and `rules` don't take `--add-sources`.
 

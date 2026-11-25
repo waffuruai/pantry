@@ -211,12 +211,12 @@ fn added_files_add_sources_and_an_id_is_defined_once() {
     let f = |name: &str, text: String| (name.to_string(), text);
     let all = merged_files(&[
         f(USER_FILE_NAME, src("own")),
-        f("the added sources file /a.toml", format!("{}[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n", src("added"))),
+        f("the added sources file /a.toml", format!("{}[[source]]\nid = \"elastic\"\ntier = \"deep\"\n", src("added"))),
     ])
     .unwrap();
     let ids: Vec<&str> = all.iter().skip(bundled().len()).map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["own", "added"], "both files' sources, the user's first");
-    assert_eq!(all.iter().find(|s| s.id == "cisa-kev").unwrap().tier, Tier::Off, "a tier from an added file");
+    assert_eq!(all.iter().find(|s| s.id == "elastic").unwrap().tier, Tier::Deep, "a tier raised by an added file");
     let twice = merged_files(&[f(USER_FILE_NAME, src("team")), f("the added sources file /a.toml", src("team"))])
         .unwrap_err()
         .to_string();
@@ -253,4 +253,84 @@ fn read_files_needs_every_file_named_and_not_the_default() {
     let (name, why) = read_files(Some(&main), std::slice::from_ref(&missing)).unwrap_err();
     assert!(name.contains("missing.toml") && why.contains("missing.toml"), "{name}: {why}");
     assert_eq!(read_files(Some(&missing), &[]).unwrap_err().0, USER_FILE_NAME, "a --sources FILE named must exist");
+}
+
+/// A sources file as `merged_files` is given one: the user's own, or an added one.
+fn added(path: &str) -> String {
+    format!("the added sources file {path}")
+}
+
+fn tier_of(all: &[Source], id: &str) -> Tier {
+    all.iter().find(|s| s.id == id).unwrap().tier
+}
+
+/// Risk: `--add-sources`, a flag described as adding sources, makes a run
+/// check LESS: a repo's `sources.toml` turning a bundled source off or down.
+/// Oracle: `specs/cli-contract.md`, `--add-sources`: an added file may add
+/// sources and may turn a bundled source up, never down or off; an entry
+/// that would is refused with an error naming the file, the id and the rule.
+#[test]
+fn an_added_file_may_not_turn_a_bundled_source_off_or_down() {
+    let tier = |id: &str, t: &str| format!("[[source]]\nid = \"{id}\"\ntier = \"{t}\"\n");
+    // Off: the case the review named.
+    let e = merged_files(&[(added("/repo/sources.toml"), tier("yara-forge-full", "off"))]).unwrap_err().to_string();
+    assert!(
+        e.contains("/repo/sources.toml") && e.contains("\"yara-forge-full\"") && e.contains("--add-sources"),
+        "the error names the file, the id and the rule: {e}"
+    );
+    // Down: default to deep checks less than every scan.
+    let e = merged_files(&[(added("/repo/sources.toml"), tier("cisa-kev", "deep"))]).unwrap_err().to_string();
+    assert!(e.contains("\"cisa-kev\"") && e.contains("--add-sources"), "{e}");
+    // Not changing a tier is not lowering it.
+    let same = merged_files(&[(added("/a.toml"), tier("cisa-kev", "default"))]).unwrap();
+    assert_eq!(tier_of(&same, "cisa-kev"), Tier::Default);
+}
+
+/// Oracle: the same rule: up (more checking) is allowed from an added file;
+/// so is a new id; one added file can't undo what an earlier one raised.
+#[test]
+fn an_added_file_may_turn_a_bundled_source_up_and_add_a_new_id() {
+    let tier = |id: &str, t: &str| format!("[[source]]\nid = \"{id}\"\ntier = \"{t}\"\n");
+    assert_eq!(tier_of(bundled(), "elastic"), Tier::Off, "the fixture: a bundled source that is off");
+    let up = merged_files(&[(added("/a.toml"), tier("elastic", "deep"))]).unwrap();
+    assert_eq!(tier_of(&up, "elastic"), Tier::Deep, "off to deep is up");
+    let top = merged_files(&[(added("/a.toml"), tier("elastic", "default"))]).unwrap();
+    assert_eq!(tier_of(&top, "elastic"), Tier::Default, "off to default is up");
+    let new =
+        "[[source]]\nid = \"added\"\nkind = \"hashes\"\nformat = \"lines\"\npath = \"/srv/h.txt\"\ntier = \"off\"\n";
+    let with_new = merged_files(&[(added("/a.toml"), new.into())]).unwrap();
+    assert_eq!(tier_of(&with_new, "added"), Tier::Off, "a source of its own may have any tier");
+    // Later than a raise: the second file may not lower what the first raised.
+    let e = merged_files(&[(added("/a.toml"), tier("elastic", "default")), (added("/b.toml"), tier("elastic", "off"))])
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("/b.toml") && e.contains("\"elastic\""), "{e}");
+}
+
+/// Risk: a refused entry leaves the rest of its file half applied.
+/// Oracle: the rule is all or nothing: a mixed file (a new source, a raise,
+/// and one lowering) is refused as a whole, and the error names the file.
+#[test]
+fn a_mixed_added_file_is_refused_as_a_whole() {
+    let mixed = "[[source]]\nid = \"added\"\nkind = \"hashes\"\nformat = \"lines\"\npath = \"/srv/h.txt\"\n\n\
+                 [[source]]\nid = \"elastic\"\ntier = \"default\"\n\n\
+                 [[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n";
+    let e = merged_files(&[(added("/repo/mixed.toml"), mixed.into())]).unwrap_err().to_string();
+    assert!(e.contains("/repo/mixed.toml") && e.contains("\"cisa-kev\""), "{e}");
+    // Nothing comes back, so nothing of the file (its new source, its
+    // raise) is applied; the same file without the lowering entry is fine.
+    let without = mixed.split("[[source]]\nid = \"cisa-kev\"").next().unwrap();
+    let ok = merged_files(&[(added("/repo/mixed.toml"), without.into())]).unwrap();
+    assert!(ok.iter().any(|s| s.id == "added") && tier_of(&ok, "elastic") == Tier::Default, "the control applies");
+}
+
+/// Oracle: the user's own file keeps its full power: it may turn a bundled
+/// source off, and an added file after it may raise that source again.
+#[test]
+fn the_users_own_file_may_still_turn_a_source_off() {
+    let off = "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n";
+    let all = merged_files(&[(USER_FILE_NAME.to_string(), off.into())]).unwrap();
+    assert_eq!(tier_of(&all, "cisa-kev"), Tier::Off);
+    let deep = merged("[[source]]\nid = \"cisa-kev\"\ntier = \"deep\"\n").unwrap();
+    assert_eq!(tier_of(&deep, "cisa-kev"), Tier::Deep, "and down to deep");
 }

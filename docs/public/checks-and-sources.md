@@ -117,7 +117,7 @@ A sources file of your own, `~/.config/wpantry/sources.toml` (or `--sources FILE
 
 A source of yours on a host Pantry doesn't already ask, or one that sends anything (a hash lookup may send a flagged file's SHA-256, nothing else), is used only after you say yes, once. With `--no-input` and no yes, it is reported not checked. Details: [the sources file](../../specs/design/sources-file.md).
 
-`--add-sources FILE` on `scan`, `fix` and `sources` adds a file's sources to yours for one run, instead of replacing your file as `--sources` does. Repeat it for more files. An `id` may be defined once across all of them; an added file may still set a bundled source's `tier`.
+`--add-sources FILE` on `scan`, `fix` and `sources` adds a file's sources to yours for one run, instead of replacing your file as `--sources` does. Repeat it for more files. An `id` may be defined once across all of them. An added file may add sources and may turn a bundled source up (`off` to `deep` or `default`, `deep` to `default`: more checking), never down or off; an entry that would is refused with an error naming the file, the id and the rule, and nothing from that file is applied. Your own sources file keeps full control of every `tier`.
 
 ### Sources on this machine
 

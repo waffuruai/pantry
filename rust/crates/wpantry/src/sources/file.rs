@@ -28,6 +28,17 @@ impl Tier {
             Tier::Off => "off",
         }
     }
+
+    /// How much checking a tier gives, the order the variants are declared
+    /// in read the other way round: `Default` (every scan) is the most,
+    /// `Deep` (only with `--deep`) less, `Off` (never) none.
+    fn checking(self) -> u8 {
+        match self {
+            Tier::Default => 2,
+            Tier::Deep => 1,
+            Tier::Off => 0,
+        }
+    }
 }
 
 /// How a source is reached.
@@ -316,21 +327,30 @@ pub fn merged(user_text: &str) -> Result<Vec<Source>> {
 }
 
 /// [`merged`] over several sources files, as `(name, text)` in order: the
-/// user's own, then each `--add-sources FILE`. Every file follows the same
-/// rules; an id one file defines can't be defined again by a later one,
-/// though any file may set a bundled source's tier (the last one wins).
+/// user's own, then each `--add-sources FILE`. An id one file defines can't
+/// be defined again by a later one. The user's own file (named
+/// [`USER_FILE_NAME`]) may set any bundled source's tier, the last file to
+/// set it winning; an added file may only turn one up (more checking:
+/// `off` to `deep` or `default`, `deep` to `default`), because a flag that
+/// adds sources must not make a run check less. An entry in an added file
+/// that would lower or disable a bundled source refuses the whole file.
 pub fn merged_files(files: &[(String, String)]) -> Result<Vec<Source>> {
     let mut all: Vec<Source> = bundled().to_vec();
     // The file each of the user's own ids came from.
     let mut defined: Vec<(String, String)> = Vec::new();
     for (name, text) in files {
-        merge_one(&mut all, &mut defined, name, text)?;
+        // A file is applied whole or not at all: work on copies and keep
+        // them only when every entry of the file was accepted.
+        let (mut next, mut next_defined) = (all.clone(), defined.clone());
+        merge_one(&mut next, &mut next_defined, name, text)?;
+        (all, defined) = (next, next_defined);
     }
     Ok(all)
 }
 
 fn merge_one(all: &mut Vec<Source>, defined: &mut Vec<(String, String)>, name: &str, text: &str) -> Result<()> {
     let parsed = entries(text).map_err(|e| Error::Invalid(format!("{name}: {e}")))?;
+    let added = name != USER_FILE_NAME;
     for (mut s, keys) in parsed {
         let bad = |why: &str| Error::Invalid(format!("{name}, source {:?}: {why}", s.id));
         if let Some(b) = all.iter_mut().find(|b| b.id == s.id && bundled().iter().any(|x| x.id == s.id)) {
@@ -338,6 +358,14 @@ fn merge_one(all: &mut Vec<Source>, defined: &mut Vec<(String, String)>, name: &
                 return Err(bad(
                     "a bundled source's only setting is its tier; a different URL is a different source, with its own id",
                 ));
+            }
+            if added && s.tier.checking() < b.tier.checking() {
+                return Err(bad(&format!(
+                    "--add-sources adds sources and may only turn a bundled source up, never down or off \
+                     (it is {} and this file sets {}); set it in your own sources file instead",
+                    b.tier.as_str(),
+                    s.tier.as_str()
+                )));
             }
             b.tier = s.tier;
             continue;

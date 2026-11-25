@@ -123,22 +123,22 @@ fn add_sources_adds_to_the_persons_file_and_an_id_is_defined_once() {
     let added = x.t.home.join("added.toml");
     write(
         &added,
-        entry("team-rules", "yara", "yara", &x.rules, "") + "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n",
+        entry("team-rules", "yara", "yara", &x.rules, "") + "[[source]]\nid = \"elastic\"\ntier = \"deep\"\n",
     );
     let r = scan(&x, &["--sources", s(&mine), "--add-sources", s(&added)]);
     assert_eq!(r.code, 1, "{}", r.err);
     let got = hits(&r.json());
     assert!(listed(&got, "listed.sh") && marked(&got), "both files' sources: {got:?}");
-    // `sources` lists both, the added file's tier for a bundled source too.
+    // `sources` lists both, the added file's raised tier for a bundled source too.
     let r = x.t.run(&["sources", "--json", "--sources", s(&mine), "--add-sources", s(&added)]);
     assert_eq!(r.code, 0, "{}", r.err);
     let listed_ids: Vec<(String, String)> = arr(&r.json()["sources"])
         .iter()
         .map(|s| (str_(&s["id"]).to_string(), str_(&s["tier"]).to_string()))
-        .filter(|(id, _)| id.starts_with("team-") || id == "cisa-kev")
+        .filter(|(id, _)| id.starts_with("team-") || id == "elastic")
         .collect();
     assert_eq!(listed_ids.len(), 3, "{listed_ids:?}");
-    assert!(listed_ids.contains(&("cisa-kev".into(), "off".into())), "{listed_ids:?}");
+    assert!(listed_ids.contains(&("elastic".into(), "deep".into())), "{listed_ids:?}");
     // The same id twice.
     let again = x.t.home.join("again.toml");
     write(&again, entry("team-hashes", "hashes", "lines", &x.list, ""));
@@ -207,4 +207,31 @@ fn a_relative_path_is_a_usage_error_naming_the_source() {
         assert_eq!(r.code, 2, "{path}: {}", r.out);
         assert!(r.err.contains("\"team-hashes\""), "{path}: {}", r.err);
     }
+}
+
+/// Risk: `--add-sources`, a flag that adds sources, makes a run check less:
+/// a repo's file turns a bundled source off or down. Oracle: the exit code
+/// (2, a usage error) and the message naming the added file, the source's id
+/// and the flag, for `scan` and for `sources`; the person's own `--sources`
+/// file may still turn it off (exit 0, and `sources` lists it off).
+#[test]
+fn an_added_file_cannot_turn_a_bundled_source_off_but_the_persons_own_can() {
+    let x = setup();
+    let added = x.t.home.join("repo-sources.toml");
+    write(&added, "[[source]]\nid = \"yara-forge-full\"\ntier = \"off\"\n");
+    for argv in [vec!["scan", "--no-input", "--offline", "--no-machine", "--path", s(&x.repo)], vec!["sources"]] {
+        let mut argv = argv;
+        argv.extend(["--add-sources", s(&added)]);
+        let r = x.t.run(&argv);
+        assert_eq!(r.code, 2, "{argv:?}: {}", r.out);
+        assert!(r.err.contains("repo-sources.toml") && r.err.contains("\"yara-forge-full\""), "{}", r.err);
+        assert!(r.err.contains("--add-sources"), "the rule is named: {}", r.err);
+    }
+    let r = x.t.run(&["sources", "--json", "--sources", s(&added)]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let tier = arr(&r.json()["sources"])
+        .iter()
+        .find(|s| str_(&s["id"]) == "yara-forge-full")
+        .map(|s| str_(&s["tier"]).to_string());
+    assert_eq!(tier.as_deref(), Some("off"), "the person's own file keeps its power");
 }

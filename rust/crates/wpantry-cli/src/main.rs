@@ -1389,6 +1389,13 @@ fn main() {
     // `scan --events`: `done` is the last line, with the exit code.
     if let Some(ev) = events::active() {
         ev.finish(code, None);
+        // A crash is named in `done.error`; its text is also the last line, as
+        // plain text after `done` (the panic hook that would have printed it
+        // is replaced). A failed write to a reader that is gone is ignored.
+        if let Some(text) = ev.trailer() {
+            let _ =
+                writeln!(std::io::stderr(), "{}", Style::stderr().red(&format!("✗ wpantry: {}", style::clean(&text))));
+        }
     }
     std::process::exit(code);
 }

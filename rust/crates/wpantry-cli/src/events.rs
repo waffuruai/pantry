@@ -216,8 +216,6 @@ struct Steps {
     /// The final counts and the scan's id (its row in the history, what
     /// the `scan` that `fix list --json` reports), once the scan has an outcome.
     outcome: Option<(u64, u64, i64)>,
-    /// A panic's message, for `done`.
-    panic: Option<String>,
 }
 
 pub struct Events {
@@ -228,6 +226,12 @@ pub struct Events {
     /// The writer says here that it has stopped.
     stopped: Mutex<Option<Receiver<()>>>,
     started: Instant,
+    /// The first panic's text, for `done` (see [`panic_hook`]).
+    panic: Mutex<Option<String>>,
+    /// The panic's text as one plain line for stderr after `done`: set by
+    /// `finish` when `done` carried a panic and the reader took it (see
+    /// [`Events::trailer`]).
+    trailer: Mutex<Option<String>>,
 }
 
 /// The run's events, once `scan --events` has started them.
@@ -238,12 +242,17 @@ static EVENTS: OnceLock<Events> = OnceLock::new();
 pub fn start(steps: Vec<Step>, paths: &[PathBuf]) -> &'static Events {
     let ev = EVENTS.get_or_init(|| Events::new(Box::new(std::io::stderr()), steps, paths));
     // A panic's text would break the stream: it goes in `done` instead.
-    std::panic::set_hook(Box::new(|info| {
-        if let Some(ev) = EVENTS.get() {
-            ev.steps.lock().unwrap_or_else(|p| p.into_inner()).panic = Some(info.to_string());
-        }
-    }));
+    std::panic::set_hook(panic_hook(ev));
     ev
+}
+
+/// The panic hook of a run: it keeps the panic's text for `done` and prints
+/// nothing (stderr is the events' stream). The first panic is kept: it is the
+/// worker's own message, while the ones after it (the scope that joined the
+/// worker re-panics with "a scoped thread panicked") only say that it
+/// happened.
+fn panic_hook(ev: &'static Events) -> Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static> {
+    Box::new(|info| ev.record_panic(info.to_string()))
 }
 
 /// The events of this run, when `--events` started them.
@@ -475,10 +484,11 @@ impl Events {
                 unchecked: 0,
                 done: false,
                 outcome: None,
-                panic: None,
             }),
             writer: Mutex::new(Some(writer)),
             stopped: Mutex::new(Some(stop_rx)),
+            panic: Mutex::default(),
+            trailer: Mutex::default(),
             started: Instant::now(),
         }
     }
@@ -544,6 +554,7 @@ impl Events {
     /// (and on exit 3 the error). Waits up to [`DRAIN`] for the reader to
     /// take what is queued; after that the lines left are dropped.
     pub fn finish(&self, exit: i32, error: Option<&str>) {
+        let from_panic: Option<String>;
         let done = {
             let mut s = self.steps();
             if s.done {
@@ -561,7 +572,10 @@ impl Events {
             fields.push(("scan", s.outcome.map_or(J::Null, |(_, _, id)| J::Int(id))));
             // Finding and note lines left out of the stream, in all.
             fields.push(("dropped", J::Int(self.queue.dropped_total() as i64)));
-            let error = error.map(str::to_string).or_else(|| s.panic.clone()).filter(|_| exit != 0);
+            // The error the run came to say, else the first panic's text.
+            let panicked = if error.is_none() && exit != 0 { self.panic_text() } else { None };
+            let error = error.map(str::to_string).or_else(|| panicked.clone()).filter(|_| exit != 0);
+            from_panic = panicked;
             if let Some(e) = error {
                 fields.push(("error", e.as_str().into()));
             }
@@ -574,7 +588,31 @@ impl Events {
             && let Some(w) = self.writer.lock().unwrap_or_else(|p| p.into_inner()).take()
         {
             let _ = w.join();
+            // The reader took everything, `done` too: stderr is free for one more line.
+            *self.trailer.lock().unwrap_or_else(|p| p.into_inner()) =
+                from_panic.map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
         }
+    }
+
+    /// Keep a panic's text for `done`. The first one is kept and the later
+    /// ones are dropped: the first is the worker's own message, the rest are
+    /// the scopes and joins that re-panic because of it.
+    pub fn record_panic(&self, text: String) {
+        self.panic.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert(text);
+    }
+
+    fn panic_text(&self) -> Option<String> {
+        self.panic.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// After `finish`: the one plain line (the panic's text, on one line) for
+    /// stderr after `done`, when `done` carried a panic. The default hook that
+    /// would have printed it is gone, so without this a crash would be named
+    /// nowhere but `done.error`. `None` when the run did not panic, and when
+    /// the reader did not take the lines within [`DRAIN`] (it is stalled: a write to
+    /// stderr could block, so none is made).
+    pub fn trailer(&self) -> Option<String> {
+        self.trailer.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 

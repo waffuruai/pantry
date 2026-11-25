@@ -304,7 +304,7 @@ fn done_carries_the_error_and_no_counts_without_an_outcome() {
     // An error isn't reported on a run that exits 0.
     let kept = Kept::default();
     let ev = Events::new(Box::new(kept.clone()), vec![A], &[]);
-    ev.steps().panic = Some("ignored".into());
+    ev.record_panic("ignored".into());
     ev.finish(0, None);
     assert!(kept.lines().last().unwrap().get("error").is_none());
 }
@@ -575,4 +575,101 @@ fn a_reader_that_keeps_up_loses_nothing_and_sees_no_dropped_event() {
     assert_eq!(lines.iter().filter(|l| l["event"] == "finding").count(), 200);
     assert!(lines.iter().all(|l| l["event"] != "dropped"));
     assert_eq!(lines.last().unwrap()["dropped"], 0);
+}
+
+/// The panic hook is process-wide: the tests that replace it take turns.
+static HOOK: Mutex<()> = Mutex::new(());
+
+/// Run `f` with `ev`'s panic hook installed (as `start` installs it), then
+/// put back the one that was there. A panic inside `f` is caught: the scan's
+/// own `catch_unwind` in `main` does the same.
+fn with_hook(ev: &'static Events, f: impl FnOnce()) {
+    let _turn = HOOK.lock().unwrap_or_else(|p| p.into_inner());
+    let before = std::panic::take_hook();
+    std::panic::set_hook(panic_hook(ev));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    std::panic::set_hook(before);
+}
+
+fn leaked(kept: &Kept) -> &'static Events {
+    Box::leak(Box::new(Events::new(Box::new(kept.clone()), vec![A], &[])))
+}
+
+/// Risk: `par_map` joins its workers with `thread::scope`, which re-panics on
+/// the scan thread ("a scoped thread panicked"); with the last panic kept,
+/// that generic text replaces the worker's own message in `done.error`, and
+/// the replaced hook prints it nowhere. Oracle: the text the test's worker
+/// panics with (A), which must be in `done.error` and the generic one not.
+#[test]
+fn a_workers_panic_message_reaches_done_not_the_scopes() {
+    let kept = Kept::default();
+    let ev = leaked(&kept);
+    ev.step("a");
+    with_hook(ev, || {
+        wpantry::utils::parallel::par_map(&[0u8], 1, |_| -> u8 { panic!("message A: the worker's own") });
+    });
+    ev.finish(3, None);
+    let lines = kept.lines();
+    let error = lines.last().unwrap()["error"].as_str().expect("done has an error").to_string();
+    assert!(error.contains("message A: the worker's own"), "{error}");
+    assert!(!error.contains("scoped thread panicked"), "{error}");
+}
+
+/// Two workers panic: the first one's message is kept (the second's, and the
+/// scope's, are not). Oracle: the order the test forces (the second worker
+/// panics only after the first's text is recorded).
+#[test]
+fn the_first_of_two_panics_is_the_one_kept() {
+    let kept = Kept::default();
+    let ev = leaked(&kept);
+    ev.step("a");
+    with_hook(ev, || {
+        wpantry::utils::parallel::par_map(&[1u8, 2], 2, |&n| -> u8 {
+            if n == 2 {
+                // Wait until the first panic has been recorded.
+                let began = Instant::now();
+                while ev.panic_text().is_none() && began.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                panic!("message B: the second");
+            }
+            panic!("message A: the first")
+        });
+    });
+    ev.finish(3, None);
+    let error = kept.lines().last().unwrap()["error"].as_str().unwrap().to_string();
+    assert!(error.contains("message A: the first"), "{error}");
+    assert!(!error.contains("message B"), "{error}");
+}
+
+/// Risk: with the default hook gone the crash is named nowhere but in a JSON
+/// field. Oracle: after `done`, one plain line holding the worker's message;
+/// none when the run did not panic, ended with exit 0, or had an error of its
+/// own; none either when the reader never took `done` (a write could block).
+#[test]
+fn a_panic_is_also_a_plain_last_line_when_the_reader_took_done() {
+    let kept = Kept::default();
+    let ev = leaked(&kept);
+    ev.step("a");
+    with_hook(ev, || {
+        wpantry::utils::parallel::par_map(&[0u8], 1, |_| -> u8 { panic!("message A\nsecond line") });
+    });
+    ev.finish(3, None);
+    let line = ev.trailer().expect("a panic leaves a trailer");
+    assert!(line.contains("message A second line") && !line.contains('\n'), "{line:?}");
+    // The stream itself stays valid JSON Lines ending in `done`.
+    assert_eq!(kept.lines().last().unwrap()["event"], "done");
+    // No panic, no line; an error of the run's own, no line.
+    let quiet = Events::new(Box::new(Kept::default()), vec![A], &[]);
+    quiet.finish(3, Some("the cache can't be opened"));
+    assert_eq!(quiet.trailer(), None);
+    let ok = Events::new(Box::new(Kept::default()), vec![A], &[]);
+    ok.record_panic("ignored".into());
+    ok.finish(0, None);
+    assert_eq!(ok.trailer(), None);
+    // A reader that never reads: `finish` gives up after DRAIN and says nothing more.
+    let stuck = Events::new(Box::new(Stuck), vec![A], &[]);
+    stuck.record_panic("never written".into());
+    stuck.finish(3, None);
+    assert_eq!(stuck.trailer(), None);
 }

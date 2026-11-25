@@ -958,6 +958,7 @@ fn a_unix_launcher_is_an_executable_beside_the_scanner() {
 
 /// The paths the quoting tests write: an app bundle's (spaces, parentheses)
 /// and one with every character the three formats treat specially.
+#[cfg(unix)]
 const NASTY: [&str; 2] = [
     "/Applications/Some App (test).app/Contents/MacOS/wpantry-desktop",
     "/opt/it's \"q\" 100% $HOME & <co>/wpantry-desktop",
@@ -967,6 +968,8 @@ const NASTY: [&str; 2] = [
 /// nothing else, written as each format wants it (exact text below); without
 /// one it runs `<scanner> schedule run`. Everything else in the job is the
 /// same either way. Known bad: before this change all three ran the scanner.
+/// Unix only: the log path in a cron line is joined with the host's separator.
+#[cfg(unix)]
 #[test]
 fn unix_jobs_run_the_launcher_with_scheduled_run_and_quote_it() {
     let scanner = Path::new("/opt/x/wpantry");

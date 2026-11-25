@@ -291,11 +291,11 @@ pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
     Ok(cache.conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get::<_, Option<i64>>(0))?)
 }
 
-fn host() -> String {
+pub(crate) fn host() -> String {
     crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string()
 }
 
-fn user() -> String {
+pub(crate) fn user() -> String {
     std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default()
 }
 
@@ -443,6 +443,20 @@ pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
 pub fn events(cache: &Cache, since: f64) -> Result<Vec<Event>> {
     let mut stmt = cache.conn.prepare("SELECT at, kind, detail FROM events WHERE at >= ? ORDER BY at")?;
     let rows = stmt.query_map([since], |r| {
+        let detail: Option<String> = r.get(2)?;
+        Ok(Event {
+            at: r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
+            kind: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            detail: detail.and_then(|d| serde_json::from_str(&d).ok()).unwrap_or(Value::Null),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Every event of one `kind`, oldest first, however old.
+pub fn events_of(cache: &Cache, kind: &str) -> Result<Vec<Event>> {
+    let mut stmt = cache.conn.prepare("SELECT at, kind, detail FROM events WHERE kind = ? ORDER BY at, id")?;
+    let rows = stmt.query_map([kind], |r| {
         let detail: Option<String> = r.get(2)?;
         Ok(Event {
             at: r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),

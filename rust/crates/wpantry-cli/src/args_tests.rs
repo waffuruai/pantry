@@ -199,8 +199,8 @@ fn every_command_has_help() {
         assert_eq!(p(same), Parsed::Help(top.clone()), "{same:?}");
     }
     for cmd in [
-        "scan", "fix", "report", "search", "watch", "sync", "schedule", "rules", "sources", "breach", "cache",
-        "update", "version", "tools", "skill", "licenses",
+        "scan", "fix", "report", "search", "watch", "sync", "schedule", "rules", "sources", "ignore", "breach",
+        "cache", "update", "version", "tools", "skill", "licenses",
     ] {
         let text = help(&[cmd]);
         assert!(top.contains(&format!("\n  {cmd}")), "{cmd} is listed");
@@ -468,4 +468,60 @@ fn policy_files_come_from_the_config_folder_unless_an_option_names_one() {
         text.contains("option '--posture-policy'") && text.contains("posture.toml: not a TOML policy file"),
         "{text}"
     );
+}
+
+#[test]
+fn ignore_takes_a_finding_or_rule_id_and_never_a_prompt() {
+    use wpantry::checks::ignore_edit::Scope;
+    let run = |action: IgnoreAction, json: bool| Parsed::Run(Command::Ignore { action, json });
+    assert_eq!(
+        p(&["ignore", "add", "F-3FA9C01B2E"]),
+        run(
+            IgnoreAction::Add { id: "F-3fa9c01b2e".into(), scope: Scope::User, reason: None, all_places: false },
+            false
+        ),
+        "the id is kept lower case, the scope is your file"
+    );
+    assert_eq!(
+        p(&[
+            "ignore",
+            "add",
+            "F-3fa9c01b2e",
+            "--scope",
+            "repo",
+            "--reason",
+            "  revoked  ",
+            "--all-places",
+            "--json",
+            "--no-input"
+        ]),
+        run(
+            IgnoreAction::Add {
+                id: "F-3fa9c01b2e".into(),
+                scope: Scope::Repo,
+                reason: Some("revoked".into()),
+                all_places: true
+            },
+            true
+        )
+    );
+    assert_eq!(p(&["ignore", "list"]), run(IgnoreAction::List { path: None }, false));
+    assert_eq!(
+        p(&["ignore", "list", "--path", "/r", "--json"]),
+        run(IgnoreAction::List { path: Some("/r".into()) }, true)
+    );
+    assert_eq!(
+        p(&["ignore", "remove", "R-3FA9C01B2E", "--path", "/r"]),
+        run(IgnoreAction::Remove { id: "R-3fa9c01b2e".into(), path: Some("/r".into()) }, false)
+    );
+    assert_eq!(
+        p(&["ignore", "remove", "f-3fa9c01b2e", "--no-input", "--json"]),
+        run(IgnoreAction::Remove { id: "F-3fa9c01b2e".into(), path: None }, true)
+    );
+    assert!(usage(&["ignore", "add", "CVE-2026-1"]).contains("expects a finding id such as F-3fa9c01b2e"));
+    assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--scope", "both"]).contains("--scope"));
+    assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--reason", "a\nb"]).contains("one line"));
+    assert!(usage(&["ignore", "remove", "F-xyz"]).contains("expects a rule id such as R-3fa9c01b2e"));
+    assert!(usage(&["ignore", "list", "x"]).contains("too many arguments"));
+    assert!(usage(&["ignore"]).contains("Usage: wpantry ignore"));
 }

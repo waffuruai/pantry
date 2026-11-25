@@ -6,6 +6,7 @@
 //! [`editors`].
 
 pub mod ca_trust;
+pub mod dismiss;
 pub mod editors;
 pub mod mitigate;
 pub mod queue;

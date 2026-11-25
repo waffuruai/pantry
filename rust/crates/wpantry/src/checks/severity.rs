@@ -109,6 +109,8 @@ pub fn is_advisory(id: &str) -> bool {
 /// What the cache knows of an advisory: every record that is it or names
 /// it as an alias, its own first.
 fn records(cache: &Cache, id: &str) -> Vec<Value> {
+    #[cfg(test)]
+    lookups::LOOKUPS.with(|n| n.set(n.get() + 1));
     let mut out = Vec::new();
     if let Ok(Some(r)) = cache.vuln(id) {
         out.push(r);
@@ -127,6 +129,47 @@ fn records(cache: &Cache, id: &str) -> Vec<Value> {
         }
     }
     out
+}
+
+/// Counts the `records` scans of `vulns` (an unindexed `aliases LIKE`) on
+/// this thread, so a test can prove how many a scan or a report makes.
+#[cfg(test)]
+pub(crate) mod lookups {
+    thread_local! {
+        pub static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    pub fn reset() {
+        LOOKUPS.with(|n| n.set(0));
+    }
+    pub fn taken() -> usize {
+        LOOKUPS.with(std::cell::Cell::get)
+    }
+}
+
+/// What one run has already asked the cache about advisories: each id's
+/// records (one `aliases LIKE` scan of `vulns`) and text, kept so an id is
+/// looked up once however many findings or exposures name it. Share one
+/// across every step of a scan or a report.
+#[derive(Default)]
+pub struct Advisories {
+    recs: HashMap<String, Vec<Value>>,
+    texts: HashMap<String, AdvisoryText>,
+}
+
+impl Advisories {
+    fn records(&mut self, cache: &Cache, id: &str) -> &[Value] {
+        self.recs.entry(id.to_string()).or_insert_with(|| records(cache, id))
+    }
+
+    /// [`advisory_text`], remembered.
+    pub fn text(&mut self, cache: &Cache, id: &str) -> AdvisoryText {
+        if let Some(t) = self.texts.get(id) {
+            return t.clone();
+        }
+        let t = text_of(cache, id, self.records(cache, id));
+        self.texts.insert(id.to_string(), t.clone());
+        t
+    }
 }
 
 /// The CVE ids among an advisory and its records' aliases.
@@ -151,11 +194,10 @@ fn cves(id: &str, recs: &[Value]) -> Vec<String> {
 /// CVE ids.
 type Scores = (String, Option<cvss::Score>, Option<(f64, f64)>, Vec<String>);
 
-fn scores(cache: &Cache, id: &str) -> Scores {
-    let recs = records(cache, id);
+fn scores(cache: &Cache, id: &str, recs: &[Value]) -> Scores {
     let score = recs.iter().find_map(cvss::of_record);
     let label = recs.iter().map(crate::db::severity_of).find(|s| !s.is_empty()).unwrap_or_default();
-    let ids = cves(id, &recs);
+    let ids = cves(id, recs);
     let epss = ids
         .iter()
         .filter_map(|c| crate::sources::epss::lookup(cache, c).ok().flatten())
@@ -169,8 +211,14 @@ fn scores(cache: &Cache, id: &str) -> Scores {
 /// wpantry's own rating.
 pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Finding]) {
     let mut known: HashMap<String, Scores> = HashMap::new();
+    // One memo for the scores and the text below: an id's records are read
+    // from the cache once (the read scans `vulns`).
+    let mut advisories = Advisories::default();
     for f in findings.iter().filter(|f| f.kind != "unchecked" && is_advisory(&f.vuln_id)) {
-        known.entry(f.vuln_id.clone()).or_insert_with(|| scores(cache, &f.vuln_id));
+        if !known.contains_key(&f.vuln_id) {
+            let s = scores(cache, &f.vuln_id, advisories.records(cache, &f.vuln_id));
+            known.insert(f.vuln_id.clone(), s);
+        }
     }
     let unscored: Vec<String> = known.values().filter(|s| s.1.is_none()).flat_map(|s| s.3.iter().cloned()).collect();
     if !unscored.is_empty() {
@@ -187,10 +235,9 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
     for s in known.values_mut().filter(|s| s.0.is_empty()) {
         s.0 = s.1.as_ref().map(|sc| cvss::label(sc.value).to_string()).unwrap_or_default();
     }
-    let mut texts: HashMap<String, AdvisoryText> = HashMap::new();
     for f in findings.iter_mut().filter(|f| f.kind != "unchecked" && is_advisory(&f.vuln_id)) {
-        let text = texts.entry(f.vuln_id.clone()).or_insert_with(|| advisory_text(cache, &f.vuln_id));
-        fill_text(f, text);
+        let text = advisories.text(cache, &f.vuln_id);
+        fill_text(f, &text);
     }
     for f in findings.iter_mut().filter(|f| f.kind != "unchecked") {
         if let Some((label, score, epss, _)) = known.get(&f.vuln_id).cloned() {
@@ -227,7 +274,7 @@ pub struct AdvisoryText {
 /// records naming it as an alias, its own first), and CISA KEV's name for
 /// one of its CVEs when no record has a summary. Nothing is fetched.
 pub fn advisory_text(cache: &Cache, id: &str) -> AdvisoryText {
-    text_of(cache, id, &records(cache, id))
+    Advisories::default().text(cache, id)
 }
 
 fn text_of(cache: &Cache, id: &str, recs: &[Value]) -> AdvisoryText {

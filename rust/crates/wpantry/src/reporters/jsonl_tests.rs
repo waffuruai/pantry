@@ -155,3 +155,54 @@ fn kev_names_the_vulnerability_when_no_record_summarises_it() {
     assert_eq!(text.summary, "Zip Remote Code Execution Vulnerability");
     c.close().unwrap();
 }
+
+/// Risk: the export reads the cache's advisory records (an unindexed
+/// `aliases LIKE` scan of `vulns`) once per exposure, and for exposures it
+/// then drops, which cost seconds on a real cache. Oracle: the count of
+/// those scans, which the test counts at the one function that makes them:
+/// at most one per distinct advisory id across the whole export, and none
+/// when the export asks for no resolved rows. Known bad: give each step its
+/// own memo, or fill the text before the resolved filter, and the count
+/// passes M.
+#[test]
+fn the_export_reads_each_advisorys_records_once_and_only_for_rows_it_keeps() {
+    let d = crate::utils::temp::TempDir::new("lookups").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let opts = Options { machine: false, paths: Some(vec!["/w".into()]), ..Default::default() };
+    let on = |id: &str, component: &str| Finding { component: component.into(), ..finding(id, "") };
+    // An open exposure the latest scan does not list: another scope's scan
+    // found it (the findings table holds only the latest scan). It is no
+    // row, so its id (Z) must cost no read at all.
+    let elsewhere = Options { paths: Some(vec!["/elsewhere".into()]), ..opts.clone() };
+    let z = [on("CVE-2026-4", "z1")];
+    history::record_scan(&c, crate::utils::os::now() - 2.0 * 86400.0, &z, &[], &elsewhere).unwrap();
+    // Latest scan: ids A and B, four findings. The next scan drops the three
+    // that name R and one more naming A: four resolved exposures.
+    let first = vec![
+        on("CVE-2026-1", "a1"),
+        on("CVE-2026-1", "a2"),
+        on("CVE-2026-1", "a3"),
+        on("CVE-2026-2", "b1"),
+        on("CVE-2026-2", "b2"),
+        on("CVE-2026-3", "r1"),
+        on("CVE-2026-3", "r2"),
+        on("CVE-2026-3", "r3"),
+    ];
+    c.replace_findings(&first).unwrap();
+    history::record_scan(&c, crate::utils::os::now() - 86400.0, &first, &[], &opts).unwrap();
+    let second = vec![on("CVE-2026-1", "a1"), on("CVE-2026-1", "a2"), on("CVE-2026-2", "b1"), on("CVE-2026-2", "b2")];
+    c.replace_findings(&second).unwrap();
+    history::record_scan(&c, crate::utils::os::now(), &second, &[], &opts).unwrap();
+    // The latest scan lists A and B (M = 2 ids); the export with `all` adds
+    // the resolved a3 (id A, already read) and r1..r3 (id R): M = 3 ids.
+    crate::checks::severity::lookups::reset();
+    let (_, n) = jsonl(&c, false).unwrap();
+    assert_eq!(n, 4);
+    assert_eq!(crate::checks::severity::lookups::taken(), 2, "one read per advisory of the latest scan");
+    crate::checks::severity::lookups::reset();
+    let (_, n) = jsonl(&c, true).unwrap();
+    assert_eq!(n, 8, "four findings and four resolved exposures");
+    let taken = crate::checks::severity::lookups::taken();
+    assert_eq!(taken, 3, "one read per distinct advisory id (3), not per row (8) or per exposure");
+    c.close().unwrap();
+}

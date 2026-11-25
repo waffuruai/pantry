@@ -10,6 +10,7 @@
 //! rows too (their `status` is the last one seen, `resolved_at` is set):
 //! that is where "fixed, N days later" comes from.
 
+use crate::checks::severity::{Advisories, fill_text, is_advisory};
 use crate::db::Cache;
 use crate::error::Result;
 use crate::finding::Finding;
@@ -60,6 +61,11 @@ fn from_exposure(e: &Exposure) -> Row {
 
 /// The latest scan's findings, as saved.
 pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
+    findings_in(cache, &mut Advisories::default())
+}
+
+/// [`findings`], asking the cache about each advisory through `advisories`.
+fn findings_in(cache: &Cache, advisories: &mut Advisories) -> Result<Vec<Finding>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
          dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model, \
@@ -96,7 +102,7 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
         })
     })?;
     let mut out: Vec<Finding> = rows.collect::<rusqlite::Result<_>>()?;
-    with_text(cache, &mut out);
+    with_text_in(cache, advisories, &mut out);
     Ok(out)
 }
 
@@ -104,13 +110,16 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
 /// them (a scan from before they were kept) from the advisory records the
 /// cache still holds. Nothing is fetched.
 pub fn with_text(cache: &Cache, findings: &mut [Finding]) {
-    use crate::checks::severity::{advisory_text, fill_text, is_advisory};
-    let mut texts = std::collections::HashMap::new();
+    with_text_in(cache, &mut Advisories::default(), findings);
+}
+
+/// [`with_text`] through a memo shared with the caller's other lookups.
+fn with_text_in(cache: &Cache, advisories: &mut Advisories, findings: &mut [Finding]) {
     for f in findings.iter_mut() {
         let bare = f.summary.is_empty() && f.aliases.is_empty() && f.cwe.is_empty();
         if bare && f.kind != "unchecked" && is_advisory(&f.vuln_id) {
-            let text = texts.entry(f.vuln_id.clone()).or_insert_with(|| advisory_text(cache, &f.vuln_id));
-            fill_text(f, text);
+            let text = advisories.text(cache, &f.vuln_id);
+            fill_text(f, &text);
         }
     }
 }
@@ -241,13 +250,18 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
 /// The export as JSON Lines: the latest findings, plus (with `all`) the
 /// resolved exposures no longer among them. Returns the text and the row count.
 pub fn jsonl(cache: &Cache, all: bool) -> Result<(String, usize)> {
-    let mut rows: Vec<Row> = findings(cache)?.into_iter().map(from_finding).collect();
+    // One memo for the whole export: an advisory's records are read once,
+    // however many rows name it.
+    let mut advisories = Advisories::default();
+    let mut rows: Vec<Row> = findings_in(cache, &mut advisories)?.into_iter().map(from_finding).collect();
     if all {
         let have: Vec<String> = rows.iter().map(|r| r.key.clone()).collect();
         for e in history::exposures(cache, 0.0)? {
             let mut r = from_exposure(&e);
-            with_text(cache, std::slice::from_mut(&mut r.finding));
+            // The filter first: an exposure that is still open, or that
+            // the latest scan lists, is not a row and costs no lookup.
             if e.resolved_at.is_some() && !have.contains(&r.key) {
+                with_text_in(cache, &mut advisories, std::slice::from_mut(&mut r.finding));
                 rows.push(r);
             }
         }

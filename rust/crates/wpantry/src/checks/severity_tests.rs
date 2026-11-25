@@ -161,3 +161,26 @@ fn an_unchecked_finding_never_gains_advisory_text() {
     assert_eq!(real[0].summary, "Remote code execution");
     assert_eq!(real[0].cwe, ["CWE-94"]);
 }
+
+/// Risk: `enrich` read an advisory's records for the scores and again for
+/// its text: each read is an unindexed `aliases LIKE` scan of `vulns`
+/// (seconds on a real cache). Oracle: the count of those reads, taken at the
+/// one function that makes them. N findings sharing M ids cost M reads, and
+/// an unchecked finding costs none. Known bad: drop the shared memo and the
+/// count is 2 * M.
+#[test]
+fn enrich_reads_each_advisorys_records_once_for_scores_and_text() {
+    let (_d, c) = crate::sources::testing::cache();
+    c.put_vuln(&serde_json::json!({"id": "GHSA-aaaa-bbbb-cccc", "aliases": ["CVE-2026-1"], "summary": "one"})).unwrap();
+    let mut all: Vec<Finding> = Vec::new();
+    for (i, id) in ["CVE-2026-1", "GHSA-aaaa-bbbb-cccc", "CVE-2026-9"].iter().cycle().take(9).enumerate() {
+        all.push(finding("runtime", id, "fail", ["", "HIGH", ""][i % 3]));
+        all[i].component = format!("c{i}");
+    }
+    all.push(finding("unchecked", "CVE-2026-77", "warn", ""));
+    super::lookups::reset();
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
+    assert_eq!(super::lookups::taken(), 3, "9 findings over 3 ids, plus an unchecked one that is never looked up");
+    // The memo does not change what the findings get.
+    assert_eq!(all[0].summary, "one");
+}

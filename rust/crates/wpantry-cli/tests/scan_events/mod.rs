@@ -303,14 +303,15 @@ fn notes_become_events() {
 /// A tree to keep a scan busy: `repos` checkouts of `dirs` folders with
 /// `files` files each, the files hard links of three small seeds (quick to
 /// make, read like any other file). Returns the folder holding the repos.
+///
+/// NTFS allows at most 1023 links to one file, so each seed is copied
+/// afresh every [`LINKS_PER_SEED`] links.
 fn big_tree(t: &Ctx, repos: usize, dirs: usize, files: usize) -> PathBuf {
     let seeds = t.tmp.join("seeds");
     mkdir(&seeds);
     let kinds =
         [("js", "const a = 1;\nmodule.exports = a;\n"), ("py", "def f(x):\n    return x\n"), ("txt", "notes\n")];
-    for (ext, text) in kinds {
-        write(&seeds.join(format!("seed.{ext}")), text);
-    }
+    let mut made = [0usize; 3];
     let code = t.home.join("code");
     for r in 0..repos {
         let repo = git_repo(&code.join(format!("repo{r}")), false);
@@ -318,13 +319,31 @@ fn big_tree(t: &Ctx, repos: usize, dirs: usize, files: usize) -> PathBuf {
             let dir = repo.join(format!("src/d{d}"));
             mkdir(&dir);
             for f in 0..files {
-                let (ext, _) = kinds[f % kinds.len()];
-                std::fs::hard_link(seeds.join(format!("seed.{ext}")), dir.join(format!("f{f}.{ext}"))).unwrap();
+                let k = f % kinds.len();
+                let (ext, text) = kinds[k];
+                let seed = seeds.join(format!("seed{}.{ext}", made[k] / LINKS_PER_SEED));
+                if made[k] % LINKS_PER_SEED == 0 {
+                    write(&seed, text);
+                }
+                std::fs::hard_link(&seed, dir.join(format!("f{f}.{ext}"))).unwrap();
+                made[k] += 1;
             }
         }
     }
+    // Windows fails the link itself past 1023; elsewhere count, so a change
+    // here shows up on every runner.
+    #[cfg(unix)]
+    for e in std::fs::read_dir(&seeds).unwrap() {
+        use std::os::unix::fs::MetadataExt;
+        let links = e.unwrap().metadata().unwrap().nlink();
+        assert!(links <= 1023, "a seed has {links} links, more than NTFS allows");
+    }
     code
 }
+
+/// Links made to one seed file before [`big_tree`] starts a new copy: under
+/// the 1023 NTFS allows.
+const LINKS_PER_SEED: usize = 1000;
 
 /// The run's event lines, each with when it arrived after the start.
 fn timed(t: &Ctx, argv: &[&str]) -> (i32, Vec<(std::time::Duration, Value)>) {

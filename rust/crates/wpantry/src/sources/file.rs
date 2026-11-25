@@ -477,6 +477,18 @@ pub fn find(id: &str) -> Option<Source> {
 
 /// Whether a source is used this run: its tier is default, or deep with `--deep`.
 pub fn active(id: &str) -> bool {
+    used(id, effective().deep)
+}
+
+/// Whether a source is used by a `--deep` scan, whatever this run is: its
+/// tier is default or deep. For a read that reports what `--deep` would
+/// use (`wpantry rules` counts every rule), so it reads what a deep scan
+/// does and the two share one compiled copy.
+pub fn active_when_deep(id: &str) -> bool {
+    used(id, true)
+}
+
+fn used(id: &str, deep: bool) -> bool {
     #[cfg(test)]
     if TEST_ON.with(|on| on.borrow().iter().any(|x| x == id)) {
         return true;
@@ -484,7 +496,7 @@ pub fn active(id: &str) -> bool {
     let e = effective();
     e.sources.iter().find(|s| s.id == id).is_some_and(|s| match s.tier {
         Tier::Default => true,
-        Tier::Deep => e.deep,
+        Tier::Deep => deep,
         Tier::Off => false,
     })
 }

@@ -1145,9 +1145,7 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
         progress.finish();
     }
     let dir = malware::yara::rules_dir(&cache);
-    let active = |id: &str| wpantry::sources::file::active(id);
-    let loaded = malware::yara::load(&dir, false, &active);
-    let all = malware::yara::load(&dir, true, &active);
+    let (loaded, all) = rules_loads(&dir);
     cache.close()?;
     let stats = all.rules.stats();
     if json {
@@ -1181,6 +1179,22 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
         }
     }
     Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
+}
+
+/// The two loads `rules` reports, `(this system's, all)`. The sources are
+/// configured for a scan that isn't `--deep`, so the load of all rules
+/// asks which sources a `--deep` scan uses: with the default `active` a
+/// `tier = "deep"` source would be left out of "all", and the compiled
+/// copy of all rules, named by the files it was made from, would differ
+/// from `scan --deep`'s, so each run replaced the other's.
+fn rules_loads(
+    dir: &std::path::Path,
+) -> (wpantry::checks::malware::yara::Loaded, wpantry::checks::malware::yara::Loaded) {
+    use wpantry::checks::malware::yara;
+    use wpantry::sources::file;
+    let this_system = yara::load(dir, false, &|id: &str| file::active(id));
+    let all = yara::load(dir, true, &|id: &str| file::active_when_deep(id));
+    (this_system, all)
 }
 
 /// Use the sources file (`file`, else `~/.config/wpantry/sources.toml` when

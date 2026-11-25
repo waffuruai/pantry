@@ -310,6 +310,65 @@ fn launchd_status_reports_a_job_still_loaded_without_its_plist() {
     assert!(status_json(Backend::Cron, &cron).unwrap().contains(r#""loaded": null"#));
 }
 
+/// Oracle: with a plist registered, `schedule status --json` asks launchd
+/// once, and `enabled` and `loaded` are that one answer: both true, both
+/// false, or both null when launchctl cannot be run. A launchctl that cannot
+/// be run is unknown, never a command error. Known bad: status asked a
+/// second time for `enabled` and passed that failure on with `?`, so an
+/// unavailable launchctl made `status --json` fail while `loaded` said null.
+#[test]
+fn launchd_status_asks_launchd_once_and_an_unavailable_launchctl_is_unknown() {
+    let _home = test_home();
+    let plist_file = plist_path();
+    std::fs::create_dir_all(plist_file.parent().unwrap()).unwrap();
+    std::fs::write(&plist_file, plist(Path::new("/opt/x/wpantry"), None, Every::Day, 6, 10, &p())).unwrap();
+    let field = |doc: &str, key: &str| {
+        let value = wpantry::utils::json::parse(doc.as_bytes(), wpantry::utils::json::MAX_DOCUMENT).unwrap();
+        value.get(key).map(|v| v.as_bool())
+    };
+    let unavailable = |argv: &[&OsStr], _: Duration| -> Result<Output> {
+        if argv[0] == "launchctl" { Err(Error::Failed("launchctl: not found".into())) } else { ok("777\n") }
+    };
+    let doc = status_json(Backend::Launchd, &unavailable).expect("an unavailable launchctl is unknown, not an error");
+    assert!(doc.contains(r#""installed": true"#), "{doc}");
+    assert_eq!((field(&doc, "enabled"), field(&doc, "loaded")), (Some(None), Some(None)), "{doc}");
+    for (code, want) in [(0, Some(true)), (113, Some(false))] {
+        let calls = Mutex::new(Vec::new());
+        let run = recorder(&calls, |cmd| {
+            if cmd.starts_with("launchctl print") {
+                Ok(Output { code: Some(code), stdout: String::new(), stderr: String::new() })
+            } else {
+                ok("777\n")
+            }
+        });
+        let doc = status_json(Backend::Launchd, &run).unwrap();
+        assert_eq!((field(&doc, "enabled"), field(&doc, "loaded")), (Some(want), Some(want)), "{doc}");
+        let prints = calls.lock().unwrap().iter().filter(|c| c.starts_with("launchctl print")).count();
+        assert_eq!(prints, 1, "one observation: {:?}", calls.lock().unwrap());
+    }
+}
+
+/// Oracle (systemd): with the timer registered, a systemctl that cannot be
+/// run makes `enabled` null (unknown), never a `status --json` error.
+/// Known bad: the `?` on the is-active query failed the whole command.
+#[test]
+fn systemd_status_with_an_unavailable_systemctl_is_unknown() {
+    let _home = test_home();
+    if !hermetic() {
+        return;
+    }
+    let dir = unit_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let (service, timer) = unit(Path::new("/opt/x/wpantry"), None, Every::Day, 6, 10, &p());
+    std::fs::write(dir.join("wpantry.timer"), timer).unwrap();
+    std::fs::write(dir.join("wpantry.service"), service).unwrap();
+    let unavailable = |_: &[&OsStr], _: Duration| -> Result<Output> { Err(Error::Failed("no systemctl".into())) };
+    let doc = status_json(Backend::Systemd, &unavailable).expect("unknown, not an error");
+    assert!(doc.contains(r#""installed": true"#) && doc.contains(r#""enabled": null"#), "{doc}");
+    let active = |_: &[&OsStr], _: Duration| ok("");
+    assert!(status_json(Backend::Systemd, &active).unwrap().contains(r#""enabled": true"#));
+}
+
 /// Oracle (systemd): after removing the unit files, a timer systemd
 /// still reports active is a leftover: exit 1. Known bad: the old code
 /// never asked and exited 0.

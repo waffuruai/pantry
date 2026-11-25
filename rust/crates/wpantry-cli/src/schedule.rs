@@ -516,22 +516,20 @@ fn status_json(backend: Backend, run: Run) -> Result<String> {
         .and_then(|_| std::fs::metadata(&p.last).ok()?.modified().ok())
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|time| wpantry::history::stamp(time.as_secs_f64()));
+    // A scheduler tool that cannot be run makes `enabled` unknown (null),
+    // never a failed status: the same rule `loaded` follows.
     let enabled = match (backend, definition) {
         (_, None) => None,
         (Backend::Windows, Some(text)) => Some(!windows::disabled(text)),
-        (Backend::Launchd, Some(_)) => Some(
-            run(&["launchctl", "print", &format!("gui/{}/{LABEL}", uid(run))].map(OsStr::new), Duration::from_secs(5))?
-                .code
-                == Some(0),
-        ),
-        (Backend::Systemd, Some(_)) => Some(
-            run(
-                &["systemctl", "--user", "is-active", "--quiet", "wpantry.timer"].map(OsStr::new),
-                Duration::from_secs(5),
-            )?
-            .code
-                == Some(0),
-        ),
+        // The one `launchctl print` that `current` made: a second query
+        // could see a different answer, or fail where the first did not.
+        (Backend::Launchd, Some(_)) => loaded,
+        (Backend::Systemd, Some(_)) => run(
+            &["systemctl", "--user", "is-active", "--quiet", "wpantry.timer"].map(OsStr::new),
+            Duration::from_secs(5),
+        )
+        .ok()
+        .map(|out| out.code == Some(0)),
         (Backend::Cron, Some(_)) => Some(true),
     };
     use wpantry::utils::json::{J, obj};

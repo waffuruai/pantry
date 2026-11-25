@@ -221,7 +221,17 @@ pub fn tool_places_on(
 
 /// `name` on PATH, else in one of its [`tool_places`].
 pub fn find_tool(name: &str) -> Option<PathBuf> {
-    which(name).or_else(|| tool_places(name, &home(), &|k| std::env::var_os(k)).into_iter().find(|p| is_executable(p)))
+    find_tool_in(name, std::env::var_os("PATH"), &home(), &|k| std::env::var_os(k))
+}
+
+/// [`find_tool`] for a PATH value, a home directory and an environment.
+pub fn find_tool_in(
+    name: &str,
+    path: Option<std::ffi::OsString>,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    which_in(name, path.as_deref()).or_else(|| tool_places(name, home, env).into_iter().find(|p| is_executable(p)))
 }
 
 /// What a finished program printed.

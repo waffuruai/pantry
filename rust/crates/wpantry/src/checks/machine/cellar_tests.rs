@@ -36,7 +36,10 @@ fn reads_a_cellar_highest_version_first() {
     assert_eq!(node.extra.get("formula").map(String::as_str), Some("node@22"));
     let ssl = &inv.components[1];
     assert_eq!((ssl.name.as_str(), ssl.version.as_str()), ("openssl", "3.6.0"));
-    assert!(ssl.fix.starts_with("Upgrade openssl@3 in the Cellar at "), "{}", ssl.fix);
+    assert_eq!(
+        ssl.fix,
+        "Run `brew upgrade openssl@3`. If another tool installed this copy (mise's brew: engine), update it there instead: `mise upgrade brew:openssl@3`."
+    );
     assert!(!ssl.auto);
     assert_eq!(ssl.path, cellar.join("openssl@3").to_string_lossy());
     assert_eq!(read(&d.path().join("nowhere"), &mise), Inventory::default());
@@ -79,4 +82,94 @@ fn a_cellar_go_is_also_its_toolchain() {
     let go = &inv.components[0];
     assert_eq!(go.osv, Some(("Go".into(), "stdlib".into(), "1.26.10".into())));
     assert_eq!(go.osv_also, [("Go".to_string(), "toolchain".to_string(), "1.26.10".to_string())]);
+}
+
+/// Risk: a hand step in the maintainer's words ("poured without brew") that
+/// names no command, for a formula that `brew upgrade` fixes. Oracle: what
+/// someone would type, and the one tool that owns each copy: mise's brew:
+/// engine leaves an `installs/brew-<formula>` folder; Homebrew's own prefix
+/// has `bin/brew`. Nothing runs: only files are laid out in a temp dir.
+#[test]
+fn the_step_says_what_to_run_and_who_owns_the_copy() {
+    let d = crate::utils::temp::TempDir::new("step").unwrap();
+    let cellar = d.path().join("opt/homebrew/Cellar");
+    let mise = d.path().join("mise/installs");
+    std::fs::create_dir_all(&cellar).unwrap();
+    std::fs::create_dir_all(&mise).unwrap();
+    let neither = upgrade_step("openssl@3", &cellar, &mise);
+    assert_eq!(
+        neither,
+        (
+            "Run `brew upgrade openssl@3`. If another tool installed this copy (mise's brew: engine), update it there instead: `mise upgrade brew:openssl@3`."
+                .to_string(),
+            false
+        ),
+        "brew first, then the other tool, and nothing run unattended when it can't tell"
+    );
+    // brew sits in the Cellar's own prefix but not on PATH: its full path, as an automatic fix.
+    let brew = d.path().join("opt/homebrew/bin/brew");
+    std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
+    std::fs::write(&brew, "#!/bin/sh\n").unwrap();
+    assert_eq!(upgrade_step("openssl@3", &cellar, &mise), (format!("{} upgrade openssl@3", brew.display()), true));
+    // mise's engine made it: that is the owner, whatever else is there.
+    std::fs::create_dir_all(mise.join("brew-openssl@3")).unwrap();
+    assert_eq!(upgrade_step("openssl@3", &cellar, &mise), ("mise upgrade brew:openssl@3".to_string(), false));
+    // A name that isn't one word never reaches a command.
+    let (odd, auto) = upgrade_step("a;b", &cellar, &mise);
+    assert!(odd.starts_with("Upgrade a;b") && !auto, "{odd}");
+    // A prefix whose path needs quoting is a step for a person, not an unattended command.
+    let spaced = d.path().join("my prefix/Cellar");
+    std::fs::create_dir_all(&spaced).unwrap();
+    std::fs::create_dir_all(d.path().join("my prefix/bin")).unwrap();
+    std::fs::write(d.path().join("my prefix/bin/brew"), "").unwrap();
+    let (step, auto) = upgrade_step("jq", &spaced, &mise);
+    assert!(step.starts_with("Run `") && step.ends_with(" upgrade jq`.") && !auto, "{step}");
+}
+
+/// The Cellar scan's components carry the step: an inventory with `bin/brew`
+/// beside the Cellar is fixed with that brew, automatically.
+#[test]
+fn a_cellar_formula_beside_its_brew_is_an_automatic_fix() {
+    let d = crate::utils::temp::TempDir::new("cellar-brew").unwrap();
+    let cellar = d.path().join("prefix/Cellar");
+    std::fs::create_dir_all(cellar.join("openssl@3/3.5.9")).unwrap();
+    std::fs::create_dir_all(d.path().join("prefix/bin")).unwrap();
+    std::fs::write(d.path().join("prefix/bin/brew"), "").unwrap();
+    let inv = read(&cellar, &d.path().join("mise/installs"));
+    let ssl = &inv.components[0];
+    assert_eq!(ssl.fix, format!("{} upgrade openssl@3", d.path().join("prefix/bin/brew").display()));
+    assert!(ssl.auto);
+}
+
+/// #326: "poured without brew" said of a keg Homebrew installed. Oracle: its
+/// own receipt. A keg whose `INSTALL_RECEIPT.json` names a `homebrew_version`
+/// is Homebrew's, whatever PATH this scan had and whatever mise has beside it;
+/// one with no such version (mise's engine writes none) is not claimed.
+#[test]
+fn a_keg_with_a_homebrew_receipt_is_never_poured_without_brew() {
+    let d = crate::utils::temp::TempDir::new("receipt").unwrap();
+    let cellar = d.path().join("prefix/Cellar");
+    let mise = d.path().join("mise/installs");
+    std::fs::create_dir_all(cellar.join("openssl@3/3.5.9")).unwrap();
+    std::fs::create_dir_all(cellar.join("node@22/22.1.0")).unwrap();
+    std::fs::write(cellar.join("openssl@3/3.5.9/INSTALL_RECEIPT.json"), r#"{"homebrew_version": "7.0.9"}"#).unwrap();
+    std::fs::write(cellar.join("node@22/22.1.0/INSTALL_RECEIPT.json"), r#"{"poured_from_bottle": true}"#).unwrap();
+    // A stale mise folder for it changes nothing.
+    std::fs::create_dir_all(mise.join("brew-openssl@3")).unwrap();
+    assert!(homebrew_receipt(&cellar, "openssl@3"));
+    assert!(!homebrew_receipt(&cellar, "node@22"));
+    assert!(!homebrew_receipt(&cellar, "nothing"));
+    let (step, auto) = upgrade_step("openssl@3", &cellar, &mise);
+    assert_eq!(step, "Homebrew installed this copy: run `brew upgrade openssl@3` where Homebrew is.");
+    assert!(!auto && !step.contains("poured") && !step.contains("mise"), "{step}");
+    // The brew beside the Cellar makes it the automatic fix.
+    let brew = d.path().join("prefix/bin/brew");
+    std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
+    std::fs::write(&brew, "").unwrap();
+    assert_eq!(upgrade_step("openssl@3", &cellar, &mise), (format!("{} upgrade openssl@3", brew.display()), true));
+    // The same Cellar read as an inventory carries the step on the component.
+    let inv = read(&cellar, &mise);
+    let ssl = inv.components.iter().find(|c| c.name == "openssl").unwrap();
+    assert_eq!(ssl.fix, format!("{} upgrade openssl@3", brew.display()));
+    assert!(ssl.auto);
 }

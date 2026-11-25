@@ -312,7 +312,9 @@ fn in_personal_folder(home: &std::path::Path, path: &std::path::Path) -> bool {
     use std::path::Component;
     let names = |p: &std::path::Path| -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for c in p.components() {
+        // `canonicalize` spells a Windows path `\\?\C:\x`: the same place as `C:\x`.
+        let plain = crate::utils::files::strip_verbatim(&p.to_string_lossy());
+        for c in std::path::Path::new(&plain).components() {
             match c {
                 Component::ParentDir => {
                     out.pop();

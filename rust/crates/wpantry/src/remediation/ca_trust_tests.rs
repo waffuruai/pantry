@@ -91,3 +91,17 @@ fn the_debian_gate_finds_its_tool_in_a_system_folder_when_path_has_none() {
         "no system folder to look in: the gate does not guess"
     );
 }
+
+/// Risk: the root spawn takes the bare name, so a tool the gate accepted
+/// (found in `/usr/sbin`) fails to start. Oracle: the program the command
+/// starts is the one `resolve` gives for the same PATH.
+#[cfg(unix)]
+#[test]
+fn the_root_spawn_runs_the_resolved_tool() {
+    let nope = Some(OsStr::new("/nowhere"));
+    let argv = [OsStr::new("sysctl"), OsStr::new("-n"), OsStr::new("kern.ostype")];
+    let cmd = root_cmd(&argv, true, nope);
+    assert_eq!(Path::new(cmd.get_program()), crate::utils::process::resolve(OsStr::new("sysctl"), nope));
+    assert!(Path::new(cmd.get_program()).is_absolute(), "{:?}", cmd.get_program());
+    assert_eq!(root_cmd(&argv, false, nope).get_program(), "sudo");
+}

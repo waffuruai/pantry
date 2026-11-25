@@ -169,3 +169,25 @@ fn which_and_resolve_agree_on_where_a_tool_is() {
     assert!(SYSTEM_DIRS.iter().any(|dir| found == Path::new(dir).join("sysctl")), "{}", found.display());
     assert_eq!(which_in("wpantry-no-such-tool", nope), None);
 }
+
+/// Risk: a spawn as root takes the bare name, so a tool the probe found in a
+/// system folder fails to start (the rule file is written, nothing loads it).
+/// Oracle: the program the command would start is the one `resolve` names for
+/// the same PATH; through sudo the whole argv goes to sudo untouched.
+#[cfg(unix)]
+#[test]
+fn a_root_command_runs_the_program_the_probe_resolved() {
+    let nope = Some(OsStr::new("/nowhere"));
+    let argv = [OsStr::new("sysctl"), OsStr::new("-n"), OsStr::new("kern.ostype")];
+    let direct = root_command(&argv, true, nope);
+    assert_eq!(Path::new(direct.get_program()), resolve(OsStr::new("sysctl"), nope), "resolved, not the bare name");
+    assert!(Path::new(direct.get_program()).is_absolute());
+    assert_eq!(direct.get_args().collect::<Vec<_>>(), [OsStr::new("-n"), OsStr::new("kern.ostype")]);
+    let sudo = root_command(&argv, false, nope);
+    assert_eq!(sudo.get_program(), "sudo");
+    assert_eq!(sudo.get_args().collect::<Vec<_>>(), argv);
+    // A tool PATH has is left to the spawn's own search.
+    let d = TempDir::new("rootcmd").unwrap();
+    executable(&d.path().join("sysctl"), "#!/bin/sh\n");
+    assert_eq!(root_command(&argv, true, Some(d.path().as_os_str())).get_program(), "sysctl");
+}

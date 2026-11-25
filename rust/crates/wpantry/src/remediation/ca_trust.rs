@@ -88,19 +88,18 @@ fn is_root() -> bool {
     run(&["id", "-u"], Duration::from_secs(5)).trim() == "0"
 }
 
+/// The command that runs `argv` as root. As root the program is resolved as
+/// `run` resolves it (PATH, then the system folders), so a tool the checks
+/// found (`update-ca-certificates` in `/usr/sbin`) is the one that runs.
+fn root_cmd(argv: &[&OsStr], root: bool, path: Option<&OsStr>) -> std::process::Command {
+    crate::utils::process::root_command(argv, root, path)
+}
+
 /// Runs `argv` as root: directly when we are, else through sudo on the
 /// terminal (it prompts there). Nothing is captured, so the prompt shows.
 fn as_root(argv: &[&OsStr]) -> Result<()> {
     let shown = argv.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
-    let mut cmd = if is_root() {
-        let mut c = std::process::Command::new(argv[0]);
-        c.args(&argv[1..]);
-        c
-    } else {
-        let mut c = std::process::Command::new("sudo");
-        c.args(argv);
-        c
-    };
+    let mut cmd = root_cmd(argv, is_root(), std::env::var_os("PATH").as_deref());
     let status =
         cmd.stdout(std::process::Stdio::null()).status().map_err(|e| Error::Failed(format!("{shown}: {e}")))?;
     if status.success() { Ok(()) } else { Err(Error::Failed(format!("{shown} failed ({status})"))) }

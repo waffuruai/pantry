@@ -125,6 +125,22 @@ pub(crate) fn program(prog: &OsStr) -> PathBuf {
     resolve(prog, std::env::var_os("PATH").as_deref())
 }
 
+/// The command that runs `argv` as root: directly when `root` (the program
+/// is resolved as [`exec`] resolves it, so a tool the probe found through
+/// the system folders is the one run), else through `sudo`, whose own search
+/// path applies. `path` is the PATH to resolve against.
+pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) -> Command {
+    let mut c;
+    if root {
+        c = Command::new(resolve(argv[0], path));
+        c.args(&argv[1..]);
+    } else {
+        c = Command::new("sudo");
+        c.args(argv);
+    }
+    c
+}
+
 fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {

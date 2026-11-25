@@ -19,27 +19,80 @@ pub fn path_dirs() -> Vec<String> {
     }
 }
 
-/// The first executable called `name` on PATH (Python: `shutil.which`). On
-/// Windows a bare name also matches `name.exe`, `.cmd` and `.bat`.
+/// The first executable called `name` on PATH (Python: `shutil.which`), else
+/// in a [`SYSTEM_DIRS`] folder. On Windows a bare name also matches
+/// `name.exe`, `.cmd` and `.bat`. It looks where [`resolve`] and so the
+/// spawns in this module look, in the same order (see `lookup`), so a tool
+/// this finds is one [`exec`] runs.
 pub fn which(name: &str) -> Option<PathBuf> {
-    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
-        let p = PathBuf::from(name);
-        return is_executable(&p).then_some(p);
-    }
-    let path = std::env::var_os("PATH")?;
-    let suffixes: &[&str] = if cfg!(windows) && !name.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(&path)
-        .flat_map(|d| suffixes.iter().map(move |s| d.join(format!("{name}{s}"))))
-        .find(|p| is_executable(p))
+    which_in(name, std::env::var_os("PATH").as_deref())
+}
+
+/// [`which`] against the PATH `path` (`None`: no PATH at all).
+pub fn which_in(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    which_with(name, path, SYSTEM_DIRS)
+}
+
+/// [`which_in`] with the system folders given (the tests' own).
+pub(crate) fn which_with(name: &str, path: Option<&OsStr>, system: &[&str]) -> Option<PathBuf> {
+    lookup(OsStr::new(name), path, system).map(Found::into_path)
 }
 
 /// Where the system's administration tools live on Unix. A program that
 /// starts wpantry may give it a PATH without the `sbin` folders (a job
 /// runner, another program's child, `env -i`); the checks that run `spctl`,
 /// `scutil`, `system_profiler`, `cupsctl` or `sysadminctl` by name would then
-/// get nothing back and report that they couldn't tell.
+/// get nothing back and report that they couldn't tell. Root-owned folders
+/// only: a folder a user can write to (Homebrew's, mise's) does not belong
+/// here, since what is found here is run, sometimes as root.
 #[cfg(unix)]
 pub const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin"];
+/// No system folders to fall back to off Unix.
+#[cfg(not(unix))]
+pub const SYSTEM_DIRS: &[&str] = &[];
+
+/// Where [`lookup`] found a program.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// A path was given, or PATH has it: the spawn finds it there.
+    Path(PathBuf),
+    /// Only a [`SYSTEM_DIRS`] folder has it: a spawn by name would not.
+    System(PathBuf),
+}
+
+impl Found {
+    fn into_path(self) -> PathBuf {
+        match self {
+            Found::Path(p) | Found::System(p) => p,
+        }
+    }
+}
+
+/// The one lookup behind [`which`] and [`resolve`] (and so every spawn here),
+/// so they cannot disagree about whether a tool is there: a name with a
+/// separator is that path when it is executable; a bare name is the first
+/// executable of that name on `path`, else the first in the `system` folders
+/// (in order); anything not executable is skipped.
+pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Option<Found> {
+    let text = name.to_string_lossy();
+    if text.contains('/') || (cfg!(windows) && text.contains('\\')) {
+        let p = PathBuf::from(name);
+        return is_executable(&p).then_some(Found::Path(p));
+    }
+    let suffixes: &[&str] = if cfg!(windows) && !text.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let named = |dir: &Path, suffix: &str| {
+        let mut file = name.to_os_string();
+        file.push(suffix);
+        dir.join(file)
+    };
+    let on_path = path.and_then(|path| {
+        std::env::split_paths(path).flat_map(|d| suffixes.iter().map(move |s| named(&d, s))).find(|p| is_executable(p))
+    });
+    if let Some(p) = on_path {
+        return Some(Found::Path(p));
+    }
+    system.iter().map(|d| named(Path::new(d), "")).find(|p| is_executable(p)).map(Found::System)
+}
 
 /// What a command named `prog` runs, given PATH `path`: `prog` itself when
 /// it has a slash or PATH has it (the spawn finds it there), else the copy
@@ -56,24 +109,19 @@ pub const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin"];
 /// # }
 /// ```
 pub fn resolve(prog: &OsStr, path: Option<&OsStr>) -> PathBuf {
-    let given = PathBuf::from(prog);
-    #[cfg(unix)]
-    {
-        let bare = !prog.to_string_lossy().contains('/') && !prog.is_empty();
-        let on_path = || path.is_some_and(|p| std::env::split_paths(p).any(|d| is_executable(&d.join(prog))));
-        if bare
-            && !on_path()
-            && let Some(found) = SYSTEM_DIRS.iter().map(|d| Path::new(d).join(prog)).find(|p| is_executable(p))
-        {
-            return found;
-        }
+    resolve_with(prog, path, SYSTEM_DIRS)
+}
+
+/// [`resolve`] with the system folders given (the tests' own).
+pub(crate) fn resolve_with(prog: &OsStr, path: Option<&OsStr>, system: &[&str]) -> PathBuf {
+    match lookup(prog, path, system) {
+        Some(Found::System(found)) => found,
+        _ => PathBuf::from(prog),
     }
-    let _ = path;
-    given
 }
 
 /// [`resolve`] against this process's PATH.
-fn program(prog: &OsStr) -> PathBuf {
+pub(crate) fn program(prog: &OsStr) -> PathBuf {
     resolve(prog, std::env::var_os("PATH").as_deref())
 }
 

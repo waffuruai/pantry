@@ -62,3 +62,32 @@ fn fingerprints_match_openssl() {
     assert_eq!(entry_name(&e[0], "ABCDEF0123456789XX"), "one");
     assert_eq!(entry_name("-----BEGIN", "ABCDEF0123456789XX"), "sha256 ABCDEF0123456789\u{2026}");
 }
+
+/// Risk: the Debian-style gate asks PATH alone for `update-ca-certificates`
+/// (it lives in `/usr/sbin`), so under a PATH without the sbin folders the
+/// store is "unknown" though `exec` would run the tool. Oracle: the gate
+/// looks the tool up as `which` does (PATH, then the system folders, here a
+/// folder of the test's own with an executable copy), so a PATH with only
+/// /nowhere in it still finds it; the config file and the tool are both
+/// needed.
+#[cfg(unix)]
+#[test]
+fn the_debian_gate_finds_its_tool_in_a_system_folder_when_path_has_none() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TempDir::new("catrust-gate").unwrap();
+    let (conf, sbin) = (d.path().join("ca-certificates.conf"), d.path().join("sbin"));
+    std::fs::create_dir_all(&sbin).unwrap();
+    std::fs::write(&conf, "mozilla/Example.crt\n").unwrap();
+    let find =
+        |name: &str| crate::utils::process::which_with(name, Some(OsStr::new("/nowhere")), &[sbin.to_str().unwrap()]);
+    assert!(!debian_style(&conf, &find), "no tool in any folder");
+    let tool = sbin.join("update-ca-certificates");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(debian_style(&conf, &find), "the tool is in a system folder");
+    assert!(!debian_style(&d.path().join("absent.conf"), &find), "no config file: not a Debian-style store");
+    assert!(
+        !debian_style(&conf, &|name| crate::utils::process::which_with(name, Some(OsStr::new("/nowhere")), &[])),
+        "no system folder to look in: the gate does not guess"
+    );
+}

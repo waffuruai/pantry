@@ -326,6 +326,18 @@ fn blocklist_dir(parent: &str) -> PathBuf {
     if old.is_dir() && !new.is_dir() { old } else { new }
 }
 
+/// Debian's config file for the trust store.
+const CA_CERTIFICATES_CONF: &str = "/etc/ca-certificates.conf";
+
+/// Whether this is a Debian-style store: its config file `conf` is there
+/// and `find` knows its refresh tool (`update-ca-certificates`, in
+/// `/usr/sbin`, which a PATH without the `sbin` folders leaves out). `find`
+/// is [`which`], the lookup `exec` runs the tool by, so the gate and the run
+/// agree.
+fn debian_style(conf: &Path, find: &dyn Fn(&str) -> Option<PathBuf>) -> bool {
+    conf.is_file() && find("update-ca-certificates").is_some()
+}
+
 /// Where [`fix`] distrusts the roots: `bundle`, or this system's trust
 /// store; an error where wpantry doesn't know it.
 pub fn store(bundle: Option<&Path>) -> Result<String> {
@@ -344,7 +356,7 @@ pub fn store(bundle: Option<&Path>) -> Result<String> {
             return Ok(what.into());
         }
     }
-    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+    if debian_style(Path::new(CA_CERTIFICATES_CONF), &which) {
         return Ok("the system trust store (/etc/ca-certificates.conf, update-ca-certificates)".into());
     }
     Err(Error::Failed(format!(
@@ -381,7 +393,7 @@ pub fn fix(bundle: Option<&Path>, say: &dyn Fn(&str)) -> Result<()> {
             say,
         );
     }
-    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+    if debian_style(Path::new(CA_CERTIFICATES_CONF), &which) {
         return fix_ca_certificates_conf(&drop, say);
     }
     Err(Error::Failed(format!(

@@ -114,3 +114,58 @@ fn a_system_tool_runs_from_its_folder_when_path_leaves_it_out() {
     assert_eq!(resolve(OsStr::new(missing), Some(d.path().as_os_str())), PathBuf::from(missing));
     assert_eq!(resolve(OsStr::new("sh"), Some(d.path().as_os_str())), PathBuf::from("sh"));
 }
+
+/// Risk: `which` and `resolve` look in different places, so a check that
+/// asks `which` whether a tool is there says "unknown" about one `exec` would
+/// run (or the reverse). Oracle: for each case the answer is fixed by the
+/// folders laid out below, not by running either function twice: a tool on
+/// PATH is found there (and PATH wins over the system folder), a tool only in
+/// a system folder is found there by both, a file that isn't executable and a
+/// missing name are found by neither.
+#[cfg(unix)]
+#[test]
+fn which_and_resolve_agree_on_where_a_tool_is() {
+    let d = TempDir::new("lookup").unwrap();
+    let (bin, sbin) = (d.path().join("bin"), d.path().join("sbin"));
+    executable(&bin.join("on-path-only"), "#!/bin/sh\n");
+    executable(&sbin.join("sbin-only"), "#!/bin/sh\n");
+    executable(&bin.join("in-both"), "#!/bin/sh\n");
+    executable(&sbin.join("in-both"), "#!/bin/sh\n");
+    std::fs::write(sbin.join("not-executable"), "data").unwrap();
+    let system = [sbin.to_str().unwrap()];
+    let path = bin.as_os_str();
+    // (name, `which`, `resolve`): `resolve` keeps the bare name when the
+    // spawn finds the tool by itself (PATH) or can't find it at all.
+    let on_path = |n: &str| (Some(bin.join(n)), PathBuf::from(n));
+    let in_sbin = |n: &str| (Some(sbin.join(n)), sbin.join(n));
+    let nowhere = |n: &str| (None, PathBuf::from(n));
+    for (name, (which, resolved)) in [
+        ("on-path-only", on_path("on-path-only")),
+        ("sbin-only", in_sbin("sbin-only")),
+        ("in-both", on_path("in-both")),
+        ("not-executable", nowhere("not-executable")),
+        ("no-such-tool", nowhere("no-such-tool")),
+    ] {
+        assert_eq!(which_with(name, Some(path), &system), which, "which({name})");
+        assert_eq!(resolve_with(OsStr::new(name), Some(path), &system), resolved, "resolve({name})");
+        // The invariant itself: when `resolve` turns a name into a path, that
+        // is the path `which` reports; when it keeps the name, `which` has
+        // it on PATH or not at all.
+        let w = which_with(name, Some(path), &system);
+        if resolved.is_absolute() {
+            assert_eq!(w, Some(resolved), "{name}");
+        } else {
+            assert!(w.is_none_or(|p| p.starts_with(&bin)), "{name}");
+        }
+    }
+    // No PATH at all: the system folder still answers, for both.
+    assert_eq!(which_with("sbin-only", None, &system), Some(sbin.join("sbin-only")));
+    assert_eq!(resolve_with(OsStr::new("sbin-only"), None, &system), sbin.join("sbin-only"));
+    // The real folders: `sysctl` is in /usr/sbin or /sbin on every Unix CI
+    // runs on, and PATH here has neither.
+    let nope = Some(OsStr::new("/nowhere"));
+    let found = which_in("sysctl", nope).expect("sysctl is in a system folder");
+    assert_eq!(found, resolve(OsStr::new("sysctl"), nope));
+    assert!(SYSTEM_DIRS.iter().any(|dir| found == Path::new(dir).join("sysctl")), "{}", found.display());
+    assert_eq!(which_in("wpantry-no-such-tool", nope), None);
+}

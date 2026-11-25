@@ -86,7 +86,13 @@ pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Opt
         dir.join(file)
     };
     let on_path = path.and_then(|path| {
-        std::env::split_paths(path).flat_map(|d| suffixes.iter().map(move |s| named(&d, s))).find(|p| is_executable(p))
+        // A PATH folder inside a folder the scan leaves out (`crate::utils::privacy`) is not
+        // looked in: even a stat there raises a privacy prompt. The system folders are not
+        // filtered: they are fixed, root-owned places.
+        std::env::split_paths(path)
+            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .flat_map(|d| suffixes.iter().map(move |s| named(&d, s)))
+            .find(|p| is_executable(p))
     });
     if let Some(p) = on_path {
         return Some(Found::Path(p));

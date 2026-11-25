@@ -171,6 +171,11 @@ fn walk_uncached(root: &Path, depth: usize, seen: Seen) -> Vec<(PathBuf, usize, 
         for e in rd.filter_map(|e| e.ok()) {
             let name = e.file_name().to_string_lossy().into_owned();
             let Ok(t) = e.file_type() else { continue };
+            // A link into a left-out folder is not followed, not even to stat it:
+            // that would open the folder (`read_link` reads only the link).
+            if t.is_symlink() && crate::utils::privacy::link_left_out(&e.path()) {
+                continue;
+            }
             // As os.walk: a symlink to a directory is listed but not walked.
             let is_dir =
                 if t.is_symlink() { std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir()) } else { t.is_dir() };
@@ -180,6 +185,7 @@ fn walk_uncached(root: &Path, depth: usize, seen: Seen) -> Vec<(PathBuf, usize, 
                 && !PRUNE.contains(&name.as_str())
                 && level < depth
                 && !skip.iter().any(|x| e.path().starts_with(x))
+                && !crate::utils::privacy::is_left_out(e.path())
             {
                 dirs.push(e.path());
             }
@@ -191,6 +197,9 @@ fn walk_uncached(root: &Path, depth: usize, seen: Seen) -> Vec<(PathBuf, usize, 
         for sub in dirs {
             visit(root, &sub, level + 1, depth, skip, seen, out);
         }
+    }
+    if crate::utils::privacy::is_left_out(root) {
+        return Vec::new();
     }
     let skip = EXCLUDED.lock().expect("lock").get(root).cloned().unwrap_or_default();
     let mut out = Vec::new();

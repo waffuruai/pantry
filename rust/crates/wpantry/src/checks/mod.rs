@@ -291,6 +291,9 @@ pub struct Scan<'a> {
     /// The secrets the history scan found, by file, rule and line: the
     /// deep scan of files doesn't report them again.
     pub(crate) history_secrets: HashSet<(PathBuf, String, usize)>,
+    /// The folders this scan never opens (`--no-personal-files`), left out
+    /// of every walk and lookup while the scan lives ([`crate::utils::privacy`]).
+    pub(crate) left_out: Option<crate::utils::privacy::Guard>,
 }
 
 impl<'a> Scan<'a> {
@@ -322,6 +325,7 @@ impl<'a> Scan<'a> {
             files: None,
             malware: None,
             history_secrets: HashSet::new(),
+            left_out: None,
         }
     }
 
@@ -638,6 +642,31 @@ impl<'a> Scan<'a> {
     /// personal folders under `--no-personal-files`.
     pub(crate) fn scope_repos(&mut self) {
         let (log, note, status) = (self.log, self.note, self.status);
+        // --no-personal-files: the folders macOS guards with a prompt are
+        // left out by path before anything lists them, for the whole scan
+        // (the repo search, every walk, the persistence checks, PATH
+        // lookups). A --path inside one of them is scanned as asked, so its
+        // folder stays in.
+        self.left_out = None;
+        if self.opts.no_personal_files {
+            let named: Vec<PathBuf> = self.opts.paths.iter().flatten().map(|p| self.home_path(p)).collect();
+            let left: Vec<PathBuf> = crate::utils::privacy::folders(&self.home, cfg!(target_os = "macos"))
+                .into_iter()
+                .filter(|f| !named.iter().any(|p| p.starts_with(f)))
+                .collect();
+            if !left.is_empty() {
+                note(&format!(
+                    "· left out of this scan (--no-personal-files): {}; repos there are not scanned",
+                    left_out_names(&self.home, &left)
+                ));
+                self.excluded(
+                    "Repositories in personal folders",
+                    "--no-personal-files",
+                    "Repos under Downloads, Desktop and Documents (and on macOS the other folders it asks permission for) were not looked for. Scan without --no-personal-files, or name one with --path, to check them.",
+                );
+            }
+            self.left_out = Some(crate::utils::privacy::leave_out(left));
+        }
         self.repos =
             repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
         // --no-personal-files keeps Downloads, Desktop and Documents out of
@@ -647,6 +676,14 @@ impl<'a> Scan<'a> {
         for (_, root) in &self.repos {
             let dirs = if self.opts.no_personal_files { repos::personal_under(&self.home, root) } else { Vec::new() };
             crate::utils::walk::exclude_under(root, dirs);
+        }
+    }
+
+    /// A `--path` as the repo search reads it: `~/x` under this scan's home.
+    fn home_path(&self, p: &Path) -> PathBuf {
+        match p.strip_prefix("~") {
+            Ok(rest) => self.home.join(rest),
+            Err(_) => p.to_path_buf(),
         }
     }
 
@@ -884,6 +921,24 @@ pub fn as_source(e: Error) -> Error {
         Error::Io(io) => Error::Invalid(io.to_string()),
         e => e,
     }
+}
+
+/// The left-out folders as `~/Documents, ~/Desktop, ...`, each once (the
+/// list holds the home folder's canonical spelling too).
+///
+/// Example: home `/h`, folders `/h/Downloads`, `/private/h/Downloads`
+/// give `~/Downloads`.
+fn left_out_names(home: &Path, folders: &[PathBuf]) -> String {
+    let canon = std::fs::canonicalize(home).ok();
+    let mut names: Vec<String> = Vec::new();
+    for f in folders {
+        let rel = f.strip_prefix(home).ok().or_else(|| canon.as_deref().and_then(|c| f.strip_prefix(c).ok()));
+        let name = rel.map_or_else(|| f.display().to_string(), |r| format!("~/{}", r.display()));
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.join(", ")
 }
 
 #[cfg(test)]

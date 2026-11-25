@@ -110,8 +110,9 @@ pub struct Check {
     /// `--deep`: every file of the computer, for malware with every system's
     /// rules and for secrets, as well as git history.
     pub deep: bool,
-    /// `--no-personal-files`: leave Downloads, Desktop and Documents out of
-    /// the document and malware passes (not with `--deep`).
+    /// `--no-personal-files`: never open Downloads, Desktop and Documents (on
+    /// macOS also the other folders it asks permission for) in any pass,
+    /// the repo search included (not with `--deep`).
     pub no_personal_files: bool,
     /// `--no-online-hash`: never look up a flagged file's hash online.
     pub no_online_hash: bool,
@@ -312,7 +313,7 @@ fn scan_opts() -> Vec<Opt> {
         Opt::new("--deep", "read everything in scope (slower): every file of the computer this user can read, ~ first (or each --path), for malware with every system's rules and for secrets; git history's files up to 256 MB with no time limit"),
         Opt::new(
             "--no-personal-files",
-            "leave Downloads, Desktop and Documents out of the document and malware passes, reported as not checked (for unattended runs)",
+            "never open Downloads, Desktop or Documents in any pass, finding repos included (on macOS also the other folders it asks permission for), reported as not checked (for unattended runs)",
         )
         .conflicts(&["deep"]),
         Opt::new(

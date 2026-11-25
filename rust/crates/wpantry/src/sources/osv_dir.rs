@@ -440,9 +440,9 @@ pub fn matching<'a>(cache: &Cache, items: impl IntoIterator<Item = &'a Item>, or
     Ok(out)
 }
 
-/// A local record by its id or, failing that, an alias, with its link
-/// ("" for none): what a report shows for a finding no cached OSV record
-/// has the id of.
+/// A local record by its id or, failing that, an alias, from whichever
+/// source holds one first, with its link ("" for none). It knows nothing of
+/// which source or package a finding is for: a report uses [`for_finding`].
 pub fn by_id(cache: &Cache, id: &str, alias: bool) -> Result<Option<(Value, String)>> {
     let sql = if alias {
         "SELECT record, url FROM local_vulns WHERE (' ' || aliases || ' ') LIKE ('% ' || ? || ' %') ORDER BY source LIMIT 1"
@@ -451,6 +451,26 @@ pub fn by_id(cache: &Cache, id: &str, alias: bool) -> Result<Option<(Value, Stri
     };
     let row: Option<(String, Option<String>)> =
         cache.conn.query_row(sql, [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    Ok(row.and_then(|(t, u)| serde_json::from_str(&t).ok().map(|v| (v, u.unwrap_or_default()))))
+}
+
+/// The record of source `source` a finding is for, with its link ("" for
+/// none): the one whose id is `id`, else the one that lists `id` as an alias,
+/// and that names `package` as an affected package (or git repository), the
+/// way matching finds it. A record of another source, or of another package,
+/// is not this finding's, whatever its id.
+pub fn for_finding(cache: &Cache, source: &str, id: &str, package: &str) -> Result<Option<(Value, String)>> {
+    let row: Option<(String, Option<String>)> = cache
+        .conn
+        .query_row(
+            "SELECT v.record, v.url FROM local_vulns v \
+             WHERE v.source = ?1 AND (v.id = ?2 OR (' ' || v.aliases || ' ') LIKE ('% ' || ?2 || ' %')) \
+             AND EXISTS (SELECT 1 FROM local_vuln_names n WHERE n.source = v.source AND n.id = v.id AND n.name = ?3) \
+             ORDER BY (v.id = ?2) DESC, v.id LIMIT 1",
+            params![source, id, package.to_lowercase()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
     Ok(row.and_then(|(t, u)| serde_json::from_str(&t).ok().map(|v| (v, u.unwrap_or_default()))))
 }
 

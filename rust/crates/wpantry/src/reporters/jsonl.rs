@@ -126,20 +126,25 @@ fn with_text_in(cache: &Cache, advisories: &mut Advisories, findings: &mut [Find
     }
 }
 
-/// The OSV record for a finding's id, and where it came from: the record
-/// with that id, or the one that lists it as an alias, from OSV's cached
-/// records first, then from the user's folders of OSV records
-/// ([`crate::sources::osv_dir`]), whose link (`Some`, "" for none) is the
-/// record's own.
-fn record(cache: &Cache, vuln_id: &str) -> Result<Option<(Value, Option<String>)>> {
+/// The OSV record for a finding, and where it came from: from OSV's cached
+/// records first (the one with the finding's id, else the one that lists it
+/// as an alias), and only when OSV has none, from the user's folder of OSV
+/// records ([`crate::sources::osv_dir`]) the finding came from, whose link
+/// (`Some`, "" for none) is the record's own.
+///
+/// A local record is used only for a finding that names its source
+/// (`local_source`: it was produced from a source of the user's in use that
+/// scan) and only a record of that source that names the finding's package,
+/// so an OSV finding that shares a CVE id with some local record, one for
+/// another package or one of a source that is off, never takes its record,
+/// aliases or url.
+fn record(cache: &Cache, f: &Finding) -> Result<Option<(Value, Option<String>)>> {
+    let vuln_id = f.vuln_id.as_str();
     if vuln_id.is_empty() {
         return Ok(None);
     }
     if let Some(r) = cache.vuln(vuln_id)? {
         return Ok(Some((r, None)));
-    }
-    if let Some((r, url)) = crate::sources::osv_dir::by_id(cache, vuln_id, false)? {
-        return Ok(Some((r, Some(url))));
     }
     let found: Option<String> = cache
         .conn
@@ -152,7 +157,11 @@ fn record(cache: &Cache, vuln_id: &str) -> Result<Option<(Value, Option<String>)
     if let Some(r) = found.and_then(|t| serde_json::from_str(&t).ok()) {
         return Ok(Some((r, None)));
     }
-    Ok(crate::sources::osv_dir::by_id(cache, vuln_id, true)?.map(|(r, url)| (r, Some(url))))
+    if f.local_source.is_empty() {
+        return Ok(None);
+    }
+    Ok(crate::sources::osv_dir::for_finding(cache, &f.local_source, vuln_id, &f.component)?
+        .map(|(r, url)| (r, Some(url))))
 }
 
 /// The exposure row for a finding's key, if scans have been recorded.
@@ -210,7 +219,7 @@ fn resolved_scan(cache: &Cache, key: &str) -> Result<Option<i64>> {
 
 fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let f = &row.finding;
-    let found = record(cache, &f.vuln_id)?;
+    let found = record(cache, f)?;
     let wordfence = crate::sources::wordfence::link_in(&f.note).filter(|_| f.kind == crate::sources::wordfence::KIND);
     let cve = || format!("https://www.cve.org/CVERecord?id={}", f.vuln_id);
     let (aliases, url) = match &found {

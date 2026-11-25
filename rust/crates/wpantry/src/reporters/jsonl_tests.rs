@@ -205,4 +205,97 @@ fn the_export_reads_each_advisorys_records_once_and_only_for_rows_it_keeps() {
     let taken = crate::checks::severity::lookups::taken();
     assert_eq!(taken, 3, "one read per distinct advisory id (3), not per row (8) or per exposure");
     c.close().unwrap();
+
+/// A record of a folder on this machine as a load of it leaves it: the row
+/// and the package name it is found by.
+fn local_row(c: &Cache, source: &str, id: &str, aliases: &[&str], package: &str, url: &str) {
+    use rusqlite::params;
+    let rec = json!({"id": id, "aliases": aliases, "summary": format!("{id} from {source}"),
+        "affected": [{"package": {"ecosystem": "npm", "name": package}}]});
+    c.conn
+        .execute(
+            "INSERT INTO local_vulns VALUES (?, ?, ?, ?, ?, ?)",
+            params![source, id, format!("{id}.json"), aliases.join(" "), url, rec.to_string()],
+        )
+        .unwrap();
+    c.conn
+        .execute("INSERT INTO local_vuln_names VALUES (?, ?, ?)", params![source, id, package.to_lowercase()])
+        .unwrap();
+}
+
+/// The export row of one finding, from a cache holding it.
+fn row_of(c: &Cache, f: &Finding) -> Value {
+    c.replace_findings(std::slice::from_ref(f)).unwrap();
+    let (text, n) = jsonl(c, false).unwrap();
+    assert_eq!(n, 1);
+    serde_json::from_str(text.trim()).unwrap()
+}
+
+fn cache_for(label: &str) -> (crate::utils::temp::TempDir, Cache) {
+    let d = crate::utils::temp::TempDir::new(label).unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    (d, c)
+}
+
+/// Risk: an upstream finding shown as `CVE-X` (promoted from an OSV record's
+/// alias) takes `record`, `aliases` and `url` from a local record whose id is
+/// `CVE-X`, because the local table was tried first. Oracle: the row is
+/// OSV's cached record and its osv.dev link, whether or not the finding
+/// names a local source; the local record is only for what OSV has none for.
+#[test]
+fn an_upstream_finding_keeps_osvs_record_when_a_local_record_has_its_cve_id() {
+    let (_d, c) = cache_for("export-order");
+    c.put_vuln(&json!({"id": "GHSA-1", "aliases": ["CVE-2026-9999"], "summary": "upstream zip bomb",
+        "affected": [{"package": {"ecosystem": "npm", "name": "zip"}}]}))
+        .unwrap();
+    local_row(&c, "t-src", "CVE-2026-9999", &[], "zip", "https://internal.example/CVE-2026-9999");
+    for source in ["", "t-src"] {
+        let f = Finding { local_source: source.into(), ..finding("CVE-2026-9999", "") };
+        let row = row_of(&c, &f);
+        assert_eq!(row["record"]["id"], "GHSA-1", "source {source:?}: {row}");
+        assert_eq!(row["url"], "https://osv.dev/vulnerability/GHSA-1", "source {source:?}");
+        assert_eq!(row["aliases"], json!(["GHSA-1"]), "source {source:?}");
+    }
+}
+
+/// Risk: a local record for another package, or one in a source the finding
+/// didn't come from (including one turned off, whose rows stay), supplies
+/// the record and link of an unrelated finding that merely shares its id.
+/// Oracle: with no OSV record, such a finding has no record and the CVE
+/// page's link; one matching the source, the package and the id has the
+/// record and its own link, by id first and then by alias.
+#[test]
+fn a_local_record_is_used_only_for_its_source_package_and_id() {
+    let (_d, c) = cache_for("export-local");
+    local_row(&c, "t-off", "CVE-2026-1", &[], "zip", "https://off.example/CVE-2026-1");
+    local_row(&c, "t-src", "CVE-2026-1", &[], "other-package", "https://wrong-package.example/CVE-2026-1");
+    let cve = "https://www.cve.org/CVERecord?id=CVE-2026-1";
+    // No local source: an upstream-style finding never reads a local table.
+    let row = row_of(&c, &finding("CVE-2026-1", ""));
+    assert_eq!((row["record"].is_null(), row["url"].as_str()), (true, Some(cve)), "{row}");
+    // From a source that holds the id only for another package.
+    let f = Finding { local_source: "t-src".into(), ..finding("CVE-2026-1", "") };
+    let row = row_of(&c, &f);
+    assert_eq!((row["record"].is_null(), row["url"].as_str()), (true, Some(cve)), "another package: {row}");
+    // From a source that holds nothing of the id (the id is in a source that is off).
+    let f = Finding { local_source: "t-other".into(), ..finding("CVE-2026-1", "") };
+    let row = row_of(&c, &f);
+    assert_eq!((row["record"].is_null(), row["url"].as_str()), (true, Some(cve)), "another source: {row}");
+    // The match: this source, this package, by id first; then by alias.
+    let from = |source: &str, id: &str| Finding { local_source: source.into(), ..finding(id, "") };
+    local_row(&c, "t-src", "CVE-2026-2", &[], "zip", "https://advisories.example/CVE-2026-2");
+    local_row(&c, "t-off", "CVE-2026-2", &[], "zip", "https://off.example/CVE-2026-2");
+    let row = row_of(&c, &from("t-src", "CVE-2026-2"));
+    assert_eq!(
+        (row["record"]["summary"].as_str(), row["url"].as_str()),
+        (Some("CVE-2026-2 from t-src"), Some("https://advisories.example/CVE-2026-2")),
+        "the finding's own source, not the other that holds the id: {row}"
+    );
+    local_row(&c, "t-src", "TEAM-7", &["CVE-2026-7"], "Zip", "https://advisories.example/TEAM-7");
+    let row = row_of(&c, &from("t-src", "CVE-2026-7"));
+    assert_eq!(
+        (row["record"]["id"].as_str(), row["url"].as_str()),
+        (Some("TEAM-7"), Some("https://advisories.example/TEAM-7")),
+        "{row}"
+    );
 }

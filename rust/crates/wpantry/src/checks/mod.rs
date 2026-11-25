@@ -191,6 +191,18 @@ pub fn local_note(note: &str, main: &Value, group: &[Value]) -> String {
     if note.is_empty() { tail } else { format!("{note} {tail}") }
 }
 
+/// What a finding carries as fields when its own record came from a folder
+/// on this machine: that source's id and the record's https link ("" for
+/// none); both "" for any other record. The report reads these and never the
+/// note, which starts with the record's free text and could carry anything.
+pub fn local_fields(rec: &Value) -> (String, String) {
+    use crate::sources::osv_dir::{SOURCE_KEY, link};
+    match rec.get(SOURCE_KEY).and_then(Value::as_str) {
+        Some(id) => (id.to_string(), link(rec).unwrap_or_default()),
+        None => (String::new(), String::new()),
+    }
+}
+
 pub fn is_malicious(rec: &Value) -> bool {
     osv::ids_of(rec).iter().any(|i| i.starts_with("MAL-"))
 }
@@ -903,6 +915,8 @@ impl<'a> Scan<'a> {
                     severity: "MALICIOUS".into(),
                     note: local_note(if summary.is_empty() { "known malicious package" } else { summary }, bad, group),
                     fix_cmd: REMOVE.replace("{}", who),
+                    local_source: local_fields(bad).0,
+                    local_link: local_fields(bad).1,
                     ..Finding::of(c)
                 });
                 continue;
@@ -951,6 +965,8 @@ impl<'a> Scan<'a> {
                             group,
                         ),
                         fix_cmd: step,
+                        local_source: local_fields(main).0,
+                        local_link: local_fields(main).1,
                         ..Finding::of(c)
                     });
                 }
@@ -983,6 +999,8 @@ impl<'a> Scan<'a> {
                 fix_cmd,
                 fix_auto,
                 affected_range,
+                local_source: local_fields(main).0,
+                local_link: local_fields(main).1,
                 ..Finding::of(c)
             });
         }

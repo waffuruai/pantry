@@ -69,7 +69,7 @@ fn findings_in(cache: &Cache, advisories: &mut Advisories) -> Result<Vec<Finding
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
          dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model, \
-         excluded, summary, aliases, cwe FROM findings",
+         excluded, summary, aliases, cwe, local_source, local_link FROM findings",
     )?;
     let rows = stmt.query_map([], |r| {
         let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -99,6 +99,8 @@ fn findings_in(cache: &Cache, advisories: &mut Advisories) -> Result<Vec<Finding
             summary: s(22)?,
             aliases: s(23)?.split_whitespace().map(str::to_string).collect(),
             cwe: s(24)?.split_whitespace().map(str::to_string).collect(),
+            local_source: s(25)?,
+            local_link: s(26)?,
         })
     })?;
     let mut out: Vec<Finding> = rows.collect::<rusqlite::Result<_>>()?;
@@ -254,6 +256,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
         "excluded": f.excluded, "summary": f.summary, "cwe": f.cwe,
+        "local_source": f.local_source, "local_link": f.local_link,
         "aliases": aliases, "url": url, "record": found.map(|(r, _)| r),
         "first_seen": first_seen, "last_seen": last_seen, "resolved_at": resolved_at, "days_exposed": days,
         "first_epss": first_epss, "first_epss_percentile": first_epss_percentile,

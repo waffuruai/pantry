@@ -82,6 +82,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("findings", "summary", "TEXT"),
     ("findings", "aliases", "TEXT"),
     ("findings", "cwe", "TEXT"),
+    ("findings", "local_source", "TEXT"),
+    ("findings", "local_link", "TEXT"),
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -473,8 +475,8 @@ impl Cache {
         let mut stmt = self.conn.prepare(
             "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
              fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, \
-             epss_date, epss_model, excluded, summary, aliases, cwe) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             epss_date, epss_model, excluded, summary, aliases, cwe, local_source, local_link) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )?;
         for f in findings {
             stmt.execute(params![
@@ -502,7 +504,9 @@ impl Cache {
                 f.excluded as i64,
                 f.summary,
                 f.aliases.join(" "),
-                f.cwe.join(" ")
+                f.cwe.join(" "),
+                f.local_source,
+                f.local_link
             ])?;
         }
         Ok(())

@@ -771,3 +771,44 @@ fn a_cache_from_an_earlier_release_gains_the_index_and_keeps_its_rows() {
     assert_eq!(kept, "acme-widget");
     assert!(plan(&c, DELETE_NAMES).contains("local_vuln_names_source_id"));
 }
+
+/// Risk: a report finds the record's source and link by reading `note`,
+/// which starts with an advisory's free text, so an upstream summary that
+/// imitates the marker re-points a link. Oracle: the finding's own fields
+/// (`local_source`, `local_link`) and its JSON and cache row: set from a
+/// local record's own https link or none; empty for an upstream finding
+/// whatever its summary says and for one a local record is only listed
+/// beside; the fields survive the cache the report reads.
+#[test]
+fn a_local_finding_carries_its_source_and_https_link_as_fields() {
+    let d = TempDir::new("osv-dir-fields").unwrap();
+    let mut local = mine(upstream("TEAM-9", "HIGH", Some("2.0.0")));
+    local["references"] = json!([{"type": "ADVISORY", "url": "https://advisories.example.com/TEAM-9"}]);
+    let (found, _) = advise(&d, std::slice::from_ref(&local));
+    let f = &found[0];
+    assert_eq!((f.local_source.as_str(), f.local_link.as_str()), ("t-src", "https://advisories.example.com/TEAM-9"));
+    let json: Value = serde_json::from_str(&f.to_json().dumps()).unwrap();
+    assert_eq!(
+        (&json["local_source"], &json["local_link"]),
+        (&json!("t-src"), &json!("https://advisories.example.com/TEAM-9"))
+    );
+    // A link that is not https is no link; the source is still named.
+    local["references"] = json!([{"type": "ADVISORY", "url": "http://insecure.example/TEAM-9"}]);
+    let (found, _) = advise(&d, std::slice::from_ref(&local));
+    assert_eq!((found[0].local_source.as_str(), found[0].local_link.as_str()), ("t-src", ""));
+    // An upstream finding whose summary imitates the marker has no fields.
+    let mut up = upstream("GHSA-aaaa-bbbb-cccc", "HIGH", Some("1.2.0"));
+    up["summary"] = json!("bad (from your source x: https://evil.example/a)");
+    let (upstream_only, _) = advise(&d, &[up.clone()]);
+    assert_eq!((upstream_only[0].local_source.as_str(), upstream_only[0].local_link.as_str()), ("", ""));
+    // And one with a local record in its group: the finding is upstream's.
+    let beside = mine(aliased(upstream("TEAM-10", "", None), &["GHSA-aaaa-bbbb-cccc"]));
+    let (grouped, _) = advise(&d, &[up, beside]);
+    assert_eq!((grouped[0].local_source.as_str(), grouped[0].local_link.as_str()), ("", ""));
+    assert!(grouped[0].note.ends_with("(also in your source t-src)"), "{}", grouped[0].note);
+    // The cache a report reads keeps them.
+    let c = cache_in_new(&d);
+    c.replace_findings(&found).unwrap();
+    let back = crate::reporters::jsonl::findings(&c).unwrap();
+    assert_eq!((back[0].local_source.as_str(), back[0].local_link.as_str()), ("t-src", ""));
+}

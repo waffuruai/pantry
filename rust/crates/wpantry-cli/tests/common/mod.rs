@@ -251,6 +251,8 @@ pub const FINDING: &[(&str, Ty)] = &[
     ("summary", Ty::Str),
     ("aliases", Ty::StrList),
     ("cwe", Ty::StrList),
+    ("local_source", Ty::Str),
+    ("local_link", Ty::Str),
 ];
 
 pub const SCOPES: &[&str] = &["runtime", "dev", "optional", "unknown"];
@@ -392,6 +394,8 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "summary",
             "aliases",
             "cwe",
+            "local_source",
+            "local_link",
         ],
     ),
     ("kev", &["cve", "added", "name", "vendor", "product"]),

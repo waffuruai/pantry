@@ -151,7 +151,9 @@ pub fn link_left_out(link: &Path) -> bool {
 fn names(path: &Path) -> Vec<String> {
     use std::path::Component;
     let mut out: Vec<String> = Vec::new();
-    for c in path.components() {
+    // `canonicalize` gives a Windows path as `\\?\C:\x`: the same place as `C:\x`.
+    let plain = super::files::strip_verbatim(&path.to_string_lossy());
+    for c in Path::new(&plain).components() {
         match c {
             Component::CurDir => {}
             Component::ParentDir => {

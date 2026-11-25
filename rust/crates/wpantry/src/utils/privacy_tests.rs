@@ -74,3 +74,16 @@ fn a_left_out_folder_is_recognised_in_every_spelling_of_it() {
     assert!(!within(home.join("Documents"), home.join("Documents/x")), "a folder is not inside its child");
     assert_eq!(within(home.join("DOCUMENTS/x"), home.join("documents")), folds);
 }
+
+/// Risk: on Windows `canonicalize` spells a path `\\?\C:\...`, which the
+/// comparison took for another drive, so a folder given in its canonical
+/// spelling (the home folder's, as `folders` adds it) did not hold a path
+/// written plainly, nor the reverse. Oracle: both spellings are the same
+/// place. Windows only: `\\?\` is no prefix elsewhere.
+#[cfg(windows)]
+#[test]
+fn the_verbatim_spelling_is_the_same_folder() {
+    assert!(within(r"C:\Users\u\Documents\x", r"\\?\C:\Users\u\Documents"));
+    assert!(within(r"\\?\C:\Users\u\Documents\x", r"C:\Users\u\Documents"));
+    assert!(!within(r"\\?\C:\Users\u\Code", r"C:\Users\u\Documents"));
+}

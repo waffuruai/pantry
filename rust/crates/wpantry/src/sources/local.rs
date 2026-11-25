@@ -158,10 +158,20 @@ fn read(s: &Source, found: &Found) -> std::result::Result<Vec<u8>, String> {
         Found::Folder(dir, rules) => {
             let mut out = Vec::new();
             for f in rules {
-                let room = s.max_bytes.saturating_sub(out.len() as u64 + 1);
-                let body = read_entry(f, room).map_err(|e| {
-                    format!("{}: {e} (the .yar files are read up to {} bytes)", dir.display(), s.max_bytes)
-                })?;
+                // Each file costs its bytes plus its separator newline, so a
+                // file needs room for at least that one byte, even an empty
+                // one: the joined copy never passes `max_bytes`. With no byte
+                // left the file is over the cap (an empty file is refused
+                // there rather than skipped, so the copy keeps the same shape
+                // wherever the cap falls). The subtraction is checked: a
+                // saturating one gave such a file a zero budget it then met,
+                // and the newline pushed the copy one byte over.
+                let over =
+                    |e: String| format!("{}: {e} (the .yar files are read up to {} bytes)", dir.display(), s.max_bytes);
+                let Some(room) = s.max_bytes.checked_sub(out.len() as u64 + 1) else {
+                    return Err(over(format!("{} is over the cap with the newline after it", f.display())));
+                };
+                let body = read_entry(f, room).map_err(over)?;
                 out.extend_from_slice(&body);
                 out.push(b'\n');
             }

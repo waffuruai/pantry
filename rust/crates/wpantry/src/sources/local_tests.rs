@@ -241,3 +241,56 @@ fn a_gzip_list_is_copied_as_is_and_read_like_a_downloaded_one() {
     assert!(zipped > 0);
     assert_eq!(zipped, unzipped);
 }
+
+/// A folder of `.yar` files holding `files` (name, content), read under a
+/// cap of `cap` bytes through the folder read itself.
+fn folder_read(files: &[(&str, &str)], cap: u64) -> std::result::Result<Vec<u8>, String> {
+    let d = TempDir::new("local-cap").unwrap();
+    for (name, body) in files {
+        std::fs::write(d.path().join(name), body).unwrap();
+    }
+    let s = local("t-local-cap", "yara", "yara", d.path(), &format!("max_bytes = {cap}"));
+    read(&s, &locate(&s).unwrap())
+}
+
+/// Risk: a file and its newline exactly fill the cap, and the next file is
+/// empty: it passes a zero-byte check, and the newline after it puts the
+/// copy one byte over `max_bytes`. Oracle: the copy is never longer than the
+/// cap, and the refusal names the cap, as for any file that does not fit.
+/// An empty file needs its newline too, so it is over the cap, not skipped.
+#[test]
+fn an_empty_file_after_a_folder_that_fills_the_cap_is_refused() {
+    let e = folder_read(&[("a.yar", "abcd"), ("b.yar", "")], 5).unwrap_err();
+    assert!(e.contains("b.yar") && e.contains("5 bytes"), "{e}");
+}
+
+/// Risk: the fix refuses what fits. Oracle: one byte of room is enough for
+/// an empty file's newline, and a folder that fills the cap exactly with
+/// its last newline is accepted, at exactly `max_bytes` long.
+#[test]
+fn a_folder_that_fits_the_cap_exactly_is_accepted() {
+    assert_eq!(folder_read(&[("a.yar", "abc"), ("b.yar", "")], 5).unwrap(), b"abc\n\n");
+    assert_eq!(folder_read(&[("a.yar", "abcd")], 5).unwrap(), b"abcd\n");
+    assert!(folder_read(&[("a.yar", "abcde")], 5).is_err(), "no room for the newline");
+}
+
+/// Risk: the cap holds for the cases chosen by hand and not for the others.
+/// Oracle: over every small cap and every pair or triple of small file
+/// sizes, an `Ok` copy is never longer than the cap, and is refused only
+/// when the files plus a newline each really exceed it.
+#[test]
+fn a_joined_folder_is_never_over_its_cap() {
+    for cap in 1u64..=8 {
+        for sizes in (0..=cap as usize + 1).flat_map(|a| (0..=3).flat_map(move |b| (0..=3).map(move |c| [a, b, c]))) {
+            let bodies: Vec<String> = sizes.iter().map(|n| "x".repeat(*n)).collect();
+            let files = [("a.yar", bodies[0].as_str()), ("b.yar", bodies[1].as_str()), ("c.yar", bodies[2].as_str())];
+            let need: u64 = sizes.iter().map(|n| *n as u64 + 1).sum();
+            match folder_read(&files, cap) {
+                Ok(b) => {
+                    assert!(b.len() as u64 <= cap && b.len() as u64 == need, "cap {cap} sizes {sizes:?}: {}", b.len())
+                }
+                Err(e) => assert!(need > cap, "cap {cap} sizes {sizes:?} refused though it fits: {e}"),
+            }
+        }
+    }
+}

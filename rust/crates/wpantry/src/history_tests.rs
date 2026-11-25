@@ -271,3 +271,113 @@ fn a_chosen_exclusion_still_resolves_and_verifies_but_a_source_failure_does_not(
     assert_eq!(verify_fixes(&c, s1, s3).unwrap(), 1);
     c.close().unwrap();
 }
+
+/// Risk: the scheduled job's scope became `machine:~;no-personal-files`, and
+/// an exposure resolves only under an identical scope, so everything a full
+/// `machine:~` scan had recorded stayed open for good once the job stopped
+/// listing it. The fix (a no-personal-files machine scan also closes what
+/// `machine:~` recorded) must never close what that scan did not read.
+/// Oracle: where each exposure is. Outside the personal folders the job read
+/// it, so its absence is real; inside them (any spelling: `..`, `~`, a
+/// different case on macOS and Windows) or in Safari's protected data it did
+/// not, so it stays open until a full scan; a full scan closes the rest.
+/// Known bad, each by one change: drop the folder test and the Documents
+/// exposures close; drop the new rule and the fixed ones stay open.
+#[test]
+fn a_no_personal_files_scan_closes_full_scan_exposures_it_could_see_and_no_others() {
+    let _home = crate::utils::files::test_home();
+    let home = crate::utils::files::home();
+    let d = crate::utils::temp::TempDir::new("closes").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let full = Options { machine: true, ..Default::default() };
+    let job = Options { no_personal_files: true, ..full.clone() };
+    assert_eq!((scope_of(&full).as_str(), scope_of(&job).as_str()), ("machine:~", "machine:~;no-personal-files"));
+    let at = |kind: &str, component: &str, location: String, id: &str| Finding {
+        kind: kind.into(),
+        component: component.into(),
+        location,
+        vuln_id: id.into(),
+        status: "fail".into(),
+        ..Default::default()
+    };
+    let p = |rel: &str| home.join(rel).to_string_lossy().into_owned();
+    // (name, finding, whether the job's scan can close it)
+    let mut cases = vec![
+        ("a repo's lockfile outside the folders", at("project", "app", p("code/app/Cargo.lock"), "CVE-1"), true),
+        ("a Homebrew formula", at("brew", "openssl@3", String::new(), "CVE-2"), true),
+        ("a lockfile in Documents", at("project", "doc", p("Documents/proj/Cargo.lock"), "CVE-3"), false),
+        ("a file in Downloads", at("malware", "x", p("Downloads/x"), "MALWARE"), false),
+        ("a path folded with ..", at("project", "dots", p("Library/../Desktop/p/Cargo.lock"), "CVE-4"), false),
+        ("a path spelled with ~", at("project", "tilde", "~/Documents/p/Cargo.lock".into(), "CVE-5"), false),
+        ("a secret in some repo (no path, only `line 3`)", at("secret", "repo/.env", "line 3".into(), "aws"), false),
+        (
+            "a document found in Downloads (no location)",
+            at("document", "~/Downloads/a.pdf", String::new(), "DOC"),
+            false,
+        ),
+        ("Safari's protected data", at("posture", "Safari", String::new(), "POSTURE-SAFARI-SAFE-FILES"), false),
+        // Folders compare without case where the volume does not tell them apart.
+        (
+            "Documents spelled in lower case",
+            at("project", "lower", p("documents/proj/Cargo.lock"), "CVE-6"),
+            !cfg!(any(target_os = "macos", windows)),
+        ),
+    ];
+    // The same folder from its canonical path (a symlinked home, as on macOS).
+    match std::fs::canonicalize(&home) {
+        Ok(canon) if canon != home => cases.push((
+            "Documents from the canonical home",
+            at("project", "canon", canon.join("Documents/p/Cargo.lock").to_string_lossy().into_owned(), "CVE-7"),
+            false,
+        )),
+        _ => println!("home has no other spelling here: the canonical-path case is skipped"),
+    }
+    let found: Vec<Finding> = cases.iter().map(|c| c.1.clone()).collect();
+    record_scan(&c, 1.0, &found, &[], &full).unwrap();
+    // The job reads everything outside the folders and lists none of it now.
+    record_scan(&c, 2.0, &skipped_by_choice(), &[], &job).unwrap();
+    let open = |c: &Cache| -> Vec<String> {
+        exposures(c, 0.0).unwrap().into_iter().filter(|e| e.resolved_at.is_none()).map(|e| e.component).collect()
+    };
+    let still_open = open(&c);
+    for (name, f, closes) in &cases {
+        assert_eq!(
+            !still_open.contains(&f.component),
+            *closes,
+            "{name}: the no-personal-files scan {} it (open now: {still_open:?})",
+            if *closes { "must close" } else { "must not close" }
+        );
+    }
+    // A full scan reads everything: it closes what is left.
+    record_scan(&c, 3.0, &[], &[], &full).unwrap();
+    assert!(open(&c).is_empty(), "a full scan closes the rest: {:?}", open(&c));
+    c.close().unwrap();
+}
+
+/// Risk: the new rule closing across scopes it was not meant for. Oracle:
+/// the scope strings. A scan limited by `--path`, a repo-only scan and a
+/// scan with other policy files each stay in their own scope.
+#[test]
+fn a_no_personal_files_scan_closes_only_the_whole_machine_scope_it_belongs_to() {
+    let _home = crate::utils::files::test_home();
+    let d = crate::utils::temp::TempDir::new("closes-scopes").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let outside = Finding {
+        kind: "project".into(),
+        component: "app".into(),
+        location: crate::utils::files::home().join("code/Cargo.lock").to_string_lossy().into_owned(),
+        vuln_id: "CVE-1".into(),
+        status: "fail".into(),
+        ..Default::default()
+    };
+    let full = Options { machine: true, ..Default::default() };
+    let licensed = Options { licenses: true, ..full.clone() };
+    record_scan(&c, 1.0, std::slice::from_ref(&outside), &[], &licensed).unwrap();
+    // `machine:~` is another scope than `machine:~+licenses`: no closing.
+    record_scan(&c, 2.0, &skipped_by_choice(), &[], &Options { no_personal_files: true, ..full.clone() }).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none(), "another scope's exposure stays open");
+    // Its own flag-less counterpart does close it.
+    record_scan(&c, 3.0, &skipped_by_choice(), &[], &Options { no_personal_files: true, ..licensed.clone() }).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
+    c.close().unwrap();
+}

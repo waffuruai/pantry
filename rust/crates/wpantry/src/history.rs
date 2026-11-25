@@ -12,7 +12,11 @@
 //! is not a fix. An area the user left out on purpose (an `unchecked`
 //! finding marked `excluded`, such as `--no-personal-files`) is not a gap:
 //! it is part of the scope string, so a later scan with the same exclusion
-//! resolves what an earlier one found. A fix is verified only by a complete scan after it ran
+//! resolves what an earlier one found. The one exception is the whole-machine
+//! scan with `--no-personal-files` (the scheduled job's on macOS): it also
+//! resolves what a full `machine:~` scan recorded and it no longer lists,
+//! except in the personal folders and the Safari check it did not read.
+//! A fix is verified only by a complete scan after it ran
 //! that no longer lists what it addressed; a failed fix never is.
 
 use crate::checks::Options;
@@ -46,6 +50,11 @@ CREATE TABLE IF NOT EXISTS events (
 /// what it looked at, and what it looked for (`--licenses`, the policy
 /// files). Two scans with different scopes say nothing about each other.
 pub fn scope_of(opts: &Options) -> String {
+    scope_with(opts, opts.no_personal_files)
+}
+
+/// [`scope_of`], as it would read with `--no-personal-files` set or not.
+fn scope_with(opts: &Options, no_personal_files: bool) -> String {
     let mut paths: Vec<String> =
         opts.paths.as_deref().unwrap_or(&[]).iter().map(|p| p.to_string_lossy().into_owned()).collect();
     paths.sort();
@@ -59,7 +68,7 @@ pub fn scope_of(opts: &Options) -> String {
     }
     // Any scan with --no-personal-files: it leaves the personal folders out
     // of the repo walk too, so it says nothing about what a full one found there.
-    if opts.no_personal_files {
+    if no_personal_files {
         scope.push_str(";no-personal-files");
     }
     let policy: Vec<String> = [
@@ -188,14 +197,15 @@ pub fn record_scan_totals(
     // Open exposures of this scope the scan didn't list are over, when every
     // source answered: a source that couldn't be asked may be where they were.
     if unchecked == 0 {
-        let mut stmt = cache.conn.prepare("SELECT key FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
-        let open: Vec<String> = stmt.query_map([&scope], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        drop(stmt);
-        for key in open.iter().filter(|k| !seen.contains(*k)) {
-            cache.conn.execute(
-                "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?",
-                params![id, at, key],
-            )?;
+        resolve_unseen(cache, &scope, id, at, &seen, |_| true)?;
+        // The whole-machine scan with --no-personal-files (the scheduled
+        // job's) is a full scan of `machine:~` minus the personal folders,
+        // so it also closes what `machine:~` recorded there before the job
+        // took that flag (its scope changed with it), outside those folders.
+        if opts.no_personal_files && opts.machine && !opts.scoped() {
+            let full = scope_with(opts, false);
+            let home = crate::utils::files::home();
+            resolve_unseen(cache, &full, id, at, &seen, |e| closable_without_personal_files(&home, e))?;
         }
         verify_targeted_fixes(cache, id, &scope, started_at)?;
     }
@@ -206,6 +216,124 @@ pub fn record_scan_totals(
                 "excluded": excluded, "seconds": (at - started_at).round()}),
     )?;
     Ok(id)
+}
+
+/// An open exposure, as far as closing it by another scope's scan needs.
+struct OpenExposure {
+    key: String,
+    kind: String,
+    location: String,
+    vuln_id: String,
+}
+
+/// The exposures of `scope` that `scan` no longer lists, closed when
+/// `may_close` says the scan could have seen them.
+fn resolve_unseen(
+    cache: &Cache,
+    scope: &str,
+    scan: i64,
+    at: f64,
+    seen: &std::collections::HashSet<String>,
+    may_close: impl Fn(&OpenExposure) -> bool,
+) -> Result<()> {
+    let mut stmt = cache
+        .conn
+        .prepare("SELECT key, kind, location, vuln_id FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
+    let open: Vec<OpenExposure> = stmt
+        .query_map([scope], |r| {
+            let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
+            Ok(OpenExposure { key: s(0)?, kind: s(1)?, location: s(2)?, vuln_id: s(3)? })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for e in open.iter().filter(|e| !seen.contains(&e.key) && may_close(e)) {
+        cache.conn.execute(
+            "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?",
+            params![scan, at, e.key],
+        )?;
+    }
+    Ok(())
+}
+
+/// The kinds of the machine inventory, whose exposures a scan finds without
+/// reading the user's folders: an installed tool, app or setting has no
+/// path under Documents for the scan to have missed.
+const MACHINE_KINDS: &[&str] = &[
+    "brew",
+    "os",
+    "posture",
+    "app",
+    "browser",
+    "tool",
+    "harness",
+    "datastore",
+    "runtime",
+    "pkgmgr",
+    "manager",
+    "compiler",
+    "account",
+    "config",
+    "package",
+    "extension",
+];
+
+/// Whether a scan with `--no-personal-files` that no longer lists `e` can
+/// say it is gone. Only when it looked where `e` was: not in `~/Downloads`,
+/// `~/Desktop` or `~/Documents` (the folders it leaves out, so a path there
+/// stays open for a scan that reads them), and not the Safari check it
+/// skips. A location that is no path (`line 12`, empty) says nothing about
+/// where in the repos or folders it was, so only the machine inventory's
+/// kinds close on it. Every doubt keeps the exposure open: closing wrongly
+/// hides a live exposure, leaving one open costs only a later full scan.
+fn closable_without_personal_files(home: &std::path::Path, e: &OpenExposure) -> bool {
+    if e.vuln_id == "POSTURE-SAFARI-SAFE-FILES" {
+        return false;
+    }
+    let text = crate::utils::files::strip_verbatim(&e.location);
+    // `~/x` is how a report spells a path under home.
+    let path = match text.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+            home.join(rest.trim_start_matches(['/', '\\']))
+        }
+        _ => std::path::PathBuf::from(&text),
+    };
+    if path.is_absolute() {
+        return !in_personal_folder(home, &path);
+    }
+    MACHINE_KINDS.contains(&e.kind.as_str())
+}
+
+/// Whether `path` is at or under one of the personal folders of `home`
+/// (spelled as given, or from its canonical path). `.` and `..` are folded
+/// by name (the path need not exist and nothing under it is opened), and
+/// names are compared without regard to case on macOS and Windows, whose
+/// volumes are case-insensitive.
+fn in_personal_folder(home: &std::path::Path, path: &std::path::Path) -> bool {
+    use std::path::Component;
+    let names = |p: &std::path::Path| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::ParentDir => {
+                    out.pop();
+                }
+                Component::CurDir => {}
+                c => {
+                    let s = c.as_os_str().to_string_lossy();
+                    out.push(if cfg!(any(target_os = "macos", windows)) { s.to_lowercase() } else { s.into_owned() });
+                }
+            }
+        }
+        out
+    };
+    let got = names(path);
+    let canon = std::fs::canonicalize(home).ok();
+    std::iter::once(home).chain(canon.as_deref()).any(|base| {
+        crate::checks::machine::downloads::PERSONAL_FOLDERS.iter().any(|name| {
+            let folder = names(&base.join(name));
+            got.starts_with(&folder)
+        })
+    })
 }
 
 /// Record one applied (or dry-run) fix command, its outcome, and the

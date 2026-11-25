@@ -621,8 +621,10 @@ pub fn run() -> Result<i32> {
 /// an unattended run must not open Downloads, Desktop and Documents (that
 /// raises a privacy prompt nobody is there to answer), and it then records
 /// the same history scope as any machine scan with `--no-personal-files`
-/// (`machine:~;no-personal-files`), so each can resolve what the other
-/// found. Linux and Windows have no such prompt and keep the full scan.
+/// (`machine:~;no-personal-files`). That scope also resolves the open
+/// `machine:~` exposures outside the personal folders that it no longer
+/// lists (what an earlier full scan recorded), and never one inside them
+/// (`wpantry::history`). Linux and Windows have no such prompt and keep the full scan.
 ///
 /// ```ignore
 /// assert_eq!(scan_args(), ["scan", "--json", "--no-input", "--no-personal-files"]); // macOS

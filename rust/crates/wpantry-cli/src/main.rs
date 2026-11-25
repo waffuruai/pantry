@@ -222,10 +222,11 @@ fn cmd_scan(a: Check) -> Result<i32> {
             let targets: Vec<String> = first
                 .findings
                 .iter()
-                .filter(|f| f.fix_auto && f.fix_cmd == *cmd)
+                .filter(|f| f.fix_auto && remediation::is_step_of(&f.fix_cmd, cmd))
                 .map(wpantry::history::key_of)
                 .collect();
-            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets)?;
+            let failure = applied.failures.iter().find(|x| x.cmd == *cmd);
+            wpantry::history::record_fix_outcome(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets, failure)?;
         }
         for (cmd, ok, targets) in &stopgaps_ran {
             wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "stopgap", *ok, targets)?;
@@ -763,9 +764,13 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
         let auto: Vec<wpantry::finding::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
         let applied = remediation::apply(&auto, dry_run, &confirm, &mut |l| show(l));
         for (cmd, ok) in &applied.ran {
-            let targets: Vec<String> =
-                auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
-            wpantry::history::record_fix(&cache, from_scan, cmd, "mitigate", *ok, &targets)?;
+            let targets: Vec<String> = auto
+                .iter()
+                .filter(|f| remediation::is_step_of(&f.fix_cmd, cmd))
+                .map(wpantry::history::key_of)
+                .collect();
+            let failure = applied.failures.iter().find(|x| x.cmd == *cmd);
+            wpantry::history::record_fix_outcome(&cache, from_scan, cmd, "mitigate", *ok, &targets, failure)?;
         }
         did_something = dry_run || !applied.ran.is_empty();
         if applied.status != 0 {

@@ -205,6 +205,8 @@ wpantry fix              # run the unattended fixes, then re-check
 - **Unattended:** Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions. On a terminal it asks `Run these N updates now? [Y/n]` first; with `--no-input`, or no terminal, it runs them.
 - **Needs you:** anything needing sudo, a vendor, or a repo change, printed as a step for you or your agent to run. A lockfile fix is a code change: make it on a branch, with that repo's tests.
 - `mise` is never upgraded for you.
+- **A mise runtime** (python, node, …) is fixed by `mise install NAME@FIXED`, which runs unattended, then `mise uninstall NAME@OLD`, which is left to you: a `mise.toml` may still pin the old one, and until it is gone the scan reports it again. If FIXED is already installed, only the uninstall is offered.
+- **When a fix fails** the line `✗ failed: <command>` is followed by the exit code (or why there is none: the program was not found and where wpantry looked, it timed out, or was stopped) and the last lines of what the command wrote to stderr (at most 20 lines and 4 KiB, your home directory shown as `~`, never the environment). `report remediation --json` keeps them as `exit_code` and `error`.
 
 ### One thing at a time
 

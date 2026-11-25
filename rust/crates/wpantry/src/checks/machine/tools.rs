@@ -9,6 +9,7 @@
 //! A tool in [`READ_BINARY`] is never run: its version is read from the
 //! strings its binary holds.
 
+use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{READ_BINARY, TOOLS, Tool};
 use crate::component::Component;
 use crate::utils::files::home;
@@ -68,6 +69,35 @@ pub fn updater(path: &str, name: &str) -> (String, bool) {
         }
     }
     (format!("Upgrade {name} at {path} to {{safe}}"), false)
+}
+
+/// A mise runtime's fix, leaving no vulnerable install behind: install the
+/// fixed version, then `mise uninstall` the old one (a second line, which
+/// the plan never runs unattended: a mise.toml or .tool-versions may still
+/// pin it). When the fixed version is already installed beside it, the fix
+/// is the uninstall alone, also for a person to run. Any other command is
+/// returned as it was.
+///
+/// Example: python 3.14.9 under `~/.local/share/mise/installs/python/3.14.9`
+/// fixed by 3.14.10 gives `mise install python@3.14.10` then
+/// `mise uninstall python@3.14.9`.
+pub fn with_uninstall(c: &Component, cmd: String, auto: bool) -> (String, bool) {
+    let Some((name, fixed)) = cmd.strip_prefix("mise install ").and_then(|r| r.split_once('@')) else {
+        return (cmd, auto);
+    };
+    let marker = format!("/installs/{name}/");
+    let Some(at) = c.path.find(&marker).filter(|_| c.path.contains("/mise/")) else { return (cmd, auto) };
+    let dir = &c.path[..at + marker.len()];
+    let old = c.path[at + marker.len()..].split('/').next().unwrap_or("");
+    if old.is_empty() || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
+        return (cmd, auto);
+    }
+    let uninstall = format!("mise uninstall {name}@{old}");
+    if Path::new(&format!("{dir}{fixed}")).is_dir() {
+        (uninstall, false)
+    } else {
+        (format!("{cmd}\n{uninstall}"), auto)
+    }
 }
 
 /// The largest binary read for its embedded version.

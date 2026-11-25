@@ -2243,3 +2243,305 @@ fn dryrun_changes_nothing() {
     assert!(!r2.out.contains("Re-checking"));
     assert_eq!(r.out.contains("Update plan"), r2.out.contains("Update plan"));
 }
+
+// ignore ------------------------------------------------------------------
+
+/// Two repos under the temp home, each with a lockfile holding minimist
+/// 1.2.5 (advisory CVE-2026-7), and the first one qs 6.0.0 too (CVE-2026-8),
+/// with the answers in the cache: the same advisory in two repos, and
+/// another advisory in one file.
+fn ignore_fixture(t: &Ctx) -> (std::path::PathBuf, std::path::PathBuf) {
+    t.project_run("scan", &[]);
+    let lock = |pkgs: &[(&str, &str)]| {
+        let entries: Vec<String> =
+            pkgs.iter().map(|(n, v)| format!(r#""node_modules/{n}": {{"version": "{v}"}}"#)).collect();
+        format!(r#"{{"lockfileVersion": 3, "packages": {{"": {{}}, {}}}}}"#, entries.join(", "))
+    };
+    let app = git_repo(&t.home.join("app"), false);
+    let other = git_repo(&t.home.join("other"), false);
+    write(&app.join("package-lock.json"), lock(&[("minimist", "1.2.5"), ("qs", "6.0.0")]));
+    write(&other.join("package-lock.json"), lock(&[("minimist", "1.2.5")]));
+    let conn = t.conn();
+    for (ghsa, cve, pkg, fixed) in
+        [("GHSA-m", "CVE-2026-7", "minimist", "1.2.6"), ("GHSA-q", "CVE-2026-8", "qs", "6.0.1")]
+    {
+        let rec = json!({"id": ghsa, "aliases": [cve], "summary": format!("{pkg} flaw"),
+                         "database_specific": {"severity": "MODERATE"},
+                         "affected": [{"package": {"ecosystem": "npm", "name": pkg},
+                                       "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": fixed}]}]}]});
+        insert_vuln(&conn, "INSERT", [ghsa, cve, str_(&rec["summary"]), "", "MODERATE", "", "", "", &rec.to_string()]);
+    }
+    let at = now();
+    insert_query(&conn, "INSERT", "npm", "minimist", "1.2.5", at, "GHSA-m");
+    insert_query(&conn, "INSERT", "npm", "qs", "6.0.0", at, "GHSA-q");
+    (app, other)
+}
+
+fn scan_projects(t: &Ctx) -> Value {
+    envelope(&t.project_run("scan", &["--json"]).out)
+}
+
+/// The ids of the `project` findings, sorted.
+fn project_ids(env: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = of_kind(env, "project").iter().map(|f| str_(&f["id"]).to_string()).collect();
+    ids.sort();
+    ids
+}
+
+/// The id of the finding for `pkg` in the repo folder `repo`.
+fn project_id(env: &Value, pkg: &str, repo: &str) -> String {
+    of_kind(env, "project")
+        .iter()
+        .find(|f| f["component"] == pkg && str_(&f["location"]).contains(&format!("/{repo}/")))
+        .map(|f| str_(&f["id"]).to_string())
+        .unwrap_or_else(|| panic!("no {pkg} in {repo}: {}", env["findings"]))
+}
+
+fn checked(env: &Value, what: &str) -> i64 {
+    env["checked"][what].as_i64().unwrap_or(0)
+}
+
+#[test]
+fn ignore_in_a_repo_leaves_out_one_finding_and_remove_brings_it_back() {
+    let t = Ctx::new();
+    let (app, _other) = ignore_fixture(&t);
+    let before = scan_projects(&t);
+    let ids = project_ids(&before);
+    assert_eq!(ids.len(), 3, "{}", before["findings"]);
+    let target = project_id(&before, "minimist", "app");
+    let r = t.run(&["ignore", "add", &target, "--scope", "repo", "--reason", "not reachable", "--json", "--no-input"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!(
+        keys(&v),
+        set(&[
+            "schema",
+            "impl",
+            "version",
+            "action",
+            "changed",
+            "finding",
+            "scope",
+            "file",
+            "rules",
+            "reason",
+            "all_places",
+            "left_out"
+        ])
+    );
+    assert_eq!((v["schema"].clone(), v["action"].clone(), v["changed"].clone()), (json!(1), json!("add"), json!(true)));
+    assert_eq!(keys(&v["finding"]), set(&["id", "kind", "component", "location", "vuln_id"]));
+    assert_eq!(keys(&v["rules"][0]), set(&["id", "section", "pattern", "place"]));
+    assert_eq!(
+        (v["rules"][0]["section"].clone(), v["rules"][0]["pattern"].clone(), v["reason"].clone()),
+        (json!("project CVE-2026-7"), json!("/package-lock.json"), json!("not reachable"))
+    );
+    let file = read(&app.join(".pantryignore"));
+    assert!(
+        file.starts_with(&format!("[project CVE-2026-7]\n/package-lock.json\n# wpantry ignore: {target} | ")),
+        "{file}"
+    );
+    assert!(file.ends_with(" | not reachable\n"), "{file}");
+    // The next scan leaves out that finding: the same advisory in the other repo, and the other advisory in this file, stay.
+    let after = scan_projects(&t);
+    assert_eq!(project_ids(&after), ids.iter().filter(|i| **i != target).cloned().collect::<Vec<_>>());
+    assert_eq!(checked(&after, "findings skipped by a repo's .pantryignore"), 1, "{}", after["checked"]);
+    // list shows it, by hand-written and command-written alike.
+    write(&app.join(".pantryignore"), format!("# mine\nvendor/\n{file}"));
+    let r = t.run(&["ignore", "list", "--path", s(&app), "--json"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!(keys(&v), set(&["schema", "impl", "version", "action", "files", "rules", "removed_by_hand"]));
+    assert_eq!(keys(&v["files"][0]), set(&["scope", "file", "exists", "error"]));
+    let rules = arr(&v["rules"]);
+    assert_eq!(
+        strs(&rules.iter().collect::<Vec<_>>(), &["source", "pattern"]),
+        [["hand", "vendor/"], ["command", "/package-lock.json"]]
+    );
+    assert_eq!(
+        keys(&rules[1]),
+        set(&[
+            "id",
+            "scope",
+            "file",
+            "line",
+            "section",
+            "active",
+            "pattern",
+            "source",
+            "finding_id",
+            "added",
+            "reason"
+        ])
+    );
+    assert_eq!((rules[1]["finding_id"].clone(), rules[1]["reason"].clone()), (json!(target), json!("not reachable")));
+    assert!(
+        t.run(&["ignore", "list", "--path", s(&app)]).out.contains("written by wpantry ignore for"),
+        "the text form"
+    );
+    // Remove by finding id: only our block goes, and the next scan reports it again.
+    let r = t.run(&["ignore", "remove", &target, "--json"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!(keys(&v), set(&["schema", "impl", "version", "action", "id", "changed", "removed"]));
+    assert_eq!(keys(&v["removed"][0]), set(&["id", "scope", "file", "section", "pattern", "finding_id"]));
+    assert_eq!(read(&app.join(".pantryignore")), "# mine\nvendor/\n");
+    assert_eq!(project_ids(&scan_projects(&t)), ids);
+    // The log: both actions, with the finding, scope, file and reason.
+    let log = t.run(&["report", "audit", "--json"]).json();
+    let events: Vec<&Value> = arr(&log["events"]).iter().filter(|e| e["kind"] == "ignore").collect();
+    assert_eq!(events.len(), 2, "{log}");
+    assert_eq!(
+        (events[0]["detail"]["action"].clone(), events[1]["detail"]["action"].clone()),
+        (json!("add"), json!("remove"))
+    );
+    assert_eq!(
+        pick(&events[0]["detail"], &["scope", "reason", "finding_id"]),
+        json!(["repo", "not reachable", target])
+    );
+    assert_eq!(events[0]["detail"]["finding"]["vuln_id"], "CVE-2026-7");
+    assert!(str_(&events[0]["detail"]["file"]).ends_with("/app/.pantryignore"));
+    assert!(t.run(&["report", "audit", "--md"]).out.contains("| ignore |"), "the Markdown audit lists them too");
+}
+
+#[test]
+fn ignore_in_your_file_is_private_idempotent_and_can_cover_every_place() {
+    let t = Ctx::new();
+    ignore_fixture(&t);
+    let before = scan_projects(&t);
+    let target = project_id(&before, "qs", "app");
+    let r = t.run(&["ignore", "add", &target]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains(&format!("ignored {target}")), "{}", r.out);
+    let user = t.home.join(".config/wpantry/ignore");
+    let text = read(&user);
+    assert!(text.starts_with("[project CVE-2026-8]\n"), "{text}");
+    #[cfg(unix)]
+    {
+        let location =
+            of_kind(&before, "project").iter().find(|f| f["id"] == target.as_str()).unwrap()["location"].clone();
+        // The path as a person reads it: `~/` under the home folder, else the whole path.
+        let home = format!("{}/", s(&t.home));
+        let want = str_(&location).strip_prefix(&home).map_or(str_(&location).to_string(), |r| format!("~/{r}"));
+        assert_eq!(text.lines().nth(1).unwrap(), want);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&user), mode(user.parent().unwrap())), (0o600, 0o700));
+    }
+    let again = t.run(&["ignore", "add", &target, "--no-input"]);
+    assert_eq!(again.code, 0);
+    assert!(again.out.contains("already"), "{}", again.out);
+    assert_eq!(read(&user), text, "nothing changed");
+    let after = scan_projects(&t);
+    assert_eq!(project_ids(&after).len(), 2);
+    assert_eq!(checked(&after, "findings skipped by your ignore file"), 1);
+    // --all-places: every lockfile with minimist, one rule each.
+    let min = project_id(&after, "minimist", "app");
+    let r = t.run(&["ignore", "add", &min, "--all-places", "--json"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!((arr(&v["rules"]).len(), v["all_places"].clone(), arr(&v["left_out"]).len()), (2, json!(true), 0));
+    assert!(project_ids(&scan_projects(&t)).is_empty());
+    // One remove by the finding id asked takes both rules.
+    let r = t.run(&["ignore", "remove", &min, "--json"]);
+    assert_eq!(arr(&r.json()["removed"]).len(), 2);
+    assert_eq!(project_ids(&scan_projects(&t)).len(), 2);
+    // A rule id from `list` removes one rule.
+    let listed = t.run(&["ignore", "list", "--json"]).json();
+    let id = str_(&listed["rules"][0]["id"]).to_string();
+    assert!(id.starts_with("R-"), "{id}");
+    let r = t.run(&["ignore", "remove", &id]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(project_ids(&scan_projects(&t)).len(), 3);
+    assert_eq!(t.run(&["ignore", "remove", &id]).code, 1, "gone: nothing matches");
+}
+
+#[test]
+fn ignore_refuses_what_it_cannot_do_and_writes_nothing() {
+    let t = Ctx::new();
+    // Before any scan.
+    let r = t.run(&["ignore", "add", "F-0000000000", "--json"]);
+    assert_eq!(r.code, 1, "{}", r.err);
+    assert_eq!(r.json()["refused"]["code"], "no-scan");
+    assert!(r.err.contains("no scan yet"), "{}", r.err);
+    let (app, _other) = ignore_fixture(&t);
+    scan_projects(&t);
+    let r = t.run(&["ignore", "add", "F-0000000000", "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("not-found")));
+    assert_eq!(r.json()["changed"], false);
+    // A repo can't hide what protects you from it; your file can.
+    let clone = git_repo(&t.home.join("clone"), false);
+    mkdir(&clone.join(".claude"));
+    write(
+        &clone.join(".claude").join("settings.json"),
+        r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node .github/init.js || bun .github/init.js"}]}]}}"#,
+    );
+    mkdir(&clone.join(".github"));
+    write(&clone.join(".github").join("init.js"), "console.log('hi')\n");
+    let env = scan_projects(&t);
+    let hook = of_kind(&env, "repo-hook").first().map(|f| str_(&f["id"]).to_string()).expect("a repo hook finding");
+    let r = t.run(&["ignore", "add", &hook, "--scope", "repo", "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("repo-cannot-skip")));
+    assert!(r.err.contains("--scope user"), "{}", r.err);
+    assert!(!clone.join(".pantryignore").exists());
+    let r = t.run(&["ignore", "add", &hook, "--scope", "user"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(of_kind(&scan_projects(&t), "repo-hook").is_empty(), "your file may skip it");
+    // Outside any repo, a repo's file has no meaning.
+    let loose = t.home.join("loose");
+    mkdir(&loose);
+    write(
+        &loose.join("package-lock.json"),
+        r#"{"lockfileVersion": 3, "packages": {"": {}, "node_modules/qs": {"version": "6.0.0"}}}"#,
+    );
+    let env = envelope(&t.run(&["scan", "--json", "--no-input", "--offline", "--no-machine", "--path", s(&loose)]).out);
+    let id = of_kind(&env, "project")
+        .iter()
+        .find(|f| str_(&f["location"]).contains("/loose/"))
+        .map(|f| str_(&f["id"]).to_string())
+        .expect("the loose lockfile's finding");
+    let r = t.run(&["ignore", "add", &id, "--scope", "repo", "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("not-in-repo")));
+    assert!(!app.join(".pantryignore").exists() && !loose.join(".pantryignore").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn ignore_never_writes_through_a_link_that_leaves_the_config_folder() {
+    let t = Ctx::new();
+    ignore_fixture(&t);
+    let env = scan_projects(&t);
+    let id = project_id(&env, "qs", "app");
+    let outside = t.tmp.join("elsewhere");
+    write(&outside, "keep me\n");
+    let user = t.home.join(".config/wpantry/ignore");
+    mkdir(user.parent().unwrap());
+    std::os::unix::fs::symlink(&outside, &user).unwrap();
+    let r = t.run(&["ignore", "add", &id, "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("unsafe-file")), "{}", r.err);
+    assert_eq!(read(&outside), "keep me\n");
+}
+
+#[test]
+fn ignore_usage_errors_exit_2() {
+    let t = Ctx::new();
+    for argv in [
+        vec!["ignore"],
+        vec!["ignore", "add"],
+        vec!["ignore", "add", "banana"],
+        vec!["ignore", "add", "F-3fa9c01b2e", "--scope", "both"],
+        vec!["ignore", "add", "F-3fa9c01b2e", "--reason", "two\nlines"],
+        vec!["ignore", "remove", "banana"],
+        vec!["ignore", "remove"],
+        vec!["ignore", "list", "--bogus"],
+    ] {
+        let r = t.run(&argv);
+        assert_eq!(r.code, 2, "{argv:?}: {}", r.err);
+        assert!(r.err.contains("Usage:") && r.err.contains("error: "), "{argv:?}: {}", r.err);
+    }
+    let r = t.run(&["ignore", "add", "banana"]);
+    assert!(r.err.contains("F-3fa9c01b2e"), "names the id's form: {}", r.err);
+    let r = t.run(&["ignore", "--help"]);
+    assert_eq!(r.code, 0);
+    assert!(r.out.contains("add") && r.out.contains("list") && r.out.contains("remove"), "{}", r.out);
+}

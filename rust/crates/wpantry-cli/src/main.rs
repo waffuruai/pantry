@@ -13,7 +13,7 @@ mod style;
 mod tui;
 mod update;
 
-use args::{Check, Command, Parsed, Show, Shown, Target};
+use args::{Check, Command, IgnoreAction, Parsed, Show, Shown, Target};
 use std::io::{IsTerminal, Write};
 use style::Style;
 use wpantry::checks::{Options, Outcome, Policy, Scan};
@@ -1269,6 +1269,40 @@ fn cmd_rules_gen(
 
 /// `skill` and `licenses`: a bundled text on stdout, as is. A reader that
 /// stops early (`wpantry licenses | head`) ends it quietly, as with `cat`.
+/// `ignore add | list | remove`: the library decides and logs; this prints
+/// its JSON (also for a refusal, with the message on stderr) or its lines.
+fn cmd_ignore(action: IgnoreAction, json: bool) -> Result<i32> {
+    use wpantry::checks::ignore_edit::Env;
+    let env = Env::real();
+    let cache = Cache::open(None)?;
+    let reply = match &action {
+        IgnoreAction::Add { id, scope, reason, all_places } => wpantry::remediation::dismiss::add(
+            &cache,
+            &env,
+            id,
+            *scope,
+            reason.as_deref(),
+            *all_places,
+            wpantry::utils::os::now(),
+        ),
+        IgnoreAction::List { path } => wpantry::remediation::dismiss::list(&cache, &env, path.as_deref()),
+        IgnoreAction::Remove { id, path } => wpantry::remediation::dismiss::remove(&cache, &env, id, path.as_deref()),
+    };
+    cache.close()?;
+    let reply = reply?;
+    if json {
+        say(&reply.json.dumps_indent(1));
+    } else {
+        for line in &reply.lines {
+            show(line);
+        }
+    }
+    if let Some(e) = &reply.error {
+        eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: {}", style::clean(e))));
+    }
+    Ok(reply.code)
+}
+
 fn cmd_print(text: &str) -> Result<i32> {
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -1291,6 +1325,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Skill => cmd_print(wpantry::SKILL),
         Command::Licenses => cmd_print(NOTICES),
         Command::Sources { json, file } => cmd_sources(json, file),
+        Command::Ignore { action, json } => cmd_ignore(action, json),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),

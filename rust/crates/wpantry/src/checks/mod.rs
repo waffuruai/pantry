@@ -15,6 +15,7 @@ pub mod email;
 pub mod files;
 pub mod hidden;
 pub mod ignore;
+pub mod ignore_edit;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;

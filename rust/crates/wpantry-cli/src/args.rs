@@ -132,6 +132,17 @@ pub enum Target {
     Id(String),
 }
 
+/// What `ignore` does.
+#[derive(Debug, PartialEq)]
+pub enum IgnoreAction {
+    /// Write the rule that leaves a finding (`F-…`) out of future scans.
+    Add { id: String, scope: wpantry::checks::ignore_edit::Scope, reason: Option<String>, all_places: bool },
+    /// Every rule in your ignore file and, with `--path`, a repo's.
+    List { path: Option<PathBuf> },
+    /// Take out a rule (`R-…`) or the rules written for a finding (`F-…`).
+    Remove { id: String, path: Option<PathBuf> },
+}
+
 #[derive(Debug, PartialEq)]
 // `Scan` carries every check option; the other commands take a few fields.
 // One value is built per process, so the size gap costs nothing.
@@ -200,6 +211,12 @@ pub enum Command {
         bundle: Option<PathBuf>,
         hours: u32,
         /// `list` and `next`: as JSON.
+        json: bool,
+    },
+    /// `ignore add | list | remove`: dismiss a finding by writing the rule
+    /// for it into your ignore file or a repo's `.pantryignore`.
+    Ignore {
+        action: IgnoreAction,
         json: bool,
     },
     Skill,
@@ -404,6 +421,45 @@ pub fn program() -> Cli {
                 .option("--sources <file>", "your sources file (default: ~/.config/wpantry/sources.toml when it exists)"),
         )
         .command(
+            Cli::new("ignore")
+                .description("Leave a finding out of future scans: write the rule for it into your ignore file or a repo's .pantryignore, list the rules in them, or take one out. It never prompts.")
+                .summary("Dismiss a finding: write, list and remove ignore rules")
+                .subcommand_required()
+                .command(
+                    Cli::new("add")
+                        .description("Write the narrowest rule that leaves one finding out of the next scan: its path, under the section for its check and its rule or advisory. The finding is read from the latest scan, so add a finding that scan listed (wpantry fix list shows the ids). Adding it again changes nothing.")
+                        .summary("Leave one finding out of future scans")
+                        .argument("<finding>", "a finding id from the latest scan (F-…)")
+                        .opt(
+                            Opt::new("--scope <scope>", "user: your ignore file (the default; creates it, private, when missing). repo: the finding's repo's .pantryignore (a finding inside a repo, and not one that protects you from the repo)")
+                                .choices(&["user", "repo"])
+                                .default("user"),
+                        )
+                        .option("--reason <text>", "why, kept in a comment under the rule and in the audit log (one line)")
+                        .option("--all-places", "one rule for each place the same rule or advisory was found for the same package, not only this one")
+                        .option("--no-input", "never prompt (this command never does)")
+                        .option("--json", "the result as JSON")
+                        .after_help("Exit codes: 0 done or already done, 1 refused (nothing changed) or not found, 2 usage error, 3 internal error."),
+                )
+                .command(
+                    Cli::new("list")
+                        .description("Every rule in your ignore file and, with --path, in a repo's .pantryignore: its id, section and pattern, and for a rule `ignore add` wrote the finding it came from, when and why. A rule the log says was added and the file no longer holds is shown as removed by hand.")
+                        .summary("The rules in your ignore file and a repo's")
+                        .option("--path <dir>", "also list this repo's .pantryignore (the repo at or above DIR)")
+                        .option("--json", "as JSON"),
+                )
+                .command(
+                    Cli::new("remove")
+                        .description("Take a rule out: R-… (any rule `list` shows, hand-written ones too) or F-… (every rule `ignore add` wrote for that finding). Only those lines go; the next scan reports the finding again.")
+                        .summary("Take a rule out, so the finding is reported again")
+                        .argument("<id>", "a rule id (R-…) or a finding id (F-…)")
+                        .option("--path <dir>", "also look in this repo's .pantryignore (needed for a hand-written rule of a repo's)")
+                        .option("--no-input", "never prompt (this command never does)")
+                        .option("--json", "the result as JSON")
+                        .after_help("Exit codes: 0 done or already gone, 1 nothing matches, 2 usage error, 3 internal error."),
+                ),
+        )
+        .command(
             Cli::new("breach")
                 .description("Show or set consent for the email breach check.")
                 .opt(Opt::new("--enable", "allow it").conflicts(&["disable"]))
@@ -543,6 +599,52 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
     Ok(c)
 }
 
+/// A finding id as `F-` and ten lower-case hex digits, whatever its case.
+fn finding_id(id: &str) -> String {
+    format!("F-{}", id[2..].to_ascii_lowercase())
+}
+
+fn ignore_action(m: &Matches, action: &str) -> Result<IgnoreAction, Exit> {
+    use wpantry::checks::ignore_edit::{Scope, clean_reason};
+    let path = m.value("path").map(expand);
+    Ok(match action {
+        "add" => {
+            let id = m.arg("finding").unwrap_or_default();
+            if !wpantry::remediation::queue::is_id(id) {
+                return Err(m.error(&format!(
+                    "argument 'finding' expects a finding id such as F-3fa9c01b2e (wpantry fix list shows them), got '{id}'"
+                )));
+            }
+            let reason = match m.value("reason") {
+                None => None,
+                Some(r) => {
+                    Some(clean_reason(r).map_err(|e| m.error(&format!("option '--reason <text>': {}", e.message)))?)
+                }
+            };
+            IgnoreAction::Add {
+                id: finding_id(id),
+                scope: Scope::parse(m.value("scope").unwrap_or("user")).expect("one of the choices"),
+                reason,
+                all_places: m.flag("all-places"),
+            }
+        }
+        "list" => IgnoreAction::List { path },
+        _ => {
+            let id = m.arg("id").unwrap_or_default();
+            let id = if wpantry::remediation::queue::is_id(id) {
+                finding_id(id)
+            } else if wpantry::remediation::dismiss::is_rule_id(id) {
+                format!("R-{}", id[2..].to_ascii_lowercase())
+            } else {
+                return Err(m.error(&format!(
+                    "argument 'id' expects a rule id such as R-3fa9c01b2e (wpantry ignore list shows them) or a finding id such as F-3fa9c01b2e, got '{id}'"
+                )));
+            };
+            IgnoreAction::Remove { id, path }
+        }
+    })
+}
+
 fn command(m: &Matches) -> Result<Command, Exit> {
     let flag = |n: &str| m.flag(n);
     Ok(match m.path().as_slice() {
@@ -635,6 +737,7 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             name: m.value("name").map(String::from),
             out: m.value("out").map(expand),
         },
+        ["ignore", action] => Command::Ignore { action: ignore_action(m, action)?, json: flag("json") },
         ["sources"] => Command::Sources { json: flag("json"), file: m.value("sources").map(expand) },
         ["breach"] => Command::Breach { enable: flag("enable"), disable: flag("disable") },
         ["cache", action] => Command::Cache {

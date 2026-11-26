@@ -115,11 +115,21 @@ fn pythons_from(
     for ((shown, real), raw) in found.into_iter().zip(probed) {
         let last = raw.trim().lines().last().unwrap_or("");
         let Some(info) = json_in(last, '{', '}') else { continue };
-        let exe = files::realpath(&str_of(&info, "exe"));
+        let reported = str_of(&info, "exe");
+        let exe = files::realpath(&reported);
         if seen.contains(&exe) {
             continue;
         }
-        seen.push(exe);
+        seen.push(exe.clone());
+        // `shown` may be a version-manager shim, which starts whichever
+        // Python the folder and environment pick. The probe's own
+        // `sys.executable` is the interpreter that answered `managed` and
+        // `sites`, so the commands name it; `shown` stays the identity.
+        let (runs, real) = if Path::new(&reported).is_absolute() && Path::new(&reported).is_file() {
+            (reported, exe)
+        } else {
+            (shown.clone(), real)
+        };
         let v = str_of(&info, "v");
         let (fix, auto) = updater(&real, "python");
         let mut c = Component::new("runtime", "python", &v, &shown);
@@ -129,7 +139,7 @@ fn pythons_from(
         c.auto = auto;
         out.push(c);
         let sites: Vec<String> = crate::utils::json::strs_at(&info, "sites");
-        let (pkgs, gaps) = pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto));
+        let (pkgs, gaps) = pip(&shown, &runs, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto));
         out.extend(pkgs);
         if !gaps.is_empty() {
             unread.push((shown, gaps));
@@ -199,17 +209,25 @@ pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
 }
 
 /// pip and the packages installed for one Python, and what couldn't be read.
-fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> (Vec<Component>, Vec<String>) {
-    let real = files::realpath(py);
+/// `py` is where the Python is shown; `runs` is the interpreter that was
+/// probed, which the fix commands name.
+fn pip(
+    py: &str,
+    runs: &str,
+    sites: &[String],
+    managed: bool,
+    runtime_fix: (String, bool),
+) -> (Vec<Component>, Vec<String>) {
+    let real = files::realpath(runs);
     let mut out = Vec::new();
     let (found, gaps) = installed(sites);
     for (name, ver) in found {
         let (fix, auto) = if managed && real.contains("/uv/") {
             runtime_fix.clone() // uv's Python builds bundle pip; a newer build brings a newer one
         } else if managed {
-            (format!("Upgrade {name} through the package manager that owns {py}"), false)
+            (format!("Upgrade {name} through the package manager that owns {runs}"), false)
         } else {
-            (format!("{py} -m pip install --upgrade '{name}>={{safe}}'"), true)
+            (format!("{runs} -m pip install --upgrade '{name}>={{safe}}'"), true)
         };
         let is_pip = name.eq_ignore_ascii_case("pip");
         let shown = if is_pip { name.clone() } else { format!("pip:{name}") };

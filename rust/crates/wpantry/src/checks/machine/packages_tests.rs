@@ -403,3 +403,44 @@ fn package_fix_commands_name_the_fixed_version() {
         }
     }
 }
+
+/// Risk: the interpreter shown is a version-manager shim that starts a
+/// different Python at fix time than at scan time, so the `managed` answer
+/// and the pip command describe two interpreters. Oracle: the probe answers
+/// as a different existing interpreter (`exe`); the package fix must start
+/// with that path, never the shim, and a managed answer yields no pip command.
+#[cfg(unix)]
+#[test]
+fn pip_fix_names_the_probed_interpreter_not_the_shim() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyshim").unwrap();
+    let site = d.path().join("site-packages");
+    std::fs::create_dir_all(site.join("requests-2.32.0.dist-info")).unwrap();
+    std::fs::write(site.join("requests-2.32.0.dist-info/METADATA"), "Name: requests\nVersion: 2.32.0\n").unwrap();
+    let probed = d.path().join("real-python3.9");
+    std::fs::write(&probed, "").unwrap();
+    let shim = "/x/mise/shims/python3";
+    let probed_s = probed.display().to_string();
+    for managed in [false, true] {
+        let json = format!(
+            "{{\"v\": \"3.9.6\", \"exe\": \"{probed_s}\", \"sites\": [\"{}\"], \"managed\": {managed}}}",
+            site.display()
+        );
+        let probe = move |_: &str| json.clone();
+        let (got, _) = pythons_from(vec![(shim.to_string(), "/x/mise/bin/mise".to_string())], &probe);
+        let pkg = got.iter().find(|c| c.name == "pip:requests").expect("requests listed");
+        assert_eq!(pkg.path, shim, "the shown location keeps its identity");
+        if managed {
+            assert!(!pkg.auto && !pkg.fix.contains("-m pip install"), "{}", pkg.fix);
+        } else {
+            assert!(pkg.auto);
+            assert!(
+                pkg.fix.starts_with(&format!("{} -m pip install", files::realpath(&probed_s)))
+                    || pkg.fix.starts_with(&format!("{probed_s} -m pip install")),
+                "the fix must start with the probed interpreter, got {}",
+                pkg.fix
+            );
+            assert!(!pkg.fix.contains(shim), "{}", pkg.fix);
+        }
+    }
+}

@@ -54,6 +54,13 @@ impl Failure {
             out.push(format!("    stderr (last {} lines):", self.stderr.lines().count()));
             out.extend(self.stderr.lines().map(|l| format!("      {l}")));
         }
+        if self.stderr.contains("externally-managed-environment") {
+            out.push(
+                "    This Python is managed by a package manager, so pip will not change it. \
+                 Upgrade the package through that package manager instead."
+                    .to_string(),
+            );
+        }
         out
     }
 

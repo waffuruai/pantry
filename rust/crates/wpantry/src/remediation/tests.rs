@@ -370,3 +370,20 @@ fn a_removal_waits_on_the_install_that_replaces_it() {
     assert_eq!(first_step("brew upgrade a"), "brew upgrade a");
     assert_eq!(first_step(""), "");
 }
+
+/// Risk: a pip fix refused under PEP 668 reads as a bare exit code and the
+/// person cannot tell why. Oracle: the failure's printed lines carry a plain
+/// sentence naming the package manager when stderr holds the marker, and
+/// no such sentence when it does not.
+#[cfg(unix)]
+#[test]
+fn externally_managed_failure_says_why() {
+    let (a, lines) = failing("echo error: externally-managed-environment >&2; exit 1");
+    assert_eq!(a.failures.len(), 1);
+    assert!(
+        lines.iter().any(|l| l.contains("managed by a package manager") && l.contains("pip will not change it")),
+        "{lines:?}"
+    );
+    let (_, lines) = failing("echo boom >&2; exit 1");
+    assert!(!lines.iter().any(|l| l.contains("managed by a package manager")), "{lines:?}");
+}

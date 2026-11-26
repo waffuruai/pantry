@@ -117,6 +117,12 @@ fn python_names(dirs: &[String]) -> Vec<String> {
 /// so those packages are reported. Whether an interpreter is vouched for is
 /// judged by the one that answered the probe (a version-manager shim starts
 /// whichever Python the folder picks), by `real` when it gave no usable path.
+/// The `extra` key on a pip package that names its interpreter's release
+/// line (`3.9`). The scan reads it once it has the end-of-life answer
+/// ([`crate::checks::machine::components::components`]), which is not
+/// known where the packages are built.
+pub const PY_LINE: &str = "python_line";
+
 /// One user site is read by every interpreter of that minor version, so each
 /// is reported once: by an interpreter nobody vouches for when one reads it
 /// (it reports every site anyway), else by the first vouched-for one.
@@ -164,7 +170,8 @@ fn pythons_from(
     let mut unread = Vec::new();
     for a in answers {
         let managed = a.info.get("managed") == Some(&Value::Bool(true));
-        let (pkgs, gaps) = if a.owned {
+        let line = Cycle::Minor.of(&str_of(&a.info, "v"));
+        let (mut pkgs, gaps) = if a.owned {
             match a.user.filter(|u| Path::new(u).is_dir() && claimed.insert(u.clone())) {
                 Some(user) => pip_user(&a.shown, &a.runs, &user, managed),
                 None => continue,
@@ -180,6 +187,11 @@ fn pythons_from(
             out.push(c);
             pip(&a.shown, &a.runs, &a.sites, managed, (fix, auto))
         };
+        if !line.is_empty() {
+            for p in &mut pkgs {
+                p.extra.insert(PY_LINE.into(), line.clone());
+            }
+        }
         out.extend(pkgs);
         if !gaps.is_empty() {
             unread.push((a.shown, gaps));

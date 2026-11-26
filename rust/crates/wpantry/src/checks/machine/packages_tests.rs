@@ -678,3 +678,25 @@ fn shim_to_an_unvouched_interpreter_is_still_listed() {
     assert!(got.iter().any(|c| c.kind == "runtime" && c.path == shim));
     assert!(got.iter().any(|c| c.name == "pip:requests"));
 }
+
+/// Risk: the end-of-life downgrade of pip fixes never fires because the
+/// packages do not carry their interpreter's release line. Oracle: the
+/// probed version, for a vouched-for interpreter and one nobody vouches for.
+#[test]
+fn pip_packages_carry_their_interpreters_release_line() {
+    let home = temp::TempDir::new("pyline").unwrap();
+    let site = home.path().join("site-packages");
+    std::fs::create_dir_all(site.join("requests-2.32.0.dist-info")).unwrap();
+    std::fs::write(site.join("requests-2.32.0.dist-info/METADATA"), "Name: requests\nVersion: 2.32.0\n").unwrap();
+    let probe = |_: &str| {
+        format!(
+            "{{\"v\": \"3.9.6\", \"exe\": \"/x/bin/python3.9\", \"sites\": [\"{}\"], \"managed\": false}}",
+            site.display()
+        )
+    };
+    let found = vec![("/x/bin/python3".to_string(), "/x/bin/python3".to_string())];
+    let (got, _) = pythons_from(found, &probe, &|_| "");
+    let lines: Vec<(&str, Option<&String>)> =
+        got.iter().filter(|c| c.kind != "runtime").map(|c| (c.name.as_str(), c.extra.get(PY_LINE))).collect();
+    assert_eq!(lines, [("pip:requests", Some(&"3.9".to_string()))]);
+}

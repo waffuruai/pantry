@@ -77,7 +77,11 @@ fn older_caches_gain_the_added_columns() {
             "epss",
             "epss_percentile",
             "epss_date",
-            "epss_model"
+            "epss_model",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe"
         ]
     );
     let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
@@ -156,7 +160,11 @@ fn schema_matches_the_contract() {
             "epss",
             "epss_percentile",
             "epss_date",
-            "epss_model"
+            "epss_model",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe"
         ]
     );
 }
@@ -240,6 +248,20 @@ fn an_older_caches_latest_scan_becomes_the_one_kept() {
     let runs = crate::history::runs(&c).unwrap();
     assert_eq!(runs.iter().map(|r| (r.row.id, r.findings, r.latest)).collect::<Vec<_>>(), [(7, 1, true)]);
     assert_eq!(crate::history::latest_scan(&c).unwrap(), Some(7));
+    c.close().unwrap();
+    // A scan an older wpantry records afterwards is adopted the same way, with what it left in `findings`.
+    let c = Cache::open(Some(&file)).unwrap();
+    c.conn.execute("DELETE FROM findings", []).unwrap();
+    c.conn.execute("INSERT INTO scans (started_at, finished_at, scope) VALUES (5.0, 6.0, 'machine:~')", []).unwrap();
+    c.close().unwrap();
+    let c = Cache::open(Some(&file)).unwrap();
+    let runs = crate::history::runs(&c).unwrap();
+    assert_eq!(
+        runs.iter().map(|r| (r.row.id, r.findings, r.latest)).collect::<Vec<_>>(),
+        [(8, 0, true), (7, 1, false)]
+    );
+    // One that was pruned stays pruned.
+    crate::history::prune_run(&c, 8).unwrap().unwrap();
     c.close().unwrap();
     // Opened again, nothing is kept twice.
     let c = Cache::open(Some(&file)).unwrap();

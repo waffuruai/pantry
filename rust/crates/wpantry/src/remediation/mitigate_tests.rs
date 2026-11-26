@@ -111,13 +111,15 @@ fn apply_writes_the_rule_the_unit_and_the_sysctl_after_a_yes() {
     assert!(text.contains("✓ MPTCP off"), "{text}");
     assert!(text.contains("Not run for you:\n    sudo systemctl restart k3s.service alloy.service"), "{text}");
     assert!(text.contains("--undo"), "{text}");
-    // a failed step is an error, and nothing after it runs
+    // a failed step is an error, and nothing after it runs but the rollback
     let mut failing = Fake::new(EXPOSED);
     failing.fail = Some("nft -f");
     let err =
         (stopgap(CVE).unwrap().run)(&failing, &Settings::default(), Mode::Apply, &|_| true, &mut |_| {}).unwrap_err();
     assert!(err.to_string().contains("nft -f"), "{err}");
-    assert_eq!(failing.did().len(), 2);
+    // the unit and the sysctl are not reached; the rule file that never loaded is taken away
+    assert_eq!(failing.did().len(), 3, "{:?}", failing.did());
+    assert!(failing.did()[2].starts_with("rm -f "), "{:?}", failing.did());
 }
 
 #[test]
@@ -278,4 +280,63 @@ fn the_registry_and_the_files() {
     assert!(rules().contains("delete table inet cve_2026_98432"), "idempotent reload");
     assert!(unit().contains("Before=network-pre.target"));
     assert_eq!(name_of("/etc/sysctl.d/90-no-mptcp.conf"), "90-no-mptcp.conf");
+}
+
+/// Risk: as root the spawn takes the bare name, so `nft --version` (resolved
+/// through the system folders) passes and `nft -f` then can't start. Oracle:
+/// the program the command starts is the one `resolve` gives the probe for
+/// the same PATH (here one with neither sbin folder); through sudo, the argv.
+#[cfg(unix)]
+#[test]
+fn the_root_spawn_runs_the_program_the_probe_resolved() {
+    let nope = Some(OsStr::new("/nowhere"));
+    // `sysctl` stands in for `nft`: the real one is never started here.
+    let argv = ["sysctl", "-n", "kern.ostype"];
+    let cmd = root_cmd(&argv, true, nope);
+    assert_eq!(Path::new(cmd.get_program()), crate::utils::process::resolve(OsStr::new("sysctl"), nope));
+    assert!(Path::new(cmd.get_program()).is_absolute(), "{:?}", cmd.get_program());
+    let sudo = root_cmd(&argv, false, nope);
+    assert_eq!(sudo.get_program(), "sudo");
+    assert_eq!(sudo.get_args().collect::<Vec<_>>(), argv);
+}
+
+/// Risk: the rule file is written and `nft -f` fails, leaving a file that
+/// looks like an active stopgap and is loaded at the next boot by anything
+/// that includes it. Oracle: the root commands the host saw, in order: the
+/// failed load is followed by removing the file this run created, nothing
+/// else (no unit, no sysctl), and the error is the load's.
+#[test]
+fn a_failed_load_removes_the_rule_file_this_run_wrote() {
+    let mut host = Fake::new(EXPOSED);
+    host.fail = Some("nft -f");
+    let err = (stopgap(CVE).unwrap().run)(&host, &Settings::default(), Mode::Apply, &|_| true, &mut |_| {})
+        .expect_err("the load failed");
+    assert!(err.to_string().contains("nft -f"), "{err}");
+    assert_eq!(
+        host.did(),
+        [
+            "write /etc/nftables-cve-2026-98432.nft: table inet cve_2026_98432",
+            "nft -f /etc/nftables-cve-2026-98432.nft",
+            "rm -f /etc/nftables-cve-2026-98432.nft",
+        ]
+    );
+}
+
+/// Risk: the rollback deletes a rule file that was there before this run
+/// (a stopgap from an earlier run, loaded at boot by its unit). Oracle: the
+/// file is put back as it was, not removed.
+#[test]
+fn a_failed_load_puts_back_the_rule_file_that_was_there() {
+    let mut answers = EXPOSED.to_vec();
+    answers.push(("ls -d /etc/nftables-cve-2026-98432.nft", "/etc/nftables-cve-2026-98432.nft\n"));
+    answers.push(("cat /etc/nftables-cve-2026-98432.nft", "# earlier rules\n"));
+    let mut host = Fake::new(&answers);
+    host.fail = Some("nft -f");
+    let err = (stopgap(CVE).unwrap().run)(&host, &Settings::default(), Mode::Apply, &|_| true, &mut |_| {})
+        .expect_err("the load failed");
+    assert!(err.to_string().contains("nft -f"), "{err}");
+    let did = host.did();
+    assert_eq!(did.len(), 3, "{did:?}");
+    assert_eq!(did[2], "write /etc/nftables-cve-2026-98432.nft: # earlier rules");
+    assert!(!did.iter().any(|c| c.starts_with("rm ")), "{did:?}");
 }

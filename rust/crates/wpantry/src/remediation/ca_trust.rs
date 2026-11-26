@@ -64,19 +64,18 @@ fn is_root() -> bool {
     run(&["id", "-u"], Duration::from_secs(5)).trim() == "0"
 }
 
+/// The command that runs `argv` as root. As root the program is resolved as
+/// `run` resolves it (PATH, then the system folders), so a tool the checks
+/// found (`update-ca-certificates` in `/usr/sbin`) is the one that runs.
+fn root_cmd(argv: &[&OsStr], root: bool, path: Option<&OsStr>) -> std::process::Command {
+    crate::utils::process::root_command(argv, root, path)
+}
+
 /// Runs `argv` as root: directly when we are, else through sudo on the
 /// terminal (it prompts there). Nothing is captured, so the prompt shows.
 fn as_root(argv: &[&OsStr]) -> Result<()> {
     let shown = argv.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
-    let mut cmd = if is_root() {
-        let mut c = std::process::Command::new(argv[0]);
-        c.args(&argv[1..]);
-        c
-    } else {
-        let mut c = std::process::Command::new("sudo");
-        c.args(argv);
-        c
-    };
+    let mut cmd = root_cmd(argv, is_root(), std::env::var_os("PATH").as_deref());
     let status =
         cmd.stdout(std::process::Stdio::null()).status().map_err(|e| Error::Failed(format!("{shown}: {e}")))?;
     if status.success() { Ok(()) } else { Err(Error::Failed(format!("{shown} failed ({status})"))) }
@@ -302,6 +301,18 @@ fn blocklist_dir(parent: &str) -> PathBuf {
     if old.is_dir() && !new.is_dir() { old } else { new }
 }
 
+/// Debian's config file for the trust store.
+const CA_CERTIFICATES_CONF: &str = "/etc/ca-certificates.conf";
+
+/// Whether this is a Debian-style store: its config file `conf` is there
+/// and `find` knows its refresh tool (`update-ca-certificates`, in
+/// `/usr/sbin`, which a PATH without the `sbin` folders leaves out). `find`
+/// is [`which`], the lookup `exec` runs the tool by, so the gate and the run
+/// agree.
+fn debian_style(conf: &Path, find: &dyn Fn(&str) -> Option<PathBuf>) -> bool {
+    conf.is_file() && find("update-ca-certificates").is_some()
+}
+
 /// Where [`fix`] distrusts the roots: `bundle`, or this system's trust
 /// store; an error where wpantry doesn't know it.
 pub fn store(bundle: Option<&Path>) -> Result<String> {
@@ -320,7 +331,7 @@ pub fn store(bundle: Option<&Path>) -> Result<String> {
             return Ok(what.into());
         }
     }
-    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+    if debian_style(Path::new(CA_CERTIFICATES_CONF), &which) {
         return Ok("the system trust store (/etc/ca-certificates.conf, update-ca-certificates)".into());
     }
     Err(Error::Failed(format!(
@@ -357,7 +368,7 @@ pub fn fix(bundle: Option<&Path>, say: &dyn Fn(&str)) -> Result<()> {
             say,
         );
     }
-    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+    if debian_style(Path::new(CA_CERTIFICATES_CONF), &which) {
         return fix_ca_certificates_conf(&drop, say);
     }
     Err(Error::Failed(format!(

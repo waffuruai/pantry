@@ -169,6 +169,32 @@ fn latest_release_keeps_its_publish_date() {
     assert_eq!(github_latest(&c, &Fake::offline(), "a/old", true).unwrap(), "3.1");
 }
 
+/// Oracle (contract, `update --check --json`): online the release info is
+/// asked of GitHub now, past a fresh copy, carries the asset names, replaces
+/// the copy and is never stale; an unreachable GitHub online is an error,
+/// not the copy. Offline the copy is the answer, stale once it is old.
+#[test]
+fn dated_release_info_asks_github_online_and_is_stale_only_offline() {
+    let (_d, c) = cache();
+    c.put_run("github-latest:a/r", "", &json!({"version": "1.0.0"})).unwrap();
+    let net = Fake::new(|_| {
+        Ok(Response::ok(
+            json!({"tag_name": "v1.1.0", "assets": [{"name": "a.tar.gz"}, {"name": "SHA256SUMS"}]}).to_string(),
+        ))
+    });
+    let (info, fresh) = github_release_info_dated(&c, &net, "a/r", false).unwrap();
+    assert_eq!(net.requests().len(), 1, "a fresh copy is not the online answer");
+    assert_eq!((info["version"].clone(), info["assets"].clone()), (json!("1.1.0"), json!(["a.tar.gz", "SHA256SUMS"])));
+    assert!(!fresh.stale && fresh.checked_at.is_some(), "{fresh:?}");
+    assert!(github_release_info_dated(&c, &Fake::offline(), "a/r", false).is_err());
+    let (info, fresh) = github_release_info_dated(&c, &Fake::offline(), "a/r", true).unwrap();
+    assert_eq!(info["version"], json!("1.1.0"), "the online answer replaced the copy");
+    assert!(!fresh.stale, "{fresh:?}");
+    c.conn.execute("UPDATE runs SET ran_at = ran_at - 30 * 86400 WHERE source = 'github-latest:a/r'", []).unwrap();
+    let (_, fresh) = github_release_info_dated(&c, &Fake::offline(), "a/r", true).unwrap();
+    assert!(fresh.stale, "a month-old copy offline: {fresh:?}");
+}
+
 #[test]
 fn postgres_table_is_fetched_as_html() {
     let (_d, c) = cache();

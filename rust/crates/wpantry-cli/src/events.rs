@@ -1,0 +1,690 @@
+//! `scan --events`: the scan's progress as JSON Lines on stderr, for a
+//! caller that runs the scanner as a child process (a script, a CI
+//! wrapper, an editor, a dashboard) and wants to follow a scan while it
+//! runs. One object per line, flushed per line, each with `v` (this
+//! format's version) and `event`; the schema is in specs/cli-contract.md
+//! (`scan --events`). Stdout is untouched.
+//!
+//! The scan's thread never writes: it queues lines for a writer thread,
+//! so a reader that is slow or gone never holds the scan up. `step` and
+//! `done` are always queued (a handful of short lines, one pair per step).
+//! `finding` and `note` lines are queued up to [`MAX_PENDING`] lines and
+//! [`MAX_PENDING_BYTES`] bytes at a time: while the reader is stalled, the
+//! ones that would go past either cap are dropped and counted, and the
+//! writer says how many in one `dropped` event as soon as it has caught up
+//! (and before the next `step` line), and `done` carries the run's total.
+//! The saved report keeps every finding. `at` and `tally` are
+//! state the writer samples at most every [`TICK`], so rate limiting drops
+//! them too, and the one written is the newest. A step
+//! that goes [`BEAT`] without a line gets the tally again (a heartbeat), so
+//! a long read or a long look over a big tree is never silent.
+//!
+//! ```text
+//! {"v":1,"event":"step","id":"secrets","title":"Looking for secrets in git history","state":"begin","index":4,"of":10}
+//! {"v":1,"event":"at","step":"secrets","path":"/home/me/src/app","kind":"dir"}
+//! {"v":1,"event":"step","id":"secrets","state":"end","index":4,"of":10,"findings":1,"unchecked":0,"ms":812}
+//! ```
+
+use std::collections::VecDeque;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+use wpantry::checks::watch::{At, Step, Watch};
+use wpantry::finding::Finding;
+use wpantry::remediation;
+use wpantry::utils::json::{J, obj};
+
+/// The event format's version, `v` on every line.
+pub const VERSION: i64 = 1;
+/// The most often an `at` or a `tally` line is written.
+pub const TICK: Duration = Duration::from_millis(100);
+/// The longest a step goes without a line: then the tally is written again
+/// even when no count moved, so a long read is never silent.
+pub const BEAT: Duration = Duration::from_secs(1);
+/// How long the end of a run waits for a reader to take the last lines.
+pub const DRAIN: Duration = Duration::from_secs(5);
+/// The step the CLI adds after the library's: the report written.
+pub const REPORT: Step = Step { id: "report", title: "Writing the report" };
+/// The most of a finding's note its event's title keeps.
+const TITLE: usize = 200;
+
+/// The most `finding` and `note` lines waiting for the writer; more are
+/// dropped and counted (`dropped` event), so a stalled reader holds at most
+/// this many lines, however many findings the scan makes.
+pub const MAX_PENDING: usize = 4096;
+/// The most bytes of `finding` and `note` lines waiting for the writer.
+pub const MAX_PENDING_BYTES: usize = 4 << 20;
+
+/// A line for the writer thread.
+enum Msg {
+    /// A line that is never dropped: `start`.
+    Line(String),
+    /// A `finding` or a `note`: dropped when the backlog is at a cap.
+    Event(String),
+    /// A step's `begin` (its 1-based index): `at` lines for it may follow.
+    Begin(usize, String),
+    /// A step's `end`: the tally first, when it changed, and the newest
+    /// `at` when none was written in the last [`TICK`].
+    End(usize, String),
+    /// The last line: written, then the writer stops.
+    Done(String),
+}
+
+#[derive(Default)]
+struct QState {
+    items: VecDeque<Msg>,
+    /// Droppable lines waiting, and their bytes: what the caps bound.
+    events: usize,
+    bytes: usize,
+    /// Dropped since the writer last said so, and over the run.
+    dropped: u64,
+    dropped_total: u64,
+    closed: bool,
+    /// The most droppable lines, and bytes, that ever waited (tests).
+    #[cfg(test)]
+    peak: (usize, usize),
+}
+
+/// What the scan hands the writer: a queue that never blocks the sender and
+/// holds at most `max_events` droppable lines and `max_bytes` of them.
+struct Queue {
+    state: Mutex<QState>,
+    ready: Condvar,
+    max_events: usize,
+    max_bytes: usize,
+}
+
+enum Next {
+    Msg(Msg),
+    Idle,
+    Closed,
+}
+
+impl Queue {
+    fn new(max_events: usize, max_bytes: usize) -> Queue {
+        Queue { state: Mutex::default(), ready: Condvar::new(), max_events, max_bytes }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, QState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Queue `m`, or count it as dropped when it is droppable and a cap is
+    /// reached. Never waits on the writer.
+    fn push(&self, m: Msg) {
+        let mut q = self.lock();
+        if q.closed {
+            return;
+        }
+        if let Msg::Event(l) = &m {
+            if q.events >= self.max_events || q.bytes + l.len() > self.max_bytes {
+                q.dropped += 1;
+                q.dropped_total += 1;
+                return;
+            }
+            q.events += 1;
+            q.bytes += l.len();
+            #[cfg(test)]
+            {
+                q.peak = (q.peak.0.max(q.events), q.peak.1.max(q.bytes));
+            }
+        }
+        q.items.push_back(m);
+        self.ready.notify_one();
+    }
+
+    /// The next line, waiting up to `wait` for one.
+    fn pop(&self, wait: Duration) -> Next {
+        let deadline = Instant::now() + wait;
+        let mut q = self.lock();
+        loop {
+            if let Some(m) = q.items.pop_front() {
+                if let Msg::Event(l) = &m {
+                    q.events -= 1;
+                    q.bytes -= l.len();
+                }
+                return Next::Msg(m);
+            }
+            if q.closed {
+                return Next::Closed;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Next::Idle;
+            }
+            q = self.ready.wait_timeout(q, left).unwrap_or_else(|p| p.into_inner()).0;
+        }
+    }
+
+    /// No more lines will be queued; the writer stops when it has the rest.
+    fn close(&self) {
+        self.lock().closed = true;
+        self.ready.notify_all();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lock().items.is_empty()
+    }
+
+    /// The count dropped since the last call.
+    fn take_dropped(&self) -> u64 {
+        std::mem::take(&mut self.lock().dropped)
+    }
+
+    fn dropped_total(&self) -> u64 {
+        self.lock().dropped_total
+    }
+}
+
+/// What the writer samples: the newest `at`, and the counts.
+#[derive(Default)]
+struct Shared {
+    /// The steps' ids, in order, for the `at` lines.
+    names: Vec<&'static str>,
+    /// The step in progress (1-based); 0 between steps, when an `at` is dropped.
+    step: AtomicUsize,
+    /// (step, path, file or dir), the newest not yet written.
+    pending: Mutex<Option<(usize, PathBuf, At)>>,
+    repos: AtomicU64,
+    files: AtomicU64,
+    findings: AtomicU64,
+    unchecked: AtomicU64,
+    /// Files the scan's folder walks have listed so far.
+    listed: AtomicU64,
+}
+
+impl Shared {
+    fn tally(&self) -> [u64; 5] {
+        [&self.repos, &self.files, &self.findings, &self.unchecked, &self.listed].map(|a| a.load(Ordering::Relaxed))
+    }
+}
+
+/// The scan thread's side: which step it is in and what it made there.
+struct Steps {
+    list: Vec<Step>,
+    /// Index into `list` of the step in progress.
+    current: Option<usize>,
+    began: Instant,
+    findings: u64,
+    unchecked: u64,
+    /// `done` was queued: nothing more is.
+    done: bool,
+    /// The final counts and the scan's id (its row in the history, what
+    /// the `scan` that `fix list --json` reports), once the scan has an outcome.
+    outcome: Option<(u64, u64, i64)>,
+}
+
+pub struct Events {
+    queue: Arc<Queue>,
+    shared: Arc<Shared>,
+    steps: Mutex<Steps>,
+    writer: Mutex<Option<JoinHandle<()>>>,
+    /// The writer says here that it has stopped.
+    stopped: Mutex<Option<Receiver<()>>>,
+    started: Instant,
+    /// The first panic's text, for `done` (see [`panic_hook`]).
+    panic: Mutex<Option<String>>,
+    /// The panic's text as one plain line for stderr after `done`: set by
+    /// `finish` when `done` carried a panic and the reader took it (see
+    /// [`Events::trailer`]).
+    trailer: Mutex<Option<String>>,
+}
+
+/// The run's events, once `scan --events` has started them.
+static EVENTS: OnceLock<Events> = OnceLock::new();
+
+/// Start the events on stderr: the `start` line, and the writer thread.
+/// Once per process; later calls return the first.
+pub fn start(steps: Vec<Step>, paths: &[PathBuf]) -> &'static Events {
+    let ev = EVENTS.get_or_init(|| Events::new(Box::new(std::io::stderr()), steps, paths));
+    // A panic's text would break the stream: it goes in `done` instead.
+    std::panic::set_hook(panic_hook(ev));
+    ev
+}
+
+/// The panic hook of a run: it keeps the panic's text for `done` and prints
+/// nothing (stderr is the events' stream). The first panic is kept: it is the
+/// worker's own message, while the ones after it (the scope that joined the
+/// worker re-panics with "a scoped thread panicked") only say that it
+/// happened.
+fn panic_hook(ev: &'static Events) -> Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static> {
+    Box::new(|info| ev.record_panic(info.to_string()))
+}
+
+/// The events of this run, when `--events` started them.
+pub fn active() -> Option<&'static Events> {
+    EVENTS.get()
+}
+
+fn line(event: &str, fields: Vec<(&str, J)>) -> String {
+    let mut all = vec![("v".to_string(), J::Int(VERSION)), ("event".to_string(), event.into())];
+    all.extend(fields.into_iter().map(|(k, v)| (k.to_string(), v)));
+    J::Obj(all).dumps()
+}
+
+fn text(p: &Path) -> J {
+    p.to_string_lossy().as_ref().into()
+}
+
+/// A finding's title: the first line of its note, cut, else what it is about.
+pub fn title(f: &Finding) -> String {
+    let first = f.note.lines().next().unwrap_or("").trim();
+    if first.is_empty() {
+        return format!("{} {}", f.component, f.vuln_id).trim().to_string();
+    }
+    if first.chars().count() <= TITLE {
+        first.to_string()
+    } else {
+        format!("{}…", first.chars().take(TITLE - 1).collect::<String>())
+    }
+}
+
+/// A finding's event: only what the report shows of it (no file contents,
+/// no secret: a secret finding names its rule, file and line).
+///
+/// With a fix, also the step the plan would take for this finding alone
+/// (`fix_cmd`, the text the report's finding carries, mise's rule applied as
+/// [`remediation::steps`] applies it), whether `wpantry fix` runs it
+/// unattended (`fix_auto`), and `fix_provisional`: true when the plan made
+/// at the scan's end can replace it, which it does for a finding about a
+/// component version (one command per component, at the highest fixed
+/// version of all its findings, so an early finding's command can upgrade to
+/// less) and for a secret (one script per file, for all its hits). Without
+/// a fix the three fields are left out.
+///
+/// ```ignore
+/// // {"event": "finding", ..., "fix_cmd": "cargo update -p rustls --precise 0.23.18",
+/// //  "fix_auto": false, "fix_provisional": true}
+/// ```
+pub fn finding_line(step: &str, f: &Finding) -> String {
+    let mut fields = vec![
+        ("step", step.into()),
+        ("id", f.id().into()),
+        ("kind", f.kind.as_str().into()),
+        ("severity", f.severity.as_str().into()),
+        ("status", f.status.as_str().into()),
+        ("title", title(f).into()),
+        ("component", f.component.as_str().into()),
+        ("location", f.location.as_str().into()),
+        ("vuln_id", f.vuln_id.as_str().into()),
+    ];
+    // The plan for this finding alone: no step when it has no fix.
+    if let Some(plan) = remediation::steps(std::slice::from_ref(f)).into_iter().next() {
+        let provisional = f.kind == "secret" || (!f.version.is_empty() && f.kind != "unchecked");
+        fields.extend([
+            ("fix_cmd", plan.cmd.as_str().into()),
+            ("fix_auto", plan.unattended.into()),
+            ("fix_provisional", provisional.into()),
+        ]);
+    }
+    line("finding", fields)
+}
+
+fn tally_line(t: [u64; 5]) -> String {
+    let n = |i: usize| J::Int(t[i] as i64);
+    line("tally", vec![("repos", n(0)), ("files", n(1)), ("findings", n(2)), ("unchecked", n(3)), ("listed", n(4))])
+}
+
+/// The `dropped` event: `count` finding and note lines were left out of
+/// the stream because the reader had fallen behind (the report has them).
+fn dropped_line(count: u64) -> String {
+    line("dropped", vec![("count", J::Int(count as i64))])
+}
+
+/// The writer thread: queued lines in order, and every [`TICK`] the
+/// newest `at` and the tally when they changed, or when a step has gone
+/// [`BEAT`] without a line. A write that fails (the reader closed its end)
+/// stops the writing, never the scan.
+fn write_all(mut out: Box<dyn Write + Send>, queue: Arc<Queue>, shared: Arc<Shared>, stopped: Sender<()>) {
+    let mut broken = false;
+    // When the last line was written, for the heartbeat.
+    let wrote = std::cell::Cell::new(Instant::now());
+    let mut put = |l: &str| {
+        if !broken
+            && out.write_all(l.as_bytes()).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush()).is_err()
+        {
+            broken = true;
+        }
+        wrote.set(Instant::now());
+    };
+    let mut tallied = [0u64; 5];
+    // The step whose `begin` was written last and whose `end` wasn't yet:
+    // the only one an `at` line may name.
+    let mut open = 0;
+    let long_ago = Instant::now().checked_sub(TICK).unwrap_or_else(Instant::now);
+    let (mut tick, mut last_at) = (long_ago, long_ago);
+    // The newest `at` of the open step, taken: one of a later step stays
+    // for when its `begin` is written; the scan clears the slot at a step's end.
+    let take_at = |open: usize| {
+        let mut p = shared.pending.lock().unwrap_or_else(|p| p.into_inner());
+        if p.as_ref().is_some_and(|(step, _, _)| *step == open && open != 0) { p.take() } else { None }
+    };
+    // Say how many lines were dropped since the last time, if any.
+    macro_rules! catch_up {
+        () => {
+            let n = queue.take_dropped();
+            if n > 0 {
+                put(&dropped_line(n));
+            }
+        };
+    }
+    loop {
+        match queue.pop(TICK) {
+            Next::Msg(Msg::Event(l)) => put(&l),
+            Next::Msg(Msg::Line(l)) => {
+                catch_up!();
+                put(&l);
+            }
+            Next::Msg(Msg::Begin(i, l)) => {
+                catch_up!();
+                put(&l);
+                open = i;
+            }
+            Next::Msg(Msg::End(i, l)) => {
+                catch_up!();
+                // A short step still says where it was, within the rate.
+                if last_at.elapsed() >= TICK
+                    && let Some((step, path, what)) = take_at(i)
+                {
+                    put(&at_line(&shared, step, &path, what));
+                    last_at = Instant::now();
+                }
+                let t = shared.tally();
+                if t != tallied {
+                    put(&tally_line(t));
+                    tallied = t;
+                }
+                put(&l);
+                open = 0;
+            }
+            Next::Msg(Msg::Done(l)) => {
+                catch_up!();
+                put(&l);
+                break;
+            }
+            Next::Idle => {}
+            Next::Closed => break,
+        }
+        // Caught up: the reader has everything queued, so say what was dropped.
+        if queue.is_empty() {
+            catch_up!();
+        }
+        if tick.elapsed() >= TICK {
+            tick = Instant::now();
+            if last_at.elapsed() >= TICK
+                && let Some((step, path, what)) = take_at(open)
+            {
+                put(&at_line(&shared, step, &path, what));
+                last_at = Instant::now();
+            }
+            let t = shared.tally();
+            // The heartbeat: a step that has been quiet for BEAT (a long
+            // read, a slow lookup) still says it is alive.
+            if open != 0 && (t != tallied || wrote.get().elapsed() >= BEAT) {
+                put(&tally_line(t));
+                tallied = t;
+            }
+        }
+    }
+    let _ = stopped.send(());
+}
+
+fn at_line(shared: &Shared, step: usize, path: &Path, what: At) -> String {
+    let id = shared.names.get(step - 1).copied().unwrap_or("");
+    line("at", vec![("step", id.into()), ("path", text(path)), ("kind", what.name().into())])
+}
+
+impl Events {
+    /// Events written to `out`: the `start` line now, the rest as they come.
+    pub fn new(out: Box<dyn Write + Send>, list: Vec<Step>, paths: &[PathBuf]) -> Events {
+        Events::with_limits(out, list, paths, MAX_PENDING, MAX_PENDING_BYTES)
+    }
+
+    /// As [`Events::new`], with the backlog caps given (lines, bytes).
+    fn with_limits(
+        out: Box<dyn Write + Send>,
+        mut list: Vec<Step>,
+        paths: &[PathBuf],
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Events {
+        if !list.contains(&REPORT) {
+            list.push(REPORT);
+        }
+        let queue = Arc::new(Queue::new(max_events, max_bytes));
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let shared = Arc::new(Shared { names: list.iter().map(|s| s.id).collect(), ..Default::default() });
+        let first = line(
+            "start",
+            vec![
+                ("version", wpantry::VERSION.into()),
+                ("steps", J::Arr(list.iter().map(|s| obj([("id", s.id.into()), ("title", s.title.into())])).collect())),
+                (
+                    "paths",
+                    J::Arr(paths.iter().map(|p| text(&std::path::absolute(p).unwrap_or_else(|_| p.clone()))).collect()),
+                ),
+            ],
+        );
+        queue.push(Msg::Line(first));
+        let s = shared.clone();
+        let q = queue.clone();
+        let writer = std::thread::spawn(move || write_all(out, q, s, stop_tx));
+        Events {
+            queue,
+            shared,
+            steps: Mutex::new(Steps {
+                list,
+                current: None,
+                began: Instant::now(),
+                findings: 0,
+                unchecked: 0,
+                done: false,
+                outcome: None,
+            }),
+            writer: Mutex::new(Some(writer)),
+            stopped: Mutex::new(Some(stop_rx)),
+            panic: Mutex::default(),
+            trailer: Mutex::default(),
+            started: Instant::now(),
+        }
+    }
+
+    fn send(&self, m: Msg) {
+        self.queue.push(m);
+    }
+
+    /// The most `finding` and `note` lines, and bytes of them, that ever
+    /// waited for the writer (tests: the backlog's high-water mark).
+    #[cfg(test)]
+    fn backlog_peak(&self) -> (usize, usize) {
+        self.queue.lock().peak
+    }
+
+    fn steps(&self) -> std::sync::MutexGuard<'_, Steps> {
+        self.steps.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// End the step in progress, if any: its `end` line (the writer puts
+    /// the tally first). A path told after this waits for the next step.
+    fn end(&self, s: &mut Steps) {
+        let Some(i) = s.current.take() else { return };
+        self.shared.step.store(0, Ordering::SeqCst);
+        self.send(Msg::End(
+            i + 1,
+            line(
+                "step",
+                vec![
+                    ("id", s.list[i].id.into()),
+                    ("state", "end".into()),
+                    ("index", J::Int(i as i64 + 1)),
+                    ("of", J::Int(s.list.len() as i64)),
+                    ("findings", J::Int(s.findings as i64)),
+                    ("unchecked", J::Int(s.unchecked as i64)),
+                    ("ms", J::Int(s.began.elapsed().as_millis() as i64)),
+                ],
+            ),
+        ));
+    }
+
+    /// The scan's final counts (its findings after the ignore files,
+    /// and what couldn't be checked) and its id in the history (`scan_id`,
+    /// the `scan` that `wpantry fix list --json` reports), for `done`.
+    ///
+    /// ```ignore
+    /// ev.outcome(&outcome.findings, outcome.scan_id); // done: {"findings": .., "unchecked": .., "scan": 42}
+    /// ```
+    pub fn outcome(&self, findings: &[Finding], scan_id: i64) {
+        let unchecked = findings.iter().filter(|f| f.kind == "unchecked").count() as u64;
+        self.steps().outcome = Some((findings.len() as u64 - unchecked, unchecked, scan_id));
+    }
+
+    /// A one-line note the scan would have printed on stderr.
+    pub fn note(&self, text: &str) {
+        if self.steps().done {
+            return;
+        }
+        self.send(Msg::Event(line("note", vec![("text", text.into())])));
+    }
+
+    /// The last line: the open step ended, then `done` with the exit code
+    /// (and on exit 3 the error). Waits up to [`DRAIN`] for the reader to
+    /// take what is queued; after that the lines left are dropped.
+    pub fn finish(&self, exit: i32, error: Option<&str>) {
+        let from_panic: Option<String>;
+        let done = {
+            let mut s = self.steps();
+            if s.done {
+                return;
+            }
+            self.end(&mut s);
+            s.done = true;
+            let mut fields = vec![("exit", J::Int(exit as i64))];
+            match s.outcome {
+                Some((f, u, _)) => fields.extend([("findings", J::Int(f as i64)), ("unchecked", J::Int(u as i64))]),
+                None => fields.extend([("findings", J::Null), ("unchecked", J::Null)]),
+            }
+            fields.push(("ms", J::Int(self.started.elapsed().as_millis() as i64)));
+            // The scan's id (the `scan` of `fix list --json`): null when it didn't finish.
+            fields.push(("scan", s.outcome.map_or(J::Null, |(_, _, id)| J::Int(id))));
+            // Finding and note lines left out of the stream, in all.
+            fields.push(("dropped", J::Int(self.queue.dropped_total() as i64)));
+            // The error the run came to say, else the first panic's text.
+            let panicked = if error.is_none() && exit != 0 { self.panic_text() } else { None };
+            let error = error.map(str::to_string).or_else(|| panicked.clone()).filter(|_| exit != 0);
+            from_panic = panicked;
+            if let Some(e) = error {
+                fields.push(("error", e.as_str().into()));
+            }
+            line("done", fields)
+        };
+        self.send(Msg::Done(done));
+        self.queue.close();
+        let stopped = self.stopped.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if stopped.is_some_and(|rx| rx.recv_timeout(DRAIN).is_ok())
+            && let Some(w) = self.writer.lock().unwrap_or_else(|p| p.into_inner()).take()
+        {
+            let _ = w.join();
+            // The reader took everything, `done` too: stderr is free for one more line.
+            *self.trailer.lock().unwrap_or_else(|p| p.into_inner()) =
+                from_panic.map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+    }
+
+    /// Keep a panic's text for `done`. The first one is kept and the later
+    /// ones are dropped: the first is the worker's own message, the rest are
+    /// the scopes and joins that re-panic because of it.
+    pub fn record_panic(&self, text: String) {
+        self.panic.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert(text);
+    }
+
+    fn panic_text(&self) -> Option<String> {
+        self.panic.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// After `finish`: the one plain line (the panic's text, on one line) for
+    /// stderr after `done`, when `done` carried a panic. The default hook that
+    /// would have printed it is gone, so without this a crash would be named
+    /// nowhere but `done.error`. `None` when the run did not panic, and when
+    /// the reader did not take the lines within [`DRAIN`] (it is stalled: a write to
+    /// stderr could block, so none is made).
+    pub fn trailer(&self) -> Option<String> {
+        self.trailer.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+impl Watch for Events {
+    fn step(&self, id: &str) {
+        let mut s = self.steps();
+        if s.done {
+            return;
+        }
+        self.end(&mut s);
+        // An id the start line didn't list would break the order it promised.
+        let Some(i) = s.list.iter().position(|st| st.id == id) else {
+            debug_assert!(false, "step {id} isn't in the start line's list");
+            return;
+        };
+        s.current = Some(i);
+        s.began = Instant::now();
+        s.findings = 0;
+        s.unchecked = 0;
+        self.send(Msg::Begin(
+            i + 1,
+            line(
+                "step",
+                vec![
+                    ("id", s.list[i].id.into()),
+                    ("title", s.list[i].title.into()),
+                    ("state", "begin".into()),
+                    ("index", J::Int(i as i64 + 1)),
+                    ("of", J::Int(s.list.len() as i64)),
+                ],
+            ),
+        ));
+        self.shared.step.store(i + 1, Ordering::SeqCst);
+    }
+
+    fn at(&self, path: &Path, what: At) {
+        let step = self.shared.step.load(Ordering::Relaxed);
+        if step == 0 {
+            return;
+        }
+        if what == At::File {
+            self.shared.files.fetch_add(1, Ordering::Relaxed);
+        }
+        // A reading thread never waits on another: when the slot is busy,
+        // the next file's path takes it.
+        if let Ok(mut p) = self.shared.pending.try_lock() {
+            *p = Some((step, path.to_path_buf(), what));
+        }
+    }
+
+    fn repos(&self, n: usize) {
+        self.shared.repos.store(n as u64, Ordering::Relaxed);
+    }
+
+    fn listed(&self, n: usize) {
+        self.shared.listed.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    fn finding(&self, f: &Finding) {
+        let mut s = self.steps();
+        let Some(i) = s.current.filter(|_| !s.done) else { return };
+        if f.kind == "unchecked" {
+            s.unchecked += 1;
+            self.shared.unchecked.fetch_add(1, Ordering::Relaxed);
+        } else {
+            s.findings += 1;
+            self.shared.findings.fetch_add(1, Ordering::Relaxed);
+        }
+        self.send(Msg::Event(finding_line(s.list[i].id, f)));
+    }
+}
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod tests;

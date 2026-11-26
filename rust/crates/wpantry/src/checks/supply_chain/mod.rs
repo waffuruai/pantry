@@ -59,6 +59,8 @@ pub fn run(scan: &mut Scan, found: &[Component]) -> Result<()> {
 
 /// As [`run`], with the container engine given (None: not installed).
 pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -> Result<()> {
+    use crate::checks::watch::{self, At};
+    scan.step(watch::DEPENDENCIES);
     let repos = scan.repos.clone();
     let git: Vec<Repo> = repos.iter().filter(|(_, r)| repos::is_git(r)).cloned().collect();
     // The secret scan is local and CPU-bound: the repos whose cached scan is
@@ -76,14 +78,19 @@ pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -
         let at_once = scans_at_once(scan);
         let todo = &todo;
         let scanner = scanner.as_ref();
+        let w = scan.watch;
+        let at = move |p: &std::path::Path| w.at(p, At::Dir);
         let running = s.spawn(move || {
             parallel::par_map(todo, at_once, |(_, job)| match scanner {
-                Some(sc) => leaks::run_job(job, sc),
+                Some(sc) => leaks::run_job_at(job, sc, &at),
                 None => Err(Error::Failed("no secret rules".into())),
             })
         });
         projects::projects(scan, &repos)?;
         wordpress::wordpress(scan, &repos)?;
+        // The history scans began beside the dependencies; this step is
+        // the wait for them and their findings.
+        scan.step(watch::SECRETS);
         if !todo.is_empty() {
             scan.status(&format!("Scanning {} repos' git history for secrets", todo.len()));
         }
@@ -95,13 +102,16 @@ pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -
         Ok(ran)
     })?;
     secrets(scan, &git, jobs, ran)?;
+    scan.step(watch::REPO_FILES);
     repo_hooks(scan, &git);
     hidden_text::hidden_text(scan, &git);
     suspect_code::suspect_code(scan, &git);
     mptcp_listeners(scan, &repos);
     documents_pass(scan, &repos);
     install_scripts::install_scripts(scan, &repos, found);
+    scan.step(watch::IMAGES);
     images_with(scan, &repos, engine)?;
+    scan.step(watch::EXTENSIONS);
     let exts = if scan.opts.machine { extensions::extensions(scan)? } else { Vec::new() };
     let refs = mcp::mcp(scan, &repos)?;
     if scan.opts.machine {
@@ -109,8 +119,10 @@ pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -
     }
     let mut known: Vec<Component> = found.to_vec();
     known.extend(exts);
+    scan.step(watch::MALICIOUS);
     sweep(scan, &known, &refs)?;
     if scan.opts.machine {
+        scan.step(watch::BREACH);
         breach(scan)?;
     }
     Ok(())

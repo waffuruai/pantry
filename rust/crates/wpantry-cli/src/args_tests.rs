@@ -208,8 +208,8 @@ fn every_command_has_help() {
         assert_eq!(p(same), Parsed::Help(top.clone()), "{same:?}");
     }
     for cmd in [
-        "scan", "fix", "report", "runs", "prune", "search", "watch", "sync", "schedule", "rules", "sources", "breach",
-        "cache", "update", "version", "tools", "skill", "licenses",
+        "scan", "fix", "report", "runs", "prune", "search", "watch", "sync", "schedule", "rules", "sources", "ignore",
+        "breach", "cache", "update", "version", "tools", "skill", "licenses",
     ] {
         let text = help(&[cmd]);
         assert!(top.contains(&format!("\n  {cmd}")), "{cmd} is listed");
@@ -344,7 +344,13 @@ fn report_options() {
 #[test]
 fn schedule_cache_and_update() {
     let sched = |every: &str, at: &str, dry_run: bool| {
-        Parsed::Run(Command::Schedule { action: "install".into(), every: every.into(), at: at.into(), dry_run })
+        Parsed::Run(Command::Schedule {
+            action: "install".into(),
+            every: every.into(),
+            at: at.into(),
+            dry_run,
+            json: false,
+        })
     };
     assert_eq!(p(&["schedule", "install"]), sched("day", "09:30", false));
     assert_eq!(
@@ -363,6 +369,7 @@ fn schedule_cache_and_update() {
     assert_eq!(
         p(&["update", "--check", "--yes", "--no-input", "--offline", "--version", "v1.2.3"]),
         Parsed::Run(Command::Update {
+            json: false,
             check: true,
             yes: true,
             no_input: true,
@@ -395,7 +402,17 @@ fn schedule_cache_and_update() {
 #[test]
 fn fix_one_thing() {
     let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| {
-        Parsed::Run(Command::Mitigate { target, dry_run, yes, no_input, undo, bundle: None, hours: 72, json: false })
+        Parsed::Run(Command::Mitigate {
+            target,
+            dry_run,
+            yes,
+            no_input,
+            undo,
+            bundle: None,
+            hours: 72,
+            json: false,
+            from_scan: None,
+        })
     };
     assert_eq!(p(&["fix", "cve-2026-98432"]), one(Target::Id("CVE-2026-98432".into()), false, false, false, false));
     assert_eq!(p(&["fix", "list"]), one(Target::List, false, false, false, false));
@@ -584,4 +601,73 @@ fn the_scans_options_read_by_what_they_are_for() {
     // report has the same formats, as plain options: it has nothing else to tell them from.
     assert!(!help(&["report"]).contains("Report options"));
     assert!(help(&["report"]).contains("\nParts:\n  findings     the latest scan's findings\n"));
+}
+
+#[test]
+fn ignore_takes_a_finding_or_rule_id_and_never_a_prompt() {
+    use wpantry::checks::ignore_edit::Scope;
+    let run = |action: IgnoreAction, json: bool| Parsed::Run(Command::Ignore { action, json });
+    assert_eq!(
+        p(&["ignore", "add", "F-3FA9C01B2E"]),
+        run(
+            IgnoreAction::Add { id: "F-3fa9c01b2e".into(), scope: Scope::User, reason: None, all_places: false },
+            false
+        ),
+        "the id is kept lower case, the scope is your file"
+    );
+    assert_eq!(
+        p(&[
+            "ignore",
+            "add",
+            "F-3fa9c01b2e",
+            "--scope",
+            "repo",
+            "--reason",
+            "  revoked  ",
+            "--all-places",
+            "--json",
+            "--no-input"
+        ]),
+        run(
+            IgnoreAction::Add {
+                id: "F-3fa9c01b2e".into(),
+                scope: Scope::Repo,
+                reason: Some("revoked".into()),
+                all_places: true
+            },
+            true
+        )
+    );
+    assert_eq!(p(&["ignore", "list"]), run(IgnoreAction::List { path: None }, false));
+    assert_eq!(
+        p(&["ignore", "list", "--path", "/r", "--json"]),
+        run(IgnoreAction::List { path: Some("/r".into()) }, true)
+    );
+    assert_eq!(
+        p(&["ignore", "remove", "R-3FA9C01B2E", "--path", "/r"]),
+        run(IgnoreAction::Remove { id: "R-3fa9c01b2e".into(), path: Some("/r".into()) }, false)
+    );
+    assert_eq!(
+        p(&["ignore", "remove", "f-3fa9c01b2e", "--no-input", "--json"]),
+        run(IgnoreAction::Remove { id: "F-3fa9c01b2e".into(), path: None }, true)
+    );
+    assert!(usage(&["ignore", "add", "CVE-2026-1"]).contains("expects a finding id such as F-3fa9c01b2e"));
+    assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--scope", "both"]).contains("--scope"));
+    assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--reason", "a\nb"]).contains("one line"));
+    assert!(usage(&["ignore", "remove", "F-xyz"]).contains("expects a rule id such as R-3fa9c01b2e"));
+    assert!(usage(&["ignore", "list", "x"]).contains("too many arguments"));
+    assert!(usage(&["ignore"]).contains("Usage: wpantry ignore"));
+}
+
+/// Oracle: the parser refuses `fix F-… --from-scan N --no-input`
+/// without `--yes` or `--dry-run`, and accepts either. Known bad: before the
+/// fix it parsed, and the fix ran unasked.
+#[test]
+fn from_scan_with_no_input_needs_yes_or_dry_run() {
+    let id = "F-0123456789";
+    assert!(usage(&["fix", id, "--from-scan", "3", "--no-input"]).contains(FROM_SCAN_NEEDS_YES));
+    for ok in [["--no-input", "--yes"], ["--no-input", "--dry-run"]] {
+        let argv: Vec<&str> = ["fix", id, "--from-scan", "3"].into_iter().chain(ok).collect();
+        assert!(matches!(p(&argv), Parsed::Run(_)), "{argv:?}");
+    }
 }

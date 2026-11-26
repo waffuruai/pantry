@@ -19,18 +19,126 @@ pub fn path_dirs() -> Vec<String> {
     }
 }
 
-/// The first executable called `name` on PATH (Python: `shutil.which`). On
-/// Windows a bare name also matches `name.exe`, `.cmd` and `.bat`.
+/// The first executable called `name` on PATH (Python: `shutil.which`), else
+/// in a [`SYSTEM_DIRS`] folder. On Windows a bare name also matches
+/// `name.exe`, `.cmd` and `.bat`. It looks where [`resolve`] and so the
+/// spawns in this module look, in the same order (see `lookup`), so a tool
+/// this finds is one [`exec`] runs.
 pub fn which(name: &str) -> Option<PathBuf> {
-    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
-        let p = PathBuf::from(name);
-        return is_executable(&p).then_some(p);
+    which_in(name, std::env::var_os("PATH").as_deref())
+}
+
+/// [`which`] against the PATH `path` (`None`: no PATH at all).
+pub fn which_in(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    which_with(name, path, SYSTEM_DIRS)
+}
+
+/// [`which_in`] with the system folders given (the tests' own).
+pub(crate) fn which_with(name: &str, path: Option<&OsStr>, system: &[&str]) -> Option<PathBuf> {
+    lookup(OsStr::new(name), path, system).map(Found::into_path)
+}
+
+/// Where the system's administration tools live on Unix. A program that
+/// starts wpantry may give it a PATH without the `sbin` folders (a job
+/// runner, another program's child, `env -i`); the checks that run `spctl`,
+/// `scutil`, `system_profiler`, `cupsctl` or `sysadminctl` by name would then
+/// get nothing back and report that they couldn't tell. Root-owned folders
+/// only: a folder a user can write to (Homebrew's, mise's) does not belong
+/// here, since what is found here is run, sometimes as root.
+#[cfg(unix)]
+pub const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin"];
+/// No system folders to fall back to off Unix.
+#[cfg(not(unix))]
+pub const SYSTEM_DIRS: &[&str] = &[];
+
+/// Where [`lookup`] found a program.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// A path was given, or PATH has it: the spawn finds it there.
+    Path(PathBuf),
+    /// Only a [`SYSTEM_DIRS`] folder has it: a spawn by name would not.
+    System(PathBuf),
+}
+
+impl Found {
+    fn into_path(self) -> PathBuf {
+        match self {
+            Found::Path(p) | Found::System(p) => p,
+        }
     }
-    let path = std::env::var_os("PATH")?;
-    let suffixes: &[&str] = if cfg!(windows) && !name.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(&path)
-        .flat_map(|d| suffixes.iter().map(move |s| d.join(format!("{name}{s}"))))
-        .find(|p| is_executable(p))
+}
+
+/// The one lookup behind [`which`] and [`resolve`] (and so every spawn here),
+/// so they cannot disagree about whether a tool is there: a name with a
+/// separator is that path when it is executable; a bare name is the first
+/// executable of that name on `path`, else the first in the `system` folders
+/// (in order); anything not executable is skipped.
+pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Option<Found> {
+    let text = name.to_string_lossy();
+    if text.contains('/') || (cfg!(windows) && text.contains('\\')) {
+        let p = PathBuf::from(name);
+        return is_executable(&p).then_some(Found::Path(p));
+    }
+    let suffixes: &[&str] = if cfg!(windows) && !text.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let named = |dir: &Path, suffix: &str| {
+        let mut file = name.to_os_string();
+        file.push(suffix);
+        dir.join(file)
+    };
+    let on_path = path.and_then(|path| {
+        std::env::split_paths(path).flat_map(|d| suffixes.iter().map(move |s| named(&d, s))).find(|p| is_executable(p))
+    });
+    if let Some(p) = on_path {
+        return Some(Found::Path(p));
+    }
+    system.iter().map(|d| named(Path::new(d), "")).find(|p| is_executable(p)).map(Found::System)
+}
+
+/// What a command named `prog` runs, given PATH `path`: `prog` itself when
+/// it has a slash or PATH has it (the spawn finds it there), else the copy
+/// in a [`SYSTEM_DIRS`] folder, else `prog` (the spawn then fails as it
+/// would have).
+///
+/// ```
+/// # #[cfg(unix)] {
+/// use std::ffi::OsStr;
+/// use wpantry::utils::process::resolve;
+/// // sysctl is in /usr/sbin or /sbin; PATH here has neither.
+/// let tool = resolve(OsStr::new("sysctl"), Some(OsStr::new("/nowhere")));
+/// assert!(tool.is_absolute() && tool.ends_with("sysctl"));
+/// # }
+/// ```
+pub fn resolve(prog: &OsStr, path: Option<&OsStr>) -> PathBuf {
+    resolve_with(prog, path, SYSTEM_DIRS)
+}
+
+/// [`resolve`] with the system folders given (the tests' own).
+pub(crate) fn resolve_with(prog: &OsStr, path: Option<&OsStr>, system: &[&str]) -> PathBuf {
+    match lookup(prog, path, system) {
+        Some(Found::System(found)) => found,
+        _ => PathBuf::from(prog),
+    }
+}
+
+/// [`resolve`] against this process's PATH.
+pub(crate) fn program(prog: &OsStr) -> PathBuf {
+    resolve(prog, std::env::var_os("PATH").as_deref())
+}
+
+/// The command that runs `argv` as root: directly when `root` (the program
+/// is resolved as [`exec`] resolves it, so a tool the probe found through
+/// the system folders is the one run), else through `sudo`, whose own search
+/// path applies. `path` is the PATH to resolve against.
+pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) -> Command {
+    let mut c;
+    if root {
+        c = Command::new(resolve(argv[0], path));
+        c.args(&argv[1..]);
+    } else {
+        c = Command::new("sudo");
+        c.args(argv);
+    }
+    c
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -88,7 +196,7 @@ const ETXTBSY: i32 = -1;
 /// hold the call past `timeout` (plus a second's grace once it's killed).
 pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-    let mut cmd = Command::new(prog);
+    let mut cmd = Command::new(program(prog));
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("NO_COLOR", "1");
     for (k, v) in env {
         cmd.env(k, v);
@@ -197,7 +305,7 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     let start = |argv: &[&OsStr], stdin: Stdio| -> Result<std::process::Child> {
         let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-        let mut cmd = Command::new(prog);
+        let mut cmd = Command::new(program(prog));
         cmd.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
         // A read of a partial clone never makes git fetch what it's missing.
         cmd.env("GIT_NO_LAZY_FETCH", "1");

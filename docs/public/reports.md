@@ -27,7 +27,11 @@ Any format: `--md`, `--json`, `--csv`, `--html`, …. Nothing is sent anywhere; 
 - A scan with a gap resolves nothing: an outage leaves exposures open.
 - A scan of one repo says nothing about the others.
 
+**Skipped by your choice:** an area you left out on purpose, such as Downloads, Desktop and Documents with `--no-personal-files` (and Safari's settings on macOS), is an `unchecked` finding with `excluded: true` and a note that starts "Skipped by your choice". The terminal and Markdown reports list it under "Skipped by your choice", apart from "Not checked". It is not a gap: it does not count in the scan's `unchecked` total, so the scan can still resolve exposures and verify fixes. Every other finding has `excluded: false`, and an `unchecked` finding with `excluded: false` is a real gap (a source failed or a path could not be read). Scheduled scans on macOS skip these folders this way.
+
 **When a fix is verified:** a complete re-check (no source `unchecked`) lists none of the exposures it addressed. A failed fix, an incomplete re-check or a finding still present leaves it blank.
+
+**What the vulnerability is:** each finding about a published advisory carries the advisory's own one-line `summary` as published (OSV's summary, a CVE record's title, or CISA KEV's name for it), its other ids under `aliases` (CVE, GHSA and OSV ids), and the weakness types it names under `cwe` (such as `CWE-787`, an out-of-bounds write). They come from the advisory records already in the cache, so a scan saved by an older Pantry shows them too while those records are kept.
 
 ## Options and output
 

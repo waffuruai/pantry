@@ -331,3 +331,39 @@ fn a_local_advisory_on_a_runtime_or_tool_exports_with_its_record() {
         assert_eq!(row["aliases"], json!([alias]), "{at}");
     }
 }
+
+/// Risk: two records of one source that share an alias (a CVE id) but cover
+/// different packages resolve to whichever record id sorts first, so a finding
+/// for one package exports the other package's record, aliases and link.
+/// Oracle: the row of each finding, whose vuln_id is the shared CVE id,
+/// carries the record filed under its own package, whichever id sorts first;
+/// the exact record id still wins over an alias, and a finding whose component
+/// is not any record's package (a runtime) still gets the record.
+#[test]
+fn two_records_of_one_source_sharing_an_alias_export_each_its_own() {
+    let (_d, c) = cache_for("export-shared-alias");
+    // TEAM-A sorts before TEAM-B: the first-by-id record is the other package's.
+    local_row(&c, "t-src", "TEAM-A-STDLIB", &["CVE-2026-77"], "stdlib", "https://advisories.example/TEAM-A-STDLIB");
+    local_row(&c, "t-src", "TEAM-B-LEFTPAD", &["CVE-2026-77"], "left-pad", "https://advisories.example/TEAM-B-LEFTPAD");
+    let from = |component: &str, id: &str| Finding {
+        kind: "project".into(),
+        component: component.into(),
+        local_source: "t-src".into(),
+        ..finding(id, "")
+    };
+    // (component, id the finding shows, record id expected)
+    let cases = [
+        ("left-pad", "CVE-2026-77", "TEAM-B-LEFTPAD"),
+        ("stdlib", "CVE-2026-77", "TEAM-A-STDLIB"),
+        ("left-pad", "TEAM-A-STDLIB", "TEAM-A-STDLIB"),
+        ("stdlib", "TEAM-B-LEFTPAD", "TEAM-B-LEFTPAD"),
+        // a runtime named `go` for the package `stdlib`: no package preference applies, a record is still found
+        ("go", "CVE-2026-77", "TEAM-A-STDLIB"),
+    ];
+    for (component, id, record_id) in cases {
+        let row = row_of(&c, &from(component, id));
+        let at = format!("{component} {id}: {row}");
+        assert_eq!(row["record"]["id"], record_id, "{at}");
+        assert_eq!(row["url"], format!("https://advisories.example/{record_id}"), "{at}");
+    }
+}

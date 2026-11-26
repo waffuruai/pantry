@@ -257,3 +257,31 @@ fn a_local_advisory_on_a_runtime_is_rated_from_its_own_record() {
     enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
     assert_eq!((all[0].cvss, all[0].cvss_version.as_str(), all[0].severity.as_str()), (Some(9.8), "3.1", "CRITICAL"));
 }
+
+/// Risk: two records of one source that share an alias but cover different
+/// packages are keyed and looked up as one, so both packages' findings are
+/// rated from whichever record id sorts first. Oracle: `enrich`'s cvss for
+/// each finding, whose vuln_id is the shared CVE id, is its own package's
+/// record's, in either order of the two findings.
+#[test]
+fn two_records_of_one_source_sharing_an_alias_rate_each_finding_from_its_own() {
+    let (_d, c) = cache();
+    for (id, package, vector) in [("TEAM-A-STDLIB", "stdlib", V98), ("TEAM-B-LEFTPAD", "left-pad", V50)] {
+        local_record(&c, "t-src", id, vector);
+        c.conn.execute("UPDATE local_vulns SET aliases = 'CVE-2026-77' WHERE id = ?", [id]).unwrap();
+        c.conn.execute("UPDATE local_vuln_names SET name = ? WHERE id = ?", [package, id]).unwrap();
+    }
+    let of = |component: &str| Finding {
+        component: component.into(),
+        local_source: "t-src".into(),
+        ..finding("project", "CVE-2026-77", "fail", "")
+    };
+    for order in [["left-pad", "stdlib"], ["stdlib", "left-pad"]] {
+        let mut all: Vec<Finding> = order.iter().map(|c| of(c)).collect();
+        enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
+        let got: Vec<(&str, Option<f64>)> = all.iter().map(|f| (f.component.as_str(), f.cvss)).collect();
+        let want: Vec<(&str, Option<f64>)> =
+            order.iter().map(|c| (*c, Some(if *c == "stdlib" { 9.8 } else { 5.5 }))).collect();
+        assert_eq!(got, want, "{order:?}");
+    }
+}

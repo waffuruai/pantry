@@ -134,8 +134,9 @@ fn with_text_in(cache: &Cache, advisories: &mut Advisories, findings: &mut [Find
 ///
 /// A local record is used only for a finding that names its source
 /// (`local_source`: it was produced from a source of the user's in use that
-/// scan) and only a record of that source, found by source and id, not by
-/// component name (which is not the OSV package name for a runtime or tool),
+/// scan) and only a record of that source, found by source and id; the
+/// component name only picks between records that share an alias (it is not
+/// the OSV package name for a runtime or tool, so it is never a filter),
 /// so an OSV finding that shares a CVE id with some local record, or one of a
 /// source that is off, never takes its record, aliases or url.
 fn record(cache: &Cache, f: &Finding) -> Result<Option<(Value, Option<String>)>> {
@@ -160,7 +161,8 @@ fn record(cache: &Cache, f: &Finding) -> Result<Option<(Value, Option<String>)>>
     if f.local_source.is_empty() {
         return Ok(None);
     }
-    Ok(crate::sources::osv_dir::for_finding(cache, &f.local_source, vuln_id)?.map(|(r, url)| (r, Some(url))))
+    Ok(crate::sources::osv_dir::for_finding(cache, &f.local_source, vuln_id, &f.component)?
+        .map(|(r, url)| (r, Some(url))))
 }
 
 /// The exposure row for a finding's key, if scans have been recorded.

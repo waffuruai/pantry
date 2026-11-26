@@ -205,11 +205,11 @@ fn scores(cache: &Cache, id: &str, recs: &[Value]) -> Scores {
     (label, score, epss, ids)
 }
 
-/// What identifies the local record a finding is rated from: its source and
-/// id. Not its component name, which is not the OSV package name for a
-/// runtime or tool.
-fn local_key(f: &Finding) -> (String, String) {
-    (f.local_source.clone(), f.vuln_id.clone())
+/// What identifies the local record a finding is rated from: its source, id
+/// and component, which `for_finding` prefers when two records share an alias.
+/// Two findings of one id and source but different packages may need two records.
+fn local_key(f: &Finding) -> (String, String, String) {
+    (f.local_source.clone(), f.vuln_id.clone(), f.component.clone())
 }
 
 /// Set every finding's severity (in CVSS's words), CVSS and EPSS. An
@@ -221,11 +221,11 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
     // machine from its own record and nothing else: a local record never
     // moves an OSV rating, and an OSV record that shares a local finding's id
     // never rates it. A local record with no score asks nobody for one.
-    let mut local: HashMap<(String, String), (Scores, AdvisoryText)> = HashMap::new();
+    let mut local: HashMap<(String, String, String), (Scores, AdvisoryText)> = HashMap::new();
     for f in findings.iter().filter(|f| f.kind != "unchecked" && !f.local_source.is_empty() && is_advisory(&f.vuln_id))
     {
         local.entry(local_key(f)).or_insert_with(|| {
-            let own = crate::sources::osv_dir::for_finding(cache, &f.local_source, &f.vuln_id);
+            let own = crate::sources::osv_dir::for_finding(cache, &f.local_source, &f.vuln_id, &f.component);
             let recs: Vec<Value> = own.ok().flatten().map(|(r, _)| vec![r]).unwrap_or_default();
             (scores(cache, &f.vuln_id, &recs), text_of(cache, &f.vuln_id, &recs))
         });

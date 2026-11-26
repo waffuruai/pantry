@@ -456,23 +456,26 @@ pub fn by_id(cache: &Cache, id: &str, alias: bool) -> Result<Option<(Value, Stri
 
 /// The record of source `source` a finding is for, with its link ("" for
 /// none): the one whose id is `id`, else the one that lists `id` as an alias,
-/// without regard to the package. A record of another source is not this
-/// finding's, whatever its id.
+/// preferring, among records that list it as an alias, one that names
+/// `package`. A record of another source is not this finding's, whatever its id.
 ///
-/// The package is left out on purpose: a finding's component name is not the
-/// OSV package name for a runtime or tool (`go` is `stdlib`, `node` is its
-/// git repository URL), and the finding already was produced from this very
-/// record by matching its packages. `(source, id)` is one record even when
-/// it covers several packages, so its record, aliases and link are right
-/// for each of them.
-pub fn for_finding(cache: &Cache, source: &str, id: &str) -> Result<Option<(Value, String)>> {
+/// The package is a preference, not a filter: a finding's component name is
+/// not the OSV package name for a runtime or tool (`go` is `stdlib`, `node`
+/// is its git repository URL), and the finding was produced from a record of
+/// this source by matching its packages, so a record that does not name the
+/// component is still the right one when no other competes. When two records
+/// of the source share an alias for different packages (a `GO-` and a `GHSA-`
+/// record of one CVE), the one that names the component is this finding's.
+pub fn for_finding(cache: &Cache, source: &str, id: &str, package: &str) -> Result<Option<(Value, String)>> {
     let row: Option<(String, Option<String>)> = cache
         .conn
         .query_row(
             "SELECT v.record, v.url FROM local_vulns v \
              WHERE v.source = ?1 AND (v.id = ?2 OR (' ' || v.aliases || ' ') LIKE ('% ' || ?2 || ' %')) \
-             ORDER BY (v.id = ?2) DESC, v.id LIMIT 1",
-            params![source, id],
+             ORDER BY (v.id = ?2) DESC, \
+             EXISTS (SELECT 1 FROM local_vuln_names n WHERE n.source = v.source AND n.id = v.id AND n.name = ?3) DESC, \
+             v.id LIMIT 1",
+            params![source, id, package.to_lowercase()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;

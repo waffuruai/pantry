@@ -343,3 +343,32 @@ fn the_users_own_file_may_still_turn_a_source_off() {
     let deep = merged("[[source]]\nid = \"cisa-kev\"\ntier = \"deep\"\n").unwrap();
     assert_eq!(tier_of(&deep, "cisa-kev"), Tier::Deep, "and down to deep");
 }
+
+/// Risk: a pin that reads as nothing is dropped without a word, so a folder
+/// the user believes is pinned is read as it is (found by running it: a
+/// `sha256` written as a number, in a list, or misspelled loaded the folder
+/// unpinned). Oracle: the entry is refused, naming the source and the key,
+/// and an entry with only the documented keys reads as before.
+#[test]
+fn a_key_of_the_wrong_type_or_one_nobody_reads_is_refused_not_dropped() {
+    let one = |body: &str| parse(&format!("[[source]]\n{body}\n"));
+    let base = "id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-dir\"\npath = \"/srv/osv\"\n";
+    let pin = "0".repeat(64);
+    assert!(one(&format!("{base}sha256 = \"{pin}\"")).is_ok(), "a pin as a string reads");
+    for (line, key) in [
+        ("sha256 = 123".to_string(), "sha256"),
+        (format!("sha256 = [\"{pin}\"]"), "sha256"),
+        ("sha256 = true".to_string(), "sha256"),
+        (format!("sha265 = \"{pin}\""), "sha265"),
+        (format!("SHA256 = \"{pin}\""), "SHA256"),
+        ("tier = 3".to_string(), "tier"),
+        ("refresh = 5".to_string(), "refresh"),
+        ("max_bytes = \"big\"".to_string(), "max_bytes"),
+        ("redistribute = \"yes\"".to_string(), "redistribute"),
+    ] {
+        let e = one(&format!("{base}{line}")).expect_err(&line).to_string();
+        assert!(e.contains("\"mine\"") && e.contains(&format!("\"{key}\"")), "{line}: {e}");
+    }
+    let e = one("id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-dir\"\npath = 5").unwrap_err().to_string();
+    assert!(e.contains("\"path\"") && e.contains("string"), "a path of the wrong type says so: {e}");
+}

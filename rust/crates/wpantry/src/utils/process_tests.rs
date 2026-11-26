@@ -328,3 +328,26 @@ fn a_path_folder_that_is_a_link_into_a_left_out_folder_is_not_looked_in() {
     assert_eq!(reachable(vec![linked.display().to_string(), ok.display().to_string()]), [ok.display().to_string()]);
     drop(guard);
 }
+
+/// Risk: the lookup judged the PATH folder, then `is_executable` stat'ed
+/// `folder/tool` through the link that file is (`~/.local/bin/tool ->
+/// ~/Documents/tools/tool`): a stat inside the folder the scan leaves out.
+/// Oracle: the tool is found through the link without a guard and not with
+/// one, by `which` and by the tool inventory's `on_path`; a real copy in the
+/// same folder is still found. Cannot notice a stat: it sees what was found.
+/// Known bad: `is_executable` without the left-out check.
+#[cfg(unix)]
+#[test]
+fn a_tool_that_is_a_link_into_a_left_out_folder_is_not_found() {
+    let d = TempDir::new("leftout-tool-link").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap();
+    executable(&root.join("Documents/tools/tool"), "#!/bin/sh\n");
+    executable(&root.join("bin/real"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink(root.join("Documents/tools/tool"), root.join("bin/tool")).unwrap();
+    let path = std::env::join_paths([root.join("bin")]).unwrap();
+    assert_eq!(which_in("tool", Some(&path)), Some(root.join("bin/tool")));
+    let _guard = crate::utils::privacy::leave_out(vec![root.join("Documents")], Vec::new());
+    assert_eq!(which_in("tool", Some(&path)), None);
+    assert!(on_path_in("tool", vec![root.join("bin").display().to_string()], &[] as &[&str]).is_empty());
+    assert_eq!(which_in("real", Some(&path)), Some(root.join("bin/real")));
+}

@@ -764,6 +764,7 @@ impl<'a> Scan<'a> {
         self.repos =
             repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
         self.flag_named_roots_left_out();
+        self.flag_path_folders_left_out();
         // --no-personal-files keeps Downloads, Desktop and Documents out of
         // every walk, on any scan: a repo or --path root that holds them (a
         // home that is a git checkout, `--path ~` with no repo) is walked
@@ -795,6 +796,30 @@ impl<'a> Scan<'a> {
                 "it lies in a folder this scan leaves out (--no-personal-files), so nothing in it was read",
                 &format!("wpantry scan --path {name}"),
             );
+        }
+    }
+
+    /// A PATH folder this scan leaves out, or that is a link into one, is not
+    /// searched for programs (`utils::process`): name each as not checked, so a
+    /// tool that lives there never reads as missing or clean. Only the PATH
+    /// entry's own spelling is shown; nothing in the folder is opened.
+    pub(crate) fn flag_path_folders_left_out(&mut self) {
+        self.flag_path_folders_left_out_in(std::env::var_os("PATH").as_deref());
+    }
+
+    /// [`Self::flag_path_folders_left_out`] for the PATH value `path`.
+    pub(crate) fn flag_path_folders_left_out_in(&mut self, path: Option<&std::ffi::OsStr>) {
+        if !self.opts.no_personal_files || !self.opts.machine {
+            return;
+        }
+        for dir in std::env::split_paths(path.unwrap_or_default()) {
+            if !dir.as_os_str().is_empty() && crate::utils::privacy::reaches_left_out(&dir) {
+                self.unchecked_until(
+                    &format!("PATH folder {}", crate::utils::files::short(&dir.to_string_lossy())),
+                    "it lies in, or is a link into, a folder this scan leaves out (--no-personal-files), so the programs in it were not looked for",
+                    "wpantry scan",
+                );
+            }
         }
     }
 

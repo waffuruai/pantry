@@ -598,6 +598,65 @@ fn a_named_root_that_ends_up_left_out_is_never_a_clean_scan() {
     drop(home);
 }
 
+/// Risk: a PATH folder the scan leaves out, or that is a link into one, is
+/// dropped from every program lookup without a word, so a tool in it reads as
+/// not installed. Oracle: the findings. Each such PATH entry (the folder, a
+/// link to it, a chain of two links, a trailing slash, and on macOS another
+/// letter case) is one not-checked finding that names it and is a gap; a plain
+/// folder, an empty entry and a path that is not there are not named; a scan
+/// without `--no-personal-files` names none. Does not notice a stat: it reads
+/// the findings. Known bad: nothing reports the dropped folders.
+#[cfg(unix)]
+#[test]
+fn a_path_folder_in_or_linked_into_a_left_out_folder_is_named_as_not_checked() {
+    use std::os::unix::fs::symlink;
+    let dir = crate::utils::temp::TempDir::new("path-gap").unwrap();
+    let h = std::fs::canonicalize(dir.path()).unwrap().join("home");
+    std::fs::create_dir_all(h.join("Documents/bin")).unwrap();
+    std::fs::create_dir_all(h.join("Documents/direct")).unwrap();
+    std::fs::create_dir_all(h.join("ok")).unwrap();
+    symlink("Documents/bin", h.join("bin")).unwrap();
+    symlink("hop2", h.join("hop1")).unwrap();
+    symlink("Documents", h.join("hop2")).unwrap();
+    let mut entries = vec![
+        h.join("bin"),
+        h.join("ok"),
+        h.join("Documents/direct"),
+        h.join("Documents/bin/"),
+        h.join("hop1/direct"),
+        std::path::PathBuf::new(),
+        h.join("not-there/bin"),
+    ];
+    let mut flagged = 4;
+    if cfg!(target_os = "macos") {
+        entries.push(h.join("documents/DIRECT"));
+        flagged += 1;
+    }
+    // The same folder as a relative entry (from wherever the tests run).
+    let up = "../".repeat(std::env::current_dir().unwrap().components().count());
+    entries.push(std::path::PathBuf::from(format!(
+        "{up}{}",
+        h.join("Documents/direct").to_string_lossy().trim_start_matches('/')
+    )));
+    flagged += 1;
+    let path = std::env::join_paths(&entries).unwrap();
+    let net = Fake::offline();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = true;
+    s.flag_path_folders_left_out_in(Some(&path));
+    assert!(s.findings.is_empty(), "no flag, no guard: {:?}", s.findings);
+    s.opts.no_personal_files = true;
+    let guard = crate::utils::privacy::leave_out(vec![h.join("Documents")], Vec::new());
+    s.flag_path_folders_left_out_in(Some(&path));
+    let gaps: Vec<&Finding> = s.findings.iter().filter(|f| f.is_gap()).collect();
+    assert_eq!(gaps.len(), flagged, "{:?}", s.findings);
+    assert!(gaps.iter().all(|g| g.component.starts_with("PATH folder ") && g.note.contains("leaves out")), "{gaps:?}");
+    let named = |tail: &str| gaps.iter().any(|g| g.component.ends_with(tail));
+    assert!(named("home/bin") && named("Documents/direct") && named("hop1/direct"), "{gaps:?}");
+    assert!(!named("home/ok") && !named("not-there/bin"), "{gaps:?}");
+    drop(guard);
+}
+
 fn kev_entry(cve: &str, added: &str, vendor: &str, product: &str) -> kev::Entry {
     kev::Entry { cve: cve.into(), added: added.into(), vendor: vendor.into(), product: product.into() }
 }

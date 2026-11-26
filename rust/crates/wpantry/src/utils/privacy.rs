@@ -189,6 +189,14 @@ pub fn reaches_left_out(path: impl AsRef<Path>) -> bool {
                 Component::CurDir => continue,
                 other => so_far.push(other),
             }
+            // A path that goes through a left-out folder (`~/Documents/foo/../../bin`
+            // folds to `~/bin`, but the system opens `~/Documents/foo` to resolve it) is
+            // left out, and nothing in the folder is looked at to say so: not even a
+            // `symlink_metadata` of the first folder in it. Only the folders on the way to
+            // a path the user named are walked.
+            if is_left_out(&so_far) && !on_the_way_to_named(&so_far) {
+                return true;
+            }
             if std::fs::symlink_metadata(&so_far).is_ok_and(|m| m.file_type().is_symlink())
                 && let Ok(target) = std::fs::read_link(&so_far)
             {
@@ -203,9 +211,19 @@ pub fn reaches_left_out(path: impl AsRef<Path>) -> bool {
     false
 }
 
+/// Whether `path` is a folder above a path the user named: the walk of a
+/// path to a named subtree goes through it, so it may be looked at.
+fn on_the_way_to_named(path: &Path) -> bool {
+    let here = names(path);
+    LEFT_OUT.read().expect("lock").iter().any(|(_, _, named)| named.iter().any(|n| n.starts_with(&here)))
+}
+
 /// Whether the symlink at `link` points into a left-out folder, read from
 /// the link alone (a relative target is taken from the link's folder).
-/// Following it, even to stat it, would open that folder.
+/// Following it, even to stat it, would open that folder. It reads one link:
+/// a link to a link (or through a linked folder) that ends in a left-out
+/// folder is only seen by [`reaches_left_out`], which a walk that goes on to
+/// stat the link must use.
 pub fn link_left_out(link: &Path) -> bool {
     if LEFT_OUT.read().expect("lock").is_empty() {
         return false;

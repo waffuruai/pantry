@@ -131,7 +131,7 @@ pub(crate) fn program_file(argv: &[String]) -> Option<PathBuf> {
         && let Some(script) = argv
             .iter()
             .skip(1)
-            .find(|a| !a.starts_with('-') && (crate::utils::privacy::is_left_out(a) || Path::new(a).is_file()))
+            .find(|a| !a.starts_with('-') && (crate::utils::privacy::reaches_left_out(a) || Path::new(a).is_file()))
     {
         return Some(PathBuf::from(script));
     }

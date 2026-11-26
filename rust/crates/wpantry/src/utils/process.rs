@@ -166,6 +166,11 @@ pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) ->
 }
 
 pub(crate) fn is_executable(p: &Path) -> bool {
+    // Not a file inside a folder a scan leaves out, nor a link that leads into one
+    // (`~/.local/bin/tool -> ~/Documents/tool`): the stat below would open it.
+    if crate::utils::privacy::reaches_left_out(p) {
+        return false;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

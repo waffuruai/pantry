@@ -65,6 +65,41 @@ impl Write for Stuck {
     }
 }
 
+/// Whether the reader holds a line `is` says yes to, within `wait`.
+fn seen_within(kept: &Kept, wait: Duration, is: impl Fn(&Value) -> bool) -> bool {
+    let until = Instant::now() + wait;
+    loop {
+        let text = String::from_utf8_lossy(&kept.0.lock().unwrap()).into_owned();
+        if text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|l| is(&l)) {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Tell `path` until the reader has its line, and say how many times it
+/// took. Two things make one telling and a fixed sleep too little on a busy
+/// machine (the whole suite at once, a CI runner):
+/// - the writer thread takes a told path at its next tick, whenever it is
+///   next run, and a step that ends first drops the path;
+/// - `at` never waits for the slot: told while the writer holds it, the path
+///   is skipped, as it should be when another follows at once. Here none does.
+fn tell(ev: &Events, kept: &Kept, path: &Path, what: At) -> usize {
+    let want = path.to_string_lossy().into_owned();
+    let until = Instant::now() + Duration::from_secs(60);
+    for told in 1.. {
+        ev.at(path, what);
+        if seen_within(kept, TICK * 5, |l| l["event"] == "at" && l["path"] == want.as_str()) {
+            return told;
+        }
+        assert!(Instant::now() < until, "the writer never wrote {want}");
+    }
+    unreachable!("the loop returns or panics")
+}
+
 const A: Step = Step { id: "a", title: "Doing a" };
 const B: Step = Step { id: "b", title: "Doing b" };
 
@@ -83,17 +118,37 @@ fn secret_finding() -> Finding {
 
 /// A run of two steps with a finding, an unchecked source, a note and paths.
 fn run(out: Box<dyn Write + Send>) -> Events {
+    // No reader to ask: tell each path once and give the writer a couple of ticks.
+    run_telling(out, &|ev, path, what| {
+        ev.at(path, what);
+        std::thread::sleep(TICK * 2);
+    })
+}
+
+/// [`run`] for a reader that keeps its lines, with how many times the file
+/// was told: each path's line is there when its step ends ([`tell`]).
+fn run_kept(kept: &Kept) -> (Events, usize) {
+    let files = std::cell::Cell::new(0);
+    let ev = run_telling(Box::new(kept.clone()), &|ev, path, what| {
+        let told = tell(ev, kept, path, what);
+        if what == At::File {
+            files.set(files.get() + told);
+        }
+    });
+    (ev, files.get())
+}
+
+/// [`run`], with `at` telling each path before its step ends.
+fn run_telling(out: Box<dyn Write + Send>, at: &dyn Fn(&Events, &Path, At)) -> Events {
     let ev = Events::new(out, vec![A, B], &[PathBuf::from("/scan/here")]);
     ev.step("a");
     ev.repos(2);
-    ev.at(Path::new("/scan/here/x.txt"), At::File);
     ev.finding(&secret_finding());
     ev.finding(&Finding { kind: "unchecked".into(), component: "OSV".into(), ..Default::default() });
     ev.note("a note");
-    std::thread::sleep(TICK * 2);
+    at(&ev, Path::new("/scan/here/x.txt"), At::File);
     ev.step("b");
-    ev.at(Path::new("/scan/here"), At::Dir);
-    std::thread::sleep(TICK * 2);
+    at(&ev, Path::new("/scan/here"), At::Dir);
     ev.step(REPORT.id);
     ev.outcome(&[secret_finding()], 42);
     ev.finish(1, None);
@@ -155,7 +210,7 @@ fn order(lines: &[Value]) -> Vec<String> {
 #[test]
 fn every_event_has_its_fields() {
     let kept = Kept::default();
-    run(Box::new(kept.clone()));
+    let (_, files) = run_kept(&kept);
     let lines = kept.lines();
     let names = order(&lines);
     for want in ["start", "step", "at", "tally", "finding", "note", "done"] {
@@ -175,11 +230,13 @@ fn every_event_has_its_fields() {
     let at = of("at");
     assert_eq!(keys(&at[0]), sorted(&["v", "event", "step", "path", "kind"]));
     assert_eq!(pick(&at[0], &["path", "kind", "step"]), serde_json::json!(["/scan/here/x.txt", "file", "a"]));
-    assert_eq!(pick(&at[1], &["kind", "step"]), serde_json::json!(["dir", "b"]));
+    // The next step's own (a file told twice has two lines in the first).
+    let in_b = at.iter().find(|l| l["step"] == "b").expect("a path in step b");
+    assert_eq!(pick(in_b, &["kind", "path"]), serde_json::json!(["dir", "/scan/here"]));
     let tally = of("tally");
     assert_eq!(keys(&tally[0]), sorted(&["v", "event", "repos", "files", "findings", "unchecked", "listed"]));
     assert_eq!(tally.last().unwrap()["repos"], 2);
-    assert_eq!(tally.last().unwrap()["files"], 1);
+    assert_eq!(tally.last().unwrap()["files"], files, "one, unless the file was told again");
     let finding = &of("finding")[0];
     assert_eq!(
         keys(finding),
@@ -402,8 +459,7 @@ fn lines_are_ascii_with_no_control_characters() {
     let kept = Kept::default();
     let ev = Events::new(Box::new(kept.clone()), vec![A], &[]);
     ev.step("a");
-    ev.at(Path::new("/odd\nname\u{1b}[31m\u{9b}é"), At::File);
-    std::thread::sleep(TICK * 2);
+    tell(&ev, &kept, Path::new("/odd\nname\u{1b}[31m\u{9b}é"), At::File);
     ev.finish(0, None);
     let raw = String::from_utf8(kept.0.lock().unwrap().clone()).unwrap();
     assert!(raw.chars().all(|c| c == '\n' || (' '..='~').contains(&c)), "{raw:?}");

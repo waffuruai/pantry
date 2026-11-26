@@ -228,6 +228,36 @@ fn clean_tail_drops_environment_lines_escapes_and_redraws() {
     assert_eq!(run::clean_tail(b"bad \xff byte\n", false), "bad \u{fffd} byte");
 }
 
+/// Risk: the failure text rewrites a path that only starts like the home
+/// directory (`/Users/sam` inside `/Users/samantha/x` became `~antha/x`), or
+/// one that merely contains it further along, and so says something false
+/// about where the program wrote. Oracle: `~` stands for the home directory
+/// as a whole path name: it ends at a `/`, a `\`, a space, a quote or the end
+/// of the line, and does not begin inside a longer name.
+#[test]
+fn clean_tail_shortens_the_home_directory_only_where_it_is_one() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home().display().to_string();
+    let text = format!("{h}/x and {h} and '{h}'\n{h}work/y {h}-old {h}.bak /mnt{h}/z\n");
+    assert_eq!(
+        run::clean_tail(text.as_bytes(), false),
+        format!("~/x and ~ and '~'\n{h}work/y {h}-old {h}.bak /mnt{h}/z")
+    );
+    drop(home);
+}
+
+/// Risk: a failed command's stderr reaches the report and the remediation
+/// log with characters that rewrite what a reader sees: right-to-left
+/// overrides and zero-width marks (the line reads as something else),
+/// device-control and application-command strings whose payload is printed
+/// as text, and a character-set escape that leaves its final letter behind.
+/// Oracle: only the visible text of each line stays, in order.
+#[test]
+fn clean_tail_drops_direction_marks_and_every_kind_of_escape_string() {
+    let text = "ok\u{202e}evil\u{200b}x\u{2066}y\u{feff}\n\u{1b}(Bplain\n\u{1b}P1;2|secret\u{1b}\\after\n\u{1b}_apc payload\u{7}end\n\u{1b}^pm\u{1b}\\\u{1b}Xsos\u{1b}\\done\n";
+    assert_eq!(run::clean_tail(text.as_bytes(), false), "okevilxy\nplain\nafter\nend\ndone");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_fix_that_cannot_start_or_is_stopped_says_so_without_an_exit_code() {

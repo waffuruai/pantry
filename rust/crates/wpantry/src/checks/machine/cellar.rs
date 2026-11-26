@@ -194,7 +194,10 @@ pub fn upgrade_step(formula: &str, cellar: &Path, mise_installs: &Path) -> (Stri
         return (format!("mise upgrade brew:{formula}"), false);
     }
     // Homebrew runs on macOS and Linux only: no Windows path is ever offered as its brew.
-    let brew = cellar.parent().map(|p| p.join("bin/brew")).filter(|b| !cfg!(windows) && b.is_file());
+    let brew = cellar
+        .parent()
+        .map(|p| p.join("bin/brew"))
+        .filter(|b| !cfg!(windows) && crate::utils::process::is_executable(b));
     if let Some(brew) = brew {
         let brew = brew.to_string_lossy().into_owned();
         let plain = brew.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@".contains(c));

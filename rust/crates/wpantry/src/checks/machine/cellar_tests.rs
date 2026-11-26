@@ -1,5 +1,15 @@
 use super::*;
 
+/// Mark a file a program, as an installed `brew` is.
+fn runnable(p: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = p;
+}
+
 #[test]
 fn maps_formulae_and_strips_revisions() {
     assert_eq!(catalog_tool("openssl@3").map(|t| t.name), Some("openssl"));
@@ -111,7 +121,13 @@ fn the_step_says_what_to_run_and_who_owns_the_copy() {
     // brew sits in the Cellar's own prefix but not on PATH: its full path, as an automatic fix.
     let brew = d.path().join("opt/homebrew/bin/brew");
     std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
+    // A file called brew that can't be run is no brew: the fix runner would
+    // only fail on it, so the step stays one for a person.
     std::fs::write(&brew, "#!/bin/sh\n").unwrap();
+    if cfg!(unix) {
+        assert!(!upgrade_step("openssl@3", &cellar, &mise).1, "not executable: never unattended");
+    }
+    runnable(&brew);
     assert_eq!(upgrade_step("openssl@3", &cellar, &mise), (format!("{} upgrade openssl@3", brew.display()), true));
     // mise's engine made it: that is the owner, whatever else is there.
     std::fs::create_dir_all(mise.join("brew-openssl@3")).unwrap();
@@ -124,6 +140,7 @@ fn the_step_says_what_to_run_and_who_owns_the_copy() {
     std::fs::create_dir_all(&spaced).unwrap();
     std::fs::create_dir_all(d.path().join("my prefix/bin")).unwrap();
     std::fs::write(d.path().join("my prefix/bin/brew"), "").unwrap();
+    runnable(&d.path().join("my prefix/bin/brew"));
     let (step, auto) = upgrade_step("jq", &spaced, &mise);
     assert!(step.starts_with("Run `") && step.ends_with(" upgrade jq`.") && !auto, "{step}");
 }
@@ -139,6 +156,7 @@ fn a_cellar_formula_beside_its_brew_is_an_automatic_fix() {
     std::fs::create_dir_all(cellar.join("openssl@3/3.5.9")).unwrap();
     std::fs::create_dir_all(d.path().join("prefix/bin")).unwrap();
     std::fs::write(d.path().join("prefix/bin/brew"), "").unwrap();
+    runnable(&d.path().join("prefix/bin/brew"));
     let inv = read(&cellar, &d.path().join("mise/installs"));
     let ssl = &inv.components[0];
     assert_eq!(ssl.fix, format!("{} upgrade openssl@3", d.path().join("prefix/bin/brew").display()));
@@ -172,6 +190,7 @@ fn a_keg_with_a_homebrew_receipt_is_never_poured_without_brew() {
     let brew = d.path().join("prefix/bin/brew");
     std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
     std::fs::write(&brew, "").unwrap();
+    runnable(&brew);
     assert_eq!(upgrade_step("openssl@3", &cellar, &mise), (format!("{} upgrade openssl@3", brew.display()), true));
     // The same Cellar read as an inventory carries the step on the component.
     let inv = read(&cellar, &mise);

@@ -12,7 +12,6 @@ use wpantry::db::Cache;
 use wpantry::error::{Error, Result};
 use wpantry::selfinstall::{self, Kind};
 use wpantry::utils::process::exec;
-use wpantry::utils::process::which;
 
 pub struct Update {
     /// Only say whether an update exists (exit 10 when one does).
@@ -172,8 +171,9 @@ fn check_json(net: &dyn wpantry::utils::net::Net, db: Option<&Path>, offline: bo
 
 /// Run the tool that owns this install, with the terminal.
 fn through(argv: &[&str]) -> Result<i32> {
-    let Some(exe) = which(argv[0]) else {
-        say(&format!("  {} isn't on PATH; run the update yourself: {}", argv[0], argv.join(" ")));
+    // Where a scan finds the tool: PATH, then its installer's own place.
+    let Some(exe) = wpantry::utils::process::find_tool(argv[0]) else {
+        say(&format!("  {} wasn't found; run the update yourself: {}", argv[0], argv.join(" ")));
         return Ok(EXIT_FAIL);
     };
     say(&format!("  → {}", argv.join(" ")));

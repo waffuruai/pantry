@@ -280,11 +280,32 @@ pub fn lockfiles(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Extensions that mark a file as something other than a Dockerfile when
+/// they follow `Dockerfile.` or `Containerfile.` (`Dockerfile.py` is a
+/// Python module named after Docker, not a build file). What follows the
+/// dot in a real Dockerfile is a label for the variant: `dev`, `prod`, `ci`.
+const NOT_DOCKERFILE_SUFFIX: &[&str] = &[
+    "py", "pyi", "pyc", "rs", "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "rb", "java", "kt", "swift", "c", "h",
+    "cc", "cpp", "cs", "php", "pl", "lua", "sh", "bash", "zsh", "ps1", "bat", "cmd", "md", "txt", "rst", "json", "yml",
+    "yaml", "toml", "xml", "html", "lock", "log", "csv", "ini", "orig", "bak", "swp", "tmp", "diff", "patch",
+];
+
+/// A Dockerfile by name: `Dockerfile` or `Containerfile`, `Dockerfile.LABEL`
+/// or `Containerfile.LABEL` (LABEL not a source or document extension, see
+/// [`NOT_DOCKERFILE_SUFFIX`]), `NAME.dockerfile` or `NAME.containerfile`;
+/// any case. The name alone is not proof: [`from_lines`] reads only the
+/// lines that are a `FROM` instruction.
 fn is_dockerfile(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    let stem_ok = |s: &str| lower == s || lower.starts_with(&format!("{s}.")) && lower.len() > s.len() + 1;
-    stem_ok("dockerfile")
-        || stem_ok("containerfile")
+    let labelled = |s: &str| {
+        lower.strip_prefix(s).and_then(|r| r.strip_prefix('.')).is_some_and(|label| {
+            !label.is_empty() && !NOT_DOCKERFILE_SUFFIX.contains(&label.rsplit('.').next().unwrap_or(""))
+        })
+    };
+    lower == "dockerfile"
+        || lower == "containerfile"
+        || labelled("dockerfile")
+        || labelled("containerfile")
         || (lower.ends_with(".dockerfile") && lower.len() > ".dockerfile".len())
         || (lower.ends_with(".containerfile") && lower.len() > ".containerfile".len())
 }
@@ -342,7 +363,14 @@ pub fn from_lines(path: &Path) -> Vec<String> {
             i += 1;
         }
         let Some(r) = rest.get(i) else { continue };
-        let stage = (rest.len() > i + 2 && rest[i + 1].eq_ignore_ascii_case("AS")).then(|| rest[i + 2]);
+        // The instruction is `FROM [--flag=value]... IMAGE [AS STAGE]`: one
+        // word, or three with AS in the middle. Anything else is not a
+        // Dockerfile line (`from importlib.metadata import version`).
+        let stage = match rest.len() - i {
+            1 => None,
+            3 if rest[i + 1].eq_ignore_ascii_case("AS") => Some(rest[i + 2]),
+            _ => continue,
+        };
         if !r.eq_ignore_ascii_case("scratch") && !r.contains('$') && !stages.contains(*r) {
             refs.push(r.to_string());
         }

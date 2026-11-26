@@ -183,6 +183,26 @@ fn the_rule_names_one_file_and_neighbours_stay_reported() {
 }
 
 #[test]
+fn a_finding_in_a_nested_checkout_goes_in_the_file_of_the_repo_the_scan_reads() {
+    // Risk: the rule lands in the submodule's own .pantryignore, which no
+    // scan of the repo around it reads, and the command says it worked.
+    // Oracle: the outer repo's file, read back by the real filter from the
+    // outer root, as the scan does.
+    let d = TempDir::new("ie-nested").unwrap();
+    let e = env(&d);
+    let root = repo(&d, "app");
+    std::fs::create_dir_all(root.join("libs/sub/.git")).unwrap();
+    let f = lock(&root, "libs/sub/package-lock.json", "lodash", "GHSA-lodash");
+    let (t, rules, _) = wrote(add(&req(&f, std::slice::from_ref(&f), Scope::Repo), &e).unwrap());
+    assert_eq!(t.file, root.join(FILE));
+    assert_eq!(rules[0].pattern, "/libs/sub/package-lock.json");
+    assert!(!root.join("libs/sub").join(FILE).exists(), "nothing is written where no scan looks");
+    assert!(Ignore::parse(&text(&t)).skips(&f.kind, &f.vuln_id, "libs/sub/package-lock.json"));
+    // `--path` inside the nested checkout means the same repo.
+    assert_eq!(repo_for(&root.join("libs/sub")), root);
+}
+
+#[test]
 fn a_rule_that_would_hide_another_finding_is_refused() {
     // Two packages with one advisory in one lockfile: the format can't tell them apart.
     let d = TempDir::new("ie-collateral").unwrap();
@@ -494,6 +514,12 @@ fn repo_for_finds_the_repo_a_path_means() {
     let plain = d.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
     assert_eq!(repo_for(&plain), plain);
+    // A relative directory is the same place as its whole path: `--path .`
+    // from inside a repo is the repo, never a file beside the words typed.
+    let here = std::env::current_dir().unwrap();
+    assert_eq!(repo_for(Path::new(".")), repo_for(&here));
+    assert!(repo_for(Path::new(".")).is_absolute() && repo_for(Path::new("src")).is_absolute());
+    assert!(!file_key(&repo_for(Path::new("src")).join(FILE)).starts_with('.'), "a file is known by its whole path");
 }
 
 #[test]

@@ -421,4 +421,6 @@ fn all_places_covers_every_lockfile_of_the_package_and_the_log_names_each_rule()
 fn rule_ids_are_told_from_finding_ids() {
     assert!(is_rule_id("R-3fa9c01b2e") && is_rule_id("r-3FA9C01B2E"));
     assert!(!is_rule_id("F-3fa9c01b2e") && !is_rule_id("R-3fa9c01b2") && !is_rule_id("R-zzzzzzzzzz"));
+    // Twelve bytes of wider characters: not an id, and not a panic.
+    assert!(!is_rule_id("€€€€") && !is_rule_id("Ré3fa9c01b2") && !is_rule_id(""));
 }

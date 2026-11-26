@@ -430,9 +430,13 @@ pub fn clean_reason(reason: &str) -> Result<String, Refused> {
     Ok(r.to_string())
 }
 
-/// The repo a path is in: the nearest folder at or above it with a `.git`.
+/// The repo a path is in, as a scan sees it: the outermost folder at or
+/// above it with a `.git`. A scan stops at the first `.git` it meets on the
+/// way down and reads that folder's `.pantryignore` only, so a submodule or
+/// a checkout nested in a repo is part of the repo around it: a rule
+/// written to the nested one's file would never be read.
 fn repo_of(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find(|a| std::fs::symlink_metadata(a.join(".git")).is_ok()).map(Path::to_path_buf)
+    path.ancestors().filter(|a| std::fs::symlink_metadata(a.join(".git")).is_ok()).last().map(Path::to_path_buf)
 }
 
 /// A path as a pattern: glob characters and a trailing space escaped.
@@ -830,6 +834,10 @@ pub fn remove(targets: &[Target], want: Want) -> Result<Vec<Removed>, Stop> {
 /// The repo whose file `--path DIR` means: DIR when it holds a
 /// `.pantryignore`, else the nearest repo at or above it, else DIR.
 pub fn repo_for(dir: &Path) -> PathBuf {
+    // The whole path: `.` and `src` have no folder above them to look in,
+    // and a file is known by where it really is ([`file_key`]).
+    let whole = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let dir = whole.as_path();
     if std::fs::symlink_metadata(dir.join(FILE)).is_ok() {
         return dir.to_path_buf();
     }

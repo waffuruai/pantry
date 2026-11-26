@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS run_findings (
   scan_id INTEGER, kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
   status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
   fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT, cvss REAL,
-  cvss_version TEXT, epss REAL, epss_percentile REAL, epss_date TEXT, epss_model TEXT);
+  cvss_version TEXT, epss REAL, epss_percentile REAL, epss_date TEXT, epss_model TEXT,
+  excluded INTEGER, summary TEXT, aliases TEXT, cwe TEXT);
 CREATE INDEX IF NOT EXISTS run_findings_scan ON run_findings (scan_id);
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, added TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS eol (
@@ -82,13 +83,17 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "first_epss_percentile", "REAL"),
     ("fixes", "host", "TEXT"),
     ("kev", "vendor", "TEXT"),
+    ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),
     ("eol", "released", "TEXT"),
     ("scans", "kept", "INTEGER"),
+    ("findings", "summary", "TEXT"),
+    ("findings", "aliases", "TEXT"),
+    ("findings", "cwe", "TEXT"),
 ];
 
 /// A finding's columns, in `findings` and in `run_findings`.
-pub const FINDING_COLUMNS: &str = "kind, component, version, location, vuln_id, status, fixed, kev, severity, note,      fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile,      epss_date, epss_model";
+pub const FINDING_COLUMNS: &str = "kind, component, version, location, vuln_id, status, fixed, kev, severity, note,      fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile,      epss_date, epss_model, excluded, summary, aliases, cwe";
 
 fn migrate(conn: &Connection) -> Result<()> {
     for (table, column, kind) in ADDED {
@@ -99,11 +104,15 @@ fn migrate(conn: &Connection) -> Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
         }
     }
-    // A cache from before scans kept their findings: `findings` is its
-    // latest scan's, which becomes the one kept scan.
-    let kept: i64 = conn.query_row("SELECT COUNT(*) FROM scans WHERE kept IS NOT NULL", [], |r| r.get(0))?;
-    let latest: Option<i64> = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0))?;
-    if let (0, Some(id)) = (kept, latest) {
+    // The newest scan with no word on whether its findings are kept was
+    // recorded by a wpantry from before scans kept them (this cache's last
+    // scan before the upgrade, or an older wpantry run since): `findings`
+    // is that scan's, and it becomes a kept scan. A scan whose findings
+    // were pruned or trimmed says so (0) and is left alone.
+    let newest: Option<(i64, Option<i64>)> = conn
+        .query_row("SELECT id, kept FROM scans ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    if let Some((id, None)) = newest {
         conn.execute(
             &format!("INSERT INTO run_findings (scan_id, {FINDING_COLUMNS}) SELECT ?, {FINDING_COLUMNS} FROM findings"),
             [id],
@@ -526,7 +535,7 @@ impl Cache {
     fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {
         let mut stmt = self.conn.prepare(&format!(
             "INSERT INTO {table} ({FINDING_COLUMNS}{}) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{})",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{})",
             if scan_id.is_some() { ", scan_id" } else { "" },
             if scan_id.is_some() { ", ?" } else { "" },
         ))?;
@@ -553,6 +562,10 @@ impl Cache {
                 f.epss_percentile.into(),
                 f.epss_date.clone().into(),
                 f.epss_model.clone().into(),
+                (f.excluded as i64).into(),
+                f.summary.clone().into(),
+                f.aliases.join(" ").into(),
+                f.cwe.join(" ").into(),
             ];
             row.extend(scan_id.map(rusqlite::types::Value::from));
             stmt.execute(rusqlite::params_from_iter(row))?;

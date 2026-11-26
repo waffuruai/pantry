@@ -172,7 +172,7 @@ pub const TOOLS: &[Tool] = &[
         bins: &["ruby"],
         args: &["--version"],
         pattern: r#"ruby (\d+\.\d+\.\d+)"#,
-        osv: Some(("GIT", "https://github.com/ruby/ruby.git", "v{u}")),
+        osv: Some(("GIT", "https://github.com/ruby/ruby.git", "v{ruby}")),
         eol: Some(("ruby", Cycle::Minor)),
         always: false,
         paths: RUBY_DIRS,

@@ -15,6 +15,7 @@ pub mod email;
 pub mod files;
 pub mod hidden;
 pub mod ignore;
+pub mod ignore_edit;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
@@ -23,6 +24,7 @@ pub mod secrets;
 pub mod severity;
 pub mod supply_chain;
 pub mod suspects;
+pub mod watch;
 
 use crate::component::Component;
 use crate::component::Status;
@@ -272,6 +274,10 @@ pub struct Scan<'a> {
     pub status: Status<'a>,
     /// Asks the user a yes/no question (see [`Scan::with_ask`]).
     pub asker: Option<crate::checks::email::Ask<'a>>,
+    /// Who follows the scan's steps and findings (see [`Scan::with_watch`]).
+    pub watch: &'a dyn watch::Watch,
+    /// How many of `findings` the watch has been told about.
+    watched: std::cell::Cell<usize>,
     pub home: PathBuf,
     pub repos: Vec<Repo>,
     pub findings: Vec<Finding>,
@@ -307,6 +313,8 @@ impl<'a> Scan<'a> {
             note,
             status: &crate::component::quiet,
             asker: None,
+            watch: &watch::Quiet,
+            watched: std::cell::Cell::new(0),
             home: crate::utils::files::home(),
             repos: Vec::new(),
             findings: Vec::new(),
@@ -378,7 +386,7 @@ impl<'a> Scan<'a> {
                 yara: self.malware.as_ref().map(|m| m.loaded.clone()),
                 secrets: self.secret_engine(),
             };
-            self.files = Some(files::pass::run_with(&jobs, Some(&self.cache), &engines));
+            self.files = Some(files::pass::run_watched(&jobs, Some(&self.cache), &engines, self.watch));
         }
         self.files.as_ref().expect("the files pass just ran")
     }
@@ -459,9 +467,42 @@ impl<'a> Scan<'a> {
         self
     }
 
-    /// Say what the scan is doing now.
+    /// Tell `watch` each step as it begins, what is being read, and each
+    /// finding as its step makes it (the CLI's `scan --events`). Off by
+    /// default.
+    pub fn with_watch(mut self, watch: &'a dyn watch::Watch) -> Scan<'a> {
+        self.watch = watch;
+        self
+    }
+
+    /// Say what the scan is doing now; the findings made since the last
+    /// time go to the watch.
     pub fn status(&self, what: &str) {
+        self.tell_findings();
         (self.status)(what);
+    }
+
+    /// The next step begins: the findings the last one made go to the
+    /// watch first. `step` is one of [`watch::steps`].
+    pub fn step(&self, step: watch::Step) {
+        self.tell_findings();
+        self.watch.step(step.id);
+    }
+
+    /// The scan is reading this file or looking in this folder now.
+    pub fn at(&self, path: &Path, what: watch::At) {
+        self.watch.at(path, what);
+    }
+
+    /// The findings the watch hasn't been told about yet. Called only
+    /// between checks, so a check that amends what it just added (a
+    /// Gradle declaration's note) is done with it.
+    fn tell_findings(&self) {
+        let from = self.watched.get().min(self.findings.len());
+        for f in &self.findings[from..] {
+            self.watch.finding(f);
+        }
+        self.watched.set(self.findings.len());
     }
 
     // helpers ---------------------------------------------------------------
@@ -510,6 +551,29 @@ impl<'a> Scan<'a> {
             status: "warn".into(),
             note,
             fix_cmd: run.into(),
+            ..Default::default()
+        });
+    }
+
+    /// An area the user chose to leave out of this scan (a scope flag such
+    /// as `--no-personal-files`): reported `unchecked` so it is never read
+    /// as clean, but marked `excluded`, so it doesn't count as a source
+    /// that failed. The note says it was skipped by the user's choice.
+    ///
+    /// ```ignore
+    /// scan.excluded("Safari settings", "--no-personal-files", "Include personal folders to check it.");
+    /// ```
+    pub fn excluded(&mut self, what: &str, flag: &str, how_to_include: &str) {
+        if self.findings.iter().any(|f| f.kind == "unchecked" && f.component == what) {
+            return;
+        }
+        self.add(Finding {
+            kind: "unchecked".into(),
+            component: what.into(),
+            vuln_id: "UNCHECKED".into(),
+            status: "warn".into(),
+            note: format!("Skipped by your choice ({flag}). {how_to_include}"),
+            excluded: true,
             ..Default::default()
         });
     }
@@ -574,22 +638,50 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
+    /// The repos in scope ([`repos::scan_scope`]), each walked without the
+    /// personal folders under `--no-personal-files`.
+    pub(crate) fn scope_repos(&mut self) {
+        let (log, note, status) = (self.log, self.note, self.status);
+        self.repos =
+            repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
+        // --no-personal-files keeps Downloads, Desktop and Documents out of
+        // every walk, on any scan: a repo or --path root that holds them (a
+        // home that is a git checkout, `--path ~` with no repo) is walked
+        // without them, so no files-pass, lockfile or malware job opens them.
+        for (_, root) in &self.repos {
+            let dirs = if self.opts.no_personal_files { repos::personal_under(&self.home, root) } else { Vec::new() };
+            crate::utils::walk::exclude_under(root, dirs);
+        }
+    }
+
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
         crate::history::scan_started(&self.cache, &self.opts, started_at)?;
         crate::utils::walk::forget_walks();
+        self.step(watch::SOURCES);
         self.use_sources();
         self.load_kev()?;
         self.status("Fetching EPSS's exploit predictions");
         let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
         self.guard("EPSS (exploit predictions)", epss, 0)?;
-        let (log, note, status) = (self.log, self.note, self.status);
-        self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
+        self.step(watch::REPOS);
+        match self.opts.paths.as_deref() {
+            Some(paths) => paths.iter().for_each(|p| self.at(p, watch::At::Dir)),
+            None => self.at(&self.home, watch::At::Dir),
+        }
+        self.scope_repos();
+        self.watch.repos(self.repos.len());
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
         self.status("Listing the repos' files");
-        crate::utils::walk::prewalk(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>());
+        let w = self.watch;
+        let seen = |dir: &Path, files: usize| {
+            w.at(dir, watch::At::Dir);
+            w.listed(files);
+        };
+        crate::utils::walk::prewalk_seen(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(), &seen);
         let found: Vec<Component> = if self.opts.machine {
+            self.step(watch::MACHINE);
             machine::run(&mut self)?
         } else if self.opts.project {
             project::run(&mut self)?
@@ -598,11 +690,16 @@ impl<'a> Scan<'a> {
         };
         supply_chain::run(&mut self, &found)?;
         if !self.opts.no_malware {
+            self.step(watch::MALWARE);
             crate::checks::malware::run(&mut self);
         }
         if self.opts.deep {
+            self.step(watch::FILE_SECRETS);
             crate::checks::secrets::files::report(&mut self);
         }
+        // Before the ignore files: the watch was told every finding as it
+        // was made, and the report says which stayed.
+        self.step(watch::RATING);
         crate::checks::ignore::apply(&mut self);
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);

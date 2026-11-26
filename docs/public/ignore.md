@@ -67,6 +67,51 @@ printf '\n[secret github-pat]\n%s\n' /config/legacy.py >> ~/code/app/.pantryigno
 - A path every secret rule skips (lines before any section, `[*]` or `[secret]`) isn't read from the history at all. A `[secret id]` entry still reads the file, since other rules may match it.
 - Editing `.pantryignore` doesn't rescan the history: the files' results are cached, and only the ones it no longer skips are read.
 
+## Ignoring a finding from the command line
+
+`wpantry ignore` writes the rule for you, for a person at a terminal or a program driving wpantry. The ids are the `F-…` ones `wpantry fix list` and `scan --json` show:
+
+```sh
+wpantry ignore add F-3fa9c01b2e --reason "a test key, revoked in 2025"   # your ignore file
+wpantry ignore add F-3fa9c01b2e --scope repo                             # the repo's .pantryignore
+wpantry ignore list --path ~/code/app
+wpantry ignore remove F-3fa9c01b2e                                       # the next scan reports it again
+```
+
+- **`add FINDING_ID`** reads the finding from the latest scan and writes the narrowest rule that leaves exactly that finding out next time: its path, under the section for its check and its rule or advisory. Nothing is written unless Pantry's own reader, run over the new file, leaves out that finding and no other finding of the latest scan. Adding it again changes nothing and says so. It never prompts, with or without `--no-input` or `--json`.
+- **`--scope user`** (the default) writes your ignore file, creating it, private to you, when it's missing. **`--scope repo`** writes the `.pantryignore` of the repo the finding is in, and is refused for a finding outside a repo, and for what a repo's file can't skip ([above](#what-a-repo-cant-skip)): it exits 1 and tells you to use `--scope user`.
+- **`--reason TEXT`** is kept in the comment under the rule and in the audit log. One line, up to 300 characters.
+- **`--all-places`** writes one rule for each place the same rule or advisory was found for the same package (a package's lockfiles in several folders), not only the one you gave. The file can name a path and a rule, not a package, so there is no broader pattern that says "this package everywhere": a pattern for a whole folder would also hide other packages. With `--scope repo` the places in other repos are listed as not covered.
+- **`list`** shows every rule in your file and, with `--path DIR`, the `.pantryignore` of the repo at or above DIR: the rule's id (`R-…`), section and pattern. For a rule `add` wrote it also shows the finding it came from, when, and the reason. A rule the log says `add` wrote that the file no longer holds is listed as removed by hand.
+- **`remove ID`** takes out `R-…` (any rule `list` shows, written by hand too) or `F-…` (every rule `add` wrote for that finding). Only those lines go. A hand-written rule of a repo's needs `--path DIR`.
+
+What `add` writes is a block at the end of the file: a blank line, the section, the pattern, and a comment line naming the finding, when and why. For a package advisory, in your file and then in the repo's:
+
+```gitignore
+
+[project GHSA-xxxx-xxxx-xxxx]
+~/code/app/package-lock.json
+# wpantry ignore: F-3fa9c01b2e | 2026-11-25 14:03 UTC | not reachable
+```
+
+```gitignore
+
+[project GHSA-xxxx-xxxx-xxxx]
+/package-lock.json
+# wpantry ignore: F-3fa9c01b2e | 2026-11-25 14:03 UTC | not reachable
+```
+
+For a secret it is `[secret github-pat]` and the file, `/config/legacy.py` in the repo's file: the line `fix secret` writes. The comment starts with `#`, the only place the reader takes a comment, so it changes nothing about how the file reads. Every other line, comment, blank line and line ending of the file stays as it was (a file whose last line had no line ending gains one), and `remove` deletes exactly the block it was asked for, and with it the blank line and section it added when nothing else sits under that section. The file is replaced in one step, and never through a link that leaves the repo or the config folder (a link in a repo's `.pantryignore` isn't read by a scan, so it isn't written either).
+
+Some findings can't be ignored this way, and `add` says so and exits 1, writing nothing:
+
+- A finding that names no file or folder, such as a machine setting (`posture`): the file skips by path. Skip a posture check in `posture.toml` ([machine settings](posture.md)).
+- A source that couldn't be asked (`unchecked`): it's a gap, not a finding to dismiss.
+- A secret rule's hits in a repo's test files (`test files`), which are one finding for many files: a path for it would be the whole repo, which would hide that rule everywhere in it.
+- A finding where the narrowest rule would also leave out another finding of the latest scan (two packages with one advisory in one lockfile, since a rule can't name a package). The message names them.
+
+Each `add` and `remove` is logged in the cache: when, which, the finding (check, component, location, advisory or rule), the scope, the file and the reason. `wpantry report audit --json` (or `--md`) shows them among the scans. The files stay the source of truth for what is skipped: a rule you add or delete by hand works as before, and `list` shows the difference.
+
 ## Problems in the file
 
 A line the scan can't use is reported in the Configuration area as `IGNORE-FILE`, a warning with its line number: an unknown check (`[secrets]` asks "did you mean `secret`?"), a header with more than a check and an id, or a pattern that matches nothing. The patterns under a header it can't read apply to nothing, so a typo never widens what is skipped. A file over 1 MB isn't read, and that is reported too.

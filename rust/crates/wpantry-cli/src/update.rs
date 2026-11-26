@@ -17,6 +17,7 @@ use wpantry::utils::process::which;
 pub struct Update {
     /// Only say whether an update exists (exit 10 when one does).
     pub check: bool,
+    pub json: bool,
     /// Install without asking.
     pub yes: bool,
     /// Never ask: report only.
@@ -35,18 +36,34 @@ pub fn run(u: Update) -> Result<i32> {
 /// `run` for the binary at `exe` (its real path), over `net`, with the
 /// cache at `db` (None: the usual one).
 fn run_with(u: Update, net: &dyn wpantry::utils::net::Net, exe: &Path, db: Option<&Path>) -> Result<i32> {
+    if u.json {
+        return check_json(net, db, u.offline);
+    }
     let kind = selfinstall::kind(exe);
+    // When the answer is an old cached copy (only offline: online asks
+    // GitHub now or fails), the time it was fetched; the text says so, as
+    // the `--json` form's `stale` does.
+    let mut stale_since: Option<String> = None;
     let latest = match &u.version {
         Some(v) => v.trim_start_matches('v').to_string(),
         None => {
             let cache = Cache::open(db)?;
             // Offline answers from the last copy; online always asks, so a
             // release out since the day's copy isn't missed.
-            let r =
-                if u.offline { selfinstall::latest(&cache, net, true) } else { selfinstall::latest_now(&cache, net) };
+            let r = wpantry::sources::releases::github_release_info_dated(&cache, net, selfinstall::REPO, u.offline);
             cache.close()?;
             match r {
-                Ok(v) => v,
+                Ok((info, freshness)) => {
+                    if freshness.stale {
+                        stale_since =
+                            Some(freshness.checked_at.map_or_else(|| "unknown".to_string(), wpantry::history::stamp));
+                    }
+                    info.as_str()
+                        .or_else(|| info.get("version").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .trim_start_matches('v')
+                        .to_string()
+                }
                 Err(e) if e.is_source() => {
                     say(&format!("wpantry {VERSION}: couldn't check for a newer release ({e})"));
                     return Ok(EXIT_OK);
@@ -57,8 +74,18 @@ fn run_with(u: Update, net: &dyn wpantry::utils::net::Net, exe: &Path, db: Optio
     };
     let wanted = u.version.is_some();
     if !wanted && !selfinstall::newer(VERSION, &latest) {
-        say(&format!("wpantry {VERSION} is the latest release"));
+        match &stale_since {
+            Some(when) => say(&format!(
+                "wpantry {VERSION}: couldn't check for a newer release just now (last checked {when}); run `wpantry update --check` again when online"
+            )),
+            None => say(&format!("wpantry {VERSION} is the latest release")),
+        }
         return Ok(EXIT_OK);
+    }
+    if let Some(when) = &stale_since
+        && !wanted
+    {
+        say(&format!("  (from the last check, {when}: Pantry couldn't check just now)"));
     }
     if !selfinstall::is_version(&latest) {
         return Err(Error::Invalid(format!("not a release version: {latest:?}")));
@@ -110,6 +137,37 @@ fn run_with(u: Update, net: &dyn wpantry::utils::net::Net, exe: &Path, db: Optio
             Ok(EXIT_OK)
         }
     }
+}
+
+fn check_json(net: &dyn wpantry::utils::net::Net, db: Option<&Path>, offline: bool) -> Result<i32> {
+    use wpantry::utils::json::{J, obj};
+    let cache = Cache::open(db)?;
+    let result = wpantry::sources::releases::github_release_info_dated(&cache, net, selfinstall::REPO, offline);
+    cache.close()?;
+    // `checked_at` and `stale` (added 2026-11-21) say how old this answer is:
+    // offline it is the cached copy of any age, and without them
+    // `available: false` from a month-old entry looked like a fresh "no".
+    // Online it was asked of GitHub now, and an unreachable GitHub is the
+    // error below, never the old copy.
+    let (info, freshness) = result?;
+    let latest = info.as_str().or_else(|| info.get("version").and_then(|v| v.as_str())).unwrap_or("");
+    if !selfinstall::is_version(latest) {
+        return Err(Error::Invalid(format!("not a release version: {latest:?}")));
+    }
+    let assets = info.get("assets").map_or(J::Null, J::from);
+    let available = selfinstall::newer(VERSION, latest);
+    crate::emit(
+        &obj([
+            ("current", VERSION.into()),
+            ("latest", latest.into()),
+            ("available", available.into()),
+            ("assets", assets),
+            ("checked_at", freshness.checked_at.map_or(J::Null, |t| wpantry::history::stamp(t).into())),
+            ("stale", freshness.stale.into()),
+        ])
+        .dumps(),
+    );
+    Ok(if available { EXIT_UPDATE_AVAILABLE } else { EXIT_OK })
 }
 
 /// Run the tool that owns this install, with the terminal.

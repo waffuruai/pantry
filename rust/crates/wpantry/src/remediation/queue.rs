@@ -115,7 +115,8 @@ pub fn find<'a>(findings: &'a [Finding], id: &str) -> Option<&'a Finding> {
 
 /// Whether a word is a finding id: `F-` and ten hex digits.
 pub fn is_id(word: &str) -> bool {
-    word.len() == 12 && word[..2].eq_ignore_ascii_case("F-") && word[2..].chars().all(|c| c.is_ascii_hexdigit())
+    let bytes = word.as_bytes();
+    bytes.len() == 12 && bytes[..2].eq_ignore_ascii_case(b"F-") && bytes[2..].iter().all(u8::is_ascii_hexdigit)
 }
 
 #[cfg(test)]

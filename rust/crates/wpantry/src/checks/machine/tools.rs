@@ -27,7 +27,13 @@ pub fn tag(fmt: &str, v: &str) -> String {
     let v3 = if v.matches('.').count() >= 2 { v.to_string() } else { format!("{v}.0") };
     let u = v.replace('.', "_");
     let ssh = u.replace('p', "_P");
-    fmt.replace("{v3}", &v3).replace("{v}", v).replace("{u}", &u).replace("{ssh}", &ssh)
+    // Ruby 4 switched its upstream tags from underscores to dots.
+    let ruby = if v.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 4) {
+        v
+    } else {
+        &u
+    };
+    fmt.replace("{v3}", &v3).replace("{v}", v).replace("{u}", &u).replace("{ssh}", &ssh).replace("{ruby}", ruby)
 }
 
 /// (path marker, update command, safe to run unattended). "{safe}" is the

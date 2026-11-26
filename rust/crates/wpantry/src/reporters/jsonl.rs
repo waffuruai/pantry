@@ -10,6 +10,7 @@
 //! rows too (their `status` is the last one seen, `resolved_at` is set):
 //! that is where "fixed, N days later" comes from.
 
+use crate::checks::severity::{Advisories, fill_text, is_advisory};
 use crate::db::Cache;
 use crate::error::Result;
 use crate::finding::Finding;
@@ -51,16 +52,24 @@ fn from_exposure(e: &Exposure) -> Row {
         epss_percentile: e.epss_percentile,
         epss_date: String::new(),
         epss_model: String::new(),
+        // Exposures never hold `unchecked` findings.
+        excluded: false,
+        ..Default::default()
     };
     from_finding(f)
 }
 
 /// The latest scan's findings, as saved.
 pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
+    findings_in(cache, &mut Advisories::default())
+}
+
+/// [`findings`], asking the cache about each advisory through `advisories`.
+fn findings_in(cache: &Cache, advisories: &mut Advisories) -> Result<Vec<Finding>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
-         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model \
-         FROM findings",
+         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model, \
+         excluded, summary, aliases, cwe FROM findings",
     )?;
     let rows = stmt.query_map([], |r| {
         let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -86,9 +95,33 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
             epss_percentile: r.get(18)?,
             epss_date: s(19)?,
             epss_model: s(20)?,
+            excluded: r.get::<_, Option<i64>>(21)?.unwrap_or(0) != 0,
+            summary: s(22)?,
+            aliases: s(23)?.split_whitespace().map(str::to_string).collect(),
+            cwe: s(24)?.split_whitespace().map(str::to_string).collect(),
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut out: Vec<Finding> = rows.collect::<rusqlite::Result<_>>()?;
+    with_text_in(cache, advisories, &mut out);
+    Ok(out)
+}
+
+/// Fill the summary, aliases and weakness types of findings saved without
+/// them (a scan from before they were kept) from the advisory records the
+/// cache still holds. Nothing is fetched.
+pub fn with_text(cache: &Cache, findings: &mut [Finding]) {
+    with_text_in(cache, &mut Advisories::default(), findings);
+}
+
+/// [`with_text`] through a memo shared with the caller's other lookups.
+fn with_text_in(cache: &Cache, advisories: &mut Advisories, findings: &mut [Finding]) {
+    for f in findings.iter_mut() {
+        let bare = f.summary.is_empty() && f.aliases.is_empty() && f.cwe.is_empty();
+        if bare && f.kind != "unchecked" && is_advisory(&f.vuln_id) {
+            let text = advisories.text(cache, &f.vuln_id);
+            fill_text(f, &text);
+        }
+    }
 }
 
 /// The OSV record for a finding's id: the record with that id, or the one
@@ -173,12 +206,17 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         Some(r) => {
             let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
+            for a in &f.aliases {
+                if !ids.contains(a) {
+                    ids.push(a.clone());
+                }
+            }
             (ids, format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")))
         }
         None if f.vuln_id.starts_with("CVE-") => {
-            (Vec::new(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
+            (f.aliases.clone(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
         }
-        None => (Vec::new(), String::new()),
+        None => (f.aliases.clone(), String::new()),
     };
     let life = exposure(cache, &row.key)?;
     let now = crate::utils::os::now();
@@ -201,6 +239,7 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         "epss_date": f.epss_date, "epss_model": f.epss_model,
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
+        "excluded": f.excluded, "summary": f.summary, "cwe": f.cwe,
         "aliases": aliases, "url": url, "record": rec,
         "first_seen": first_seen, "last_seen": last_seen, "resolved_at": resolved_at, "days_exposed": days,
         "first_epss": first_epss, "first_epss_percentile": first_epss_percentile,
@@ -211,12 +250,18 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
 /// The export as JSON Lines: the latest findings, plus (with `all`) the
 /// resolved exposures no longer among them. Returns the text and the row count.
 pub fn jsonl(cache: &Cache, all: bool) -> Result<(String, usize)> {
-    let mut rows: Vec<Row> = findings(cache)?.into_iter().map(from_finding).collect();
+    // One memo for the whole export: an advisory's records are read once,
+    // however many rows name it.
+    let mut advisories = Advisories::default();
+    let mut rows: Vec<Row> = findings_in(cache, &mut advisories)?.into_iter().map(from_finding).collect();
     if all {
         let have: Vec<String> = rows.iter().map(|r| r.key.clone()).collect();
         for e in history::exposures(cache, 0.0)? {
-            let r = from_exposure(&e);
+            let mut r = from_exposure(&e);
+            // The filter first: an exposure that is still open, or that
+            // the latest scan lists, is not a row and costs no lookup.
             if e.resolved_at.is_some() && !have.contains(&r.key) {
+                with_text_in(cache, &mut advisories, std::slice::from_mut(&mut r.finding));
                 rows.push(r);
             }
         }

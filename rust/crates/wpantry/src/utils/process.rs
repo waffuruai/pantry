@@ -86,12 +86,35 @@ impl Found {
     }
 }
 
+/// The folders Windows' `CreateProcess` searches before PATH: the system
+/// folder (`System32`) and the Windows folder, so `whoami`, `schtasks` or
+/// `reg` is the operating system's own even when a program's folder earlier
+/// on PATH (Git's `usr\bin` has a `whoami.exe` that takes other arguments)
+/// has a tool of the same name. Both are administrator-owned. None off
+/// Windows.
+pub(crate) fn first_dirs() -> Vec<PathBuf> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let root = std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("windir"))
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    vec![root.join("System32"), root]
+}
+
 /// The one lookup behind [`which`] and [`resolve`] (and so every spawn here),
 /// so they cannot disagree about whether a tool is there: a name with a
 /// separator is that path when it is executable; a bare name is the first
-/// executable of that name on `path`, else the first in the `system` folders
-/// (in order); anything not executable is skipped.
+/// executable of that name in the [`first_dirs`] (Windows), else on `path`,
+/// else in the `system` folders (in order); anything not executable is
+/// skipped.
 pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Option<Found> {
+    lookup_with(name, path, &first_dirs(), system)
+}
+
+/// [`lookup`] with the folders searched before PATH given (the tests' own).
+pub(crate) fn lookup_with(name: &OsStr, path: Option<&OsStr>, first: &[PathBuf], system: &[&str]) -> Option<Found> {
     let text = name.to_string_lossy();
     if text.contains('/') || (cfg!(windows) && text.contains('\\')) {
         let p = PathBuf::from(name);
@@ -103,6 +126,9 @@ pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Opt
         file.push(suffix);
         dir.join(file)
     };
+    if let Some(p) = first.iter().flat_map(|d| suffixes.iter().map(move |s| named(d, s))).find(|p| is_executable(p)) {
+        return Some(Found::Path(p));
+    }
     let on_path = path.and_then(|path| {
         // A PATH folder inside a folder the scan leaves out (`crate::utils::privacy`) is not
         // looked in: even a stat there raises a privacy prompt. The system folders are not

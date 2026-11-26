@@ -422,3 +422,46 @@ fn a_path_or_a_relative_or_empty_path_entry_is_still_spawned_as_given() {
     assert!(found.components().count() > 1, "a bare name would search PATH again");
     assert!(try_resolve_with(OsStr::new("wpantry-odd-entry-tool"), Some(OsStr::new("")), &[]).is_err());
 }
+
+/// Risk: on Windows a tool that has the operating system's name (`whoami`,
+/// `schtasks`) is found in a PATH folder ahead of the system folder, and the
+/// spawn then runs another program with that name (Git's `usr\bin` has a
+/// `whoami.exe` that rejects `/user`), which `CreateProcess` by name never
+/// did. Oracle: the folders laid out below, not a second call of the same
+/// function: a folder searched first wins over PATH, PATH still answers for
+/// what the first folders lack, and no first folder changes nothing.
+#[test]
+fn the_folders_searched_before_path_win_over_path() {
+    let d = TempDir::new("first").unwrap();
+    let (system, bin) = (d.path().join("system"), d.path().join("bin"));
+    for dir in [&system, &bin] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let put = |dir: &Path, name: &str| {
+        let file = dir.join(name);
+        std::fs::write(&file, "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    put(&system, "in-both");
+    put(&bin, "in-both");
+    put(&bin, "path-only");
+    put(&system, "system-only");
+    let path = bin.as_os_str();
+    let first = [system.clone()];
+    let found = |name: &str, first: &[PathBuf]| lookup_with(OsStr::new(name), Some(path), first, &[]);
+    assert_eq!(found("in-both", &first), Some(Found::Path(system.join("in-both"))));
+    assert_eq!(found("path-only", &first), Some(Found::Path(bin.join("path-only"))));
+    assert_eq!(found("system-only", &first), Some(Found::Path(system.join("system-only"))));
+    // Without a first folder PATH decides, as before.
+    assert_eq!(found("in-both", &[]), Some(Found::Path(bin.join("in-both"))));
+    assert_eq!(found("system-only", &[]), None);
+    // Off Windows nothing is searched ahead of PATH; on Windows the operating system's own folders are.
+    assert_eq!(first_dirs().is_empty(), !cfg!(windows));
+    if cfg!(windows) {
+        assert!(first_dirs().iter().all(|d| d.is_absolute()), "{:?}", first_dirs());
+    }
+}

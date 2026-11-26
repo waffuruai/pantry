@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The largest single file kept from an image.
 pub const MAX_FILE: u64 = 64 << 20;
@@ -50,8 +50,79 @@ pub fn engine() -> Option<PathBuf> {
     which("docker").or_else(|| which("podman"))
 }
 
-/// The local image id for `r`, or "" when it isn't pulled or built here.
-pub fn image_id(engine: &Path, r: &str) -> String {
+/// How long the engine gets to answer the one probe before the per-image
+/// work. `version --format {{.Server.Version}}` asks the daemon for its
+/// version only (docker `info` also gathers every container, image and
+/// plugin count, which is the slow call on a busy daemon), and without a
+/// daemon it exits non-zero ("Cannot connect to the Docker daemon"), so a
+/// healthy engine answers in well under a second.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one `image inspect` gets. After the first timeout the step
+/// stops asking, so a hung engine costs this once, not once per image.
+pub const INSPECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The time the images step gives the engine (shortened in tests).
+#[derive(Clone, Copy, Debug)]
+pub struct Timeouts {
+    pub probe: Duration,
+    pub inspect: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Timeouts { probe: PROBE_TIMEOUT, inspect: INSPECT_TIMEOUT }
+    }
+}
+
+/// The engine's name for messages: `docker`, `podman`.
+pub fn engine_name(engine: &Path) -> String {
+    engine.file_stem().unwrap_or(engine.as_os_str()).to_string_lossy().into_owned()
+}
+
+fn last_line(s: &str) -> String {
+    s.trim().lines().last().unwrap_or("").trim().to_string()
+}
+
+/// Asks the engine, once, whether its daemon answers. Err says why not.
+pub fn probe(engine: &Path, timeout: Duration) -> std::result::Result<(), String> {
+    let argv = [engine.as_os_str(), OsStr::new("version"), OsStr::new("--format"), OsStr::new("{{.Server.Version}}")];
+    let start = Instant::now();
+    match exec(&argv, &[], timeout) {
+        Ok(o) if o.code == Some(0) => Ok(()),
+        Ok(o) => {
+            let why = last_line(&o.stderr);
+            Err(if why.is_empty() { "it exited with an error".to_string() } else { why })
+        }
+        Err(_) if start.elapsed() >= timeout => Err(format!("no answer within {} s", timeout.as_secs().max(1))),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// What the engine said about one image ref.
+#[derive(Debug, PartialEq)]
+pub enum Local {
+    /// The image's id: it is here.
+    Pulled(String),
+    /// The engine answered that it has no such image.
+    NotHere,
+    /// No answer in time: nothing is known about the image.
+    TimedOut,
+    /// Any other failure, with the engine's last line.
+    Failed(String),
+}
+
+/// What the engine's error says when the image isn't local. docker's
+/// daemon answers `No such image: REF` (the CLI exits 1); podman answers
+/// `REF: image not known`. Only this text counts as "not pulled here": a
+/// timeout or any other error is not an answer about the image.
+fn says_absent(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("no such image") || s.contains("image not known") || s.contains("no such object")
+}
+
+/// The local image id for `r`, or why there isn't one (see [`Local`]).
+pub fn local_image(engine: &Path, r: &str, timeout: Duration) -> Local {
     let argv = [
         engine.as_os_str(),
         OsStr::new("image"),
@@ -60,12 +131,27 @@ pub fn image_id(engine: &Path, r: &str) -> String {
         OsStr::new("{{.Id}}"),
         OsStr::new(r),
     ];
-    let out = exec(&argv, &[], Duration::from_secs(20))
-        .map(|o| if o.code == Some(0) { o.stdout } else { String::new() })
-        .unwrap_or_default();
-    let id = out.trim().lines().last().unwrap_or("").trim();
-    let hex = id.strip_prefix("sha256:").unwrap_or(id);
-    if hex.len() >= 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()) { id.to_string() } else { String::new() }
+    let start = Instant::now();
+    let o = match exec(&argv, &[], timeout) {
+        Ok(o) => o,
+        Err(_) if start.elapsed() >= timeout => return Local::TimedOut,
+        Err(e) => return Local::Failed(e.to_string()),
+    };
+    if o.code != Some(0) {
+        return if says_absent(&o.stderr) {
+            Local::NotHere
+        } else {
+            let why = last_line(&o.stderr);
+            Local::Failed(if why.is_empty() { "it exited with an error".into() } else { why })
+        };
+    }
+    let id = last_line(&o.stdout);
+    let hex = id.strip_prefix("sha256:").unwrap_or(&id);
+    if hex.len() >= 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Local::Pulled(id)
+    } else {
+        Local::Failed("it printed no image id".into())
+    }
 }
 
 /// Removes the created container when dropped.
@@ -506,7 +592,7 @@ pub(crate) mod testing {
         std::fs::write(
             &p,
             "#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncase \"$1\" in\n\
-             image) cat \"$d/inspect.txt\"; exit \"$(cat \"$d/inspect.code\")\" ;;\n\
+             image) cat \"$d/inspect.txt\"; c=$(cat \"$d/inspect.code\"); [ \"$c\" = 0 ] || echo 'Error: No such image: x' >&2; exit \"$c\" ;;\n\
              create) if [ -f \"$d/create.fail\" ]; then echo 'Error: No such image' >&2; exit 1; fi; echo cid123 ;;\n\
              export) if [ -f \"$d/export.fail\" ]; then echo 'Error: export broke' >&2; exit 1; fi; cp \"$d/rootfs.tar\" \"$3\" ;;\n\
              rm) echo \"$3\" > \"$d/removed.txt\" ;;\n\

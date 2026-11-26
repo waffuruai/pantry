@@ -222,23 +222,29 @@ fn what_cannot_be_read_is_a_named_gap() {
     assert!(gaps[1].starts_with("/app/Cargo.lock: "), "{gaps:?}");
 }
 
-/// The engine's answers: an id (with or without its `sha256:` prefix),
-/// nothing that isn't hex, nothing when inspect fails, nothing when the
-/// engine can't run.
+/// The engine's answers: an id (with or without its `sha256:` prefix); "not
+/// here" only when the engine says there is no such image; any other failure
+/// (a bare non-zero exit, text that isn't an id, a program that can't run)
+/// is a failure, not an absence.
 #[cfg(unix)]
 #[test]
-fn the_image_id_is_the_engines_hex_answer() {
+fn the_local_image_is_the_engines_answer() {
+    let t = Duration::from_secs(5);
     let d = TempDir::new("image-id").unwrap();
     let engine = testing::engine(d.path());
-    assert_eq!(image_id(&engine, "debian:12"), "sha256:0123456789abcdef0123456789abcdef");
+    let ask = |engine: &Path| local_image(engine, "debian:12", t);
+    assert_eq!(ask(&engine), Local::Pulled("sha256:0123456789abcdef0123456789abcdef".into()));
     std::fs::write(d.path().join("inspect.txt"), "WARNING: x\n0123456789abcdef\n").unwrap();
-    assert_eq!(image_id(&engine, "debian:12"), "0123456789abcdef", "the last line");
+    assert_eq!(ask(&engine), Local::Pulled("0123456789abcdef".into()), "the last line");
     std::fs::write(d.path().join("inspect.txt"), "Error: no such image\n").unwrap();
-    assert_eq!(image_id(&engine, "debian:12"), "");
+    assert!(matches!(ask(&engine), Local::Failed(_)), "text that is not an id, from a successful inspect");
     std::fs::write(d.path().join("inspect.txt"), "sha256:0123456789abcdef0123456789abcdef\n").unwrap();
     std::fs::write(d.path().join("inspect.code"), "1").unwrap();
-    assert_eq!(image_id(&engine, "debian:12"), "", "an id printed by a failing inspect doesn't count");
-    assert_eq!(image_id(Path::new("/nonexistent/docker"), "debian:12"), "");
+    assert_eq!(ask(&engine), Local::NotHere, "a failing inspect that says no such image; its stdout doesn't count");
+    assert!(matches!(local_image(Path::new("/nonexistent/docker"), "debian:12", t), Local::Failed(_)));
+    assert!(says_absent("Error response from daemon: No such image: x"));
+    assert!(says_absent("Error: x: image not known"));
+    assert!(!says_absent("Cannot connect to the Docker daemon") && !says_absent(""));
 }
 
 /// create, export, read, cache: the packages come from the export, the

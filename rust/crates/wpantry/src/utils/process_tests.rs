@@ -278,3 +278,20 @@ fn brew_is_found_at_its_prefix_when_path_is_minimal() {
     // A tool with no standard place is on PATH or nowhere.
     assert_eq!(find_tool_in("wpantry-no-such-tool", Some("/usr/bin:/bin".into()), &home, &with), None);
 }
+
+/// Risk: as root, the scan runs a `brew` or `mise` from a folder its owner
+/// (not root) can write to. Oracle: this process's own answer follows who it
+/// is: root looks on PATH alone.
+#[test]
+fn root_finds_a_tool_on_path_alone() {
+    if is_root() {
+        assert_eq!(find_tool("brew"), which("brew"));
+        assert_eq!(find_tool("mise"), which("mise"));
+    } else {
+        assert_eq!(
+            find_tool("brew"),
+            find_tool_in("brew", std::env::var_os("PATH"), &home(), &|k| std::env::var_os(k))
+        );
+    }
+    assert_eq!(is_root(), cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0");
+}

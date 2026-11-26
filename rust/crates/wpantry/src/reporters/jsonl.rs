@@ -191,6 +191,9 @@ fn exposure(cache: &Cache, key: &str) -> Result<Option<Life>> {
 /// The latest fix `wpantry fix` ran for this command, and whether a later scan
 /// verified it (the exposure resolved in that scan).
 fn fix(cache: &Cache, command: &str, resolved_scan: Option<i64>) -> Result<Option<Value>> {
+    // A fix of several steps is logged a step at a time: the first is the
+    // one that runs unattended, and the one the fix is known by.
+    let command = crate::remediation::first_step(command);
     if command.is_empty() {
         return Ok(None);
     }
@@ -198,7 +201,7 @@ fn fix(cache: &Cache, command: &str, resolved_scan: Option<i64>) -> Result<Optio
         .conn
         .query_row(
             "SELECT at, mode, ok, verified_scan FROM fixes WHERE command = ? ORDER BY at DESC LIMIT 1",
-            [command],
+            [&command],
             |r| Ok((r.get::<_, Option<f64>>(0)?.unwrap_or(0.0), r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;

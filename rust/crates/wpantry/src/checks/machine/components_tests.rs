@@ -144,7 +144,8 @@ fn components_against_osv_eol_postgres_and_mise() {
         "{got:?}"
     );
     // The first later tag OSV stops reporting the advisory for is the fix.
-    assert_eq!(s.findings[1].fixed, "v1.0.2");
+    // (the tag is v1.0.2; the version, which the command and the report say, has no v)
+    assert_eq!(s.findings[1].fixed, "1.0.2");
     // Nothing found: nothing asked.
     let quiet = Fake::new(|_| panic!("nothing to ask about"));
     let mut s2 = Scan::new(Default::default(), s.cache, &quiet, &|_| {}, &|_| {});

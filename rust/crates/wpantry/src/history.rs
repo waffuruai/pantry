@@ -336,15 +336,33 @@ pub fn record_fix(
     ok: bool,
     targets: &[String],
 ) -> Result<()> {
+    record_fix_outcome(cache, scan_id, command, mode, ok, targets, None)
+}
+
+/// [`record_fix`], with why the command failed when it did: its exit code
+/// (None when it never ran or was stopped) and the bounded, home-shortened
+/// end of its stderr (`error`, "" when it printed none).
+pub fn record_fix_outcome(
+    cache: &Cache,
+    scan_id: Option<i64>,
+    command: &str,
+    mode: &str,
+    ok: bool,
+    targets: &[String],
+    failure: Option<&crate::remediation::run::Failure>,
+) -> Result<()> {
+    let exit_code = failure.and_then(|f| f.exit_code);
+    let error = failure.map(|f| f.summary());
     cache.conn.execute(
-        "INSERT INTO fixes (scan_id, at, command, mode, ok, verified_scan, targets, user, host) \
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
-        params![scan_id, now(), command, mode, ok as i64, json!(targets).to_string(), user(), host()],
+        "INSERT INTO fixes (scan_id, at, command, mode, ok, verified_scan, targets, user, host, exit_code, error) \
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+        params![scan_id, now(), command, mode, ok as i64, json!(targets).to_string(), user(), host(), exit_code, error],
     )?;
     event(
         cache,
         "fix",
-        &json!({"scan": scan_id, "command": command, "mode": mode, "ok": ok, "targets": targets, "user": user(), "host": host()}),
+        &json!({"scan": scan_id, "command": command, "mode": mode, "ok": ok, "targets": targets, "user": user(), "host": host(),
+                "exit_code": exit_code, "error": error}),
     )
 }
 
@@ -666,6 +684,13 @@ pub struct Fix {
     /// wpantry kept them).
     pub user: String,
     pub host: String,
+    /// The command's exit code when it failed and had one; None otherwise
+    /// (it succeeded, never started, timed out, or was recorded before
+    /// wpantry kept it).
+    pub exit_code: Option<i64>,
+    /// Why it failed: the exit code or reason, then the end of its stderr,
+    /// home shortened to `~`; None when it succeeded or nothing was kept.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -737,7 +762,7 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
 
 pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
     let mut stmt = cache.conn.prepare(
-        "SELECT at, command, mode, ok, scan_id, verified_scan, targets, user, host FROM fixes WHERE at >= ? ORDER BY at",
+        "SELECT at, command, mode, ok, scan_id, verified_scan, targets, user, host, exit_code, error FROM fixes WHERE at >= ? ORDER BY at",
     )?;
     let rows = stmt.query_map([since], |r| {
         let targets: Option<String> = r.get(6)?;
@@ -751,6 +776,8 @@ pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
             targets: targets.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
             user: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
             host: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            exit_code: r.get(9)?,
+            error: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -859,7 +886,7 @@ impl Fix {
     pub fn to_json(&self) -> Value {
         json!({"at": self.at, "when": stamp(self.at), "command": self.command, "mode": self.mode, "ok": self.ok,
                "scan_id": self.scan_id, "verified_scan": self.verified_scan, "targets": self.targets,
-               "user": self.user, "host": self.host})
+               "user": self.user, "host": self.host, "exit_code": self.exit_code, "error": self.error})
     }
 }
 

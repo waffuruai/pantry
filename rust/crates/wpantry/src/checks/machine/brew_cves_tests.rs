@@ -477,7 +477,7 @@ fn the_fix_is_brews_or_mises_or_words() {
     let without = fixer(false, d.path().join("installs"), d.path().join("Cellar"));
     assert_eq!(without("expat"), ("mise upgrade brew:expat".to_string(), false));
     let (words, auto) = without("jq");
-    assert!(words.starts_with("Upgrade jq in the Cellar at ") && !auto, "{words}");
+    assert!(words.starts_with("Run `brew upgrade jq`.") && !auto, "{words}");
     let (odd, auto) = with("a;b");
     assert!(odd.starts_with("Upgrade a;b") && !auto);
 }

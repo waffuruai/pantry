@@ -259,3 +259,31 @@ fn which_and_resolve_skip_a_left_out_path_folder_but_not_the_system_folders() {
     assert_eq!(resolve_with(OsStr::new(name), Some(&path), &system), sys.join(name));
     drop(guard);
 }
+
+/// #326: an app or a service starts with `PATH=/usr/bin:/bin`, and `brew`
+/// is not on it. Oracle: brew is found at `$HOMEBREW_PREFIX/bin` or its
+/// standard prefix, as it would be from a terminal. The known-bad control
+/// (no variable, a home with nothing in it) finds a brew only where the
+/// machine really has one at a standard prefix, so the answer follows the
+/// disk and not the PATH. Files only: nothing is run.
+#[cfg(unix)]
+#[test]
+fn brew_is_found_at_its_prefix_when_path_is_minimal() {
+    let d = TempDir::new("brewprefix").unwrap();
+    let prefix = d.path().join("prefix");
+    executable(&prefix.join("bin/brew"), "#!/bin/sh\n");
+    let minimal = Some(std::ffi::OsString::from("/usr/bin:/bin"));
+    let with = |k: &str| (k == "HOMEBREW_PREFIX").then(|| prefix.clone().into_os_string());
+    let home = d.path().join("home");
+    assert_eq!(find_tool_in("brew", minimal.clone(), &home, &with), Some(prefix.join("bin/brew")));
+    // Control: without the variable, only a real standard prefix can answer.
+    let none = |_: &str| None;
+    let standard = ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"]
+        .iter()
+        .map(|p| Path::new(p).join("bin/brew"))
+        .find(|p| is_executable(p));
+    let on_path = which_in("brew", minimal.as_deref());
+    assert_eq!(find_tool_in("brew", minimal, &home, &none), on_path.or(standard));
+    // A tool with no standard place is on PATH or nowhere.
+    assert_eq!(find_tool_in("wpantry-no-such-tool", Some("/usr/bin:/bin".into()), &home, &with), None);
+}

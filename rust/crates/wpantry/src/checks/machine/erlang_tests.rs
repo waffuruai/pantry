@@ -397,7 +397,7 @@ fn osv_lists_for_cve_2025_32433_give_fixes_outside_its_ranges() {
         cves,
         [
             s("25.3.2.19", "25.3.2.20", "asdf install erlang 25.3.2.20"),
-            s("26.2.5", "26.2.5.11", "mise install erlang@26.2.5.11"),
+            s("26.2.5", "26.2.5.11", "mise install erlang@26.2.5.11\nmise uninstall erlang@26.2.5"),
             s("27.0", "27.3.3", "asdf install erlang 27.3.3"),
             s("27.3.2", "27.3.3", "asdf install erlang 27.3.3"),
         ]
@@ -441,7 +441,7 @@ fn cve_2025_32433_ranges_tell_26_2_5_its_patch_and_27_0_1_27_3_3() {
         cves,
         [
             s("25.3.2", "25.3.2.20", "asdf install erlang 25.3.2.20"),
-            s("26.2.5", "26.2.5.11", "mise install erlang@26.2.5.11"),
+            s("26.2.5", "26.2.5.11", "mise install erlang@26.2.5.11\nmise uninstall erlang@26.2.5"),
             s("27.0.1", "27.3.3", "asdf install erlang 27.3.3"),
         ]
     );
@@ -487,5 +487,12 @@ fn without_a_fix_on_its_line_26_2_5_is_never_told_a_side_branch_patch() {
         LISTED.clone(),
         tags,
     );
-    assert_eq!(cves, [("26.2.5".to_string(), "27.3.4.19".to_string(), "mise install erlang@27.3.4.19".to_string())]);
+    assert_eq!(
+        cves,
+        [(
+            "26.2.5".to_string(),
+            "27.3.4.19".to_string(),
+            "mise install erlang@27.3.4.19\nmise uninstall erlang@26.2.5".to_string()
+        )]
+    );
 }

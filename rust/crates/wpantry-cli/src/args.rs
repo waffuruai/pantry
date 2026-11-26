@@ -307,6 +307,7 @@ const GROUPS: [(&str, &[&str]); 3] = [
             "suspect-policy",
             "posture-policy",
             "sources",
+            "add-sources",
         ],
     ),
 ];

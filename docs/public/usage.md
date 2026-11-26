@@ -461,21 +461,21 @@ Policy options:
                             ~/.config/wpantry)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
 
 Options:
-  --refresh             ignore cached answers and ask every source again
-  --offline             use only the local cache
-  --no-input            never prompt
-  --jobs <n>            repos scanned for secrets at once (default: half the cores, at most 4)
-  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar
-                        (asked once otherwise)
-  --add-sources <file>  add this sources file's sources to yours for this run; repeat it for more
-                        (an id may be defined once)
-  --allow-sleep         let the Mac idle-sleep during the scan (kept awake otherwise; or
-                        WPANTRY_ALLOW_SLEEP=1)
-  --events              write the scan's progress to stderr as JSON Lines (steps, the path being
-                        read, findings), for programs that run wpantry; implies --no-input
-  -h, --help            print this help
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  --events          write the scan's progress to stderr as JSON Lines (steps, the path being read,
+                    findings), for programs that run wpantry; implies --no-input
+  -h, --help        print this help
 
 Commands:
   project [options] [dir]  Scan one project and the runtimes it uses, nothing else of this computer
@@ -522,6 +522,8 @@ Policy options:
                             suspect.toml in ~/.config/wpantry)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
 
 Scope options:
   --licenses [file]  also check dependency licenses, against the file (default: licenses.toml in
@@ -533,17 +535,15 @@ Scope options:
                      secrets; git history's files up to 256 MB with no time limit
 
 Options:
-  --refresh             ignore cached answers and ask every source again
-  --offline             use only the local cache
-  --no-input            never prompt
-  --jobs <n>            repos scanned for secrets at once (default: half the cores, at most 4)
-  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar
-                        (asked once otherwise)
-  --add-sources <file>  add this sources file's sources to yours for this run; repeat it for more
-                        (an id may be defined once)
-  --allow-sleep         let the Mac idle-sleep during the scan (kept awake otherwise; or
-                        WPANTRY_ALLOW_SLEEP=1)
-  -h, --help            print this help
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ```
@@ -612,25 +612,25 @@ Policy options:
                             ~/.config/wpantry)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
 
 Options:
-  --dry-run             print what would run or be written; change nothing
-  --yes                 run the fixes and write the stopgaps without asking
-  --from-scan <id>      with a finding id: require this latest scan and an automatic fix
-  --undo                with an id: take wpantry's stopgap away once the real fix is installed
-  --bundle <file>       ca-trust: rewrite this PEM bundle instead of the system trust store
-  --hours <n>           extension-cooldown: the cooldown (default: 72)
-  --refresh             ignore cached answers and ask every source again
-  --offline             use only the local cache
-  --no-input            never prompt
-  --jobs <n>            repos scanned for secrets at once (default: half the cores, at most 4)
-  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar
-                        (asked once otherwise)
-  --add-sources <file>  add this sources file's sources to yours for this run; repeat it for more
-                        (an id may be defined once)
-  --allow-sleep         let the Mac idle-sleep during the scan (kept awake otherwise; or
-                        WPANTRY_ALLOW_SLEEP=1)
-  -h, --help            print this help
+  --dry-run         print what would run or be written; change nothing
+  --yes             run the fixes and write the stopgaps without asking
+  --from-scan <id>  with a finding id: require this latest scan and an automatic fix
+  --undo            with an id: take wpantry's stopgap away once the real fix is installed
+  --bundle <file>   ca-trust: rewrite this PEM bundle instead of the system trust store
+  --hours <n>       extension-cooldown: the cooldown (default: 72)
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage
 error, 3 internal error.

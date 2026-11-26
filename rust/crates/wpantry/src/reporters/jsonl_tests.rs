@@ -259,30 +259,25 @@ fn an_upstream_finding_keeps_osvs_record_when_a_local_record_has_its_cve_id() {
     }
 }
 
-/// Risk: a local record for another package, or one in a source the finding
-/// didn't come from (including one turned off, whose rows stay), supplies
+/// Risk: a local record in a source the finding didn't come from (one turned
+/// off, whose rows stay, or another local source) supplies
 /// the record and link of an unrelated finding that merely shares its id.
 /// Oracle: with no OSV record, such a finding has no record and the CVE
-/// page's link; one matching the source, the package and the id has the
+/// page's link; one matching the source and the id has the
 /// record and its own link, by id first and then by alias.
 #[test]
-fn a_local_record_is_used_only_for_its_source_package_and_id() {
+fn a_local_record_is_used_only_for_its_source_and_id() {
     let (_d, c) = cache_for("export-local");
     local_row(&c, "t-off", "CVE-2026-1", &[], "zip", "https://off.example/CVE-2026-1");
-    local_row(&c, "t-src", "CVE-2026-1", &[], "other-package", "https://wrong-package.example/CVE-2026-1");
     let cve = "https://www.cve.org/CVERecord?id=CVE-2026-1";
     // No local source: an upstream-style finding never reads a local table.
     let row = row_of(&c, &finding("CVE-2026-1", ""));
     assert_eq!((row["record"].is_null(), row["url"].as_str()), (true, Some(cve)), "{row}");
-    // From a source that holds the id only for another package.
-    let f = Finding { local_source: "t-src".into(), ..finding("CVE-2026-1", "") };
-    let row = row_of(&c, &f);
-    assert_eq!((row["record"].is_null(), row["url"].as_str()), (true, Some(cve)), "another package: {row}");
     // From a source that holds nothing of the id (the id is in a source that is off).
     let f = Finding { local_source: "t-other".into(), ..finding("CVE-2026-1", "") };
     let row = row_of(&c, &f);
     assert_eq!((row["record"].is_null(), row["url"].as_str()), (true, Some(cve)), "another source: {row}");
-    // The match: this source, this package, by id first; then by alias.
+    // The match: this source, by id first; then by alias.
     let from = |source: &str, id: &str| Finding { local_source: source.into(), ..finding(id, "") };
     local_row(&c, "t-src", "CVE-2026-2", &[], "zip", "https://advisories.example/CVE-2026-2");
     local_row(&c, "t-off", "CVE-2026-2", &[], "zip", "https://off.example/CVE-2026-2");
@@ -299,4 +294,40 @@ fn a_local_record_is_used_only_for_its_source_package_and_id() {
         (Some("TEAM-7"), Some("https://advisories.example/TEAM-7")),
         "{row}"
     );
+}
+
+/// Risk: a local advisory on a runtime or tool exports with `record: null`
+/// and no aliases because the lookup compared the finding's component name
+/// (`go`, `node`) with the OSV package name the record is filed under
+/// (`stdlib`, the repository URL). Oracle: the row of such a finding carries
+/// the record, its alias and its own link, as a project dependency whose name
+/// equals the package does; a record that names two packages is still one
+/// record for each of them, found by id or by alias.
+#[test]
+fn a_local_advisory_on_a_runtime_or_tool_exports_with_its_record() {
+    let (_d, c) = cache_for("export-runtime");
+    local_row(&c, "t-src", "TEAM-GO", &["CVE-2026-31"], "stdlib", "https://advisories.example/TEAM-GO");
+    // The same record also covers the Go toolchain package.
+    c.conn.execute("INSERT INTO local_vuln_names VALUES ('t-src', 'TEAM-GO', 'toolchain')", []).unwrap();
+    let node = "https://github.com/nodejs/node";
+    local_row(&c, "t-src", "TEAM-NODE", &["CVE-2026-32"], node, "https://advisories.example/TEAM-NODE");
+    local_row(&c, "t-src", "TEAM-TOOL", &["CVE-2026-33"], "curl", "https://advisories.example/TEAM-TOOL");
+    // (kind, component, id the finding shows, record id, the alias exported)
+    let cases = [
+        ("runtime", "go", "TEAM-GO", "TEAM-GO", "CVE-2026-31"),
+        ("runtime", "go", "CVE-2026-31", "TEAM-GO", "TEAM-GO"),
+        ("runtime", "node", "TEAM-NODE", "TEAM-NODE", "CVE-2026-32"),
+        ("runtime", "node", "CVE-2026-32", "TEAM-NODE", "TEAM-NODE"),
+        ("tool", "libcurl-cli", "TEAM-TOOL", "TEAM-TOOL", "CVE-2026-33"),
+        ("project", "curl", "TEAM-TOOL", "TEAM-TOOL", "CVE-2026-33"),
+    ];
+    for (kind, component, id, record_id, alias) in cases {
+        let f =
+            Finding { kind: kind.into(), component: component.into(), local_source: "t-src".into(), ..finding(id, "") };
+        let row = row_of(&c, &f);
+        let at = format!("{kind} {component} {id}: {row}");
+        assert_eq!(row["record"]["id"], record_id, "{at}");
+        assert_eq!(row["url"], format!("https://advisories.example/{record_id}"), "{at}");
+        assert_eq!(row["aliases"], json!([alias]), "{at}");
+    }
 }

@@ -238,3 +238,22 @@ fn a_local_finding_is_rated_from_its_own_record_and_an_osv_one_from_osvs() {
         "own record for a local finding (not OSV's same id), OSV's for an OSV finding, none and wpantry's own rating for a record with no score"
     );
 }
+
+/// Risk (same flaw as the export's): a local advisory on a runtime is rated
+/// from nothing because the lookup compared the finding's component name
+/// (`go`) with the OSV package name (`stdlib`) the record is filed under.
+/// Oracle: `enrich`'s cvss and version for a runtime finding whose
+/// component differs from its record's package are the record's own.
+#[test]
+fn a_local_advisory_on_a_runtime_is_rated_from_its_own_record() {
+    let (_d, c) = cache();
+    local_record(&c, "t-src", "TEAM-GO", V98);
+    c.conn.execute("UPDATE local_vuln_names SET name = 'stdlib' WHERE id = 'TEAM-GO'", []).unwrap();
+    let mut all = vec![Finding {
+        component: "go".into(),
+        local_source: "t-src".into(),
+        ..finding("runtime", "TEAM-GO", "fail", "")
+    }];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
+    assert_eq!((all[0].cvss, all[0].cvss_version.as_str(), all[0].severity.as_str()), (Some(9.8), "3.1", "CRITICAL"));
+}

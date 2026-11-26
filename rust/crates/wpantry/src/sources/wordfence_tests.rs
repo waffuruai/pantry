@@ -41,6 +41,17 @@ pub(crate) fn record(id: &str, kind: &str, slug: &str, ranges: &[(&str, bool, &s
 
 const A: &str = "61c39f5f-3b17-4e4d-824e-241159a73400";
 
+/// What a fetch came to is kept for the process under the source's id
+/// ([`fetch::last_error`]), and every test here fetches as `wordfence`: one
+/// that succeeds while another has just been refused clears the reason the
+/// second is about to read. The tests that fetch take turns, the WordPress
+/// check's among them.
+static FETCHES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    FETCHES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 #[test]
 fn a_record_gives_a_row_per_software_and_informational_ones_none() {
     let rec = record(A, "plugin", "Akismet", &[("*", true, "1.2.3", true)], &["1.2.4"]);
@@ -91,6 +102,7 @@ fn the_feed_is_read_gzip_or_not_and_refused_when_it_isnt_the_feed() {
 
 #[test]
 fn only_the_key_is_sent_and_the_feed_is_kept_daily_with_its_etag() {
+    let _turn = one_at_a_time();
     let (_d, c) = cache();
     let body = feed(&[record(A, "plugin", "akismet", &[("*", true, "1.2.3", true)], &["1.2.4"])]);
     let net = Fake::new(move |r| {
@@ -118,6 +130,7 @@ fn only_the_key_is_sent_and_the_feed_is_kept_daily_with_its_etag() {
 
 #[test]
 fn a_refused_key_or_a_bad_copy_is_not_checked_never_clean() {
+    let _turn = one_at_a_time();
     let (_d, c) = cache();
     let denied =
         Fake::new(|_| Ok(Response { status: 401, body: b"{\"message\":\"unauthorized\"}".to_vec(), etag: None }));

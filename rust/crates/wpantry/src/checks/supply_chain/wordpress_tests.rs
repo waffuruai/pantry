@@ -1,7 +1,7 @@
 use super::*;
 use crate::checks::Options;
 use crate::checks::supply_chain::testing::{repo, scan, write};
-use crate::sources::wordfence::tests::{feed, record};
+use crate::sources::wordfence::tests::{feed, one_at_a_time, record};
 use crate::utils::net::{Fake, Response};
 use crate::utils::temp::TempDir;
 use std::collections::HashSet;
@@ -210,6 +210,7 @@ fn wordfence_net(body: String) -> Fake {
 
 #[test]
 fn without_a_key_each_site_is_not_checked_with_how_to_get_one() {
+    let _turn = one_at_a_time();
     let d = TempDir::new("wp").unwrap();
     let (name, root) = repo(&d, "app");
     sites(&root);
@@ -228,6 +229,7 @@ fn without_a_key_each_site_is_not_checked_with_how_to_get_one() {
 
 #[test]
 fn with_a_key_the_sites_are_judged_and_the_report_carries_the_notices() {
+    let _turn = one_at_a_time();
     let d = TempDir::new("wp").unwrap();
     let (name, root) = repo(&d, "app");
     sites(&root);
@@ -272,6 +274,7 @@ fn with_a_key_the_sites_are_judged_and_the_report_carries_the_notices() {
 
 #[test]
 fn a_feed_that_cant_be_had_is_not_checked() {
+    let _turn = one_at_a_time();
     let d = TempDir::new("wp").unwrap();
     let (name, root) = repo(&d, "app");
     sites(&root);
@@ -285,6 +288,7 @@ fn a_feed_that_cant_be_had_is_not_checked() {
 
 #[test]
 fn a_repo_without_wordpress_asks_nothing() {
+    let _turn = one_at_a_time();
     let d = TempDir::new("wp").unwrap();
     let (name, root) = repo(&d, "app");
     write(&root, "composer.lock", r#"{"packages": [{"name": "monolog/monolog", "version": "3.5.0"}]}"#);

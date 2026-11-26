@@ -207,12 +207,18 @@ fn left_personal_out(cache: &Cache, scan: i64) -> Result<bool> {
     Ok(scope.is_some_and(|s| s.contains("no-personal-files")))
 }
 
+/// A finding id as the report spells it (`F-` and ten lower-case hex
+/// digits); anything that is not one is returned as given.
+pub fn canonical(id: &str) -> String {
+    if crate::remediation::queue::is_id(id) { format!("F-{}", id[2..].to_ascii_lowercase()) } else { id.to_string() }
+}
+
 /// Re-check finding `id` of scan `scan`, which must be the latest. Reads
 /// the cache and the one component's place on the machine; when the
 /// finding is gone, records that ([`crate::history::record_recheck`]) and
 /// commits; otherwise changes nothing. `cache` is closed either way.
 pub fn recheck(cache: Cache, id: &str, scan: i64) -> Result<Outcome> {
-    let finding = if crate::remediation::queue::is_id(id) { id.to_ascii_uppercase() } else { id.to_string() };
+    let finding = canonical(id);
     let done = |cache: Cache, verdict: Verdict, keys: Vec<String>| -> Result<Outcome> {
         cache.close()?;
         Ok(Outcome { finding: finding.clone(), scan, verdict, keys })

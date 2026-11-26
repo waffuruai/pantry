@@ -1589,7 +1589,7 @@ fn cmd_recheck(id: &str, from_scan: i64, json: bool) -> Result<i32> {
     let outcome = Cache::open(None).and_then(|cache| recheck::recheck(cache, id, from_scan)).unwrap_or_else(|e| {
         let first = e.to_string().lines().next().unwrap_or("").trim().to_string();
         let reason = if matches!(e, wpantry::Error::Cache(_)) { "cache" } else { "error" };
-        let shown = if wpantry::remediation::queue::is_id(id) { id.to_ascii_uppercase() } else { id.to_string() };
+        let shown = recheck::canonical(id);
         let detail = format!("The cache could not be read or written ({first}); nothing was changed.");
         Outcome { finding: shown, scan: from_scan, verdict: Verdict::unknown(reason, detail), keys: Vec::new() }
     });

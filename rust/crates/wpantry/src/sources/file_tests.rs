@@ -355,6 +355,12 @@ fn a_key_of_the_wrong_type_or_one_nobody_reads_is_refused_not_dropped() {
     let base = "id = \"mine\"\nkind = \"advisories\"\nformat = \"osv-dir\"\npath = \"/srv/osv\"\n";
     let pin = "0".repeat(64);
     assert!(one(&format!("{base}sha256 = \"{pin}\"")).is_ok(), "a pin as a string reads");
+    for (line, hosts) in
+        [("redirects = [\"a.example\", \"b.example\"]", vec!["a.example", "b.example"]), ("redirects = []", vec![])]
+    {
+        let s = one(&format!("{base}{line}")).expect(line);
+        assert_eq!(s[0].redirects, hosts, "{line}");
+    }
     for (line, key) in [
         ("sha256 = 123".to_string(), "sha256"),
         (format!("sha256 = [\"{pin}\"]"), "sha256"),
@@ -365,6 +371,10 @@ fn a_key_of_the_wrong_type_or_one_nobody_reads_is_refused_not_dropped() {
         ("refresh = 5".to_string(), "refresh"),
         ("max_bytes = \"big\"".to_string(), "max_bytes"),
         ("redistribute = \"yes\"".to_string(), "redistribute"),
+        // a redirects list is an array of strings: a bare string or a number read as no hosts at all
+        ("redirects = \"example.com\"".to_string(), "redirects"),
+        ("redirects = 123".to_string(), "redirects"),
+        ("redirects = true".to_string(), "redirects"),
     ] {
         let e = one(&format!("{base}{line}")).expect_err(&line).to_string();
         assert!(e.contains("\"mine\"") && e.contains(&format!("\"{key}\"")), "{line}: {e}");

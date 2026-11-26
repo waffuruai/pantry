@@ -213,7 +213,12 @@ fn entries(text: &str) -> Result<Vec<(Source, Vec<String>)>> {
             if STRING_KEYS.contains(&key.as_str()) && !quoted {
                 return Err(bad(&format!("{key:?} is a quoted string")));
             }
-            if !STRING_KEYS.contains(&key.as_str()) && quoted && key != "redirects" {
+            if key == "redirects" {
+                // only a list is read: a quoted host or a number would load as no hosts
+                if !matches!(val, Val::Raw(r) if r.trim_start().starts_with('[')) {
+                    return Err(bad("\"redirects\" is a list of quoted strings"));
+                }
+            } else if !STRING_KEYS.contains(&key.as_str()) && quoted {
                 return Err(bad(&format!("{key:?} is not a quoted string")));
             }
         }

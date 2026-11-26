@@ -40,6 +40,7 @@ pub mod error;
 pub mod external;
 pub mod finding;
 pub mod history;
+pub mod recheck;
 pub mod remediation;
 pub mod reporters;
 pub mod selfinstall;

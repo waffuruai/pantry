@@ -454,6 +454,15 @@ pub fn tried_since(cache: &Cache, scan_id: i64) -> Result<std::collections::Hash
     Ok(out)
 }
 
+/// The folders the latest scan was pointed at (each `--path`), as it
+/// recorded them: `Some` of none when it scanned home, `None` before any scan.
+pub fn latest_scan_paths(cache: &Cache) -> Result<Option<Vec<std::path::PathBuf>>> {
+    let Some(id) = latest_scan(cache)? else { return Ok(None) };
+    let Some(scan) = scan_detail(cache, id)? else { return Ok(None) };
+    let paths = scan.options.get("paths").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or_default();
+    Ok(Some(paths.iter().filter_map(Value::as_str).map(std::path::PathBuf::from).collect()))
+}
+
 pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
     Ok(cache.conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get::<_, Option<i64>>(0))?)
 }

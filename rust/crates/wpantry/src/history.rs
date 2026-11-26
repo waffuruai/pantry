@@ -15,7 +15,7 @@
 //! resolves what an earlier one found. The one exception is the whole-machine
 //! scan with `--no-personal-files` (the scheduled job's on macOS): it also
 //! resolves what a full `machine:~` scan recorded and it no longer lists,
-//! except in the personal folders and the Safari check it did not read.
+//! except in the folders it leaves out and the Safari check it did not read.
 //! A fix is verified only by a complete scan after it ran
 //! that no longer lists what it addressed; a failed fix never is.
 
@@ -278,10 +278,10 @@ const MACHINE_KINDS: &[&str] = &[
 ];
 
 /// Whether a scan with `--no-personal-files` that no longer lists `e` can
-/// say it is gone. Only when it looked where `e` was: not in `~/Downloads`,
-/// `~/Desktop` or `~/Documents` (the folders it leaves out, so a path there
-/// stays open for a scan that reads them), and not the Safari check it
-/// skips. A location that is no path (`line 12`, empty) says nothing about
+/// say it is gone. Only when it looked where `e` was: not in a folder it
+/// leaves out (`~/Downloads`, `~/Desktop`, `~/Documents` and, on macOS, the
+/// others `utils::privacy::folders` lists: a path there stays open for a scan
+/// that reads them), and not the Safari check it skips. A location that is no path (`line 12`, empty) says nothing about
 /// where in the repos or folders it was, so only the machine inventory's
 /// kinds close on it. Every doubt keeps the exposure open: closing wrongly
 /// hides a live exposure, leaving one open costs only a later full scan.
@@ -298,44 +298,20 @@ fn closable_without_personal_files(home: &std::path::Path, e: &OpenExposure) -> 
         _ => std::path::PathBuf::from(&text),
     };
     if path.is_absolute() {
-        return !in_personal_folder(home, &path);
+        return !in_left_out_folder(home, &path);
     }
     MACHINE_KINDS.contains(&e.kind.as_str())
 }
 
-/// Whether `path` is at or under one of the personal folders of `home`
-/// (spelled as given, or from its canonical path). `.` and `..` are folded
-/// by name (the path need not exist and nothing under it is opened), and
-/// names are compared without regard to case on macOS and Windows, whose
-/// volumes are case-insensitive.
-fn in_personal_folder(home: &std::path::Path, path: &std::path::Path) -> bool {
-    use std::path::Component;
-    let names = |p: &std::path::Path| -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        // `canonicalize` spells a Windows path `\\?\C:\x`: the same place as `C:\x`.
-        let plain = crate::utils::files::strip_verbatim(&p.to_string_lossy());
-        for c in std::path::Path::new(&plain).components() {
-            match c {
-                Component::ParentDir => {
-                    out.pop();
-                }
-                Component::CurDir => {}
-                c => {
-                    let s = c.as_os_str().to_string_lossy();
-                    out.push(if cfg!(any(target_os = "macos", windows)) { s.to_lowercase() } else { s.into_owned() });
-                }
-            }
-        }
-        out
-    };
-    let got = names(path);
-    let canon = std::fs::canonicalize(home).ok();
-    std::iter::once(home).chain(canon.as_deref()).any(|base| {
-        crate::checks::machine::downloads::PERSONAL_FOLDERS.iter().any(|name| {
-            let folder = names(&base.join(name));
-            got.starts_with(&folder)
-        })
-    })
+/// Whether `path` is at or under a folder a scan with `--no-personal-files`
+/// leaves out of `home` ([`crate::utils::privacy::folders`]: Downloads,
+/// Desktop and Documents, on macOS the other folders it guards too), by
+/// spelling: `..` folded, and without regard to case on macOS and Windows
+/// (`privacy::within`). The path need not exist and nothing under it is opened.
+fn in_left_out_folder(home: &std::path::Path, path: &std::path::Path) -> bool {
+    crate::utils::privacy::folders(home, cfg!(target_os = "macos"))
+        .iter()
+        .any(|folder| crate::utils::privacy::within(path, folder))
 }
 
 /// Record one applied (or dry-run) fix command, its outcome, and the

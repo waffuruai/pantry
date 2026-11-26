@@ -117,3 +117,62 @@ fn persistence_baselines_first_then_warns_on_what_is_new() {
     assert_eq!(testing::kinds(&s2), [("b.plist".to_string(), "PERSISTENCE-NEW".to_string(), "warn".to_string())]);
     assert_eq!(s2.findings[0].kind, "persistence");
 }
+
+/// Risk: a launch agent whose program lies in a folder the scan leaves out
+/// (`~/Downloads` under `--no-personal-files`) was dropped from the checks
+/// and then skipped without a word, so the output read as if its signature,
+/// quarantine flag and contents had been checked. Oracle: the findings and
+/// the calls the checks make. The scan says it once, as an `unchecked`
+/// finding that is a gap (not an area left out by choice) and names the item
+/// and its program; the program is never opened, or handed to `codesign` or
+/// `xattr`; the agent whose program is elsewhere is vetted as before.
+/// Known bad: drop the finding, or let `vet_all` look at the program (the
+/// recorded calls then name it).
+#[test]
+fn a_login_program_in_a_left_out_folder_is_named_as_not_checked_and_never_opened() {
+    use crate::checks::machine::any::persistence::{Inventory, Item, Source, vet_all};
+    let _home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    let d = temp::TempDir::new("left-out-agent").unwrap();
+    let (shut, fine) = (h.join("Downloads/agent"), h.join("bin/tool"));
+    testing::write(&shut, "x");
+    testing::write(&fine, "x");
+    let item = |loc: &str, program: &Path| Item {
+        source: Source::Launchd,
+        location: loc.into(),
+        ident: program.display().to_string(),
+        program: Some(program.to_path_buf()),
+        injects: Vec::new(),
+        line: 0,
+    };
+    let inv = Inventory {
+        items: vec![item("~/Library/LaunchAgents/evil.plist", &shut), item("~/Library/LaunchAgents/ok.plist", &fine)],
+        read: vec![Source::Launchd],
+        unread: Vec::new(),
+    };
+    let _guard = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    let calls = std::sync::Mutex::new(Vec::<String>::new());
+    let runner = |argv: &[&str]| {
+        calls.lock().unwrap().push(argv.join(" "));
+        String::new()
+    };
+    let vetted = vet_all(&testing::roots(d.path(), true, &runner), &inv);
+    let calls = calls.lock().unwrap().clone();
+    assert!(!calls.iter().any(|c| c.contains("Downloads")), "the left-out program was handed to a tool: {calls:?}");
+    assert!(calls.iter().any(|c| c.contains("tool")), "the witness: the other program is checked: {calls:?}");
+    assert!(vetted.contains_key(&fine) && !vetted.contains_key(&shut));
+
+    let net = Fake::offline();
+    let mut s = testing::scan(&net, &d);
+    persistence(&mut s, (inv, vetted));
+    let gaps: Vec<&Finding> = s.findings.iter().filter(|f| f.kind == "unchecked").collect();
+    assert_eq!(gaps.len(), 1, "{:?}", s.findings);
+    let gap = gaps[0];
+    assert!(gap.is_gap(), "the person should know: {gap:?}");
+    assert!(gap.component.contains("evil.plist") && gap.component.contains("agent"), "{}", gap.component);
+    assert!(!gap.component.contains("ok.plist") && gap.note.contains("--no-personal-files"), "{gap:?}");
+    assert_eq!(
+        (gap.vuln_id.as_str(), gap.status.as_str(), gap.fix_cmd.as_str()),
+        ("UNCHECKED", "warn", "wpantry scan")
+    );
+}

@@ -78,7 +78,9 @@ fn older_caches_gain_the_added_columns() {
             "excluded",
             "summary",
             "aliases",
-            "cwe"
+            "cwe",
+            "local_source",
+            "local_link"
         ]
     );
     let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
@@ -161,7 +163,9 @@ fn schema_matches_the_contract() {
             "excluded",
             "summary",
             "aliases",
-            "cwe"
+            "cwe",
+            "local_source",
+            "local_link"
         ]
     );
 }

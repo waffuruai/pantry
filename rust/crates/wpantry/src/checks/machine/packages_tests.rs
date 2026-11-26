@@ -356,3 +356,25 @@ fn gems_of_each_ruby() {
     assert_eq!(got[1].fix, format!("{gem} update rake"));
     assert!(got[1].auto && got[1].path == gem);
 }
+
+/// Risk: the Python search listed `python3.*` in every PATH folder, a
+/// left-out one (`~/Documents/bin`) included, which raises the macOS privacy
+/// prompt for an unattended scan. Oracle: the names it finds. A `python3.99`
+/// in the left-out folder is found when nothing is left out (the witness: the
+/// folder is listed) and not when it is; the reachable folder's is.
+#[cfg(unix)]
+#[test]
+fn the_python_search_does_not_list_a_left_out_folder() {
+    let _home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    for d in ["Documents/bin/python3.99", "tools/bin/python3.98"] {
+        std::fs::create_dir_all(h.join(d).parent().unwrap()).unwrap();
+        std::fs::write(h.join(d), "").unwrap();
+    }
+    let path = std::env::join_paths([h.join("Documents/bin"), h.join("tools/bin")]).unwrap();
+    let names = |path: &std::ffi::OsStr| python_names(&python_dirs(Some(path)));
+    assert_eq!(names(&path), ["python3", "python3.98", "python3.99"]);
+    let guard = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    assert_eq!(names(&path), ["python3", "python3.98"]);
+    drop(guard);
+}

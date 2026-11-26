@@ -59,6 +59,12 @@ pub struct Finding {
     /// The weakness types the advisory names (`CWE-787`), from OSV's
     /// `database_specific.cwe_ids` or a CVE record's `problemTypes`.
     pub cwe: Vec<String>,
+    /// The id of the source on this machine ([`crate::sources::osv_dir`]) whose
+    /// record this finding is, and that record's own https link ("" for none);
+    /// both "" for every other finding. Fields, so a report never has to read a
+    /// link out of `note`, which starts with an advisory's free text.
+    pub local_source: String,
+    pub local_link: String,
 }
 
 /// The longest summary kept, in characters (an ellipsis marks a cut).
@@ -210,6 +216,8 @@ impl Finding {
             ("summary", self.summary.as_str().into()),
             ("aliases", J::Arr(self.aliases.iter().map(|a| a.as_str().into()).collect())),
             ("cwe", J::Arr(self.cwe.iter().map(|c| c.as_str().into()).collect())),
+            ("local_source", self.local_source.as_str().into()),
+            ("local_link", self.local_link.as_str().into()),
         ])
     }
 }

@@ -1574,7 +1574,7 @@ fn runs_are_listed_reported_and_pruned() {
         (2, &json!(2), &json!(true), &json!(1), &json!(false))
     );
     assert_eq!(runs[0]["findings"], arr(&second["findings"]).len());
-    assert!(str_(&runs[1]["scope"]).starts_with("project:") && str_(&runs[1]["scope"]).ends_with("/a"));
+    assert!(str_(&runs[1]["scope"]).starts_with("project:") && Path::new(str_(&runs[1]["scope"])).ends_with("a"));
     let table = t.run(&["runs"]).out;
     assert!(table.starts_with("scan  finished") && table.contains("\n2 *  ") && table.contains("\n1    "), "{table}");
     // The latest by default; an earlier one by its number, byte for byte what its scan printed.

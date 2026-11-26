@@ -332,3 +332,93 @@ fn a_tool_found_past_a_left_out_folder_is_spawned_by_the_path_that_was_found() {
     assert_eq!(root_command(&[OsStr::new("tool")], true, Some(&path)).get_program(), found.as_os_str());
     drop(guard);
 }
+
+/// Risk: a tool that only a left-out PATH folder has (`~/Documents/bin/tool`)
+/// is found nowhere by the filtered lookup, and the spawn then gets the bare
+/// name, so the operating system searches the unfiltered PATH: it opens the
+/// folder the scan promised not to touch, and runs that copy. Oracle: (1) the
+/// call fails with the "not found, and where it looked" text, which names the
+/// folders it searched and says one was left out; (2) the copy never ran (it
+/// writes a marker file when it does). Neither can notice a stat: (2) notices
+/// a run, (1) notices that the spawn was refused before the operating system
+/// searched. A mode-000 folder was tried and does not help: macOS's exec
+/// search swallows the permission error and reports "No such file" either way.
+#[cfg(unix)]
+#[test]
+fn a_tool_only_a_left_out_path_folder_has_fails_before_the_spawn() {
+    let d = TempDir::new("leftout-only").unwrap();
+    let marker = d.path().join("ran");
+    let (docs, left, ok) = (d.path().join("Documents"), d.path().join("Documents/bin"), d.path().join("bin"));
+    executable(&left.join("tool"), &format!("#!/bin/sh\n: > '{}'\n", marker.display()));
+    std::fs::create_dir_all(&ok).unwrap();
+    let path = std::env::join_paths([&left, &ok]).unwrap();
+    let _guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    // The child's own PATH is the same one, so a spawn by name would search it.
+    let child_path = path.to_str().unwrap();
+    let err = exec_in(&[OsStr::new("tool")], &[("PATH", child_path)], Duration::from_secs(5), Some(&path));
+    let text = err.unwrap_err().to_string();
+    assert!(text.starts_with("`tool` was not found: wpantry looked in PATH ("), "{text}");
+    assert!(text.contains(&ok.display().to_string()), "names the folder it did search: {text}");
+    assert!(!text.contains(&left.display().to_string()), "names a folder it did not search: {text}");
+    assert!(text.contains("leaves out"), "says a PATH folder was left out: {text}");
+    // No PATH to look on at all: also not found, never the bare name.
+    let err = exec_in(&[OsStr::new("tool")], &[("PATH", child_path)], Duration::from_secs(5), None);
+    assert!(err.is_err_and(|e| e.to_string().contains("was not found")));
+    assert!(!marker.exists(), "the left-out copy ran");
+}
+
+/// Risk: the same hole through other spellings of the left-out PATH folder.
+/// Oracle: each is skipped by the lookup, so the call fails with not-found
+/// and the copy never ran (marker). A spelling the lookup mistook for another
+/// folder would find the copy and run it.
+#[cfg(unix)]
+#[test]
+fn a_left_out_path_folder_spelled_oddly_is_still_not_spawned() {
+    let d = TempDir::new("leftout-spellings").unwrap();
+    let marker = d.path().join("ran");
+    let docs = d.path().join("Documents");
+    executable(&docs.join("bin/tool"), &format!("#!/bin/sh\n: > '{}'\n", marker.display()));
+    let _guard = crate::utils::privacy::leave_out(vec![docs.clone()], Vec::new());
+    let root = d.path().display().to_string();
+    let mut spellings = vec![
+        format!("{root}/Documents/bin/"),
+        format!("{root}/Documents/./bin"),
+        format!("{root}/Documents/x/../bin"),
+        format!("{root}/other/../Documents/bin"),
+    ];
+    if cfg!(target_os = "macos") {
+        spellings.push(format!("{root}/documents/BIN"));
+    }
+    for entry in spellings {
+        let path = std::ffi::OsString::from(&entry);
+        let got = try_resolve_with(OsStr::new("tool"), Some(&path), &[]);
+        assert!(got.is_err(), "{entry}: {got:?}");
+        let got = exec_in(&[OsStr::new("tool")], &[("PATH", &entry)], Duration::from_secs(5), Some(&path));
+        assert!(got.is_err_and(|e| e.to_string().contains("was not found")), "{entry}");
+    }
+    assert!(!marker.exists(), "the left-out copy ran");
+}
+
+/// Risk: failing for a bare name that is not found must not change what a
+/// path or a relative PATH folder means. Oracle: a name with a slash is left
+/// as it is (its spawn never searches PATH, and says itself that it is not
+/// there); a copy in a relative PATH folder is found and spelled with that
+/// folder, so the spawn does not search PATH for it; an empty entry (the
+/// current directory) with no copy there is not-found, never the bare name.
+/// Not run: an empty entry that does have a copy, which needs a file in the
+/// working directory.
+#[cfg(unix)]
+#[test]
+fn a_path_or_a_relative_or_empty_path_entry_is_still_spawned_as_given() {
+    let d = TempDir::new("resolve-odd").unwrap();
+    let missing = d.path().join("nothing");
+    assert_eq!(try_resolve_with(missing.as_os_str(), None, &[]).unwrap(), missing);
+    executable(&d.path().join("bin/tool"), "#!/bin/sh\n");
+    // The same folder spelled relative to wherever the tests run.
+    let up = "../".repeat(std::env::current_dir().unwrap().components().count());
+    let rel = format!("{up}{}", d.path().join("bin").to_string_lossy().trim_start_matches('/'));
+    let found = try_resolve_with(OsStr::new("tool"), Some(OsStr::new(&rel)), &[]).unwrap();
+    assert_eq!(found, Path::new(&rel).join("tool"));
+    assert!(found.components().count() > 1, "a bare name would search PATH again");
+    assert!(try_resolve_with(OsStr::new("wpantry-odd-entry-tool"), Some(OsStr::new("")), &[]).is_err());
+}

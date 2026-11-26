@@ -120,8 +120,8 @@ pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Opt
 
 /// What a command named `prog` runs, given PATH `path`: the file `which`
 /// finds (`prog` itself when it has a slash), PATH's copy before the one
-/// in a [`SYSTEM_DIRS`] folder, else `prog` (the spawn then fails as it
-/// would have).
+/// in a [`SYSTEM_DIRS`] folder, else `prog` as given, to show or compare: the
+/// spawns here refuse a bare name that is not found, as it must not be searched again.
 ///
 /// ```
 /// # #[cfg(unix)] {
@@ -136,25 +136,71 @@ pub fn resolve(prog: &OsStr, path: Option<&OsStr>) -> PathBuf {
     resolve_with(prog, path, SYSTEM_DIRS)
 }
 
-/// [`resolve`] with the system folders given (the tests' own).
+/// [`resolve`] with the system folders given (the tests' own). A bare name
+/// that is not found stays the bare name, for a caller that only compares or
+/// shows it: never spawn that (see [`try_resolve_with`]).
 pub(crate) fn resolve_with(prog: &OsStr, path: Option<&OsStr>, system: &[&str]) -> PathBuf {
+    try_resolve_with(prog, path, system).unwrap_or_else(|_| PathBuf::from(prog))
+}
+
+/// What a spawn of `prog` runs, or the reason it must not happen. A tool
+/// found is spelled by its path, never the bare name: the operating system
+/// would search PATH again, including the folders a scan leaves out
+/// (`--no-personal-files`), and could start another copy than the one
+/// [`which`] reported. An empty PATH entry (the current directory) is spelled
+/// out for the same reason. A bare name that is not found is an error, for
+/// the same reason: the spawn by name would search the whole PATH, left-out
+/// folders first, so it fails here with where wpantry looked. A name with a
+/// separator is a path, which a spawn never searches PATH for.
+pub(crate) fn try_resolve_with(prog: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Result<PathBuf> {
     match lookup(prog, path, system) {
-        // By the path found, never the bare name: the operating system would
-        // search PATH again, including the folders a scan leaves out
-        // (`--no-personal-files`), and could start another copy than the one
-        // `which` reported. An empty PATH entry (the current directory) is
-        // spelled out for the same reason.
         Some(found) => {
             let found = found.into_path();
-            if found.parent().is_some_and(|p| p.as_os_str().is_empty()) { Path::new(".").join(found) } else { found }
+            Ok(if found.parent().is_some_and(|p| p.as_os_str().is_empty()) {
+                Path::new(".").join(found)
+            } else {
+                found
+            })
         }
-        None => PathBuf::from(prog),
+        None if has_separator(prog) => Ok(PathBuf::from(prog)),
+        None => Err(Error::Failed(not_found(&prog.to_string_lossy(), path))),
     }
 }
 
-/// [`resolve`] against this process's PATH.
-pub(crate) fn program(prog: &OsStr) -> PathBuf {
-    resolve(prog, std::env::var_os("PATH").as_deref())
+/// Whether `name` is a path (it has a separator) rather than a bare name.
+fn has_separator(name: &OsStr) -> bool {
+    let text = name.to_string_lossy();
+    text.contains('/') || (cfg!(windows) && text.contains('\\'))
+}
+
+/// Why a bare `prog` can't be run: where wpantry looked (PATH's folders it
+/// may search, home shortened to `~`), and that PATH folders were left out
+/// when a scan skips them. The left-out ones are not named: they were not
+/// opened, and naming them would say where they are.
+fn not_found(prog: &str, path: Option<&OsStr>) -> String {
+    let dirs = path_dirs_of(path);
+    let short = |p: &String| crate::utils::files::short(p);
+    let shown: Vec<String> = dirs.iter().take(8).map(short).collect();
+    let more = if dirs.len() > 8 { format!(" and {} more", dirs.len() - 8) } else { String::new() };
+    let skipped =
+        path.map_or(0, |p| std::env::split_paths(p).filter(|d| crate::utils::privacy::is_left_out(d)).count());
+    let left = match skipped {
+        0 => String::new(),
+        1 => ", and one PATH folder it leaves out (--no-personal-files)".to_string(),
+        n => format!(", and {n} PATH folders it leaves out (--no-personal-files)"),
+    };
+    format!("`{prog}` was not found: wpantry looked in PATH ({}{more}){left}", shown.join(":"))
+}
+
+/// The program a spawn of `prog` runs when PATH is this process's; the
+/// reason it can't be spawned otherwise (see [`try_resolve_with`]).
+pub(crate) fn program(prog: &OsStr) -> Result<PathBuf> {
+    program_in(prog, std::env::var_os("PATH").as_deref())
+}
+
+/// [`program`] against the PATH `path`.
+pub(crate) fn program_in(prog: &OsStr, path: Option<&OsStr>) -> Result<PathBuf> {
+    try_resolve_with(prog, path, SYSTEM_DIRS)
 }
 
 /// The command that runs `argv` as root: directly when `root` (the program
@@ -297,8 +343,18 @@ const ETXTBSY: i32 = -1;
 /// background that keeps the pipes open (a daemon, a `sleep &`) doesn't
 /// hold the call past `timeout` (plus a second's grace once it's killed).
 pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<Output> {
+    exec_in(argv, env, timeout, std::env::var_os("PATH").as_deref())
+}
+
+/// [`exec`] with the program looked up on the PATH `path` (the tests').
+pub(crate) fn exec_in(
+    argv: &[&OsStr],
+    env: &[(&str, &str)],
+    timeout: Duration,
+    path: Option<&OsStr>,
+) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-    let mut cmd = Command::new(program(prog));
+    let mut cmd = Command::new(program_in(prog, path)?);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("NO_COLOR", "1");
     for (k, v) in env {
         cmd.env(k, v);
@@ -412,7 +468,7 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     let start = |argv: &[&OsStr], stdin: Stdio| -> Result<std::process::Child> {
         let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-        let mut cmd = Command::new(program(prog));
+        let mut cmd = Command::new(program(prog)?);
         cmd.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
         // A read of a partial clone never makes git fetch what it's missing.
         cmd.env("GIT_NO_LAZY_FETCH", "1");
@@ -474,14 +530,17 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
 /// Whether process `pid` is running. Unix asks `kill -0` (no signal is
 /// sent); elsewhere there is no cheap way to ask, and the answer is no.
 pub fn alive(pid: u32) -> bool {
+    // By the path found: a spawn by name would search PATH again, the folders a scan leaves out included.
     cfg!(unix)
-        && Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        && program(OsStr::new("kill")).is_ok_and(|kill| {
+            Command::new(kill)
+                .args(["-0", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
 }
 
 /// `caffeinate` holds the assertion and ends with us (`-w`); elsewhere,

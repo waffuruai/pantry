@@ -1,6 +1,7 @@
 use super::*;
 
 /// Mark a file a program, as an installed `brew` is.
+#[cfg_attr(not(unix), allow(dead_code))] // the tests that lay out a brew are Unix's
 fn runnable(p: &Path) {
     #[cfg(unix)]
     {

@@ -165,7 +165,7 @@ pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) ->
     c
 }
 
-fn is_executable(p: &Path) -> bool {
+pub(crate) fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

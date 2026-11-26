@@ -111,7 +111,7 @@ fn the_step_says_what_to_run_and_who_owns_the_copy() {
     // brew sits in the Cellar's own prefix but not on PATH: its full path, as an automatic fix.
     let brew = d.path().join("opt/homebrew/bin/brew");
     std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
-    std::fs::write(&brew, "#!/bin/sh\n").unwrap();
+    executable(&brew);
     assert_eq!(upgrade_step("openssl@3", &cellar, &mise), (format!("{} upgrade openssl@3", brew.display()), true));
     // mise's engine made it: that is the owner, whatever else is there.
     std::fs::create_dir_all(mise.join("brew-openssl@3")).unwrap();
@@ -123,7 +123,7 @@ fn the_step_says_what_to_run_and_who_owns_the_copy() {
     let spaced = d.path().join("my prefix/Cellar");
     std::fs::create_dir_all(&spaced).unwrap();
     std::fs::create_dir_all(d.path().join("my prefix/bin")).unwrap();
-    std::fs::write(d.path().join("my prefix/bin/brew"), "").unwrap();
+    executable(&d.path().join("my prefix/bin/brew"));
     let (step, auto) = upgrade_step("jq", &spaced, &mise);
     assert!(step.starts_with("Run `") && step.ends_with(" upgrade jq`.") && !auto, "{step}");
 }
@@ -138,7 +138,7 @@ fn a_cellar_formula_beside_its_brew_is_an_automatic_fix() {
     let cellar = d.path().join("prefix/Cellar");
     std::fs::create_dir_all(cellar.join("openssl@3/3.5.9")).unwrap();
     std::fs::create_dir_all(d.path().join("prefix/bin")).unwrap();
-    std::fs::write(d.path().join("prefix/bin/brew"), "").unwrap();
+    executable(&d.path().join("prefix/bin/brew"));
     let inv = read(&cellar, &d.path().join("mise/installs"));
     let ssl = &inv.components[0];
     assert_eq!(ssl.fix, format!("{} upgrade openssl@3", d.path().join("prefix/bin/brew").display()));
@@ -170,8 +170,7 @@ fn a_keg_with_a_homebrew_receipt_is_never_poured_without_brew() {
     assert!(!auto && !step.contains("poured") && !step.contains("mise"), "{step}");
     // The brew beside the Cellar makes it the automatic fix.
     let brew = d.path().join("prefix/bin/brew");
-    std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
-    std::fs::write(&brew, "").unwrap();
+    executable(&brew);
     assert_eq!(upgrade_step("openssl@3", &cellar, &mise), (format!("{} upgrade openssl@3", brew.display()), true));
     // The same Cellar read as an inventory carries the step on the component.
     let inv = read(&cellar, &mise);
@@ -197,4 +196,37 @@ fn windows_has_no_cellar_and_never_a_brew_step() {
         let (step, auto) = upgrade_step("openssl@3", &cellar, &d.path().join("mise"));
         assert!(!auto && !step.contains("bin/brew") && !step.contains("bin\\brew"), "{step}");
     }
+}
+
+/// A stand-in `brew`: a script the owner may run.
+#[cfg(unix)]
+fn executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Risk: a `bin/brew` beside the Cellar that cannot run (a leftover file, a
+/// failed copy, a folder's mode) is named in the fix as an unattended
+/// command, so `wpantry fix` plans it as automatic and then fails on it with
+/// "was not found, or is not executable". Oracle: only a brew that could be
+/// run is put in an automatic command; a file that is not executable gets the
+/// step a person reads, as if there were no brew there.
+// Homebrew runs on macOS and Linux only.
+#[cfg(unix)]
+#[test]
+fn a_brew_that_is_not_executable_is_not_offered_as_the_automatic_fix() {
+    let d = crate::utils::temp::TempDir::new("cellar-brew-mode").unwrap();
+    let cellar = d.path().join("prefix/Cellar");
+    let mise = d.path().join("mise/installs");
+    std::fs::create_dir_all(&cellar).unwrap();
+    std::fs::create_dir_all(d.path().join("prefix/bin")).unwrap();
+    std::fs::write(d.path().join("prefix/bin/brew"), "#!/bin/sh\n").unwrap();
+    let (step, auto) = upgrade_step("jq", &cellar, &mise);
+    assert!(!auto && !step.contains("prefix/bin/brew"), "{step}");
+    assert!(step.starts_with("Run `brew upgrade jq`."), "{step}");
+    executable(&d.path().join("prefix/bin/brew"));
+    let (step, auto) = upgrade_step("jq", &cellar, &mise);
+    assert!(auto && step.ends_with("prefix/bin/brew upgrade jq"), "{step}");
 }

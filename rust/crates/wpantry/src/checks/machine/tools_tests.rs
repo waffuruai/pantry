@@ -298,3 +298,154 @@ fn an_installed_go_is_also_its_toolchain() {
 fn catalog_tool(name: &str) -> Tool {
     *crate::checks::machine::catalog::TOOLS.iter().find(|t| t.name == name).unwrap()
 }
+
+/// Risk: a version manager's command built from the fixed version is not the
+/// one its documentation writes. Oracle: each manager's own documented
+/// spelling, a bare version (`mise install python@3.14.10`); a command that
+/// names no version is left alone; a mise runtime also gets the uninstall of
+/// the vulnerable install. Nothing here runs a manager: the commands are
+/// only built.
+#[test]
+fn every_version_manager_command_names_the_fixed_version() {
+    use crate::checks::fix_with;
+    let home = crate::utils::files::home().display().to_string();
+    // (a path the manager installed to, the tool, the command for 3.14.10)
+    let cases: Vec<(String, &str, &str)> = vec![
+        ("/x/.nvm/versions/node/v22/bin/node".into(), "node", "nvm install 3.14.10"),
+        ("/x/.volta/tools/image/node/22/bin/node".into(), "node", "volta install node@3.14.10"),
+        ("/x/fnm/node-versions/v22/installation/bin/node".into(), "node", "fnm install 3.14.10"),
+        ("/x/.asdf/installs/python/3.14.9/bin/python3".into(), "python", "asdf install python 3.14.10"),
+        (
+            format!("{home}/.local/share/mise/installs/python/3.14.9/bin/python3"),
+            "python",
+            "mise install python@3.14.10\nmise uninstall python@3.14.9",
+        ),
+        ("/x/.pyenv/versions/3.14.9/bin/python3".into(), "python", "pyenv install 3.14.10"),
+        ("/x/.rbenv/versions/3.4.1/bin/ruby".into(), "ruby", "rbenv install 3.14.10"),
+        ("/x/.rvm/rubies/ruby-3.4.1/bin/ruby".into(), "ruby", "rvm install 3.14.10"),
+        ("/x/.sdkman/candidates/java/21/bin/java".into(), "java", "sdk install java 3.14.10"),
+        // no version in these: unchanged
+        ("/x/.rustup/toolchains/stable/bin/rustc".into(), "rust", "rustup update"),
+        ("/x/uv/python/cpython-3.14.9/bin/python3".into(), "python", "uv python upgrade"),
+        ("/x/anaconda3/bin/python".into(), "python", "conda update --name base python"),
+    ];
+    for (path, name, want) in cases {
+        let (fix, auto) = updater(&path, name);
+        let mut c = Component::new("runtime", name, "1", &path);
+        c.fix = fix;
+        c.auto = auto;
+        assert_eq!(fix_with(&c, "3.14.10").0, want, "{path}");
+    }
+}
+
+/// Risk: a locked dependency's update command names a version its tool
+/// rejects. Oracle per tool: semver tools take a version with no `v`; Go
+/// module versions carry it (`go get mod@v1.2.3`), added by the command, and
+/// the Go toolchain's is `go1.2.3`.
+#[test]
+fn project_fixes_name_the_fixed_version_and_go_adds_its_own_v() {
+    use crate::checks::fill;
+    use crate::checks::supply_chain::projects::project_fix;
+    let lock = |f: &str| std::path::PathBuf::from(format!("/w/app/{f}"));
+    // (ecosystem, lock file, name, the command for 1.2.3)
+    let cases = [
+        ("crates.io", "Cargo.lock", "rustls", "cd /w/app && cargo update -p rustls --precise 1.2.3"),
+        ("npm", "pnpm-lock.yaml", "vite", "cd /w/app && pnpm update vite@1.2.3"),
+        ("npm", "yarn.lock", "vite", "cd /w/app && yarn upgrade 'vite@1.2.3'"),
+        ("npm", "package-lock.json", "vite", "cd /w/app && npm install vite@1.2.3"),
+        ("PyPI", "uv.lock", "requests", "cd /w/app && uv lock --upgrade-package requests==1.2.3"),
+        ("Go", "go.mod", "example.com/m", "cd /w/app && go get example.com/m@v1.2.3 && go mod tidy"),
+        ("Go", "go.mod", "stdlib", "cd /w/app && go get go@1.2.3"),
+        (
+            "NuGet",
+            "app.csproj",
+            "Newtonsoft.Json",
+            "cd /w/app && dotnet add app.csproj package Newtonsoft.Json --version '1.2.3'",
+        ),
+    ];
+    for (eco, file, name, want) in cases {
+        assert_eq!(fill(&project_fix(&lock(file), eco, name, "{safe}"), "1.2.3"), want, "{eco} {file}");
+    }
+}
+
+/// The oracle for the report: python 3.14.9 from a `mise` install,
+/// OSV's tag list naming `v3.14.10` as the first release without the
+/// advisory. The finding says 3.14.10; the plan installs it, then offers
+/// the removal of 3.14.9 (never unattended).
+#[test]
+fn a_python_fixed_by_a_v_tag_is_fixed_in_the_bare_version() {
+    use crate::checks::machine::testing;
+    use crate::utils::net::{Fake, Response};
+    const REPO: &str = "https://github.com/python/cpython";
+    let home = crate::utils::files::test_home();
+    let path =
+        format!("{}/.local/share/mise/installs/python/3.14.9/bin/python3", crate::utils::files::home().display());
+    let d = crate::utils::temp::TempDir::new("pyfix").unwrap();
+    let net = Fake::new(|req| -> crate::error::Result<Response> { panic!("unexpected request {}", req.url) });
+    let mut s = testing::scan(&net, &d);
+    let (fix, auto) = updater(&path, "python");
+    let mut c = Component::new("runtime", "python", "3.14.9", &path);
+    c.osv = Some(("GIT".into(), REPO.into(), "v3.14.9".into()));
+    c.fix = fix;
+    c.auto = auto;
+    let rec = serde_json::json!({"id": "CVE-2026-0001", "modified": "m", "summary": "x",
+        "affected": [{"ranges": [{"type": "GIT", "repo": REPO, "events": [{"introduced": "abc"}]}]}]});
+    // OSV still reports it for v3.14.9 and no longer for v3.14.10.
+    let newer = std::collections::BTreeMap::from([
+        ("v3.14.9".to_string(), vec!["CVE-2026-0001".to_string()]),
+        ("v3.14.10".to_string(), vec![]),
+    ]);
+    let failing = s.advisories(&c, &[rec], Some(&newer), "fail", None);
+    assert!(failing);
+    let f = &s.findings[0];
+    assert_eq!(f.fixed, "3.14.10");
+    assert_eq!(f.fix_cmd, "mise install python@3.14.10\nmise uninstall python@3.14.9");
+    assert!(f.fix_auto);
+    drop(home);
+}
+
+/// #330: after `mise install python@3.14.10` the vulnerable 3.14.9 is still
+/// on disk and the next scan reports it. Risk: a fix that does not clear the
+/// finding. Oracle: the plan ends with the uninstall of the old version,
+/// offered (a person runs it: a mise.toml may pin 3.14.9); with 3.14.10
+/// already installed beside it, the plan is only the uninstall; elsewhere
+/// (a path not under mise's installs, a bare `latest`) nothing changes.
+/// Directories only: mise is never run.
+#[test]
+fn a_mise_fix_removes_the_vulnerable_install_and_only_offers_it() {
+    use crate::remediation::steps;
+    let d = crate::utils::temp::TempDir::new("miseplan").unwrap();
+    let installs = d.path().join("share/mise/installs/python");
+    std::fs::create_dir_all(installs.join("3.14.9/bin")).unwrap();
+    let path = installs.join("3.14.9").join("bin").join("python3").display().to_string();
+    let component = |path: &str| Component::new("runtime", "python", "3.14.9", path);
+    let finding = |c: &Component, fix: (String, bool)| crate::finding::Finding {
+        kind: "runtime".into(),
+        component: "python".into(),
+        version: "3.14.9".into(),
+        vuln_id: "CVE-1".into(),
+        status: "fail".into(),
+        fixed: "3.14.10".into(),
+        fix_cmd: fix.0,
+        fix_auto: fix.1,
+        ..crate::finding::Finding::of(c)
+    };
+    let c = component(&path);
+    let fix = with_uninstall(&c, "mise install python@3.14.10".into(), true);
+    assert_eq!(fix, ("mise install python@3.14.10\nmise uninstall python@3.14.9".to_string(), true));
+    let plan = steps(&[finding(&c, fix.clone())]);
+    let got: Vec<(&str, &str)> = plan.iter().map(|s| (s.cmd.as_str(), s.mode())).collect();
+    assert_eq!(got, [("mise install python@3.14.10", "auto"), ("mise uninstall python@3.14.9", "manual")]);
+    // 3.14.10 already installed: only the removal, and not unattended.
+    std::fs::create_dir_all(installs.join("3.14.10")).unwrap();
+    let fix = with_uninstall(&c, "mise install python@3.14.10".into(), true);
+    assert_eq!(fix, ("mise uninstall python@3.14.9".to_string(), false));
+    let plan = steps(&[finding(&c, fix)]);
+    assert_eq!(plan.len(), 1);
+    assert_eq!((plan[0].cmd.as_str(), plan[0].mode()), ("mise uninstall python@3.14.9", "manual"));
+    // Not under mise's installs, not a mise command, or `latest`: as it was.
+    let other = Component::new("runtime", "python", "3.14.9", "/x/.asdf/installs/python/3.14.9/bin/python3");
+    assert_eq!(with_uninstall(&other, "mise install python@3.14.10".into(), true).0, "mise install python@3.14.10");
+    assert_eq!(with_uninstall(&c, "brew upgrade python".into(), true).0, "brew upgrade python");
+    assert_eq!(with_uninstall(&c, "mise install python@latest".into(), true).0, "mise install python@latest");
+}

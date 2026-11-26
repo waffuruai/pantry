@@ -147,3 +147,196 @@ fn shlex() {
     );
     assert_eq!(shlex_split("x 'unclosed"), None);
 }
+
+// -- why a fix failed ---------------------------------------------------------
+//
+// Risk: "✗ failed: <command>" with nothing else leaves the person unable to
+// tell a missing tool from a refused version from a full disk. Oracle: what
+// the command itself said, as a person reading the terminal would need it:
+// its exit code and the end of its stderr, bounded, home shortened, no
+// environment, no terminal escapes. The commands are `sh` one-liners: stand-ins
+// that print and exit, never a package manager.
+
+#[cfg(unix)]
+fn failing(script: &str) -> (Applied, Vec<String>) {
+    let mut lines = Vec::new();
+    let cmd = format!("sh -c '{script}'");
+    let applied = apply(&[f(&cmd, true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string()));
+    (applied, lines)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_fix_says_its_exit_code_and_what_it_wrote_to_stderr() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home().display().to_string();
+    let (applied, lines) =
+        failing(&format!("echo mise ERROR no such version >&2; echo cannot write {h}/.cache/x >&2; exit 4"));
+    assert_eq!(applied.status, 1);
+    assert_eq!(applied.ran.len(), 1);
+    assert!(!applied.ran[0].1);
+    // The line that was there before stays as it was.
+    assert!(lines.iter().any(|l| l.starts_with("  ✗ failed: sh -c ")), "{lines:?}");
+    assert!(lines.contains(&"    exit code: 4".to_string()), "{lines:?}");
+    assert!(lines.contains(&"      mise ERROR no such version".to_string()), "{lines:?}");
+    assert!(lines.contains(&"      cannot write ~/.cache/x".to_string()), "{lines:?}");
+    let shown = lines.iter().position(|l| l == "    exit code: 4").unwrap();
+    assert!(!lines[shown..].iter().any(|l| l.contains(&h)), "the home directory is shortened: {lines:?}");
+    let x = &applied.failures[0];
+    assert_eq!((x.exit_code, x.reason.as_str()), (Some(4), ""));
+    assert_eq!(x.stderr, "mise ERROR no such version\ncannot write ~/.cache/x");
+    drop(home);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_success_has_no_failure() {
+    let mut lines = Vec::new();
+    let a = apply(&[f("sh -c 'echo noise >&2'", true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string()));
+    assert_eq!((a.status, a.ran.len(), a.failures.len()), (0, 1, 0));
+    assert!(!lines.iter().any(|l| l.contains("failed") || l.contains("stderr")), "{lines:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_stderr_tail_is_bounded() {
+    // 3000 lines of ~10 bytes: more than 20 lines and more than 4 KiB.
+    let (a, lines) = failing("i=0; while [ $i -lt 3000 ]; do echo line$i >&2; i=$((i+1)); done; exit 1");
+    let x = &a.failures[0];
+    let kept: Vec<&str> = x.stderr.lines().collect();
+    assert_eq!(kept.len(), run::TAIL_LINES, "{kept:?}");
+    assert_eq!((kept[0], kept[19]), ("line2980", "line2999"));
+    assert!(x.stderr.len() <= run::TAIL_BYTES);
+    assert!(lines.contains(&"    stderr (last 20 lines):".to_string()));
+    // One enormous line is cut, not printed whole.
+    let (a, _) = failing("head -c 9000 /dev/zero | tr \"\\\\0\" x >&2; exit 1");
+    assert!(a.failures[0].stderr.chars().count() <= 401, "{}", a.failures[0].stderr.len());
+}
+
+#[test]
+fn clean_tail_drops_environment_lines_escapes_and_redraws() {
+    // An environment dump is never carried; a line that merely has an `=` is.
+    let text = "PATH=/usr/bin\nSECRET_TOKEN=abc\nHOME=/h\nerror: version=3.14 is not installed\n";
+    assert_eq!(run::clean_tail(text.as_bytes(), false), "error: version=3.14 is not installed");
+    // Colour codes and a progress bar's redraws: what the screen ended on.
+    let text = "\u{1b}[31merror\u{1b}[0m: boom\n10%\r50%\rdone\n\u{1b}]0;title\u{7}ok\u{0}\n";
+    assert_eq!(run::clean_tail(text.as_bytes(), false), "error: boom\ndone\nok");
+    // Cut output starts mid-line: that line is not shown.
+    assert_eq!(run::clean_tail(b"rtial line\nwhole line\n", true), "whole line");
+    assert_eq!(run::clean_tail(b"", false), "");
+    // Invalid UTF-8 doesn't fail it.
+    assert_eq!(run::clean_tail(b"bad \xff byte\n", false), "bad \u{fffd} byte");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fix_that_cannot_start_or_is_stopped_says_so_without_an_exit_code() {
+    let r = run::run_bounded(&["/nonexistent/wpantry-no-such-tool".to_string()], std::time::Duration::from_secs(5));
+    assert!(
+        !r.ok && r.exit_code.is_none() && r.reason.starts_with("`/nonexistent/wpantry-no-such-tool` was not found"),
+        "{r:?}"
+    );
+    let sh = |s: &str| vec!["sh".to_string(), "-c".to_string(), s.to_string()];
+    let r = run::run_bounded(&sh("echo slow >&2; sleep 5"), std::time::Duration::from_millis(200));
+    assert!(!r.ok && r.exit_code.is_none(), "{r:?}");
+    assert_eq!(r.reason, "timed out after 200 ms and was stopped");
+    assert_eq!(r.stderr, "slow");
+    let r = run::run_bounded(&sh("kill -9 $$"), std::time::Duration::from_secs(5));
+    assert_eq!((r.exit_code, r.reason.as_str()), (None, "stopped by a signal"));
+    // A command that isn't one word list at all.
+    let mut lines = Vec::new();
+    let a = apply(&[f("echo 'unclosed", true, "fail")], false, &|_| true, &mut |l| lines.push(l.to_string()));
+    assert_eq!(a.status, 1);
+    assert!(lines.contains(&"    not a command wpantry can run unattended".to_string()), "{lines:?}");
+}
+
+/// A process the fix left running holds stderr open; the report doesn't wait for it.
+#[cfg(unix)]
+#[test]
+fn a_left_behind_process_holding_stderr_does_not_hold_the_report() {
+    let start = std::time::Instant::now();
+    let (a, _) = failing("sleep 6 & echo partial >&2; exit 2");
+    assert!(start.elapsed() < std::time::Duration::from_secs(4), "{:?}", start.elapsed());
+    assert_eq!((a.failures[0].exit_code, a.failures[0].stderr.as_str()), (Some(2), "partial"));
+}
+
+/// #330: mise was not on the app's PATH, the spawn failed, and the user saw
+/// only "failed". Oracle: the line says the program was not found and where
+/// wpantry looked (PATH, and the places its installer uses). A name no
+/// installer is known for gets PATH only.
+#[test]
+fn a_fix_program_that_is_not_found_says_where_wpantry_looked() {
+    let mut lines = Vec::new();
+    let a = apply(&[f("wpantry-no-such-tool upgrade x", true, "fail")], false, &|_| true, &mut |l| {
+        lines.push(l.to_string())
+    });
+    assert_eq!(a.status, 1);
+    let why = lines.iter().find(|l| l.contains("was not found")).unwrap_or_else(|| panic!("{lines:?}"));
+    assert!(why.contains("`wpantry-no-such-tool` was not found: wpantry looked in PATH ("), "{why}");
+    assert!(!why.contains(", and in "), "no installer places for an unknown program: {why}");
+    // mise and brew name their installers' places too.
+    let m = run::run_bounded(&["wpantry-never-a-tool".to_string()], std::time::Duration::from_secs(1));
+    assert!(m.exit_code.is_none() && !m.ok);
+    // Per platform, compared as paths (the separator is the host's): the
+    // Unix places on Unix, and on Windows only what its installer sets.
+    use crate::utils::process::tool_places_on;
+    use std::path::{Path, PathBuf};
+    let h = Path::new("/h");
+    let at = |prefix: &str, name: &str| Path::new(prefix).join("bin").join(name);
+    let unix = |name: &str| -> Vec<PathBuf> {
+        ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"].iter().map(|p| at(p, name)).collect()
+    };
+    let none = |_: &str| None;
+    let env = |k: &str| match k {
+        "MISE_INSTALL_PATH" => Some("/opt/m/mise".into()),
+        "HOMEBREW_PREFIX" => Some("/brew".into()),
+        _ => None,
+    };
+    let mut want = vec![h.join(".local/bin/mise")];
+    want.extend(unix("mise"));
+    assert_eq!(tool_places_on(false, "mise", h, &none), want);
+    assert_eq!(tool_places_on(false, "mise", h, &env)[0], PathBuf::from("/opt/m/mise"));
+    let mut want = vec![Path::new("/brew").join("bin/brew")];
+    want.extend(unix("brew"));
+    assert_eq!(tool_places_on(false, "brew", h, &env), want);
+    assert!(tool_places_on(false, "jq", h, &env).is_empty());
+    // Windows: no Unix prefixes, no Homebrew, no ~/.local/bin.
+    assert!(tool_places_on(true, "mise", h, &none).is_empty());
+    assert_eq!(tool_places_on(true, "mise", h, &env), [PathBuf::from("/opt/m/mise")]);
+    assert!(tool_places_on(true, "brew", h, &env).is_empty());
+    // The host's own list is its platform's.
+    assert_eq!(crate::utils::process::tool_places("brew", h, &env), tool_places_on(cfg!(windows), "brew", h, &env));
+}
+
+/// A program only in an installer's place is found there when PATH lacks it:
+/// only located here, never run (a real mise may be on PATH or not).
+#[cfg(unix)]
+#[test]
+fn a_program_in_its_installers_place_is_found_when_path_lacks_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let _home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    let mise = h.join(".local/bin/mise");
+    std::fs::create_dir_all(mise.parent().unwrap()).unwrap();
+    std::fs::write(&mise, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let found = crate::utils::process::find_tool("mise").unwrap();
+    assert!(found == mise || crate::utils::process::which("mise").as_deref() == Some(found.as_path()), "{found:?}");
+}
+
+/// A fix of two mise commands is two steps, the first as the finding says
+/// and the second never unattended; a script stays one step.
+#[test]
+fn a_two_line_mise_fix_is_two_steps_and_only_the_first_may_run() {
+    let fix = "mise install python@3.14.10\nmise uninstall python@3.14.9";
+    let fs = [Finding { component: "python".into(), ..f(fix, true, "fail") }];
+    let got: Vec<(String, &str)> = steps(&fs).into_iter().map(|s| (s.cmd.clone(), s.mode())).collect();
+    assert_eq!(
+        got,
+        [("mise install python@3.14.10".to_string(), "auto"), ("mise uninstall python@3.14.9".to_string(), "manual")]
+    );
+    assert!(is_step_of(fix, "mise uninstall python@3.14.9") && is_step_of(fix, "mise install python@3.14.10"));
+    assert!(is_step_of("brew upgrade a", "brew upgrade a") && !is_step_of(fix, "mise install node@1"));
+    let script = "# 3 hits\ngit -C x show y";
+    assert_eq!(steps(&[f(script, false, "warn")]).len(), 1);
+}

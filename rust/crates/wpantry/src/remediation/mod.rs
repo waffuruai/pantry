@@ -10,6 +10,7 @@ pub mod dismiss;
 pub mod editors;
 pub mod mitigate;
 pub mod queue;
+pub mod run;
 pub mod secret;
 
 use crate::checks::ecosystems::versions;
@@ -87,13 +88,34 @@ pub fn steps(findings: &[Finding]) -> Vec<Step> {
             continue;
         }
         let fails = fs.iter().any(|x| x.status == "fail");
-        match out.iter_mut().find(|s| s.cmd == cmd) {
-            // The first component to name a command decides how it runs.
-            Some(s) => s.findings.extend(is.iter().copied()),
-            None => out.push(Step { cmd, unattended, fails, findings: is.clone() }),
+        // A mise runtime's fix is two lines, install then uninstall: two
+        // steps, of which only the first may run unattended.
+        for (n, cmd) in split_steps(cmd).into_iter().enumerate() {
+            let unattended = unattended && n == 0;
+            match out.iter_mut().find(|s| s.cmd == cmd) {
+                // The first component to name a command decides how it runs.
+                Some(s) => s.findings.extend(is.iter().copied()),
+                None => out.push(Step { cmd, unattended, fails, findings: is.clone() }),
+            }
         }
     }
     out
+}
+
+/// A fix of several `mise` commands, a line each, as the steps it is; any
+/// other fix (a script, a sentence) is one step.
+fn split_steps(cmd: String) -> Vec<String> {
+    if cmd.lines().count() > 1 && cmd.lines().all(|l| l.starts_with("mise ")) {
+        cmd.lines().map(str::to_string).collect()
+    } else {
+        vec![cmd]
+    }
+}
+
+/// Whether `step` (one command of the plan) is, or is one line of, the fix
+/// `fix_cmd` a finding carries.
+pub fn is_step_of(fix_cmd: &str, step: &str) -> bool {
+    fix_cmd == step || (fix_cmd.lines().count() > 1 && split_steps(fix_cmd.to_string()).iter().any(|s| s == step))
 }
 
 /// (unattended, needs you, also worth doing): the plan's commands by mode.
@@ -142,6 +164,8 @@ pub fn upgrades_mise(cmd: &str) -> bool {
 pub struct Applied {
     pub status: i32,
     pub ran: Vec<(String, bool)>,
+    /// Why each command in `ran` that failed did: its exit code and the end of its stderr.
+    pub failures: Vec<run::Failure>,
 }
 
 /// Run (or, on a dry run, print) the unattended fixes and list the rest.
@@ -155,9 +179,10 @@ pub fn apply(
 ) -> Applied {
     let (auto, manual, optional) = plan(findings);
     let mut ran = Vec::new();
+    let mut failures = Vec::new();
     if auto.is_empty() && manual.is_empty() && optional.is_empty() {
         out("Nothing to update.");
-        return Applied { status: 0, ran };
+        return Applied { status: 0, ran, failures };
     }
     out("");
     out(&format!("==> Update plan{}", if dryrun { " (dry run: nothing is changed)" } else { "" }));
@@ -172,9 +197,19 @@ pub fn apply(
             continue;
         }
         out(&format!("  → {cmd}"));
-        let ok = shlex_split(cmd).filter(|w| !w.is_empty()).is_some_and(|w| run_bounded(&w, APPLY_TIMEOUT));
+        let run = match shlex_split(cmd).filter(|w| !w.is_empty()) {
+            Some(w) => run::run_bounded(&w, APPLY_TIMEOUT),
+            None => run::Run { reason: "not a command wpantry can run unattended".into(), ..Default::default() },
+        };
+        let ok = run.ok;
         if !ok {
             out(&format!("  ✗ failed: {cmd}"));
+            let failure =
+                run::Failure { cmd: cmd.clone(), exit_code: run.exit_code, reason: run.reason, stderr: run.stderr };
+            for line in failure.lines() {
+                out(&line);
+            }
+            failures.push(failure);
             status = 1;
         }
         ran.push((cmd.clone(), ok));
@@ -190,34 +225,11 @@ pub fn apply(
             }
         }
     }
-    Applied { status, ran }
+    Applied { status, ran, failures }
 }
 
 /// How long one unattended fix may take (a package manager download).
 const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-
-/// Run `argv` as is (no shell), with the terminal, killing it after
-/// `timeout`; whether it exited 0.
-fn run_bounded(argv: &[String], timeout: std::time::Duration) -> bool {
-    let Ok(mut child) =
-        std::process::Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::null()).spawn()
-    else {
-        return false;
-    };
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(_) => return false,
-        }
-    }
-}
 
 /// POSIX shell word splitting, as Python's `shlex.split`; None on an
 /// unclosed quote or a trailing backslash.

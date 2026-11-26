@@ -1585,7 +1585,7 @@ fn cmd_ignore(action: IgnoreAction, json: bool) -> Result<i32> {
 /// opened or written is "could not tell" too: the program that asked gets
 /// its object either way.
 fn cmd_recheck(id: &str, from_scan: i64, json: bool) -> Result<i32> {
-    use wpantry::recheck::{self, Outcome, Verdict};
+    use wpantry::remediation::recheck::{self, Outcome, Verdict};
     let outcome = Cache::open(None).and_then(|cache| recheck::recheck(cache, id, from_scan)).unwrap_or_else(|e| {
         let first = e.to_string().lines().next().unwrap_or("").trim().to_string();
         let reason = if matches!(e, wpantry::Error::Cache(_)) { "cache" } else { "error" };

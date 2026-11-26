@@ -574,3 +574,179 @@ fn a_recheck_on_thirty_thousand_findings_takes_seconds() {
     assert_eq!(str_(&v["state"]), "still_present");
     assert!(took.as_secs() < 10, "{took:?}");
 }
+
+// Several ids in one call ---------------------------------------------------
+
+fn brew_many(n: usize) -> Vec<Finding> {
+    (0..n).map(|i| Finding { vuln_id: format!("CVE-2026-{}", 1100 + i), ..brew_finding("Homebrew") }).collect()
+}
+
+/// `brew vulns`' answer for `foo`: the first half of the advisories fixed in
+/// 1.2.5, the second in 1.3.0.
+fn brew_answer_many(lab: &Lab, findings: &[Finding]) {
+    let vulns: Vec<Value> = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let fixed = if i < findings.len() / 2 { "1.2.5" } else { "1.3.0" };
+            serde_json::json!({"id": f.vuln_id, "summary": "s", "severity": "high", "fixed_versions": [fixed]})
+        })
+        .collect();
+    let cache = Cache::open(Some(&lab.t.db)).unwrap();
+    cache
+        .put_run(
+            "brew-vulns",
+            "fp",
+            &serde_json::json!({"checked": 1, "findings": [{"formula": "foo", "version": "1.2.3", "vulnerabilities": vulns}]}),
+        )
+        .unwrap();
+    cache.close().unwrap();
+}
+
+/// A lab with `n` advisories of one formula, the formula at 1.2.6 (past the
+/// first half's fix, behind the second's), a manual-fix finding and the
+/// bystander, with a fix recorded for the first two.
+fn many_lab(n: usize) -> (Lab, i64, Vec<Finding>) {
+    let lab = Lab::new();
+    let findings = brew_many(n);
+    brew_answer_many(&lab, &findings);
+    mkdir(&lab.cellar.join("foo/1.2.6"));
+    let manual = Finding { vuln_id: "CVE-2026-9999".into(), fix_auto: false, ..brew_finding("Homebrew") };
+    let mut all = findings.clone();
+    all.push(manual);
+    all.push(bystander());
+    let scan = lab.scan_of(&all, false);
+    lab.fix_ran(scan, "brew upgrade foo", &[findings[0].key(), findings[1].key()]);
+    (lab, scan, all)
+}
+
+/// What a re-check can change, without the clock.
+fn state_of(lab: &Lab) -> Vec<String> {
+    let conn = lab.t.conn();
+    let mut out = Vec::new();
+    for (table, sql) in [
+        ("findings", "SELECT kind, component, location, vuln_id FROM findings ORDER BY 1,2,3,4"),
+        ("run_findings", "SELECT scan_id, kind, component, location, vuln_id FROM run_findings ORDER BY 1,2,3,4,5"),
+        ("exposures", "SELECT key, resolved_scan, resolved_at IS NOT NULL FROM exposures ORDER BY key"),
+        ("fixes", "SELECT id, ok, verified_scan, verified_by, targets FROM fixes ORDER BY id"),
+        ("events", "SELECT kind, detail FROM events WHERE kind = 'recheck' ORDER BY id"),
+        ("scans", "SELECT id FROM scans ORDER BY id"),
+    ] {
+        let mut st = conn.prepare(sql).unwrap();
+        let n = st.column_count();
+        let rows = st
+            .query_map([], |r| {
+                Ok((0..n)
+                    .map(|i| format!("{:?}", r.get::<_, rusqlite::types::Value>(i).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join("|"))
+            })
+            .unwrap();
+        out.extend(rows.map(|r| format!("{table}: {}", r.unwrap())));
+    }
+    out
+}
+
+fn args_many<'a>(ids: &'a [String], scan: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut v = vec!["recheck"];
+    v.extend(ids.iter().map(String::as_str));
+    v.extend(["--from-scan", scan, "--json", "--no-input"]);
+    v.extend_from_slice(extra);
+    v
+}
+
+/// Oracle: every id's object is byte for byte what the id gives alone, and
+/// the cache ends in the same state, whether the ids are asked one process
+/// at a time on one copy of a cache or in one call on another. Includes an
+/// unknown id among good ones, a duplicate, a manual-fix finding and ids
+/// that are gone, still present and not in the scan.
+#[test]
+fn many_ids_in_one_call_answer_exactly_as_one_at_a_time() {
+    let (one, scan, all) = many_lab(12);
+    let (many, scan2, _) = many_lab(12);
+    assert_eq!(scan, scan2);
+    let mut ids: Vec<String> = all.iter().map(Finding::id).collect();
+    ids.insert(3, "F-0123456789".into());
+    ids.push(ids[0].clone()); // a duplicate, last
+    ids.reverse(); // not the order of the scan
+    let n = scan.to_string();
+    let mut alone = Vec::new();
+    let mut worst = 0;
+    for id in &ids {
+        let r = one.run(&["recheck", id, "--from-scan", &n, "--json", "--no-input"]);
+        assert!(r.out.ends_with('\n') && r.out.lines().count() == 1);
+        alone.push(r.out.trim_end().to_string());
+        worst = match (worst, r.code) {
+            (1, _) | (_, 1) => 1,
+            (3, _) | (_, 3) => 3,
+            _ => 0,
+        };
+    }
+    let r = many.run(&args_many(&ids, &n, &[]));
+    let lines: Vec<String> = r.out.lines().map(str::to_string).collect();
+    assert_eq!(lines, alone, "{}", r.err);
+    assert_eq!(r.code, worst);
+    assert_eq!(r.code, 1, "some are still present");
+    assert_eq!(state_of(&many), state_of(&one));
+    // The mix is what the test says it is.
+    let states: Vec<String> =
+        lines.iter().map(|l| serde_json::from_str::<Value>(l).unwrap()["state"].to_string()).collect();
+    for s in ["\"gone\"", "\"still_present\"", "\"unknown\""] {
+        assert!(states.contains(&s.to_string()), "{states:?}");
+    }
+    // Without --json: one plain line per id, the same count.
+    let (plain, _, _) = many_lab(12);
+    let mut argv = vec!["recheck"];
+    argv.extend(ids.iter().map(String::as_str));
+    argv.extend(["--from-scan", &n, "--no-input"]);
+    let r = plain.run(&argv);
+    assert_eq!(r.out.lines().count(), ids.len(), "{}", r.out);
+    assert_eq!(state_of(&plain), state_of(&one));
+}
+
+/// Oracle: the answers come in the order the ids were given, and with
+/// `--stop-at-first-present` the run ends after the first still-present id:
+/// nothing is printed or recorded for the ids after it.
+#[test]
+fn the_order_is_kept_and_stop_at_first_present_ends_the_run() {
+    let (lab, scan, all) = many_lab(12);
+    let n = scan.to_string();
+    // 0..6 are gone at 1.2.6, 6..12 still present.
+    let ids: Vec<String> = [0usize, 7, 1, 2].iter().map(|&i| all[i].id()).collect();
+    let r = lab.run(&args_many(&ids, &n, &["--stop-at-first-present"]));
+    let got: Vec<Value> = r.out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(got.len(), 2, "{}", r.out);
+    assert_eq!((got[0]["finding"].as_str(), got[0]["state"].as_str()), (Some(ids[0].as_str()), Some("gone")));
+    assert_eq!((got[1]["finding"].as_str(), got[1]["state"].as_str()), (Some(ids[1].as_str()), Some("still_present")));
+    assert_eq!(r.code, 1);
+    let state = state_of(&lab);
+    assert!(state.iter().any(|l| l.starts_with("events:") && l.contains(&all[0].key())));
+    assert!(
+        !state.iter().any(|l| l.starts_with("events:") && (l.contains(&all[1].key()) || l.contains(&all[2].key()))),
+        "{state:?}"
+    );
+    // Without the flag, all four, in order.
+    let (lab, scan, all) = many_lab(12);
+    let ids: Vec<String> = [0usize, 7, 1, 2].iter().map(|&i| all[i].id()).collect();
+    let r = lab.run(&args_many(&ids, &scan.to_string(), &[]));
+    let order: Vec<String> = r
+        .out
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()["finding"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(order, ids);
+    // All gone: 0; only unknown ones besides: 3.
+    let (lab, scan, all) = many_lab(12);
+    let gone: Vec<String> = (0..3).map(|i| all[i].id()).collect();
+    assert_eq!(lab.run(&args_many(&gone, &scan.to_string(), &[])).code, 0);
+    let mixed = vec![all[3].id(), "F-0123456789".to_string()];
+    assert_eq!(lab.run(&args_many(&mixed, &scan.to_string(), &[])).code, 3);
+}
+
+#[test]
+fn recheck_help_names_the_several_ids_form() {
+    let lab = Lab::new();
+    let r = lab.run(&["recheck", "--help"]);
+    assert!(r.out.contains("Usage: wpantry recheck [options] <id...>"), "{}", r.out);
+    assert!(r.out.contains("--stop-at-first-present"), "{}", r.out);
+}

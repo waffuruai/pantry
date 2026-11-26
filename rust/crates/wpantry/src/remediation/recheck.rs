@@ -152,13 +152,25 @@ impl Row {
     }
 }
 
-/// The rows of finding `id` in scan `scan`: the latest view first (what
-/// `fix` reads), then the scan's kept copy, which still holds a finding a
-/// re-check already took out of the view. Only the four identifying
-/// columns of every row are read, so a cache of tens of thousands of
-/// findings costs one pass and one id hash per row.
+/// The rows of finding `id` in scan `scan`: see [`rows_for`].
+#[cfg(test)]
 fn rows(cache: &Cache, id: &str, scan: i64) -> Result<Vec<Row>> {
+    Ok(rows_for(cache, &[id.to_string()], scan)?.remove(&id.to_ascii_lowercase()).unwrap_or_default())
+}
+
+/// The rows of each of `ids` (by lower-cased id) in scan `scan`: the latest
+/// view first (what `fix` reads), then, for an id the view lacks, the scan's
+/// kept copy, which still holds a finding a re-check already took out of the
+/// view. Only the four identifying columns of every row are read, so a cache
+/// of tens of thousands of findings costs one pass and one id hash per row
+/// for all the ids together.
+fn rows_for(cache: &Cache, ids: &[String], scan: i64) -> Result<std::collections::HashMap<String, Vec<Row>>> {
+    let mut wanted: std::collections::HashSet<String> = ids.iter().map(|i| i.to_ascii_lowercase()).collect();
+    let mut out = std::collections::HashMap::new();
     for (table, filter) in [("findings", ""), ("run_findings", " WHERE scan_id = ?1")] {
+        if wanted.is_empty() {
+            break;
+        }
         let mut stmt =
             cache.conn.prepare(&format!("SELECT rowid, kind, component, location, vuln_id FROM {table}{filter}"))?;
         let text = |r: &rusqlite::Row<'_>, i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -168,20 +180,18 @@ fn rows(cache: &Cache, id: &str, scan: i64) -> Result<Vec<Row>> {
         } else {
             stmt.query_map([scan], map)?.collect::<rusqlite::Result<_>>()?
         };
-        let hits: Vec<i64> = all
+        let hits: Vec<(i64, String)> = all
             .iter()
-            .filter(|(_, k, c, l, v)| Finding::id_for(k, c, l, v).eq_ignore_ascii_case(id))
-            .map(|(rowid, ..)| *rowid)
+            .filter_map(|(rowid, k, c, l, v)| {
+                let id = Finding::id_for(k, c, l, v).to_ascii_lowercase();
+                wanted.contains(&id).then_some((*rowid, id))
+            })
             .collect();
-        if hits.is_empty() {
-            continue;
-        }
         let mut full = cache.conn.prepare(&format!(
             "SELECT kind, component, location, vuln_id, fix_cmd, fix_auto FROM {table} WHERE rowid = ?1"
         ))?;
-        let mut out = Vec::new();
-        for rowid in hits {
-            out.push(full.query_row([rowid], |r| {
+        for (rowid, id) in hits {
+            let row = full.query_row([rowid], |r| {
                 Ok(Row {
                     kind: text(r, 0)?,
                     component: text(r, 1)?,
@@ -190,11 +200,12 @@ fn rows(cache: &Cache, id: &str, scan: i64) -> Result<Vec<Row>> {
                     fix_cmd: text(r, 4)?,
                     fix_auto: r.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0,
                 })
-            })?);
+            })?;
+            out.entry(id).or_insert_with(Vec::new).push(row);
         }
-        return Ok(out);
+        wanted.retain(|id| !out.contains_key(id));
     }
-    Ok(Vec::new())
+    Ok(out)
 }
 
 /// The scan's recorded scope says it left the personal folders out
@@ -213,44 +224,111 @@ pub fn canonical(id: &str) -> String {
     if crate::remediation::queue::is_id(id) { format!("F-{}", id[2..].to_ascii_lowercase()) } else { id.to_string() }
 }
 
+/// A re-check that could not finish: the id it was on and why. Ids answered
+/// before it are recorded (when gone) and stay so.
+#[derive(Debug)]
+pub struct Failed {
+    pub id: String,
+    pub error: Error,
+}
+
 /// Re-check finding `id` of scan `scan`, which must be the latest. Reads
 /// the cache and the one component's place on the machine; when the
 /// finding is gone, records that ([`crate::history::record_recheck`]) and
 /// commits; otherwise changes nothing. `cache` is closed either way.
 pub fn recheck(cache: Cache, id: &str, scan: i64) -> Result<Outcome> {
-    let finding = canonical(id);
-    let done = |cache: Cache, verdict: Verdict, keys: Vec<String>| -> Result<Outcome> {
-        cache.close()?;
-        Ok(Outcome { finding: finding.clone(), scan, verdict, keys })
-    };
-    let exists: bool = cache.conn.query_row("SELECT EXISTS(SELECT 1 FROM scans WHERE id = ?)", [scan], |r| r.get(0))?;
-    if !exists {
-        return done(cache, Verdict::unknown("stale", format!("there is no scan {scan}")), Vec::new());
+    let mut got = None;
+    recheck_many(cache, &[id.to_string()], scan, false, &mut |o| got = Some(o)).map_err(|f| f.error)?;
+    Ok(got.expect("one id was asked, one outcome came back"))
+}
+
+/// [`recheck`] for several ids with the cache opened once and the scan's
+/// rows read once. Each id is decided as it would be alone, in the order
+/// given and, when it is gone, recorded before the next (a duplicate id is
+/// answered each time it is named, the same way). `answer` gets each outcome
+/// as soon as it is decided. With `stop_at_present` the run ends after the
+/// first `still_present`, and the ids after it are not answered. An error
+/// ends the run with the cache closed, so what was recorded stays recorded;
+/// the [`Failed`] names the id it was on.
+pub fn recheck_many(
+    cache: Cache,
+    ids: &[String],
+    scan: i64,
+    stop_at_present: bool,
+    answer: &mut dyn FnMut(Outcome),
+) -> std::result::Result<(), Failed> {
+    let first = ids.first().cloned().unwrap_or_default();
+    let fail = |id: &str, error: Error| Failed { id: canonical(id), error };
+    let stale = (|| -> Result<Option<Verdict>> {
+        let exists: bool =
+            cache.conn.query_row("SELECT EXISTS(SELECT 1 FROM scans WHERE id = ?)", [scan], |r| r.get(0))?;
+        if !exists {
+            return Ok(Some(Verdict::unknown("stale", format!("there is no scan {scan}"))));
+        }
+        if crate::history::latest_scan(&cache)? != Some(scan) {
+            let why = "A newer scan is available: a re-check answers for the latest scan only.";
+            return Ok(Some(Verdict::unknown("stale", why)));
+        }
+        Ok(None)
+    })()
+    .map_err(|e| fail(&first, e))?;
+    if let Some(verdict) = stale {
+        for id in ids {
+            answer(Outcome { finding: canonical(id), scan, verdict: verdict.clone(), keys: Vec::new() });
+            if stop_at_present && verdict.state == State::StillPresent {
+                break;
+            }
+        }
+        return cache.close().map_err(|e| fail(&first, e));
     }
-    if crate::history::latest_scan(&cache)? != Some(scan) {
-        let why = "A newer scan is available: a re-check answers for the latest scan only.";
-        return done(cache, Verdict::unknown("stale", why), Vec::new());
-    }
-    let found = rows(&cache, id, scan)?;
-    if found.is_empty() {
-        let why = format!("scan {scan} has no finding {finding}.");
-        return done(cache, Verdict::unknown("unlisted", why), Vec::new());
-    }
-    let mut keys: Vec<String> = found.iter().map(Row::key).collect();
-    keys.sort();
-    keys.dedup();
+    let all = rows_for(&cache, ids, scan).map_err(|e| fail(&first, e))?;
     // The folders the scan never opened stay unopened.
-    let left_out = left_personal_out(&cache, scan)?
+    let left_out = left_personal_out(&cache, scan)
+        .map_err(|e| fail(&first, e))?
         .then(|| privacy::leave_out(privacy::folders(&files::home(), cfg!(target_os = "macos")), Vec::new()));
     let log = |_: &str| {};
     let mut scratch =
         Scan::new(Options { offline: true, machine: true, ..Default::default() }, cache, &NoNet, &log, &log);
-    let mut verdicts = Vec::new();
-    for row in &found {
-        scratch.findings.clear();
-        verdicts.push(judge(&mut scratch, row, left_out.is_some())?);
+    for id in ids {
+        let finding = canonical(id);
+        let Some(found) = all.get(&id.to_ascii_lowercase()).filter(|f| !f.is_empty()) else {
+            let why = format!("scan {scan} has no finding {finding}.");
+            answer(Outcome { finding, scan, verdict: Verdict::unknown("unlisted", why), keys: Vec::new() });
+            continue;
+        };
+        match decide(&mut scratch, found, scan, &finding, left_out.is_some()) {
+            Ok((verdict, keys)) => {
+                let present = verdict.state == State::StillPresent;
+                answer(Outcome { finding, scan, verdict, keys });
+                if present && stop_at_present {
+                    break;
+                }
+            }
+            Err(e) => {
+                let _ = scratch.cache.close();
+                return Err(fail(id, e));
+            }
+        }
     }
-    let cache = scratch.cache;
+    scratch.cache.close().map_err(|e| fail(&first, e))
+}
+
+/// One finding's verdict and keys from its rows, recorded when gone.
+fn decide(
+    scratch: &mut Scan,
+    found: &[Row],
+    scan: i64,
+    finding: &str,
+    left_out: bool,
+) -> Result<(Verdict, Vec<String>)> {
+    let mut keys: Vec<String> = found.iter().map(Row::key).collect();
+    keys.sort();
+    keys.dedup();
+    let mut verdicts = Vec::new();
+    for row in found {
+        scratch.findings.clear();
+        verdicts.push(judge(scratch, row, left_out)?);
+    }
     // Gone only when every key is; one still there is still there.
     let pick = |state: State| verdicts.iter().find(|v| v.state == state).cloned();
     let verdict = pick(State::StillPresent)
@@ -258,9 +336,19 @@ pub fn recheck(cache: Cache, id: &str, scan: i64) -> Result<Outcome> {
         .unwrap_or_else(|| verdicts.into_iter().next().expect("a row was found"));
     if verdict.state == State::Gone {
         let covered: Vec<Finding> = found.iter().map(Row::finding).collect();
-        crate::history::record_recheck(&cache, scan, &finding, &covered, verdict.reason)?;
+        let cache = &scratch.cache;
+        cache.conn.execute_batch("SAVEPOINT recheck")?;
+        match crate::history::record_recheck(cache, scan, finding, &covered, verdict.reason) {
+            Ok(()) => cache.conn.execute_batch("RELEASE recheck")?,
+            Err(e) => {
+                let _ = cache.conn.execute_batch("ROLLBACK TO recheck; RELEASE recheck");
+                return Err(e);
+            }
+        }
+        // Recorded before the next id, so a failure later keeps it.
+        cache.commit()?;
     }
-    done(cache, verdict, keys)
+    Ok((verdict, keys))
 }
 
 /// Whether a plain-word kind of finding has a narrow check.

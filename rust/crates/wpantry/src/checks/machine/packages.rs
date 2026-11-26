@@ -4,6 +4,7 @@
 
 use crate::checks::machine::catalog::{Cycle, PYTHON_DIRS};
 use crate::checks::machine::tools::updater;
+use crate::checks::machine::uv_pythons;
 use crate::component::Component;
 use crate::utils::files::expand;
 use crate::utils::files::owner;
@@ -70,7 +71,7 @@ fn str_of(v: &Value, k: &str) -> String {
 /// couldn't be read, for the scan to report unchecked (incomplete metadata
 /// must never read as fewer packages).
 pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    pythons_from(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15), &owner)
+    pythons_with_uv(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15), &owner, &uv_pythons::ask)
 }
 
 /// Every Python on PATH or installed by a version manager, as (shown path,
@@ -126,11 +127,25 @@ pub const PY_LINE: &str = "python_line";
 /// One user site is read by every interpreter of that minor version, so each
 /// is reported once: by an interpreter nobody vouches for when one reads it
 /// (it reports every site anyway), else by the first vouched-for one.
+#[cfg(test)]
 fn pythons_from(
     found: Vec<(String, String)>,
     probe: &(dyn Fn(&str) -> String + Sync),
     vouched: &dyn Fn(&str) -> &'static str,
 ) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
+    pythons_with_uv(found, probe, vouched, &|| None)
+}
+
+/// [`pythons_from`] with what uv can install asked through `ask_uv`, at most
+/// once and only when a uv-managed Python is found (None: unknown, and the
+/// fix stays as it is). See [`uv_pythons`].
+pub(crate) fn pythons_with_uv(
+    found: Vec<(String, String)>,
+    probe: &(dyn Fn(&str) -> String + Sync),
+    vouched: &dyn Fn(&str) -> &'static str,
+    ask_uv: &dyn Fn() -> Option<uv_pythons::UvPythons>,
+) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
+    let uv_answer = std::cell::OnceCell::new();
     struct Answer {
         shown: String,
         real: String,
@@ -184,8 +199,19 @@ fn pythons_from(
             c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
             c.fix = fix.clone();
             c.auto = auto;
+            let (mut pkgs, gaps) = pip(&a.shown, &a.runs, &a.sites, managed, (fix.clone(), auto));
+            if auto && fix == uv_pythons::UPGRADE {
+                // uv-managed: what uv can install decides the fix, where the
+                // fixed version is known ([`uv_pythons::adjust`]).
+                if let Some(known) = uv_answer.get_or_init(ask_uv) {
+                    uv_pythons::stamp(&mut c, known, &line, &v, false);
+                    for p in pkgs.iter_mut().filter(|p| p.fix == uv_pythons::UPGRADE) {
+                        uv_pythons::stamp(p, known, &line, &v, true);
+                    }
+                }
+            }
             out.push(c);
-            pip(&a.shown, &a.runs, &a.sites, managed, (fix, auto))
+            (pkgs, gaps)
         };
         if !line.is_empty() {
             for p in &mut pkgs {

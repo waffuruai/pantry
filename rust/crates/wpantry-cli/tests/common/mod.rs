@@ -82,7 +82,19 @@ impl Ctx {
 
     /// A run with these variables set over the test's environment.
     pub fn run_env(&self, argv: &[&str], env: &[(&str, &str)]) -> Out {
+        self.run_at(None, argv, env)
+    }
+
+    /// A run with `cwd` as its working directory.
+    pub fn run_in(&self, cwd: &Path, argv: &[&str]) -> Out {
+        self.run_at(Some(cwd), argv, &[])
+    }
+
+    fn run_at(&self, cwd: Option<&Path>, argv: &[&str], env: &[(&str, &str)]) -> Out {
         let mut cmd = Command::new(BIN);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.args(argv)
             .env("HOME", &self.home)
             .env("WPANTRY_DB", &self.db)
@@ -239,6 +251,8 @@ pub const FINDING: &[(&str, Ty)] = &[
     ("summary", Ty::Str),
     ("aliases", Ty::StrList),
     ("cwe", Ty::StrList),
+    ("local_source", Ty::Str),
+    ("local_link", Ty::Str),
 ];
 
 pub const SCOPES: &[&str] = &["runtime", "dev", "optional", "unknown"];
@@ -380,6 +394,8 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "summary",
             "aliases",
             "cwe",
+            "local_source",
+            "local_link",
         ],
     ),
     (
@@ -411,6 +427,8 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "summary",
             "aliases",
             "cwe",
+            "local_source",
+            "local_link",
         ],
     ),
     ("kev", &["cve", "added", "name", "vendor", "product"]),

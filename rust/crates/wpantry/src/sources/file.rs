@@ -28,6 +28,17 @@ impl Tier {
             Tier::Off => "off",
         }
     }
+
+    /// How much checking a tier gives, the order the variants are declared
+    /// in read the other way round: `Default` (every scan) is the most,
+    /// `Deep` (only with `--deep`) less, `Off` (never) none.
+    fn checking(self) -> u8 {
+        match self {
+            Tier::Default => 2,
+            Tier::Deep => 1,
+            Tier::Off => 0,
+        }
+    }
 }
 
 /// How a source is reached.
@@ -37,6 +48,19 @@ pub enum Transport {
     Https,
     /// Cloned or listed by `git`.
     Git,
+    /// Read from a file or folder on this machine (`path = "..."`, a source
+    /// of the user's own only): it contacts nobody.
+    Local,
+}
+
+impl Transport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Transport::Https => "https",
+            Transport::Git => "git",
+            Transport::Local => "local",
+        }
+    }
 }
 
 /// One source.
@@ -46,6 +70,8 @@ pub struct Source {
     pub kind: String,
     pub format: String,
     /// The file, or the API's base; `{}` marks where a request puts its part.
+    /// For a [`Transport::Local`] source, its `path` as written
+    /// ([`local_path`] resolves it).
     pub url: String,
     pub transport: Transport,
     /// Other hosts the source sends its downloads to.
@@ -91,6 +117,44 @@ pub fn duration(s: &str) -> Option<f64> {
     )
 }
 
+/// Whether a local source's `path` is one wpantry reads: absolute (`/…`,
+/// `C:\…`, `\\server\…`) or under the home folder (`~/…`), with no `..`
+/// part. Checked as text, so a file written for one system reads on any;
+/// [`local_path`] then refuses a path that isn't absolute where it runs.
+fn path_shape(p: &str) -> std::result::Result<(), &'static str> {
+    if p.is_empty() {
+        return Err("a path is not empty");
+    }
+    if p.split(['/', '\\']).any(|part| part == "..") {
+        return Err("a path has no .. part");
+    }
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    if p.starts_with('/') || p.starts_with("~/") || p.starts_with(r"\\") || drive {
+        Ok(())
+    } else {
+        Err("a path is absolute, or starts with ~/ for your home folder")
+    }
+}
+
+/// Where a local source is read: its path with `~/` taken as the home
+/// folder. A path that isn't absolute on this system (`C:\…` on macOS) is
+/// refused rather than read from the current folder.
+///
+/// ```ignore
+/// // path = "~/rules/team" reads $HOME/rules/team
+/// ```
+pub fn local_path(s: &Source) -> Result<PathBuf> {
+    let p = match s.url.strip_prefix("~/") {
+        Some(rest) => crate::utils::files::home().join(rest),
+        None => PathBuf::from(&s.url),
+    };
+    if !p.is_absolute() {
+        return Err(Error::Invalid(format!("source {:?}: {} is not an absolute path on this system", s.id, s.url)));
+    }
+    Ok(p)
+}
+
 fn raw(t: &Table, key: &str) -> Option<String> {
     match t.get(key)? {
         Val::Raw(r) => Some(r.split('#').next().unwrap_or("").trim().to_string()),
@@ -115,18 +179,28 @@ fn entries(text: &str) -> Result<Vec<(Source, Vec<String>)>> {
         if out.iter().any(|(s, _)| s.id == id) {
             return Err(bad("listed twice"));
         }
-        let transport = match t.str("transport") {
-            "" | "https" => Transport::Https,
-            "git" => Transport::Git,
-            other => return Err(bad(&format!("unknown transport {other:?}"))),
+        let has = |k: &str| t.entries.iter().any(|(n, _)| n == k);
+        let transport = match (t.str("transport"), has("path")) {
+            ("" | "local", true) => Transport::Local,
+            (_, true) => return Err(bad("a source with a path is read on this machine: its transport is local")),
+            ("local", false) => return Err(bad("a local source gives its path")),
+            ("" | "https", false) => Transport::Https,
+            ("git", false) => Transport::Git,
+            (other, false) => return Err(bad(&format!("unknown transport {other:?}"))),
         };
+        if transport == Transport::Local {
+            if has("url") {
+                return Err(bad("a source gives a url or a path, not both"));
+            }
+            path_shape(t.str("path")).map_err(&bad)?;
+        }
         let tier = match t.str("tier") {
             "" | "default" => Tier::Default,
             "deep" => Tier::Deep,
             "off" => Tier::Off,
             other => return Err(bad(&format!("unknown tier {other:?}"))),
         };
-        let url = t.str("url").to_string();
+        let url = if transport == Transport::Local { t.str("path") } else { t.str("url") }.to_string();
         let keys: Vec<String> = t.entries.iter().map(|(k, _)| k.clone()).collect();
         if transport == Transport::Https
             && (keys.contains(&"url".to_string()) || !url.is_empty())
@@ -196,6 +270,37 @@ pub fn user_file() -> PathBuf {
     config_dir().join("sources.toml")
 }
 
+/// The sources files of a run, as `(name, text)`: the user's own (`main`,
+/// else [`user_file`] when it exists), then each of `added`
+/// (`--add-sources FILE`) in order. A file named on the command line that
+/// can't be read is an error, `(name, why)`; only the default file may be
+/// missing.
+pub fn read_files(
+    main: Option<&std::path::Path>,
+    added: &[PathBuf],
+) -> std::result::Result<Vec<(String, String)>, (String, String)> {
+    let mut out = Vec::new();
+    let path = main.map(std::path::Path::to_path_buf).unwrap_or_else(user_file);
+    match std::fs::read_to_string(&path) {
+        Ok(t) => out.push((USER_FILE_NAME.to_string(), t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && main.is_none() => {}
+        Err(e) => return Err((USER_FILE_NAME.to_string(), format!("{}: {e}", path.display()))),
+    }
+    for p in added {
+        let name = added_name(p);
+        match std::fs::read_to_string(p) {
+            Ok(t) => out.push((name, t)),
+            Err(e) => return Err((name, format!("{}: {e}", p.display()))),
+        }
+    }
+    Ok(out)
+}
+
+/// What an added sources file is called in messages.
+pub fn added_name(p: &std::path::Path) -> String {
+    format!("the added sources file {}", p.display())
+}
+
 /// The kinds and formats a user's source may have: what wpantry can read
 /// and use with no code of the user's own.
 const USER_FORMATS: &[(&str, &[&str])] = &[
@@ -204,24 +309,77 @@ const USER_FORMATS: &[(&str, &[&str])] = &[
     ("hosts", &["lines"]),
     ("filenames", &["lines"]),
     ("indicators", &["maltrail-csv"]),
-    ("advisories", &["osv-api"]),
+    ("advisories", &["osv-api", "osv-dir"]),
     ("hash-lookup", &["circl", "yaraify"]),
 ];
+
+/// The kinds a local source (`path = …`) may have: the ones kept as a file
+/// ([`crate::sources::user`]), read into that file instead of fetched, and
+/// advisories as a folder of OSV records (`format = "osv-dir"`,
+/// [`crate::sources::osv_dir`]).
+const LOCAL_KINDS: &[&str] = &["yara", "hashes", "hosts", "filenames", "indicators", "advisories"];
+
+/// The format of a folder of OSV records on this machine.
+pub const OSV_DIR: &str = "osv-dir";
+
+/// What the user's sources file is called in messages.
+pub const USER_FILE_NAME: &str = "your sources file";
 
 /// The sources in effect: the bundled ones with the user's tiers, then the
 /// user's own, checked against what a user's source may be and do.
 pub fn merged(user_text: &str) -> Result<Vec<Source>> {
+    merged_files(&[(USER_FILE_NAME.to_string(), user_text.to_string())])
+}
+
+/// [`merged`] over several sources files, as `(name, text)` in order: the
+/// user's own, then each `--add-sources FILE`. An id one file defines can't
+/// be defined again by a later one. The user's own file (named
+/// [`USER_FILE_NAME`]) may set any bundled source's tier, the last file to
+/// set it winning; an added file may only turn one up (more checking:
+/// `off` to `deep` or `default`, `deep` to `default`), because a flag that
+/// adds sources must not make a run check less. An entry in an added file
+/// that would lower or disable a bundled source refuses the whole file.
+pub fn merged_files(files: &[(String, String)]) -> Result<Vec<Source>> {
     let mut all: Vec<Source> = bundled().to_vec();
-    for (mut s, keys) in entries(user_text)? {
-        let bad = |why: &str| Error::Invalid(format!("your sources file, source {:?}: {why}", s.id));
-        if let Some(b) = all.iter_mut().find(|b| b.id == s.id) {
+    // The file each of the user's own ids came from.
+    let mut defined: Vec<(String, String)> = Vec::new();
+    for (name, text) in files {
+        // A file is applied whole or not at all: work on copies and keep
+        // them only when every entry of the file was accepted.
+        let (mut next, mut next_defined) = (all.clone(), defined.clone());
+        merge_one(&mut next, &mut next_defined, name, text)?;
+        (all, defined) = (next, next_defined);
+    }
+    Ok(all)
+}
+
+fn merge_one(all: &mut Vec<Source>, defined: &mut Vec<(String, String)>, name: &str, text: &str) -> Result<()> {
+    let parsed = entries(text).map_err(|e| Error::Invalid(format!("{name}: {e}")))?;
+    let added = name != USER_FILE_NAME;
+    for (mut s, keys) in parsed {
+        let bad = |why: &str| Error::Invalid(format!("{name}, source {:?}: {why}", s.id));
+        if let Some(b) = all.iter_mut().find(|b| b.id == s.id && bundled().iter().any(|x| x.id == s.id)) {
             if keys.iter().any(|k| k != "id" && k != "tier") {
                 return Err(bad(
                     "a bundled source's only setting is its tier; a different URL is a different source, with its own id",
                 ));
             }
+            if added && s.tier.checking() < b.tier.checking() {
+                return Err(bad(&format!(
+                    "--add-sources adds sources and may only turn a bundled source up, never down or off \
+                     (it is {} and this file sets {}); set it in your own sources file instead",
+                    b.tier.as_str(),
+                    s.tier.as_str()
+                )));
+            }
             b.tier = s.tier;
             continue;
+        }
+        if let Some((_, first)) = defined.iter().find(|(id, _)| *id == s.id) {
+            return Err(Error::Invalid(format!(
+                "source {:?} is defined in {first} and again in {name}: an id names one source",
+                s.id
+            )));
         }
         let formats = USER_FORMATS.iter().find(|(k, _)| *k == s.kind).map(|(_, f)| *f);
         match formats {
@@ -236,7 +394,25 @@ pub fn merged(user_text: &str) -> Result<Vec<Source>> {
             }
             _ => {}
         }
-        if s.transport != Transport::Https || s.host().is_none() {
+        // A folder of OSV records is read on this machine, and advisories on
+        // this machine come only as such a folder.
+        if s.format == OSV_DIR && s.transport != Transport::Local {
+            return Err(bad("an osv-dir source is a folder on this machine: it gives a path, not a url"));
+        }
+        if s.kind == "advisories" && s.transport == Transport::Local && s.format != OSV_DIR {
+            return Err(bad("an advisories source with a path is a folder of OSV records: format = \"osv-dir\""));
+        }
+        if s.transport == Transport::Local {
+            if !LOCAL_KINDS.contains(&s.kind.as_str()) {
+                return Err(bad(&format!(
+                    "a {} source is fetched over https; a path is for {}",
+                    s.kind,
+                    LOCAL_KINDS.join(", ")
+                )));
+            }
+        } else if s.transport == Transport::Https && s.url.is_empty() && !keys.iter().any(|k| k == "url") {
+            return Err(bad("a source of yours gives a url (https) or a path on this machine"));
+        } else if s.transport != Transport::Https || s.host().is_none() {
             return Err(bad("a source of yours is fetched over https"));
         }
         match (s.kind.as_str(), s.sends.as_str()) {
@@ -252,9 +428,10 @@ pub fn merged(user_text: &str) -> Result<Vec<Source>> {
         }
         s.redistribute = false;
         s.redirects.clear();
+        defined.push((s.id.clone(), name.to_string()));
         all.push(s);
     }
-    Ok(all)
+    Ok(())
 }
 
 /// The sources in effect for this run, and the ids of the user's own.
@@ -272,10 +449,15 @@ static EFFECTIVE: LazyLock<RwLock<Arc<Effective>>> =
 /// this run. A file that can't be used leaves the bundled sources in effect
 /// and says why.
 pub fn configure(user_text: Option<&str>, deep: bool) -> Result<()> {
-    let merged = match user_text {
-        Some(t) => merged(t),
-        None => Ok(bundled().to_vec()),
-    };
+    let files: Vec<(String, String)> =
+        user_text.map(|t| (USER_FILE_NAME.to_string(), t.to_string())).into_iter().collect();
+    configure_files(&files, deep)
+}
+
+/// [`configure`] with several sources files, as `(name, text)`
+/// ([`merged_files`], [`read_files`]).
+pub fn configure_files(files: &[(String, String)], deep: bool) -> Result<()> {
+    let merged = merged_files(files);
     let (sources, err) = match merged {
         Ok(s) => (s, None),
         Err(e) => (bundled().to_vec(), Some(e)),
@@ -308,6 +490,18 @@ pub fn find(id: &str) -> Option<Source> {
 
 /// Whether a source is used this run: its tier is default, or deep with `--deep`.
 pub fn active(id: &str) -> bool {
+    used(id, effective().deep)
+}
+
+/// Whether a source is used by a `--deep` scan, whatever this run is: its
+/// tier is default or deep. For a read that reports what `--deep` would
+/// use (`wpantry rules` counts every rule), so it reads what a deep scan
+/// does and the two share one compiled copy.
+pub fn active_when_deep(id: &str) -> bool {
+    used(id, true)
+}
+
+fn used(id: &str, deep: bool) -> bool {
     #[cfg(test)]
     if TEST_ON.with(|on| on.borrow().iter().any(|x| x == id)) {
         return true;
@@ -315,7 +509,7 @@ pub fn active(id: &str) -> bool {
     let e = effective();
     e.sources.iter().find(|s| s.id == id).is_some_and(|s| match s.tier {
         Tier::Default => true,
-        Tier::Deep => e.deep,
+        Tier::Deep => deep,
         Tier::Off => false,
     })
 }

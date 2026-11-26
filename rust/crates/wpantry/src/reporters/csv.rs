@@ -17,12 +17,15 @@ fn line(fields: &[&str]) -> String {
     t
 }
 
-/// The latest findings, each joined with its OSV record's aliases and URL.
+/// The latest findings, each joined with its OSV record's aliases and URL:
+/// OSV's cached record, else a record from the user's folders of OSV
+/// records with its own link ("" for none, never OSV.dev's).
 pub fn findings(cache: &Cache) -> Result<String> {
     let mut stmt = cache.conn.prepare(
-        "SELECT f.vuln_id, v.aliases, v.url, f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location, \
+        "SELECT f.vuln_id, COALESCE(v.aliases, l.aliases), COALESCE(v.url, l.url), f.component, f.kind, f.version, f.fixed, f.severity, f.kev, f.status, f.location, \
          f.cvss, f.cvss_version, f.epss, f.epss_percentile, f.epss_date, f.note \
          FROM findings f LEFT JOIN vulns v ON v.id = f.vuln_id OR (' ' || v.aliases || ' ') LIKE ('% ' || f.vuln_id || ' %') \
+         LEFT JOIN local_vulns l ON v.id IS NULL AND (l.id = f.vuln_id OR (' ' || l.aliases || ' ') LIKE ('% ' || f.vuln_id || ' %')) \
          GROUP BY f.vuln_id, f.component, f.version, f.location",
     )?;
     let rows: Vec<Vec<String>> = stmt

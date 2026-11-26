@@ -200,3 +200,62 @@ fn a_root_command_runs_the_program_the_probe_resolved() {
     executable(&d.path().join("sysctl"), "#!/bin/sh\n");
     assert_eq!(root_command(&argv, true, Some(d.path().as_os_str())).get_program(), "sysctl");
 }
+
+/// Risk: only `which` left out the folders a scan must not open
+/// (`--no-personal-files`), so the tool inventory (`on_path`, which stats
+/// `dir/name` in every PATH folder) and the Python search (which lists
+/// `python3.*` in each) still touched a PATH folder like `~/Documents/bin`,
+/// which on macOS raises the privacy prompt. Oracle: what a consumer finds.
+/// A tool in a left-out PATH folder is found when nothing is left out (the
+/// witness: the consumer does look there), and not when its folder is, for
+/// PATH's folders and for the extra folders a caller adds; the reachable
+/// folder is still searched. Known bad: filter only in `which`.
+#[cfg(unix)]
+#[test]
+fn no_path_consumer_looks_inside_a_left_out_folder() {
+    let _home = test_home();
+    let h = home();
+    let name = "wpantry-no-such-binary-left-out";
+    let (shut, open) = (h.join("Documents/bin"), h.join("tools/bin"));
+    executable(&shut.join(name), "#!/bin/sh\n");
+    executable(&open.join(name), "#!/bin/sh\n");
+    let path = std::env::join_paths([&shut, &open]).unwrap();
+    let extra = [shut.display().to_string()];
+    let none: &[&str] = &[];
+    // The witness: with nothing left out both are searched.
+    assert_eq!(path_dirs_of(Some(&path)).len(), 2);
+    assert_eq!(on_path_in(name, path_dirs_of(Some(&path)), none).len(), 2);
+    assert_eq!(on_path_in(name, Vec::new(), &extra).len(), 1);
+    let guard = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    assert_eq!(path_dirs_of(Some(&path)), [open.display().to_string()], "PATH without the left-out folder");
+    let got = on_path_in(name, path_dirs_of(Some(&path)), none);
+    assert_eq!(got.iter().map(|(shown, _)| shown.clone()).collect::<Vec<_>>(), [format!("{}/{name}", open.display())]);
+    assert!(on_path_in(name, Vec::new(), &extra).is_empty(), "an extra folder is left out too");
+    assert_eq!(reachable(vec![shut.display().to_string(), open.display().to_string()]), [open.display().to_string()]);
+    drop(guard);
+    assert_eq!(path_dirs_of(Some(&path)).len(), 2, "the folder is back once the guard ends");
+}
+
+/// Risk: after `which`, `resolve` and the spawns share one `lookup`, a
+/// filter on only one of them would let another still stat a left-out PATH
+/// folder. Oracle: what each returns. With a tool in a left-out PATH folder
+/// and a copy in a system folder, both give the system copy once the folder
+/// is left out (the system folder is never filtered), and the PATH copy when
+/// nothing is. Known bad: no filter in `lookup`.
+#[cfg(unix)]
+#[test]
+fn which_and_resolve_skip_a_left_out_path_folder_but_not_the_system_folders() {
+    let _home = test_home();
+    let h = home();
+    let name = "wpantry-no-such-tool-lookup";
+    let (shut, sys) = (h.join("Documents/bin"), h.join("sysbin"));
+    executable(&shut.join(name), "#!/bin/sh\n");
+    executable(&sys.join(name), "#!/bin/sh\n");
+    let path = std::env::join_paths([&shut]).unwrap();
+    let system = [sys.to_str().unwrap()];
+    assert_eq!(which_with(name, Some(&path), &system), Some(shut.join(name)), "the witness: it looks there");
+    let guard = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    assert_eq!(which_with(name, Some(&path), &system), Some(sys.join(name)));
+    assert_eq!(resolve_with(OsStr::new(name), Some(&path), &system), sys.join(name));
+    drop(guard);
+}

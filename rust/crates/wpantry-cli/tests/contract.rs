@@ -164,6 +164,7 @@ fn sources() {
                 "tier",
                 "host",
                 "transport",
+                "path",
                 "user",
                 "license",
                 "redistribute",
@@ -172,12 +173,19 @@ fn sources() {
                 "last_attempt",
                 "last_success",
                 "fresh",
-                "error"
+                "error",
+                "records",
+                "skipped"
             ])
         );
         assert!(["default", "deep", "off"].contains(&str_(&s["tier"])), "{s}");
-        assert!(["https", "git"].contains(&str_(&s["transport"])), "{s}");
-        assert_eq!(s["host"].is_null(), s["transport"] == "git", "{s}");
+        assert!(["https", "git", "local"].contains(&str_(&s["transport"])), "{s}");
+        assert_eq!(s["host"].is_null(), s["transport"] == "git" || s["transport"] == "local", "{s}");
+        assert_eq!(s["path"].is_null(), s["transport"] != "local", "{s}");
+        // Counts only for a folder of OSV records on this machine.
+        if s["format"] != "osv-dir" {
+            assert_eq!(pick(s, &["records", "skipped"]), json!([null, null]), "{s}");
+        }
     }
     let r = t.run(&["sources"]);
     assert_eq!(r.code, 0);
@@ -188,7 +196,8 @@ fn sources() {
     write(
         &mine,
         "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n\n\
-         [[source]]\nid = \"team-rules\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example.com/t.yar\"\n",
+         [[source]]\nid = \"team-rules\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example.com/t.yar\"\n\n\
+         [[source]]\nid = \"team-hashes\"\nkind = \"hashes\"\nformat = \"lines\"\npath = \"~/lists/bad.txt\"\n",
     );
     let r = t.run(&["sources", "--sources", s(&mine), "--json"]);
     assert_eq!(r.code, 0);
@@ -197,6 +206,14 @@ fn sources() {
     assert_eq!(by_id["cisa-kev"]["tier"], "off");
     assert!(truthy(&by_id["team-rules"]["user"]));
     assert_eq!(by_id["team-rules"]["host"], "rules.example.com");
+    assert_eq!(by_id["team-rules"]["path"], Value::Null);
+    // A source on this machine: no host, its path as written.
+    let local = &by_id["team-hashes"];
+    assert_eq!(pick(local, &["transport", "host", "path"]), json!(["local", null, "~/lists/bad.txt"]), "{local}");
+    let r = t.run(&["sources", "--sources", s(&mine)]);
+    assert_eq!(r.code, 0);
+    let line = r.out.lines().find(|l| l.starts_with("team-hashes")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(line.contains("~/lists/bad.txt (yours)"), "the path where a host would be: {line}");
     write(&mine, "[[source]]\nid = \"cisa-kev\"\nurl = \"https://evil.example/kev.json\"\n");
     let r = t.run(&["sources", "--sources", s(&mine)]);
     assert_eq!(r.code, 2);
@@ -2886,4 +2903,75 @@ fn ignore_usage_errors_exit_2() {
     let r = t.run(&["ignore", "--help"]);
     assert_eq!(r.code, 0);
     assert!(r.out.contains("add") && r.out.contains("list") && r.out.contains("remove"), "{}", r.out);
+}
+
+/// Risk: `cd ~/Documents/proj && wpantry scan --no-personal-files --path .`
+/// (or a symlink to the project, or `~/documents/proj` on a volume that
+/// ignores case) left the project out of the scan, which read nothing and
+/// reported no problem. Oracle: the envelope's `checked` counts, which say
+/// what was read (`project dependencies`: the lockfile) and the findings
+/// (no not-checked finding for the root the user named). The run is the
+/// binary's own, with its working directory in the project, as a user's is;
+/// the folder next to it stays left out in every run.
+/// Known bad: the exception for the named path built from the path as typed
+/// (the run reads no lockfile).
+#[cfg(unix)]
+#[test]
+fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files() {
+    let t = Ctx::new();
+    let proj = t.home.join("Documents/proj");
+    mkdir(&proj);
+    write(
+        &proj.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"itoa\"\nversion = \"1.0.9\"\n\
+         source = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+    );
+    let other = t.home.join("Documents/other");
+    mkdir(&other);
+    write(&other.join("Cargo.lock"), std::fs::read(proj.join("Cargo.lock")).unwrap());
+    std::os::unix::fs::symlink(&proj, t.home.join("link")).unwrap();
+    let flags = ["scan", "--no-machine", "--no-personal-files", "--offline", "--json", "--no-input", "--path"];
+    let run = |cwd: &Path, path: &str| {
+        let mut argv = flags.to_vec();
+        argv.push(path);
+        envelope(&t.run_in(cwd, &argv).out)
+    };
+    let mut spellings = vec![
+        ("--path . from inside the project", proj.clone(), ".".to_string()),
+        ("a symlink to it", t.home.clone(), "link".to_string()),
+        ("a path with ..", t.home.clone(), "Documents/other/../proj".to_string()),
+    ];
+    // Another case, on a file system that ignores it (macOS by default).
+    if t.home.join("documents/proj").exists() {
+        spellings.push(("another letter case", t.home.clone(), "documents/proj".to_string()));
+    } else {
+        eprintln!("the letter-case spelling is skipped: this file system tells `documents` from `Documents`");
+    }
+    for (what, cwd, path) in spellings {
+        let env = run(&cwd, &path);
+        assert_eq!(env["checked"]["project dependencies"], 1, "{what}: the lockfile was not read: {}", env["checked"]);
+        let said: Vec<&str> = findings(&env).iter().map(|f| str_(&f["component"])).collect();
+        assert!(!said.iter().any(|c| c.starts_with("--path")), "{what}: {said:?}");
+    }
+    // The folder's other project is not what was named: left out, not read.
+    let env = run(&t.home, "Documents/other");
+    assert_eq!(env["checked"]["project dependencies"], 1, "a path named in full is read");
+    let env = envelope(
+        &t.run(&[
+            "scan",
+            "--no-machine",
+            "--no-personal-files",
+            "--offline",
+            "--json",
+            "--no-input",
+            "--path",
+            s(&t.home),
+        ])
+        .out,
+    );
+    assert!(
+        env["checked"].get("project dependencies").is_none(),
+        "the home folder's scan read a personal folder: {}",
+        env["checked"]
+    );
 }

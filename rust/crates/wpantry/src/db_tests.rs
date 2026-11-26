@@ -81,7 +81,9 @@ fn older_caches_gain_the_added_columns() {
             "excluded",
             "summary",
             "aliases",
-            "cwe"
+            "cwe",
+            "local_source",
+            "local_link"
         ]
     );
     let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap();
@@ -164,7 +166,9 @@ fn schema_matches_the_contract() {
             "excluded",
             "summary",
             "aliases",
-            "cwe"
+            "cwe",
+            "local_source",
+            "local_link"
         ]
     );
 }
@@ -271,4 +275,29 @@ fn an_older_caches_latest_scan_becomes_the_one_kept() {
     assert_eq!(crate::reporters::jsonl::findings(&c).unwrap()[0].vuln_id, "CVE-1");
     c.show_findings_of(6).unwrap();
     assert!(crate::reporters::jsonl::findings(&c).unwrap().is_empty());
+}
+
+/// A kept scan's findings are the findings, whole: a column added to
+/// `findings` and not to `run_findings` would drop it from `report --run`.
+#[test]
+fn a_kept_scans_findings_have_every_findings_column() {
+    let d = crate::utils::temp::TempDir::new("columns").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let columns = |table: &str| -> Vec<String> {
+        c.conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let mut findings = columns("findings");
+    let mut kept: Vec<String> = columns("run_findings").into_iter().filter(|c| c != "scan_id").collect();
+    let mut listed: Vec<String> = FINDING_COLUMNS.split(',').map(|c| c.trim().to_string()).collect();
+    findings.sort();
+    kept.sort();
+    listed.sort();
+    assert_eq!(kept, findings);
+    assert_eq!(listed, findings);
 }

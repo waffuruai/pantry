@@ -461,25 +461,206 @@ fn shim_probe(d: &temp::TempDir, exe: &std::path::Path) -> impl Fn(&str) -> Stri
     move |_: &str| json.clone()
 }
 
-/// Risk: a version-manager shim whose probe reports an interpreter the OS or a
-/// package manager vouches for is listed (runtime and packages) although the
-/// same interpreter found directly is dropped, so the scan offers pip and
-/// version-manager fixes for something other tools own. Oracle: the outcome
-/// equals the directly found one, which is empty; the stand-in `vouched`
-/// answers for the probed real path only, so no machine state is read.
+/// A fake interpreter for the user-site tests: a real file `exe` (the probe
+/// checks it exists), a system site holding `sysdist`, a user site holding
+/// `userdist` (not created when `userdist` is None) and the probe's JSON.
+#[cfg(unix)]
+struct FakePython {
+    exe: std::path::PathBuf,
+    json: String,
+}
+
+#[cfg(unix)]
+fn fake_python(d: &std::path::Path, name: &str, user: &std::path::Path, managed: bool, sys: &[&str]) -> FakePython {
+    let system = d.join(format!("{name}-system-site"));
+    std::fs::create_dir_all(&system).unwrap();
+    for dist in sys {
+        std::fs::create_dir_all(system.join(format!("{dist}-1.0.dist-info"))).unwrap();
+        std::fs::write(system.join(format!("{dist}-1.0.dist-info/METADATA")), format!("Name: {dist}\nVersion: 1.0\n"))
+            .unwrap();
+    }
+    let exe = d.join(name);
+    std::fs::write(&exe, "").unwrap();
+    let json = format!(
+        "{{\"v\": \"3.9.6\", \"exe\": \"{}\", \"user\": \"{}\", \"sites\": [\"{}\", \"{}\"], \"managed\": {managed}}}",
+        exe.display(),
+        user.display(),
+        user.display(),
+        system.display()
+    );
+    FakePython { exe, json }
+}
+
+/// One distribution in a user site folder, created on demand.
+#[cfg(unix)]
+fn put_dist(site: &std::path::Path, name: &str) {
+    std::fs::create_dir_all(site.join(format!("{name}-2.0.dist-info"))).unwrap();
+    std::fs::write(site.join(format!("{name}-2.0.dist-info/METADATA")), format!("Name: {name}\nVersion: 2.0\n"))
+        .unwrap();
+}
+
+/// A probe answering each interpreter's shown path with its fake JSON.
+#[cfg(unix)]
+fn fake_probe(pys: &[&FakePython]) -> impl Fn(&str) -> String + Sync {
+    let table: Vec<(String, String)> = pys.iter().map(|p| (p.exe.display().to_string(), p.json.clone())).collect();
+    move |shown: &str| table.iter().find(|(e, _)| e == shown).map(|(_, j)| j.clone()).unwrap_or_default()
+}
+
+/// `vouched` for exactly the interpreters named in `owned` (real paths).
+#[cfg(unix)]
+fn vouching(owned: &[&FakePython]) -> impl Fn(&str) -> &'static str {
+    let reals: Vec<String> = owned.iter().map(|p| files::realpath(&p.exe.display().to_string())).collect();
+    move |p: &str| if reals.iter().any(|r| r == p) { "os" } else { "" }
+}
+
+#[cfg(unix)]
+fn found_of(pys: &[&FakePython]) -> Vec<(String, String)> {
+    pys.iter().map(|p| (p.exe.display().to_string(), files::realpath(&p.exe.display().to_string()))).collect()
+}
+
+/// Risk: an interpreter the OS vouches for is dropped whole, so what a person
+/// installed with `pip install --user` (nobody else updates it) is never
+/// scanned; or the opposite, its system site packages (the OS updates those)
+/// are offered pip fixes. Oracle: the fixture holds one distribution in the
+/// user site and one in the system site; exactly the user-site one is
+/// reported, with no runtime, and its fix names the probed exe, carries
+/// `--user` and runs unattended.
 #[cfg(unix)]
 #[test]
-fn shim_to_a_vouched_interpreter_is_dropped_like_the_interpreter_found_directly() {
+fn vouched_unmanaged_python_reports_only_its_user_site() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyuser").unwrap();
+    let user = d.path().join("user-site");
+    put_dist(&user, "requests");
+    let py = fake_python(d.path(), "python3.9", &user, false, &["setuptools"]);
+    let (got, unread) = pythons_from(found_of(&[&py]), &fake_probe(&[&py]), &vouching(&[&py]));
+    let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["pip:requests"], "no runtime, no system site package");
+    let c = &got[0];
+    assert_eq!(c.path, py.exe.display().to_string());
+    assert!(c.fix.starts_with(&format!("{} -m pip install --user --upgrade ", py.exe.display())), "{}", c.fix);
+    assert!(c.fix.contains(" -m pip install --user --upgrade "), "{}", c.fix);
+    assert!(c.auto);
+    assert!(unread.is_empty());
+}
+
+/// Risk: a PEP 668 Python gets an unattended pip command that fails, or one
+/// that overrides the protection. Oracle: the user-site package is reported,
+/// not unattended, the text mentions `--user` and never the override flag;
+/// `pip` itself in the user site follows the same rule.
+#[cfg(unix)]
+#[test]
+fn vouched_managed_python_reports_user_site_without_a_command_or_override() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pymanaged").unwrap();
+    let user = d.path().join("user-site");
+    put_dist(&user, "requests");
+    put_dist(&user, "pip");
+    let py = fake_python(d.path(), "python3.12", &user, true, &["setuptools"]);
+    let (got, _) = pythons_from(found_of(&[&py]), &fake_probe(&[&py]), &vouching(&[&py]));
+    let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["pip", "pip:requests"]);
+    for c in &got {
+        assert!(!c.auto, "{}", c.fix);
+        assert!(c.fix.contains("--user"), "{}", c.fix);
+        assert!(!c.fix.contains("break-system-packages"), "{}", c.fix);
+        assert!(c.fix.contains("externally managed"), "{}", c.fix);
+    }
+}
+
+/// Risk: an interpreter whose user site was never created is probed further
+/// or invents findings. Oracle: nothing is reported, not even a gap.
+#[cfg(unix)]
+#[test]
+fn vouched_python_without_a_user_site_reports_nothing() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pynouser").unwrap();
+    let py = fake_python(d.path(), "python3.9", &d.path().join("no-such-user-site"), false, &["setuptools"]);
+    let (got, unread) = pythons_from(found_of(&[&py]), &fake_probe(&[&py]), &vouching(&[&py]));
+    assert!(got.is_empty() && unread.is_empty(), "{:?}", got.iter().map(|c| &c.name).collect::<Vec<_>>());
+}
+
+/// Risk: one user site read by two interpreters yields the same dist-info
+/// directory as two findings (two fixes for one package), or the finding
+/// goes to the vouched-for interpreter when an unvouched one already reports
+/// the site. Oracle: the shared package is listed once; with one of each, by
+/// the unvouched interpreter, with its runtime, wherever it comes in the list;
+/// with two vouched-for, by the first.
+#[cfg(unix)]
+#[test]
+fn a_shared_user_site_is_reported_once() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyshared").unwrap();
+    let user = d.path().join("user-site");
+    put_dist(&user, "requests");
+    let a = fake_python(d.path(), "python3.14-a", &user, false, &[]);
+    let b = fake_python(d.path(), "python3.14-b", &user, false, &[]);
+    let listed = |got: &[Component]| -> Vec<(String, String)> {
+        got.iter().filter(|c| c.name == "pip:requests").map(|c| (c.path.clone(), c.fix.clone())).collect()
+    };
+    for order in [[&a, &b], [&b, &a]] {
+        // `a` vouched for, `b` not: `b` keeps it, and its fix is the plain one.
+        let (got, _) = pythons_from(found_of(&order), &fake_probe(&[&a, &b]), &vouching(&[&a]));
+        let l = listed(&got);
+        assert_eq!(l.len(), 1, "{l:?}");
+        assert_eq!(l[0].0, b.exe.display().to_string());
+        assert!(!l[0].1.contains("--user"), "an unvouched interpreter's fix is unchanged: {}", l[0].1);
+        assert!(got.iter().any(|c| c.kind == "runtime" && c.path == b.exe.display().to_string()));
+    }
+    // both vouched for: the first one reads it.
+    let (got, _) = pythons_from(found_of(&[&a, &b]), &fake_probe(&[&a, &b]), &vouching(&[&a, &b]));
+    let l = listed(&got);
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert_eq!(l[0].0, a.exe.display().to_string());
+}
+
+/// Risk: the new rule leaks into interpreters nobody vouches for. Oracle: an
+/// unvouched interpreter reports its runtime, the user site and the system
+/// site packages, with the plain `-m pip install --upgrade` fix (no `--user`).
+#[cfg(unix)]
+#[test]
+fn an_unvouched_python_reports_user_and_system_sites_as_before() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyplain").unwrap();
+    let user = d.path().join("user-site");
+    put_dist(&user, "requests");
+    let py = fake_python(d.path(), "python3.11", &user, false, &["setuptools"]);
+    let (got, _) = pythons_from(found_of(&[&py]), &fake_probe(&[&py]), &vouching(&[]));
+    let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["python", "pip:requests", "pip:setuptools"]);
+    for c in got.iter().filter(|c| c.kind == "package") {
+        assert_eq!(c.fix, format!("{} -m pip install --upgrade '{}>={{safe}}'", py.exe.display(), &c.name[4..]));
+        assert!(c.auto);
+    }
+}
+
+/// Risk: a shim to a vouched-for interpreter is listed whole (runtime and
+/// system packages), or dropped whole so its user-site packages vanish.
+/// Oracle: the outcome equals the directly found one: no runtime, no system
+/// package, the user-site package once, shown at the shim, fixed through the
+/// probed exe; the stand-in `vouched` answers for the probed real path only.
+#[cfg(unix)]
+#[test]
+fn shim_to_a_vouched_interpreter_keeps_only_its_user_site_packages() {
     let _home = files::test_home();
     let d = temp::TempDir::new("pyvouched").unwrap();
-    let probed = d.path().join("vouched-python3.9");
-    let probe = shim_probe(&d, &probed);
-    let real = files::realpath(&probed.display().to_string());
-    let vouched = move |p: &str| if p == real { "os" } else { "" };
+    let user = d.path().join("user-site");
+    put_dist(&user, "requests");
+    let py = fake_python(d.path(), "vouched-python3.9", &user, false, &["setuptools"]);
     let shim = "/x/mise/shims/python3".to_string();
-    let (got, unread) = pythons_from(vec![(shim, "/x/mise/bin/mise".to_string())], &probe, &vouched);
-    assert!(got.is_empty(), "{:?}", got.iter().map(|c| &c.name).collect::<Vec<_>>());
+    let found = vec![(shim.clone(), "/x/mise/bin/mise".to_string())];
+    let (got, unread) = pythons_from(found, &fake_probe_for_any(&py), &vouching(&[&py]));
+    let names: Vec<&str> = got.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["pip:requests"]);
+    assert_eq!(got[0].path, shim);
+    assert!(got[0].fix.starts_with(&format!("{} -m pip install --user", py.exe.display())), "{}", got[0].fix);
     assert!(unread.is_empty());
+}
+
+#[cfg(unix)]
+fn fake_probe_for_any(py: &FakePython) -> impl Fn(&str) -> String + Sync {
+    let json = py.json.clone();
+    move |_: &str| json.clone()
 }
 
 /// Risk: the new filter drops too much, hiding a shim whose interpreter

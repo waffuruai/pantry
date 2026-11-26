@@ -204,6 +204,13 @@ pub enum Command {
     Prune {
         ids: Vec<i64>,
     },
+    /// `recheck ID --from-scan N`: is that one finding of the latest scan
+    /// still there.
+    Recheck {
+        id: String,
+        from_scan: i64,
+        json: bool,
+    },
     Sync {
         refresh: bool,
         json: bool,
@@ -448,6 +455,16 @@ fn commands() -> Cli {
                 .opt(Opt::new("--hours <n>", "extension-cooldown: the cooldown").default("72"))
                 .opts(scan_opts())
                 .after_help("Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage error, 3 internal error."),
+        )
+        .command(
+            Cli::new("recheck")
+                .description("Is one finding of the latest scan still there? After a fix, look at the machine for that one component, where the scan found it, with the checks the scan used and the answers the cache already holds. It asks the network nothing, runs no fix and no scan, and writes only when the finding is gone: it is then resolved in the history and left out of the latest findings. A finding wpantry can't narrow-check is unknown, never gone.")
+                .summary("Is one finding of the latest scan still there? Looks at that component only")
+                .argument("<id>", "the finding's id (F-…), from fix list or the JSON report")
+                .option("--from-scan <id>", "the latest scan's number, as fix --from-scan takes it (required)")
+                .option("--json", "the answer as one JSON object: {schema, finding, scan, state, reason, detail, keys}")
+                .option("--no-input", "never prompt (this command never does)")
+                .after_help("States: gone (exit 0), still_present (exit 1), unknown (exit 3: could not tell, or refused: an unknown id, a scan that is no longer the latest, a finding with no narrow check). Exit 2 is a usage error."),
         )
         .command(
             Cli::new("report")
@@ -889,6 +906,16 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             Command::Report(Show { part, ..show(m)? })
         }
         ["runs"] => Command::Runs { json: flag("json") },
+        ["recheck"] => {
+            let Some(from_scan) = m.get::<i64>("from-scan")? else {
+                return Err(m.error("recheck needs --from-scan N, the latest scan's number (wpantry runs lists it)"));
+            };
+            if from_scan < 1 {
+                return Err(m.error("--from-scan expects a positive scan id"));
+            }
+            let id = m.arg("id").unwrap_or_default().trim().to_string();
+            Command::Recheck { id, from_scan, json: flag("json") }
+        }
         ["prune"] => {
             let mut ids = Vec::new();
             for word in m.args("id") {

@@ -1579,6 +1579,40 @@ fn cmd_ignore(action: IgnoreAction, json: bool) -> Result<i32> {
     Ok(reply.code)
 }
 
+/// `recheck ID --from-scan N`: one finding of the latest scan, looked at
+/// again on its own. Prints one line, or with `--json` one object, and
+/// exits 0 gone, 1 still present, 3 could not tell. A cache that can't be
+/// opened or written is "could not tell" too: the program that asked gets
+/// its object either way.
+fn cmd_recheck(id: &str, from_scan: i64, json: bool) -> Result<i32> {
+    use wpantry::recheck::{self, Outcome, Verdict};
+    let outcome = Cache::open(None).and_then(|cache| recheck::recheck(cache, id, from_scan)).unwrap_or_else(|e| {
+        let first = e.to_string().lines().next().unwrap_or("").trim().to_string();
+        let reason = if matches!(e, wpantry::Error::Cache(_)) { "cache" } else { "error" };
+        let shown = if wpantry::remediation::queue::is_id(id) { id.to_ascii_uppercase() } else { id.to_string() };
+        let detail = format!("The cache could not be read or written ({first}); nothing was changed.");
+        Outcome { finding: shown, scan: from_scan, verdict: Verdict::unknown(reason, detail), keys: Vec::new() }
+    });
+    let Outcome { finding, scan, verdict, keys } = outcome;
+    if json {
+        emit(
+            &obj([
+                ("schema", J::Int(SCHEMA)),
+                ("finding", finding.as_str().into()),
+                ("scan", J::Int(scan)),
+                ("state", verdict.state.name().into()),
+                ("reason", verdict.reason.into()),
+                ("detail", verdict.detail.as_str().into()),
+                ("keys", J::Arr(keys.iter().map(|k| k.as_str().into()).collect())),
+            ])
+            .dumps(),
+        );
+    } else {
+        say(&format!("{finding}: {} ({}). {}", verdict.state.name(), verdict.reason, verdict.detail));
+    }
+    Ok(verdict.state.exit())
+}
+
 fn cmd_print(text: &str) -> Result<i32> {
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -1614,6 +1648,7 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
         Command::Runs { json } => tell_unfinished().and_then(|()| cmd_runs(json)),
         Command::Prune { ids } => cmd_prune(&ids),
+        Command::Recheck { id, from_scan, json } => cmd_recheck(&id, from_scan, json),
         Command::Update { check, json, yes, no_input, offline, version } => {
             update::run(update::Update { check, json, yes, no_input, offline, version })
         }

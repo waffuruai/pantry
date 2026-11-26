@@ -55,15 +55,8 @@ impl Host for Real {
 
     fn root(&self, argv: &[&str]) -> Result<()> {
         let shown = argv.join(" ");
-        let mut cmd = if self.read(&["id", "-u"]).trim() == "0" {
-            let mut c = std::process::Command::new(argv[0]);
-            c.args(&argv[1..]);
-            c
-        } else {
-            let mut c = std::process::Command::new("sudo");
-            c.args(argv);
-            c
-        };
+        let root = self.read(&["id", "-u"]).trim() == "0";
+        let mut cmd = root_cmd(argv, root, std::env::var_os("PATH").as_deref());
         // stdout is not captured: sudo's prompt and nft's errors show on the terminal.
         let status = cmd.status().map_err(|e| Error::Failed(format!("{shown}: {e}")))?;
         if status.success() { Ok(()) } else { Err(Error::Failed(format!("{shown} failed ({status})"))) }
@@ -76,6 +69,15 @@ impl Host for Real {
         let _ = std::fs::remove_file(&tmp);
         out
     }
+}
+
+/// The command that runs `argv` as root. As root the program is resolved as
+/// the probes' [`Host::read`] resolves it (PATH, then the system folders), so
+/// a tool a probe found is the one that runs; through sudo, sudo's own
+/// search path applies.
+fn root_cmd(argv: &[&str], root: bool, path: Option<&OsStr>) -> std::process::Command {
+    let argv: Vec<&OsStr> = argv.iter().map(OsStr::new).collect();
+    crate::utils::process::root_command(&argv, root, path)
 }
 
 fn name_of(path: &str) -> String {
@@ -416,8 +418,24 @@ fn cve_2026_98432(host: &dyn Host, _: &Settings, mode: Mode, confirm: Confirm, s
                     "nft (install nftables: sudo apt install nftables, or sudo dnf install nftables)".into(),
                 ));
             }
+            // What the rule file held before this run, if it was there: a
+            // load that fails must leave things as they were.
+            let before =
+                host.read(&["ls", "-d", RULE_FILE]).trim().eq(RULE_FILE).then(|| host.read(&["cat", RULE_FILE]));
             host.write_root(RULE_FILE, &rules())?;
-            host.root(&["nft", "-f", RULE_FILE])?;
+            if let Err(load) = host.root(&["nft", "-f", RULE_FILE]) {
+                // A rule file that was never loaded must not stay in place as if
+                // it were active: take away the one this run created (as
+                // `--undo` does), or put back the one that was there.
+                let undone = match &before {
+                    Some(old) => host.write_root(RULE_FILE, old),
+                    None => host.root(&["rm", "-f", RULE_FILE]),
+                };
+                return Err(match undone {
+                    Ok(()) => load,
+                    Err(e) => Error::Failed(format!("{load}; and {RULE_FILE} could not be undone: {e}")),
+                });
+            }
             say(&format!("  ✓ rule loaded: nft list table inet {TABLE}"));
             if host.read(&["systemctl", "--version"]).trim().is_empty() {
                 say(&format!(

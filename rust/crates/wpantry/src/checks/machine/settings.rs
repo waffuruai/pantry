@@ -171,7 +171,15 @@ pub fn posture(scan: &mut Scan) {
 fn posture_with(scan: &mut Scan, runner: crate::checks::machine::settings::Runner) {
     use crate::checks::machine::settings::{Severity, Status};
     scan.status("Checking the machine's security settings");
-    let skip = scan.opts.policy.posture_skip();
+    let mut skip = scan.opts.policy.posture_skip();
+    if cfg!(target_os = "macos") && scan.opts.no_personal_files {
+        skip.push("POSTURE-SAFARI-SAFE-FILES".into());
+        scan.excluded(
+            "Safari settings",
+            "--no-personal-files",
+            "Safari’s protected app data was not read. Include personal folders to check it.",
+        );
+    }
     let results = run(&skip, runner);
     scan.count("security settings checked", results.len() as i64);
     for (c, o) in results {

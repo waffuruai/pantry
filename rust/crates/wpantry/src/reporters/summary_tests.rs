@@ -116,3 +116,46 @@ fn the_summary_counts_against_the_policy_targets() {
     let j = json(&s).dumps();
     assert!(j.contains("\"known_exploited_open\": 1") && j.contains("\"who\": \"eric@mac\""), "{j}");
 }
+
+/// Risk: `report summary` listed an area the user left out (`excluded`) as a
+/// coverage gap, so the summary an auditor reads said "not checked" about a
+/// scope the user chose. Oracle: `Finding::is_gap` and the contract's
+/// `unchecked` text (only a failed source or unreadable path is a gap).
+/// Known bad: filter on `kind == "unchecked"` alone and the list has two
+/// names, in the text and in the JSON.
+#[test]
+fn the_summary_lists_a_real_gap_but_not_an_area_the_user_left_out() {
+    let unchecked = |component: &str, excluded: bool| Finding {
+        kind: "unchecked".into(),
+        component: component.into(),
+        excluded,
+        ..Default::default()
+    };
+    let report = Report {
+        outcome: Outcome {
+            scan_id: 1,
+            findings: vec![unchecked("Personal documents and images", true), unchecked("CISA KEV", false)],
+            ..Default::default()
+        },
+        scan: ScanDetail { row: ScanRow { id: 1, finished_at: 3.0, ..Default::default() }, ..Default::default() },
+        after_fixes: false,
+        history: None,
+        part: Part::Summary,
+    };
+    let s = summary(&report);
+    assert_eq!(s.gaps, ["CISA KEV"]);
+    let j = json(&s).dumps();
+    assert!(j.contains("CISA KEV") && !j.contains("Personal documents"), "{j}");
+    let md = md(&s);
+    assert!(md.contains("CISA KEV") && !md.contains("Personal documents"), "{md}");
+    // Only an excluded area: nothing is listed as not checked.
+    let only = Report {
+        outcome: Outcome {
+            scan_id: 1,
+            findings: vec![unchecked("Personal documents and images", true)],
+            ..Default::default()
+        },
+        ..report
+    };
+    assert!(summary(&only).gaps.is_empty());
+}

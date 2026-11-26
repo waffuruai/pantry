@@ -2,6 +2,8 @@
 
 Pantry inventories what is installed on your computer and what your git repos lock, then asks a few public sources about only those exact versions. This page lists every check and every source.
 
+On macOS the default search for repos under `~` skips `~/Pictures`, `~/Music`, `~/Movies` and Photos or Music libraries, which hold no code and would raise a privacy prompt. Give `--path` to scan inside one.
+
 See also: [usage.md](usage.md) (running it), [install.md](install.md), [architecture.md](architecture.md).
 
 ## What it checks

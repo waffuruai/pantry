@@ -474,7 +474,7 @@ function normalize(raw, meta){
   var fs=(raw.findings||[]).map(function(f,i){
     var kind=f.kind||'other';
     return {n:i+1, kind:kind, component:f.component||'', version:f.version||'', location:f.location||'',
-      vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?'unchecked':(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
+      vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?(f.excluded===true?'excluded':'unchecked'):(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
       cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile), epss_date:f.epss_date||'', epss_model:f.epss_model||'',
       dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
@@ -483,7 +483,9 @@ function normalize(raw, meta){
   var r={title:meta.title||'Scan', file:meta.file||'', source:meta.source||'json', loadedAt:meta.loadedAt||null, original:!meta.loadedAt,
     schema:raw.schema, impl:raw.impl||'', version:raw.version||'', checked:raw.checked||{}, unfixed:raw.unfixed||0,
     unknown_licenses:raw.unknown_licenses||0, findings:fs, partial:meta.source==='csv'};
-  var c={fail:0,warn:0,unchecked:0,kev:0}, advs=Object.create(null), comps=Object.create(null);
+  // Finding::is_gap(): an `unchecked` finding is a gap (state 'unchecked') unless the user
+  // left the area out (`excluded`, state 'excluded'): that is no gap and no failed source.
+  var c={fail:0,warn:0,unchecked:0,excluded:0,kev:0}, advs=Object.create(null), comps=Object.create(null);
   fs.forEach(function(f){c[f.state]++; if(f.kev)c.kev++; if(isAdvisory(f))advs[f.vuln_id]=1; if(f.state==='fail')comps[f.kind+'|'+f.component+'|'+f.version+'|'+f.location]=1;});
   c.advisories=Object.keys(advs).length; c.components=Object.keys(comps).length;
   r.counts=c;
@@ -505,7 +507,7 @@ function planFor(r){
   }
   var by=Object.create(null);
   r.findings.forEach(function(f){
-    if(!f.fix_cmd||f.state==='unchecked')return;
+    if(!f.fix_cmd||f.kind==='unchecked')return;
     var s=by[f.fix_cmd]; if(!s){s={cmd:f.fix_cmd,findings:[],auto:true,fails:false,own:false};by[f.fix_cmd]=s;steps.push(s)}
     s.findings.push(f); s.auto=s.auto&&f.fix_auto; s.fails=s.fails||f.state==='fail';
   });
@@ -564,7 +566,7 @@ function rowsOf(fs){
 }
 function areasOf(r){
   var by=Object.create(null), kinds=[];
-  r.findings.forEach(function(f){if(f.state==='unchecked')return; if(!by[f.kind]){by[f.kind]=[];kinds.push(f.kind)} by[f.kind].push(f)});
+  r.findings.forEach(function(f){if(f.kind==='unchecked')return; if(!by[f.kind]){by[f.kind]=[];kinds.push(f.kind)} by[f.kind].push(f)});
   return kinds.map(function(k){
     var fs=by[k], rows=rowsOf(fs);
     return {kind:k, label:kindLabel(k), fs:fs, rows:rows, rank:rows.length?rank(rows[0].top):999,
@@ -667,6 +669,8 @@ function scannedHTML(r,print){
   } else if(!r.partial){
     out+='<p class="ok-line">Every source answered: no coverage gaps were recorded for this scan.</p>';
   } else out+='<p class="ok-line">A CSV export does not record coverage gaps; it cannot establish complete coverage.</p>';
+  var left=r.findings.filter(function(f){return f.state==='excluded'});
+  if(left.length)out+='<p class="ok-line">Left out by your choice, so not read: '+left.map(function(f){return esc(f.component)}).join(', ')+'. That is a scope you picked, not a coverage gap.</p>';
   if(r.unknown_licenses)out+='<p class="ok-line">'+esc(plural(r.unknown_licenses,'dependency','dependencies'))+' have no license the scanner can identify.</p>';
   // scope
   function mode(key,yes,no){return sc&&typeof sc[key]==='boolean'?(sc[key]?yes:no):'Not recorded'}

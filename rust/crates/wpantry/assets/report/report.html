@@ -842,9 +842,10 @@ function manualHTML(r,print){
 // What a scan covered, as the command that repeats it; null when not recorded.
 function rescanCmd(sc){
   if(!sc||typeof sc.machine!=='boolean'||!Array.isArray(sc.paths))return null;
-  var cmd='wpantry scan';
-  sc.paths.forEach(function(p){if(typeof p==='string')cmd+=' --path '+(/^[\w.\/~@%+=:,-]+$/.test(shortPath(p))?shortPath(p):"'"+String(shortPath(p)).replace(/'/g,"'\\''")+"'")});
-  if(!sc.machine)cmd+=' --no-machine';
+  var cmd='wpantry scan', project=sc.project===true&&sc.paths.length===1;
+  if(project)cmd+=' project';
+  sc.paths.forEach(function(p){if(typeof p==='string')cmd+=(project?' ':' --path ')+(/^[\w.\/~@%+=:,-]+$/.test(shortPath(p))?shortPath(p):"'"+String(shortPath(p)).replace(/'/g,"'\\''")+"'")});
+  if(!sc.machine&&!project)cmd+=' --no-machine';
   if(sc.licenses===true)cmd+=' --licenses';
   if(sc.machine&&sc.personal_files===false&&!sc.paths.length)cmd+=' --no-personal-files';
   return cmd;
@@ -873,7 +874,7 @@ function fixCode(cmd){
 }
 function agentPrompt(r){
   var sc=r.original&&bundle.scope&&typeof bundle.scope==='object'?bundle.scope:null, rescan=rescanCmd(sc);
-  var what=!sc?null:(sc.machine?'this computer and ':'')+(sc.paths&&sc.paths.length?'the repos and folders under '+sc.paths.map(shortPath).join(', '):'every git repo under ~');
+  var what=!sc?null:sc.project===true&&sc.paths&&sc.paths.length===1?'the project at '+shortPath(sc.paths[0])+' and the runtimes it uses':(sc.machine?'this computer and ':'')+(sc.paths&&sc.paths.length?'the repos and folders under '+sc.paths.map(shortPath).join(', '):'every git repo under ~');
   var meta=['wpantry '+(r.version||'(version not recorded)')];
   if(r.original&&Number.isSafeInteger(bundle.scan_id))meta.push('scan #'+bundle.scan_id);
   if(r.original&&typeof bundle.generated_at==='number'){var w=when(bundle.generated_at);if(w)meta.push(w)}

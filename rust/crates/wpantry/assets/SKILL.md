@@ -14,8 +14,8 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Goal | Command |
 |---|---|
 | Report what applies on this computer: machine + every git repo under `~` (exits 1 when something fails) | `wpantry scan` |
-| One project only, no machine inventory | `wpantry scan --path ~/code/app --no-machine` |
-| A clone you didn't write, before opening it in an agent or editor (hooks that run on open fail) | `wpantry scan --path ~/Downloads/repo --no-machine` |
+| One project only: its repos and the runtimes it pins, nothing else of the machine | `wpantry scan project ~/code/app` |
+| A clone you didn't write, before opening it in an agent or editor (hooks that run on open fail) | `wpantry scan project ~/Downloads/repo` |
 | Show the update plan, change nothing | `wpantry fix --dry-run` |
 | Apply the fixes that can run unattended, then re-check | `wpantry fix` (also installs the stopgaps, after a yes on the terminal; `--yes` skips the question) |
 | What wpantry can mitigate here, and what has an unattended fix | `wpantry fix list` |
@@ -70,4 +70,4 @@ For anything the CLI doesn't answer, query the cache read-only: `sqlite3 -readon
 - A false positive or a fixture goes in the repo's `.pantryignore` (gitignore patterns under `[kind]` or `[kind id]` sections; the finding's `fix_cmd` names the line, or `wpantry ignore add <F-id> --scope repo --reason "..."` writes it, `ignore list` shows the rules and `ignore remove` takes one out). Suggest it; don't add one unless asked, and never one that hides a fail you haven't confirmed is false. A repo's `.pantryignore` can't skip `malware`, `suspect-code`, `hidden-text`, `repo-hook` or `clipper`: an `IGNORE-PROTECTED` finding means the repo asked to, which is itself worth reporting.
 - The email breach check sends the user's address to a third party. Never enable it (`wpantry breach --enable`) unless the user asks.
 - An answer of "not affected" depends on how fresh the cache is. Say when it was last refreshed (`--refresh` forces it) and whether the machine was offline.
-- A default run walks the whole home directory. When the question is about one project, pass `--path` (and `--no-machine` if the machine isn't in question).
+- A default run walks the whole home directory. When the question is about one project, run `wpantry scan project DIR`: it checks that project and the runtime versions it pins, not every version installed. `--path DIR` narrows the repo checks but keeps the whole machine inventory.

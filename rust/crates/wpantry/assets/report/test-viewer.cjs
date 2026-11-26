@@ -252,6 +252,9 @@ load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...repo
 assert(ctx.viewerTest.agentPrompt(ctx.viewerTest.cur()).length<5000,'the prompt stays short however many findings');
 load({...bundle,scope:{...scope,machine:false,paths:['/Users/me/my repo','/Users/me/w']}});
 assert(ctx.viewerTest.agentPrompt(ctx.viewerTest.cur()).includes("`wpantry scan --path '~/my repo' --path ~/w --no-machine --licenses`"),'paths are quoted for the shell');
+load({...bundle,scope:{...scope,machine:false,project:true,paths:['/Users/me/my repo']}});
+assert(ctx.viewerTest.agentPrompt(ctx.viewerTest.cur()).includes("`wpantry scan project '~/my repo' --licenses`"),'a project scan repeats as scan project');
+assert(ctx.viewerTest.agentPrompt(ctx.viewerTest.cur()).includes('the project at ~/my repo and the runtimes it uses'),'a project scan says what it covered');
 load(bundle);
 search('smallvec');
 assert(main().includes('class="fleet"') && main().includes('>Check out our other tools'),'the fleet callout is on screen');

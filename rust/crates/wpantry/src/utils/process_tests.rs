@@ -304,3 +304,27 @@ fn root_finds_a_tool_on_path_alone() {
     }
     assert_eq!(is_root(), cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0");
 }
+
+/// Risk: a PATH folder that is a link into a left-out folder (`~/bin` linked
+/// to `~/Documents/bin`) passes the spelling check, so the lookup stats a
+/// file inside the folder the scan promised not to open. Oracle: the tool is
+/// found in the other PATH folder, and every consumer of the PATH list
+/// (`path_dirs_of`, `reachable`, `which`) drops the linked one.
+#[cfg(unix)]
+#[test]
+fn a_path_folder_that_is_a_link_into_a_left_out_folder_is_not_looked_in() {
+    let d = TempDir::new("leftout-link").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap(); // macOS keeps its temp folder behind a link
+    let (docs, ok) = (root.join("Documents"), root.join("ok"));
+    executable(&docs.join("bin/tool"), "#!/bin/sh\n");
+    executable(&ok.join("tool"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink("Documents/bin", root.join("bin")).unwrap();
+    let linked = root.join("bin");
+    let path = std::env::join_paths([&linked, &ok]).unwrap();
+    assert_eq!(which_in("tool", Some(&path)), Some(linked.join("tool")));
+    let guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    assert_eq!(which_in("tool", Some(&path)), Some(ok.join("tool")));
+    assert_eq!(path_dirs_of(Some(&path)), [ok.to_string_lossy().into_owned()]);
+    assert_eq!(reachable(vec![linked.display().to_string(), ok.display().to_string()]), [ok.display().to_string()]);
+    drop(guard);
+}

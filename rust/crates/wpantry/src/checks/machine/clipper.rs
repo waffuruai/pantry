@@ -210,7 +210,7 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
             // read, the command line is all there is.
             if let Some(p) = &program
                 && !is_interpreter(p)
-                && !crate::utils::privacy::is_left_out(p)
+                && !crate::utils::privacy::reaches_left_out(p)
                 && let Ok(bytes) = files::read_capped_bytes(p, MAX_PROGRAM)
             {
                 text.push('\n');
@@ -254,7 +254,7 @@ pub fn persisted_files() -> Vec<PathBuf> {
                 continue;
             }
             if let Some(program) =
-                program_file(&command_of(&item)).filter(|p| !crate::utils::privacy::is_left_out(p) && p.is_file())
+                program_file(&command_of(&item)).filter(|p| !crate::utils::privacy::reaches_left_out(p) && p.is_file())
             {
                 out.push(program);
             }

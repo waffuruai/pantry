@@ -24,7 +24,7 @@ pub fn path_dirs() -> Vec<String> {
 pub(crate) fn path_dirs_of(path: Option<&OsStr>) -> Vec<String> {
     match path {
         Some(p) => std::env::split_paths(p)
-            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .filter(|d| !crate::utils::privacy::reaches_left_out(d))
             .map(|d| d.to_string_lossy().into_owned())
             .collect(),
         None => Vec::new(),
@@ -34,7 +34,7 @@ pub(crate) fn path_dirs_of(path: Option<&OsStr>) -> Vec<String> {
 /// `dirs` without the ones inside a folder the scan leaves out: for the
 /// extra directories a caller searches beside PATH.
 pub fn reachable(dirs: Vec<String>) -> Vec<String> {
-    dirs.into_iter().filter(|d| !crate::utils::privacy::is_left_out(d)).collect()
+    dirs.into_iter().filter(|d| !crate::utils::privacy::reaches_left_out(d)).collect()
 }
 
 /// The first executable called `name` on PATH (Python: `shutil.which`), else
@@ -108,7 +108,7 @@ pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Opt
         // looked in: even a stat there raises a privacy prompt. The system folders are not
         // filtered: they are fixed, root-owned places.
         std::env::split_paths(path)
-            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .filter(|d| !crate::utils::privacy::reaches_left_out(d))
             .flat_map(|d| suffixes.iter().map(move |s| named(&d, s)))
             .find(|p| is_executable(p))
     });

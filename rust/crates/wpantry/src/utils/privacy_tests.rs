@@ -87,3 +87,55 @@ fn the_verbatim_spelling_is_the_same_folder() {
     assert!(within(r"\\?\C:\Users\u\Documents\x", r"C:\Users\u\Documents"));
     assert!(!within(r"\\?\C:\Users\u\Code", r"C:\Users\u\Documents"));
 }
+
+/// Risk: the check goes by the spelling alone, so a PATH entry or a login
+/// item's program that reaches `Documents` through a link (`~/bin` linked to
+/// `~/Documents/bin`, `work/docs/..`-style spellings, a relative path from
+/// the folder itself) passes it, and the scan stats or opens the folder the
+/// flag promised not to touch. Oracle: a layout of real links in a temp
+/// dir; the answer is fixed by where each path leads, and nothing leads
+/// anywhere for a loop, a dangling link or a path that is not there.
+/// Known bad: `is_left_out` alone.
+#[cfg(unix)]
+#[test]
+fn a_path_that_reaches_a_left_out_folder_through_a_link_is_left_out() {
+    use std::os::unix::fs::symlink;
+    let d = crate::utils::temp::TempDir::new("privacy-links").unwrap();
+    // The temp folder under its canonical spelling (macOS keeps it behind a link): the guard names
+    // the folders as `folders` does, in the spelling the links lead to.
+    let h = std::fs::canonicalize(d.path()).unwrap().join("home");
+    std::fs::create_dir_all(h.join("Documents/bin")).unwrap();
+    std::fs::create_dir_all(h.join("work")).unwrap();
+    std::fs::create_dir_all(h.join("bin-real")).unwrap();
+    symlink("Documents/bin", h.join("bin")).unwrap(); // relative target
+    symlink(h.join("Documents"), h.join("work/docs")).unwrap(); // absolute target
+    symlink("hop2", h.join("hop1")).unwrap();
+    symlink("Documents", h.join("hop2")).unwrap(); // two links in a row
+    symlink("loop-b", h.join("loop-a")).unwrap();
+    symlink("loop-a", h.join("loop-b")).unwrap();
+    symlink("nowhere", h.join("dangling")).unwrap();
+    let guard = leave_out(vec![h.join("Documents")], Vec::new());
+    for inside in [
+        "Documents/bin",
+        "bin",
+        "work/docs",
+        "work/docs/bin",
+        "hop1/bin",
+        "work/docs/..",
+        "work/docs/../Documents/x",
+        "bin/tool",
+    ] {
+        assert!(reaches_left_out(h.join(inside)), "{inside}");
+    }
+    for outside in ["bin-real", "work", "loop-a", "loop-a/x", "dangling", "dangling/x", "absent/x"] {
+        assert!(!reaches_left_out(h.join(outside)), "{outside}");
+    }
+    // The cheap spelling check does not know about links: that is the gap.
+    assert!(!is_left_out(h.join("bin")));
+    // A path the user named inside the folder is still let in.
+    drop(guard);
+    let guard = leave_out(vec![h.join("Documents")], vec![h.join("Documents/bin")]);
+    assert!(!reaches_left_out(h.join("bin")), "the named path is read as asked, by the link too");
+    drop(guard);
+    assert!(!reaches_left_out(h.join("bin")), "nothing is left out once the guard is gone");
+}

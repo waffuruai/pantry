@@ -131,6 +131,78 @@ pub fn within(path: impl AsRef<Path>, dir: impl AsRef<Path>) -> bool {
     names(path.as_ref()).starts_with(&names(dir.as_ref()))
 }
 
+/// The most links [`reaches_left_out`] follows before it gives up and says no
+/// (a loop of links).
+const MAX_LINKS: usize = 40;
+
+/// Whether `path` is left out ([`is_left_out`]) or reaches a left-out folder
+/// through a symbolic link on the way: `~/bin` that is a link to
+/// `~/Documents/bin`, `~/work/link/bin` for a link to `~/Documents`, a
+/// relative path from a folder that is one. Each link met is read (never
+/// followed with a stat first), and its target is judged by the same
+/// spelling rule, so no left-out folder is opened to find out: only the
+/// links on the way, which are in folders that are not left out, are looked
+/// at. A loop of links, a link that points nowhere and a path that does not
+/// exist are not left out. The cheap spelling check ([`is_left_out`]) is the
+/// one for a walk that does not follow links; this one is for a path a
+/// program is about to be looked up, stat'ed or opened at.
+///
+/// ```
+/// use std::path::Path;
+/// use wpantry::utils::privacy::{leave_out, reaches_left_out};
+/// let guard = leave_out(vec![Path::new("/nonexistent-home/Documents").to_path_buf()], vec![]);
+/// assert!(reaches_left_out("/nonexistent-home/Documents/bin"));
+/// assert!(!reaches_left_out("/nonexistent-home/bin"));
+/// drop(guard);
+/// ```
+pub fn reaches_left_out(path: impl AsRef<Path>) -> bool {
+    use std::path::Component;
+    if LEFT_OUT.read().expect("lock").is_empty() {
+        return false;
+    }
+    let mut path = path.as_ref().to_path_buf();
+    if path.is_relative() {
+        match std::env::current_dir() {
+            Ok(cwd) => path = cwd.join(path),
+            Err(_) => return false,
+        }
+    }
+    'again: for _ in 0..=MAX_LINKS {
+        // By spelling, the whole path first: when it is left out nothing on the way is looked at.
+        // A path inside a named subtree is not, and its ancestors (the folder itself) may be
+        // looked at to find the links on the way.
+        if is_left_out(&path) {
+            return true;
+        }
+        let mut so_far = PathBuf::new();
+        let mut parts = path.components();
+        while let Some(part) = parts.next() {
+            match part {
+                Component::ParentDir => {
+                    // `link/..` leaves a folder the path went through.
+                    if is_left_out(&so_far) {
+                        return true;
+                    }
+                    so_far.pop();
+                    continue;
+                }
+                Component::CurDir => continue,
+                other => so_far.push(other),
+            }
+            if std::fs::symlink_metadata(&so_far).is_ok_and(|m| m.file_type().is_symlink())
+                && let Ok(target) = std::fs::read_link(&so_far)
+            {
+                let base =
+                    if target.is_absolute() { PathBuf::new() } else { so_far.parent().unwrap_or(&so_far).into() };
+                path = base.join(target).join(parts.as_path());
+                continue 'again;
+            }
+        }
+        return false;
+    }
+    false
+}
+
 /// Whether the symlink at `link` points into a left-out folder, read from
 /// the link alone (a relative target is taken from the link's folder).
 /// Following it, even to stat it, would open that folder.

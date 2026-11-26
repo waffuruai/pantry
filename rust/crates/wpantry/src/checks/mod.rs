@@ -808,6 +808,7 @@ impl<'a> Scan<'a> {
 
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
+        crate::history::scan_started(&self.cache, &self.opts, started_at)?;
         crate::utils::walk::forget_walks();
         self.step(watch::SOURCES);
         self.use_sources();
@@ -865,6 +866,7 @@ impl<'a> Scan<'a> {
             totals,
             &self.opts,
         )?;
+        crate::history::scan_finished(&self.cache)?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,

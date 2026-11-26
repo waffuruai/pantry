@@ -59,6 +59,21 @@ fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
+/// Say, on stderr, which scans began and never finished: one interrupted
+/// (Ctrl-C, a closed terminal, a crash) saved nothing, and one still
+/// running will replace what `report` shows. Each interrupted scan is told
+/// once.
+fn tell_unfinished() -> Result<()> {
+    let cache = Cache::open(None)?;
+    let found = wpantry::history::unfinished(&cache, &wpantry::utils::process::alive)?;
+    let latest = wpantry::history::latest_scan(&cache)?;
+    cache.close()?;
+    for scan in found {
+        tell(&Style::stderr().line(&style::clean(&scope_shown(&scan.line(latest)))));
+    }
+    Ok(())
+}
+
 /// A one-line note on stderr, or the events' `note` under `scan --events`.
 fn tell(line: &str) {
     match events::active() {
@@ -179,6 +194,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
     if !a.allow_sleep {
         wpantry::utils::process::stay_awake();
     }
+    tell_unfinished()?;
     let net = wpantry::utils::net::Http::new();
     let first = scan(opts.clone(), quiet, &net, ev.map(|e| e as &dyn wpantry::checks::watch::Watch))?;
     // The scan is done; what it found is shown as `wpantry report` shows it.
@@ -438,7 +454,22 @@ fn cmd_report(show: &Show) -> Result<i32> {
     let cache = Cache::open(None)?;
     // The logs, when the report shows them; the HTML page always carries them.
     let days = (show.part.logs() || show.format == Shown::Html).then_some(show.since);
-    let found = match wpantry::reporters::latest(&cache, days)? {
+    let found = match show.run {
+        Some(id) => match wpantry::reporters::of_run(&cache, id, days)? {
+            Some(report) => Some(report),
+            None => {
+                cache.close()?;
+                eprintln!(
+                    "{}",
+                    Style::stderr()
+                        .red(&format!("✗ wpantry: no scan {id} with its findings kept: wpantry runs lists them"))
+                );
+                return Ok(EXIT_FAIL);
+            }
+        },
+        None => wpantry::reporters::latest(&cache, days)?,
+    };
+    let found = match found {
         // A log needs no scan: a fix can be run, and logged, before one.
         None if !show.part.findings() && show.part != wpantry::reporters::Part::Summary => {
             Some(wpantry::reporters::logs_only(&cache, show.since)?)
@@ -581,6 +612,98 @@ fn cmd_cache_prune(days: i64) -> Result<i32> {
         file.display()
     ));
     Ok(EXIT_OK)
+}
+
+/// How long a scan took: `45s`, `3m 07s`, `1h 02m`.
+fn took(seconds: f64) -> String {
+    let s = seconds.max(0.0).round() as i64;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// A scan's scope with the home directory as `~`: `project:~/code/app`.
+fn scope_shown(scope: &str) -> String {
+    let home = wpantry::utils::files::home().to_string_lossy().into_owned();
+    if home.len() > 1 { scope.replace(&home, "~") } else { scope.to_string() }
+}
+
+/// `runs`: the scans whose findings are kept, the latest first.
+fn cmd_runs(json: bool) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let runs = wpantry::history::runs(&cache)?;
+    cache.close()?;
+    if json {
+        emit(&wpantry::history::runs_json(&runs));
+        return Ok(EXIT_OK);
+    }
+    if runs.is_empty() {
+        say("no scan yet: run wpantry scan");
+        return Ok(EXIT_OK);
+    }
+    let rows: Vec<[String; 7]> = runs
+        .iter()
+        .map(|r| {
+            [
+                format!("{}{}", r.row.id, if r.latest { " *" } else { "" }),
+                wpantry::history::stamp(r.row.finished_at),
+                took(r.row.finished_at - r.row.started_at),
+                r.row.fails.to_string(),
+                r.row.warns.to_string(),
+                r.row.unchecked.to_string(),
+                scope_shown(&r.row.scope),
+            ]
+        })
+        .collect();
+    let head = ["scan", "finished", "took", "fails", "warns", "not checked", "scope"].map(String::from);
+    let width = |i: usize| rows.iter().chain([&head]).map(|r| r[i].chars().count()).max().unwrap_or(0);
+    for row in [&head].into_iter().chain(&rows) {
+        let cells: Vec<String> = (0..7)
+            .map(|i| match i {
+                // Numbers to the right, the scope (last) as long as it is.
+                2..=5 => format!("{:>w$}", row[i], w = width(i)),
+                6 => row[i].clone(),
+                _ => format!("{:<w$}", row[i], w = width(i)),
+            })
+            .collect();
+        println!("{}", cells.join("  ").trim_end());
+    }
+    say(&format!(
+        "* is what wpantry report shows; report --run N shows another, prune N forgets one. The latest {} are kept.",
+        wpantry::history::KEEP_RUNS
+    ));
+    Ok(EXIT_OK)
+}
+
+/// `prune ID...`: forget those scans' findings; exit 1 when one isn't kept.
+fn cmd_prune(ids: &[i64]) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let mut status = EXIT_OK;
+    for id in ids {
+        match wpantry::history::prune_run(&cache, *id)? {
+            Some((row, gone)) => say(&format!(
+                "pruned scan {id} ({}, {}): {gone} findings",
+                scope_shown(&row.scope),
+                wpantry::history::stamp(row.finished_at)
+            )),
+            None => {
+                eprintln!(
+                    "{}",
+                    Style::stderr()
+                        .red(&format!("✗ wpantry: no scan {id} with its findings kept: wpantry runs lists them"))
+                );
+                status = EXIT_FAIL;
+            }
+        }
+    }
+    match wpantry::history::latest_scan(&cache)? {
+        Some(latest) => say(&format!("wpantry report now shows scan {latest}")),
+        None => say("no scan is kept now: run wpantry scan"),
+    }
+    cache.close()?;
+    Ok(status)
 }
 
 fn mb(bytes: u64) -> String {
@@ -1480,30 +1603,38 @@ fn dispatch(cmd: Command) -> Result<i32> {
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),
             _ => cmd_rules(update, json),
         },
-        Command::Report(show) => cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now())),
+        Command::Report(show) => tell_unfinished()
+            .and_then(|()| cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now()))),
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
         Command::Schedule { action, every, at, dry_run, json } => cmd_schedule(&action, &every, &at, dry_run, json),
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
+        Command::Runs { json } => tell_unfinished().and_then(|()| cmd_runs(json)),
+        Command::Prune { ids } => cmd_prune(&ids),
         Command::Update { check, json, yes, no_input, offline, version } => {
             update::run(update::Update { check, json, yes, no_input, offline, version })
         }
-        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json, from_scan } => match target {
-            Target::List => cmd_fix_list(json),
-            Target::Next => cmd_fix_next(json),
-            Target::Secret(id) => cmd_fix_secret(&id, dry_run, no_input),
-            Target::Id(id) => cmd_mitigate(
-                &id,
-                FixOne {
-                    from_scan,
-                    dry_run,
-                    json,
-                    yes,
-                    no_input,
-                    undo,
-                    settings: wpantry::remediation::mitigate::Settings { bundle, hours },
-                },
-            ),
-        },
+        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json, from_scan } => {
+            // fix list, next and ID read the latest kept scan: say when a
+            // scan since then never finished, as report does.
+            tell_unfinished()?;
+            match target {
+                Target::List => cmd_fix_list(json),
+                Target::Next => cmd_fix_next(json),
+                Target::Secret(id) => cmd_fix_secret(&id, dry_run, no_input),
+                Target::Id(id) => cmd_mitigate(
+                    &id,
+                    FixOne {
+                        from_scan,
+                        dry_run,
+                        json,
+                        yes,
+                        no_input,
+                        undo,
+                        settings: wpantry::remediation::mitigate::Settings { bundle, hours },
+                    },
+                ),
+            }
+        }
     }
 }
 

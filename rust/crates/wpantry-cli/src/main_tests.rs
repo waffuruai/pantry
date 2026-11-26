@@ -30,6 +30,17 @@ fn numbers_round_and_sizes_read_in_mb() {
 }
 
 #[test]
+fn a_scans_duration_reads_in_its_largest_units() {
+    for (seconds, want) in [(0.2, "0s"), (45.4, "45s"), (187.0, "3m 07s"), (3720.0, "1h 02m"), (-4.0, "0s")] {
+        assert_eq!(took(seconds), want);
+    }
+    let _home = wpantry::utils::files::test_home();
+    let home = wpantry::utils::files::home().to_string_lossy().into_owned();
+    assert_eq!(scope_shown(&format!("project:{home}/code/app")), "project:~/code/app");
+    assert_eq!(scope_shown("repos:/srv/app+licenses"), "repos:/srv/app+licenses");
+}
+
+#[test]
 fn the_envelope_carries_the_counts_and_findings() {
     let scan = Outcome {
         scan_id: 3,

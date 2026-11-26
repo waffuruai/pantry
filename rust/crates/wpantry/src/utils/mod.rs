@@ -18,6 +18,7 @@ pub mod net;
 pub mod os;
 pub mod parallel;
 pub mod plist;
+pub mod privacy;
 pub mod process;
 pub mod re;
 pub mod sha256;

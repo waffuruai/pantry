@@ -190,6 +190,16 @@ wpantry search "tarfile traversal"            # rank cached advisories (FTS5: "e
 wpantry search openssl --applicable --json    # only those that apply here
 ```
 
+## macOS privacy prompts
+
+macOS asks before a program opens some folders, and a scan started by a GUI program or a scheduled job has nobody to answer. With `--no-personal-files` (what a scheduled run uses) a scan never lists or opens:
+
+- `~/Documents`, `~/Desktop` and `~/Downloads`, in any pass: finding repos, the files pass, the malware scan, the programs that start at login, the PATH;
+- iCloud Drive and other cloud drives (`~/Library/Mobile Documents`, `~/Library/CloudStorage`), `~/Pictures`, `~/Music` and `~/Movies`;
+- other apps' data: `~/Library/Mail`, `Messages`, `Safari`, `Calendars`, `Application Support/AddressBook`, `Containers` and `Group Containers`.
+
+They are left out by path, before anything touches them, and the report says so as "Skipped by your choice" (`Repositories in personal folders`, `Personal documents and images`). A repo kept in one of them is not scanned. To include them, run the scan without `--no-personal-files` at a terminal that can answer the prompt, or name the folder: `wpantry scan --path ~/Documents/project` scans that path and what is under it even with the flag; the rest of that folder stays left out for every pass, the login programs and PATH included. A login program (a launch agent's, for one) that sits in a left-out folder is not opened or checked, and the report lists it as not checked, naming the item and the program. A folder the system refuses to list (a denied prompt, no Full Disk Access) is reported as not checked and the scan goes on. On Linux and Windows the flag leaves out the same three folders under your home folder.
+
 ## Fixing
 
 ```bash
@@ -419,12 +429,15 @@ Options:
                             can read, ~ first (or each --path), for malware with every system's
                             rules and for secrets; git history's files up to 256 MB with no time
                             limit
-  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
-                            passes, reported as not checked (for unattended runs)
+  --no-personal-files       never open Downloads, Desktop or Documents in any pass, finding repos
+                            included (on macOS also the other folders it asks permission for),
+                            reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
   --events                  write the scan's progress to stderr as JSON Lines (steps, the path being
@@ -489,6 +502,8 @@ Options:
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
   -h, --help                print this help
@@ -563,12 +578,15 @@ Options:
                             can read, ~ first (or each --path), for malware with every system's
                             rules and for secrets; git history's files up to 256 MB with no time
                             limit
-  --no-personal-files       leave Downloads, Desktop and Documents out of the document and malware
-                            passes, reported as not checked (for unattended runs)
+  --no-personal-files       never open Downloads, Desktop or Documents in any pass, finding repos
+                            included (on macOS also the other folders it asks permission for),
+                            reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
   -h, --help                print this help
@@ -757,9 +775,11 @@ Every outside source wpantry reads: its kind, tier, host and licence, when it wa
 whether that is fresh, and what last went wrong.
 
 Options:
-  --json            the sources as JSON
-  --sources <file>  your sources file (default: ~/.config/wpantry/sources.toml when it exists)
-  -h, --help        print this help
+  --json                the sources as JSON
+  --sources <file>      your sources file (default: ~/.config/wpantry/sources.toml when it exists)
+  --add-sources <file>  add this sources file's sources to yours; repeat it for more (an id may be
+                        defined once)
+  -h, --help            print this help
 ```
 
 ### ignore

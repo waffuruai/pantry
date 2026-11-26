@@ -260,6 +260,344 @@ fn no_personal_files_keeps_documents_out_of_a_repo_only_scan() {
     drop(home);
 }
 
+/// A `.git` with a HEAD under `d`: a repo the search finds.
+fn repo_at(d: &Path) {
+    std::fs::create_dir_all(d.join(".git")).unwrap();
+    std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+}
+
+/// `mode` on `d` (Unix): 0o000 makes any listing or open of it fail, as
+/// the privacy system's denial does.
+#[cfg(unix)]
+fn chmod(d: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Oracle: with `--no-personal-files` no file-system call lists or opens
+/// Downloads, Desktop or Documents in the repo search or any walk. The
+/// witness: Desktop and Downloads are mode 000, so listing either would be
+/// recorded by the walk as unreadable (and would fail outright for the
+/// repo search), and the search's status lines name every folder it
+/// enters; with the flag neither names them, the readable Documents repo is
+/// not scanned, the scan says once what it left out (one excluded
+/// `unchecked` finding, one note) and nothing errs. Without the flag the
+/// Documents repo is scanned and the walk records the 000 folders as
+/// unreadable: the witness sees a touch when there is one.
+/// Known bad: a search that descends into Documents with the flag (the
+/// mutation the PR names) puts its repo in scope.
+#[cfg(unix)]
+#[test]
+fn an_unattended_scan_never_lists_the_personal_folders() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    for d in ["code/a", "Documents/b", "Desktop/c", "Downloads/d"] {
+        repo_at(&h.join(d));
+    }
+    let locked = [h.join("Desktop"), h.join("Downloads")];
+    locked.iter().for_each(|d| chmod(d, 0o000));
+    // Running as root reads a 000 folder anyway: the witness can't work.
+    let enforced = std::fs::read_dir(&locked[0]).is_err();
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
+    let notes = std::sync::Mutex::new(Vec::<String>::new());
+    let note = |m: &str| notes.lock().unwrap().push(m.to_string());
+    let statuses = std::sync::Mutex::new(Vec::<String>::new());
+    let status = |m: &str| statuses.lock().unwrap().push(m.to_string());
+    let mut s = Scan::new(Options::default(), cache, &net, &|_| {}, &note);
+    s.status = &status;
+    s.opts.machine = false;
+    s.opts.no_malware = true;
+    s.opts.no_personal_files = true;
+    s.scope_repos();
+    let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| r.clone()).collect();
+    assert_eq!(roots, [h.join("code/a")]);
+    let personal =
+        |line: &String| ["Documents", "Desktop", "Downloads"].iter().any(|p| line.contains(&format!("/{p}")));
+    assert!(!statuses.lock().unwrap().iter().any(personal), "{:?}", statuses.lock().unwrap());
+    let left: Vec<&Finding> = s.findings.iter().filter(|f| f.component == "Repositories in personal folders").collect();
+    assert_eq!(left.len(), 1, "{:?}", s.findings);
+    assert!(left[0].excluded && left[0].kind == "unchecked", "{:?}", left[0]);
+    let said: Vec<String> = notes.lock().unwrap().clone();
+    assert_eq!(said.iter().filter(|n| n.contains("left out of this scan")).count(), 1, "{said:?}");
+    assert!(
+        said[0].contains("~/Documents") && said[0].contains("~/Desktop") && said[0].contains("~/Downloads"),
+        "{said:?}"
+    );
+
+    // A home that is a checkout: walked whole, the 000 folders never listed.
+    repo_at(&h);
+    s.scope_repos();
+    assert!(crate::utils::walk::walk(&h, 6).iter().all(|(d, _)| !d.starts_with(h.join("Documents"))));
+    assert_eq!(crate::utils::walk::unreadable(&h), Vec::<PathBuf>::new(), "a left-out folder was listed");
+    assert!(s.file_jobs().iter().all(|j| !crate::utils::privacy::is_left_out(&j.root)));
+
+    // The witness: without the flag the folders are walked, so the 000 ones
+    // are recorded as unreadable, quietly, and the Documents repo is in.
+    s.opts.no_personal_files = false;
+    crate::utils::walk::forget_walks();
+    s.scope_repos();
+    let walked = crate::utils::walk::walk(&h, 6);
+    assert!(walked.iter().any(|(d, _)| d.starts_with(h.join("Documents"))));
+    if enforced {
+        let mut unreadable = crate::utils::walk::unreadable(&h);
+        unreadable.sort();
+        assert_eq!(unreadable, locked.to_vec(), "the witness sees a listing");
+    }
+    locked.iter().for_each(|d| chmod(d, 0o755));
+    crate::utils::walk::exclude_under(&h, Vec::new());
+    crate::utils::walk::forget_walks();
+    drop(home);
+}
+
+/// Oracle: a `--path` inside a personal folder is scanned as asked, with
+/// the flag; the other personal folders stay left out.
+#[test]
+fn a_named_path_inside_a_personal_folder_is_still_scanned() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/x"));
+    repo_at(&h.join("Desktop/y"));
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![PathBuf::from("~/Documents/x")]);
+    s.scope_repos();
+    let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| std::fs::canonicalize(r).unwrap()).collect();
+    assert_eq!(roots, [std::fs::canonicalize(h.join("Documents/x")).unwrap()]);
+    assert!(!crate::utils::privacy::is_left_out(h.join("Documents/x")));
+    assert!(crate::utils::privacy::is_left_out(h.join("Desktop/y")));
+    s.opts.no_personal_files = false;
+    s.scope_repos();
+    assert!(!crate::utils::privacy::is_left_out(h.join("Desktop/y")), "the guard ends with the flag");
+    drop(home);
+}
+
+/// Risk: naming one project in a personal folder lifts the whole folder
+/// off the exclusion list, so the persistence and PATH checks (which ask
+/// the same `is_left_out` gate) and every other walk may open unrelated
+/// paths beside it, which raises the privacy prompt the flag exists to
+/// avoid. Oracle: with `--path ~/Documents/proj` the project (and its
+/// subfolders) is scanned, while a persistence program, a PATH folder, a
+/// sibling repo and a sibling whose name only starts like the project's, all
+/// in the same Documents, are left out exactly as when no project is named
+/// (the gate says so and a walk of them lists nothing).
+/// Known bad: the exception that drops the whole containing folder.
+#[test]
+fn a_named_project_does_not_open_its_personal_folder_for_other_passes() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    repo_at(&h.join("Documents/other"));
+    for f in ["Documents/proj/src/a.txt", "Documents/other/agent", "Documents/bin/tool", "Documents/proj2/b.txt"] {
+        std::fs::create_dir_all(h.join(f).parent().unwrap()).unwrap();
+        std::fs::write(h.join(f), "x").unwrap();
+    }
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![PathBuf::from("~/Documents/proj")]);
+    s.scope_repos();
+    let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| std::fs::canonicalize(r).unwrap()).collect();
+    assert_eq!(roots, [std::fs::canonicalize(h.join("Documents/proj")).unwrap()]);
+    let left = crate::utils::privacy::is_left_out;
+    assert!(!left(h.join("Documents/proj")) && !left(h.join("Documents/proj/src/a.txt")), "the named project is in");
+    for (what, p) in [
+        ("a persistence program", "Documents/other/agent"),
+        ("a PATH folder", "Documents/bin"),
+        ("a PATH tool", "Documents/bin/tool"),
+        ("a sibling repo", "Documents/other"),
+        ("a sibling named like the project", "Documents/proj2/b.txt"),
+        ("the folder itself", "Documents"),
+        ("another personal folder", "Desktop/y"),
+    ] {
+        assert!(left(h.join(p)), "{what} ({p}) must stay left out");
+    }
+    let walked = |d: &str| crate::utils::walk::walk(&h.join(d), 6).len();
+    assert!(walked("Documents/proj") > 0, "the named project is walked");
+    for d in ["Documents/other", "Documents/bin", "Documents/proj2"] {
+        assert_eq!(walked(d), 0, "{d} was walked");
+    }
+    // Without the flag the guard ends and nothing is left out.
+    s.opts.no_personal_files = false;
+    s.scope_repos();
+    assert!(!left(h.join("Documents/bin/tool")), "the guard ends with the flag");
+    drop(home);
+}
+
+/// Oracle: `--path ~` names a folder that holds the personal folders; it
+/// does not name anything inside them, so they stay left out.
+#[test]
+fn naming_the_home_folder_does_not_let_the_personal_folders_back_in() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/x"));
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![PathBuf::from("~")]);
+    s.scope_repos();
+    assert!(crate::utils::privacy::is_left_out(h.join("Documents/x")));
+    drop(home);
+}
+
+/// Oracle: a folder the system won't let the scan list, outside the
+/// personal folders, is not checked, quietly: the repo search goes on past
+/// it, the walk records it once as unreadable (what the report lists as
+/// not checked) and nothing fails. Known bad: a search that fails on a
+/// denied folder (the mutation the PR names) panics here.
+#[cfg(unix)]
+#[test]
+fn a_denied_folder_elsewhere_is_not_checked_and_fails_nothing() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("code/a"));
+    std::fs::create_dir_all(h.join("code/locked/inner")).unwrap();
+    std::fs::create_dir_all(h.join("shut")).unwrap();
+    chmod(&h.join("code/locked"), 0o000);
+    chmod(&h.join("shut"), 0o000);
+    let enforced = std::fs::read_dir(h.join("shut")).is_err();
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = scan(&net, &dir);
+    s.opts.machine = false;
+    s.scope_repos();
+    assert_eq!(s.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(), [h.join("code/a")]);
+    repo_at(&h);
+    s.scope_repos();
+    crate::utils::walk::forget_walks();
+    let _ = crate::utils::walk::walk(&h, 6);
+    if enforced {
+        let mut unreadable = crate::utils::walk::unreadable(&h);
+        unreadable.sort();
+        assert_eq!(unreadable, [h.join("code/locked"), h.join("shut")]);
+    }
+    chmod(&h.join("code/locked"), 0o755);
+    chmod(&h.join("shut"), 0o755);
+    crate::utils::walk::forget_walks();
+    drop(home);
+}
+
+/// A scan of `path` (`--path`) with `--no-personal-files`, its repos found.
+fn named_scan<'a>(net: &'a Fake, dir: &crate::utils::temp::TempDir, path: &Path) -> Scan<'a> {
+    let mut s = scan(net, dir);
+    s.opts.machine = false;
+    s.opts.no_malware = true;
+    s.opts.no_personal_files = true;
+    s.opts.paths = Some(vec![path.to_path_buf()]);
+    s.scope_repos();
+    s
+}
+
+/// Risk: the exception for a `--path` inside a personal folder was kept
+/// as typed, while the search root is canonical, so `--path .` from inside
+/// the project, a symlink to it, or `a/../b` left the exception empty: the
+/// root was then left out, the scan walked nothing and reported clean.
+/// Oracle: for each spelling of one project in `~/Documents`, the scan's
+/// root is that project (canonical), neither it nor what is under it is left
+/// out, a walk of it lists its files, the folder's other repo stays left out,
+/// and the scan carries no gap. `--path .` itself needs a working directory
+/// the tests cannot change in parallel, so the relative spelling goes up from
+/// the test's own directory to the project, which is the same unresolved
+/// shape (relative, with `..`).
+/// Known bad: `named` built from the typed path alone.
+#[cfg(unix)]
+#[test]
+fn a_named_path_in_any_spelling_is_scanned_and_never_left_out() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    repo_at(&h.join("Documents/other"));
+    std::fs::write(h.join("Documents/proj/a.txt"), "x").unwrap();
+    std::fs::create_dir_all(h.join("code")).unwrap();
+    std::os::unix::fs::symlink(h.join("Documents/proj"), h.join("code/link")).unwrap();
+    let proj = std::fs::canonicalize(h.join("Documents/proj")).unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let up = "../".repeat(cwd.components().count() - 1);
+    let relative = PathBuf::from(format!("{up}{}", proj.strip_prefix("/").unwrap().display()));
+    let net = Fake::offline();
+    for (what, spelled) in [
+        ("a relative path with ..", relative),
+        ("a symlink to it", h.join("code/link")),
+        ("~ and a ..", PathBuf::from("~/code/../Documents/proj")),
+        ("a trailing dot", h.join("Documents/proj/.")),
+        ("as typed", h.join("Documents/proj")),
+    ] {
+        let dir = crate::utils::temp::TempDir::new("check").unwrap();
+        let s = named_scan(&net, &dir, &spelled);
+        let roots: Vec<PathBuf> = s.repos.iter().map(|(_, r)| r.clone()).collect();
+        assert_eq!(roots, std::slice::from_ref(&proj), "{what}: the search root");
+        assert!(!crate::utils::privacy::is_left_out(&proj), "{what}: the root was left out");
+        assert!(!crate::utils::privacy::is_left_out(proj.join("a.txt")), "{what}: its files were left out");
+        assert!(crate::utils::privacy::is_left_out(h.join("Documents/other")), "{what}: a sibling got in");
+        assert!(!crate::utils::walk::walk(&proj, 6).is_empty(), "{what}: nothing was read");
+        assert!(s.findings.iter().all(|f| !f.is_gap()), "{what}: {:?}", s.findings);
+    }
+    drop(home);
+}
+
+/// Oracle: the same on a volume that ignores case (macOS, Windows' NTFS):
+/// `--path ~/documents/proj` is the project in `Documents`, scanned, and the
+/// folder's other repo is left out in any case. Skipped, with the reason
+/// printed, on a case-sensitive file system, where `documents` is no folder.
+#[test]
+fn a_differently_cased_path_is_scanned_where_the_volume_ignores_case() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    repo_at(&h.join("Documents/other"));
+    std::fs::write(h.join("Documents/proj/a.txt"), "x").unwrap();
+    if !h.join("documents/proj").exists() {
+        println!("skipped: this file system is case-sensitive, so `documents` is another folder");
+        return;
+    }
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let s = named_scan(&net, &dir, &PathBuf::from("~/documents/proj"));
+    let roots: Vec<String> = s.repos.iter().map(|(_, r)| r.to_string_lossy().to_lowercase()).collect();
+    let want = std::fs::canonicalize(h.join("Documents/proj")).unwrap().to_string_lossy().to_lowercase();
+    assert_eq!(roots, [want]);
+    let root = &s.repos[0].1;
+    assert!(!crate::utils::privacy::is_left_out(root), "the root was left out");
+    assert!(!crate::utils::walk::walk(root, 6).is_empty(), "nothing was read");
+    assert!(crate::utils::privacy::is_left_out(h.join("documents/other")), "a sibling got in");
+    assert!(s.findings.iter().all(|f| !f.is_gap()), "{:?}", s.findings);
+    drop(home);
+}
+
+/// Risk: whatever the spelling, a `--path` root that ends up left out is
+/// read as nothing and the scan says clean. Oracle: the findings. A second
+/// guard (what a spelling the exception did not cover would amount to) leaves
+/// the named root out; the scan then carries exactly one not-checked finding
+/// that is a gap, names the path and gives the command that reads it, and a
+/// scan whose root is read carries none.
+/// Known bad: no check, and the findings are empty.
+#[test]
+fn a_named_root_that_ends_up_left_out_is_never_a_clean_scan() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    repo_at(&h.join("Documents/proj"));
+    let net = Fake::offline();
+    let dir = crate::utils::temp::TempDir::new("check").unwrap();
+    let mut s = named_scan(&net, &dir, &h.join("Documents/proj"));
+    s.flag_named_roots_left_out();
+    assert!(s.findings.iter().all(|f| !f.is_gap()), "a root that is read is no gap: {:?}", s.findings);
+    let _other = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    s.flag_named_roots_left_out();
+    let gaps: Vec<&Finding> = s.findings.iter().filter(|f| f.is_gap()).collect();
+    assert_eq!(gaps.len(), 1, "{:?}", s.findings);
+    assert!(gaps[0].component.starts_with("--path ") && gaps[0].component.contains("proj"), "{:?}", gaps[0]);
+    assert!(gaps[0].fix_cmd.starts_with("wpantry scan --path ") && gaps[0].note.contains("nothing in it was read"));
+    drop(home);
+}
+
 fn kev_entry(cve: &str, added: &str, vendor: &str, product: &str) -> kev::Entry {
     kev::Entry { cve: cve.into(), added: added.into(), vendor: vendor.into(), product: product.into() }
 }

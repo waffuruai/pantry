@@ -62,13 +62,24 @@ fn malware_options_and_the_rules_command() {
     assert!(usage(&["rules", "goodware", "x"]).contains("too many arguments for 'goodware'"));
     assert!(help(&["scan"]).contains("--no-malware") && help(&["scan"]).contains("--deep"));
     assert!(help(&["rules"]).contains("--update") && help(&["rules"]).contains("gen [options] <sample...>"));
-    assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false, file: None }));
-    assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true, file: None }));
+    assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false, file: None, added: vec![] }));
+    assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true, file: None, added: vec![] }));
     assert_eq!(
         p(&["sources", "--sources", "/s.toml"]),
-        Parsed::Run(Command::Sources { json: false, file: Some("/s.toml".into()) })
+        Parsed::Run(Command::Sources { json: false, file: Some("/s.toml".into()), added: vec![] })
     );
     assert_eq!(scan(&["scan", "--sources", "/s.toml"]).sources, Some("/s.toml".into()));
+    // --add-sources repeats, in order, on scan, fix and sources; sync and rules don't take it.
+    let added: Vec<std::path::PathBuf> = vec!["/a.toml".into(), "/b.toml".into()];
+    assert_eq!(scan(&["scan", "--add-sources", "/a.toml", "--add-sources", "/b.toml"]).add_sources, added);
+    assert_eq!(scan(&["fix", "--add-sources", "/a.toml", "--add-sources", "/b.toml"]).add_sources, added);
+    assert_eq!(scan(&["scan"]).add_sources, Vec::<std::path::PathBuf>::new());
+    assert_eq!(
+        p(&["sources", "--add-sources", "/a.toml", "--add-sources", "/b.toml"]),
+        Parsed::Run(Command::Sources { json: false, file: None, added })
+    );
+    assert!(usage(&["sync", "--add-sources", "/a.toml"]).contains("add-sources"));
+    assert!(usage(&["rules", "--add-sources", "/a.toml"]).contains("add-sources"));
     assert!(usage(&["sources", "extra"]).contains("too many arguments for 'sources'"));
 }
 

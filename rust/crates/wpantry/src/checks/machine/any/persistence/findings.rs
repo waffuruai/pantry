@@ -122,9 +122,21 @@ pub fn findings(
         }
     }
     let mut flagged = HashSet::new();
+    let mut said = HashSet::new();
     for i in &inv.items {
         let Some(p) = &i.program else { continue };
-        let Some(v) = vetted.get(p) else { continue };
+        let Some(v) = vetted.get(p) else {
+            // `vet_all` leaves a program inside a left-out folder unread (no
+            // signature, quarantine or malware check, and not even a stat).
+            // Say so, naming the item: nothing here speaks for that program.
+            if crate::utils::privacy::is_left_out(p) {
+                let component = format!("persistence: {} runs {}", i.location, show(p));
+                if said.insert(component.clone()) {
+                    out.push(left_out(component, &show(p)));
+                }
+            }
+            continue;
+        };
         if let Signature::Invalid(why) = &v.signature
             && flagged.insert((p.clone(), "sig"))
         {
@@ -151,6 +163,23 @@ pub fn findings(
         }
     }
     out
+}
+
+/// An `unchecked` finding (a gap, as `Scan::unchecked` makes) for a login
+/// program the scan left out of its checks because it lies in a folder it
+/// does not open (`--no-personal-files`).
+fn left_out(component: String, program: &str) -> Finding {
+    Finding {
+        kind: "unchecked".into(),
+        component,
+        vuln_id: "UNCHECKED".into(),
+        status: "warn".into(),
+        note: format!(
+            "{program} lies in a folder this scan leaves out (--no-personal-files), so its signature, quarantine flag and contents were not checked"
+        ),
+        fix_cmd: "wpantry scan".into(),
+        ..Default::default()
+    }
 }
 
 /// Persistence: every place a program can arrange to run again (listed

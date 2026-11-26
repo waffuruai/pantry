@@ -103,3 +103,29 @@ fn a_large_scan_is_deflated_small() {
     let (plain, page) = (findings.dumps().len(), write(&findings).len());
     assert!(page * 20 < plain, "{page} bytes on the page for {plain} of JSON");
 }
+
+/// Risk: the packer drops or mangles a field it has not heard of, so the
+/// page loses the source and link a local finding is linked from. Oracle: a
+/// bundle of local and upstream findings comes back from `write` and `read`
+/// exactly, the two fields included, packed and (when large) deflated.
+#[test]
+fn the_local_source_and_link_fields_survive_the_packer() {
+    let local = |i: usize| Finding {
+        kind: "project".into(),
+        component: format!("acme-{i}"),
+        vuln_id: format!("TEAM-2026-000{i}"),
+        status: "fail".into(),
+        local_source: "team-advisories".into(),
+        local_link: format!("https://advisories.example.com/TEAM-2026-000{i}"),
+        ..Default::default()
+    };
+    let upstream = Finding { vuln_id: "GHSA-aaaa-bbbb-cccc".into(), status: "fail".into(), ..Default::default() };
+    let bundle = obj([("findings", J::Arr(vec![local(1).to_json(), local(2).to_json(), upstream.to_json()]))]);
+    let back = read(&write(&bundle)).unwrap();
+    assert_eq!(back, value(&bundle));
+    assert_eq!(back["findings"][1]["local_link"], "https://advisories.example.com/TEAM-2026-0002");
+    assert_eq!(back["findings"][2]["local_source"], "");
+    let big = J::Arr((0..9000).map(|i| local(i % 9).to_json()).collect());
+    let text = write(&big);
+    assert_eq!(read(&text), Some(value(&big)));
+}

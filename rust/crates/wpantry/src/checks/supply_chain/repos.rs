@@ -6,6 +6,7 @@
 
 use crate::component::Status;
 use crate::utils::files::short;
+use crate::utils::privacy;
 use crate::utils::walk::{MAC_MEDIA_FOLDERS, media_bundle, skip, walk};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -62,15 +63,16 @@ pub(crate) struct Excluded {
 
 /// [`Excluded`] for a search: nothing when the user named `--path`s (they
 /// are walked as asked); for the default search of `home`, the personal
-/// folders with `--no-personal-files`, and on macOS (`mac`) the media
-/// folders and library bundles.
+/// folders with `--no-personal-files` (on macOS every folder it guards,
+/// [`privacy::folders`]), and on macOS (`mac`) the media folders and
+/// library bundles.
 pub(crate) fn default_excluded(home: &Path, explicit_paths: bool, no_personal_files: bool, mac: bool) -> Excluded {
     if explicit_paths {
         return Excluded::default();
     }
     let mut paths = Vec::new();
     if no_personal_files {
-        paths.extend(crate::checks::machine::downloads::PERSONAL_FOLDERS.iter().map(|folder| home.join(folder)));
+        paths.extend(privacy::folders(home, mac));
     }
     if mac {
         paths.extend(MAC_MEDIA_FOLDERS.iter().map(|folder| home.join(folder)));
@@ -78,22 +80,20 @@ pub(crate) fn default_excluded(home: &Path, explicit_paths: bool, no_personal_fi
     Excluded { paths, media_bundles: mac }
 }
 
-/// `~/Downloads`, `~/Desktop` and `~/Documents` when they lie strictly under
-/// `root`, spelled from `home` as given and from its canonical path (a
-/// `--path` root is canonical, `home` may not be). A root inside or equal to
-/// one of them gives nothing: a folder the user named is scanned.
+/// The folders an unattended scan leaves out ([`privacy::folders`]: the
+/// personal ones, and on macOS the other guarded ones) that lie strictly
+/// under `root`, spelled from `home` as given and from its canonical path
+/// (a `--path` root is canonical, `home` may not be). A root inside or
+/// equal to one of them gives nothing: a folder the user named is scanned.
 ///
 /// Example: home `/h`, root `/h` gives `/h/Downloads`, `/h/Desktop`,
-/// `/h/Documents`; root `/h/Documents/x` gives none.
+/// `/h/Documents` (and on macOS `/h/Pictures`, `/h/Library/Mail`, ...);
+/// root `/h/Documents/x` gives none.
 pub(crate) fn personal_under(home: &Path, root: &Path) -> Vec<PathBuf> {
-    let canon = std::fs::canonicalize(home).ok();
     let mut out: Vec<PathBuf> = Vec::new();
-    for base in std::iter::once(home.to_path_buf()).chain(canon) {
-        for name in crate::checks::machine::downloads::PERSONAL_FOLDERS {
-            let f = base.join(name);
-            if f != root && f.starts_with(root) && !out.contains(&f) {
-                out.push(f);
-            }
+    for f in privacy::folders(home, cfg!(target_os = "macos")) {
+        if f != root && f.starts_with(root) && !out.contains(&f) {
+            out.push(f);
         }
     }
     out
@@ -101,7 +101,8 @@ pub(crate) fn personal_under(home: &Path, root: &Path) -> Vec<PathBuf> {
 
 fn discover_excluding(root: &Path, excluded: &Excluded, status: Status) -> Vec<PathBuf> {
     fn visit(d: &Path, level: usize, found: &mut Vec<PathBuf>, excluded: &Excluded, status: Status) {
-        if excluded.paths.iter().any(|path| d.starts_with(path)) {
+        // By path, before the folder is listed: listing it raises the prompt.
+        if excluded.paths.iter().any(|path| d.starts_with(path)) || privacy::is_left_out(d) {
             return;
         }
         if excluded.media_bundles && d.file_name().is_some_and(|n| media_bundle(&n.to_string_lossy())) {
@@ -142,6 +143,7 @@ fn discover_excluding(root: &Path, excluded: &Excluded, status: Status) -> Vec<P
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .filter(|e| !skip(&parent, &e.file_name().to_string_lossy()))
             .map(|e| e.path())
+            .filter(|p| !excluded.paths.iter().any(|x| p.starts_with(x)) && !privacy::is_left_out(p))
             .collect();
         tops.sort();
         status(&format!("Looking for git repos in {} ({} folders)", short(&root.to_string_lossy()), tops.len()));

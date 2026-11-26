@@ -205,16 +205,34 @@ fn scores(cache: &Cache, id: &str, recs: &[Value]) -> Scores {
     (label, score, epss, ids)
 }
 
+/// What identifies the local record a finding is rated from.
+fn local_key(f: &Finding) -> (String, String, String) {
+    (f.local_source.clone(), f.vuln_id.clone(), f.component.clone())
+}
+
 /// Set every finding's severity (in CVSS's words), CVSS and EPSS. An
 /// advisory with no score in the cache has its CVEs asked about (unless
 /// `offline`); one that still has none keeps its record's label, or gets
 /// wpantry's own rating.
 pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Finding]) {
+    // An OSV finding is rated from OSV's records, a finding of a source on this
+    // machine from its own record and nothing else: a local record never
+    // moves an OSV rating, and an OSV record that shares a local finding's id
+    // never rates it. A local record with no score asks nobody for one.
+    let mut local: HashMap<(String, String, String), (Scores, AdvisoryText)> = HashMap::new();
+    for f in findings.iter().filter(|f| f.kind != "unchecked" && !f.local_source.is_empty() && is_advisory(&f.vuln_id))
+    {
+        local.entry(local_key(f)).or_insert_with(|| {
+            let own = crate::sources::osv_dir::for_finding(cache, &f.local_source, &f.vuln_id, &f.component);
+            let recs: Vec<Value> = own.ok().flatten().map(|(r, _)| vec![r]).unwrap_or_default();
+            (scores(cache, &f.vuln_id, &recs), text_of(cache, &f.vuln_id, &recs))
+        });
+    }
     let mut known: HashMap<String, Scores> = HashMap::new();
     // One memo for the scores and the text below: an id's records are read
     // from the cache once (the read scans `vulns`).
     let mut advisories = Advisories::default();
-    for f in findings.iter().filter(|f| f.kind != "unchecked" && is_advisory(&f.vuln_id)) {
+    for f in findings.iter().filter(|f| f.kind != "unchecked" && f.local_source.is_empty() && is_advisory(&f.vuln_id)) {
         if !known.contains_key(&f.vuln_id) {
             let s = scores(cache, &f.vuln_id, advisories.records(cache, &f.vuln_id));
             known.insert(f.vuln_id.clone(), s);
@@ -232,15 +250,20 @@ pub fn enrich(cache: &Cache, net: &dyn Net, offline: bool, findings: &mut [Findi
         }
     }
     let (epss_date, epss_model) = crate::sources::epss::edition(cache).unwrap_or_default();
-    for s in known.values_mut().filter(|s| s.0.is_empty()) {
+    for s in known.values_mut().chain(local.values_mut().map(|l| &mut l.0)).filter(|s| s.0.is_empty()) {
         s.0 = s.1.as_ref().map(|sc| cvss::label(sc.value).to_string()).unwrap_or_default();
     }
     for f in findings.iter_mut().filter(|f| f.kind != "unchecked" && is_advisory(&f.vuln_id)) {
-        let text = advisories.text(cache, &f.vuln_id);
+        let text = match local.get(&local_key(f)) {
+            Some(l) if !f.local_source.is_empty() => l.1.clone(),
+            _ => advisories.text(cache, &f.vuln_id),
+        };
         fill_text(f, &text);
     }
     for f in findings.iter_mut().filter(|f| f.kind != "unchecked") {
-        if let Some((label, score, epss, _)) = known.get(&f.vuln_id).cloned() {
+        let rated =
+            if f.local_source.is_empty() { known.get(&f.vuln_id) } else { local.get(&local_key(f)).map(|l| &l.0) };
+        if let Some((label, score, epss, _)) = rated.cloned() {
             if let Some(s) = score {
                 f.cvss = Some(s.value);
                 f.cvss_version = s.version;

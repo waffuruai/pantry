@@ -318,6 +318,13 @@ fn a_no_personal_files_scan_closes_full_scan_exposures_it_could_see_and_no_other
             false,
         ),
         ("Safari's protected data", at("posture", "Safari", String::new(), "POSTURE-SAFARI-SAFE-FILES"), false),
+        // The folders macOS guards too are left out there, and read elsewhere.
+        (
+            "Pictures (left out on macOS only)",
+            at("project", "pics", p("Pictures/proj/Cargo.lock"), "CVE-8"),
+            !cfg!(target_os = "macos"),
+        ),
+        ("a file in Mail (macOS only)", at("malware", "m", p("Library/Mail/x"), "MALWARE"), !cfg!(target_os = "macos")),
         // Folders compare without case where the volume does not tell them apart.
         (
             "Documents spelled in lower case",

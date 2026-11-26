@@ -587,6 +587,13 @@ fn show(m: &Matches) -> Result<Show, Exit> {
 }
 
 fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
+    check_for(m, fix, false)
+}
+
+/// [`check`]; a `project` scan reads no machine setting, so the user's
+/// posture policy isn't loaded for it (a broken `posture.toml` must not
+/// fail a scan that runs no posture check).
+fn check_for(m: &Matches, fix: bool, project: bool) -> Result<Check, Exit> {
     let mut c = Check {
         no_machine: m.flag("no-machine"),
         fix,
@@ -627,6 +634,9 @@ fn check(m: &Matches, fix: bool) -> Result<Check, Exit> {
         ("suspect-policy", "suspect.toml", &mut c.suspect_policy),
         ("hooks-policy", "hooks.toml", &mut c.hooks_policy),
     ] {
+        if project && name == "posture-policy" {
+            continue;
+        }
         let p = match m.value(name) {
             Some(v) => {
                 let p = expand(v);
@@ -705,12 +715,22 @@ fn command(m: &Matches) -> Result<Command, Exit> {
     Ok(match m.path().as_slice() {
         ["scan"] => Command::Scan(Check { events: flag("events"), ..check(m, false)? }),
         ["scan", "project"] => {
-            let mut c = Check { events: flag("events"), ..check(m, false)? };
-            if c.path.is_some() {
+            // The scan's options are in scope here too, the machine's
+            // among them: one that a project scan has no use for is
+            // refused, not quietly applied or dropped.
+            if !m.values("path").is_empty() {
                 return Err(
                     m.error("scan project takes its directory as an argument, not --path: wpantry scan project DIR")
                 );
             }
+            if let Some(name) =
+                NOT_FOR_PROJECT.iter().find(|n| **n != "gitleaks-config" && (flag(n) || m.value(n).is_some()))
+            {
+                return Err(m.error(&format!(
+                    "option '--{name}' is for a scan of this computer: scan project reads one project and its runtimes"
+                )));
+            }
+            let mut c = Check { events: flag("events"), ..check_for(m, false, true)? };
             let given = m.arg("dir").unwrap_or(".");
             let dir = expand(given);
             // The whole path: the scope a project's scans are compared by.

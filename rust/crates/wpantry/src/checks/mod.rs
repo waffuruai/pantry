@@ -234,7 +234,7 @@ pub fn fill(cmd: &str, safe: &str) -> String {
 /// named: a version that isn't one plain token never reaches a command.
 pub fn fix_with(c: &Component, safe: &str) -> (String, bool) {
     if safe.is_empty() || versions::is_safe_token(safe) {
-        (fill(&c.fix, safe), c.auto)
+        machine::tools::with_uninstall(c, fill(&c.fix, safe), c.auto)
     } else {
         ("Review the advisory: the fix version it names isn't a version, so no command is offered".to_string(), false)
     }
@@ -994,6 +994,13 @@ impl<'a> Scan<'a> {
                 Some(p) => safe.strip_prefix(p.as_str()).map(str::to_string).unwrap_or(safe),
                 None => safe,
             };
+            // A git tag's `v` (`v3.14.10`, python's release tags) is not part
+            // of the version a person reads ("update to 3.14.10") or a
+            // version manager's documentation writes. (Whether mise refuses
+            // `python@v3.14.10` is not documented; the failure that was
+            // reported was mise not being found: #330.) The one place that
+            // wants a `v` (`go get mod@v1.2.3`) spells it itself.
+            let safe = versions::bare(&safe).to_string();
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
             self.add(Finding {
                 vuln_id: display_id(main),
@@ -1035,7 +1042,7 @@ impl<'a> Scan<'a> {
             let mut f = Finding {
                 vuln_id: "OUTDATED".into(),
                 status: "warn".into(),
-                fixed: res.latest.clone(),
+                fixed: versions::bare(&res.latest).to_string(),
                 fix_cmd,
                 fix_auto,
                 note: format!("behind {}, the latest {product} {cycle} release", res.latest),

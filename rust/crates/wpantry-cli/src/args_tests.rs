@@ -526,6 +526,28 @@ fn scan_project_is_one_directory_and_never_the_machine() {
     assert!(usage(&["scan", "project", "~/nowhere"]).contains("argument 'dir': no such directory: ~/nowhere"));
     assert!(usage(&["scan", "project", "--path", "~/app"]).contains("takes its directory as an argument, not --path"));
     assert!(usage(&["scan", "project", "~/app", "~/app"]).contains("too many arguments"));
+    // The machine's options reach this command from `scan`, hidden from its
+    // help: each is refused, so none changes what a project scan covers.
+    for (flag, value) in [
+        ("--no-machine", None),
+        ("--no-posture", None),
+        ("--no-personal-files", None),
+        ("--posture-policy", Some("~/p.toml")),
+    ] {
+        let argv: Vec<&str> = ["scan", "project", "~/app", flag].into_iter().chain(value).collect();
+        let text = usage(&argv);
+        assert!(text.contains(&format!("option '{flag}' is for a scan of this computer")), "{flag}: {text}");
+    }
+    // A posture policy that doesn't parse fails a machine scan, and never a
+    // project scan, which runs no posture check and so never reads it.
+    if std::env::var_os("XDG_CONFIG_HOME").is_none_or(|v| v.is_empty()) {
+        let config = wpantry::utils::files::home().join(".config/wpantry");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("posture.toml"), "FIREWALL\n").unwrap();
+        assert!(usage(&["scan"]).contains("posture.toml: not a TOML policy file"), "{}", usage(&["scan"]));
+        let c = scan(&["scan", "project", "~/app"]);
+        assert!(c.project && c.posture_policy.is_none());
+    }
     // Its help offers the scan's options, without the machine's.
     let text = help(&["scan", "project"]);
     assert!(text.starts_with("Usage: wpantry scan project [options] [dir]\n"), "{text}");

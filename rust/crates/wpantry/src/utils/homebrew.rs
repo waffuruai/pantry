@@ -1,13 +1,13 @@
 //! Homebrew's prefix and its installed casks, read without starting brew
 //! where the Caskroom says.
 
-use super::process::{run, which};
+use super::process::{find_tool, run};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub fn brew_prefix() -> String {
-    brew_prefix_of(which("brew"))
+    brew_prefix_of(find_tool("brew"))
 }
 
 /// What the `brew` at `brew` says its prefix is, or "" without one.
@@ -55,7 +55,7 @@ pub fn caskroom(dir: &Path) -> Option<BTreeMap<String, String>> {
 
 /// {cask token: installed version} for Homebrew-installed casks.
 pub fn brew_casks() -> BTreeMap<String, String> {
-    let brew = which("brew");
+    let brew = find_tool("brew");
     brew_casks_in(brew.as_deref().and_then(homebrew_prefix), brew.as_deref())
 }
 

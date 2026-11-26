@@ -210,6 +210,8 @@ wpantry fix              # run the unattended fixes, then re-check
 - **Unattended:** Homebrew, pip, npm -g, cargo, rustup, uv, editor extensions, removing malicious extensions. On a terminal it asks `Run these N updates now? [Y/n]` first; with `--no-input`, or no terminal, it runs them.
 - **Needs you:** anything needing sudo, a vendor, or a repo change, printed as a step for you or your agent to run. A lockfile fix is a code change: make it on a branch, with that repo's tests.
 - `mise` is never upgraded for you.
+- **A mise runtime** (python, node, …) is fixed by `mise install NAME@FIXED`, which runs unattended, then `mise uninstall NAME@OLD`, which is left to you: a `mise.toml` may still pin the old one, and until it is gone the scan reports it again. If FIXED is already installed, only the uninstall is offered.
+- **When a fix fails** the line `✗ failed: <command>` is followed by the exit code (or why there is none: the program was not found and where wpantry looked, it timed out, or was stopped) and the last lines of what the command wrote to stderr (at most 20 lines and 4 KiB, your home directory shown as `~`, never the environment). `report remediation --json` keeps them as `exit_code` and `error`.
 
 ### One thing at a time
 
@@ -358,7 +360,7 @@ Options:
   -h, --help     print this help
 
 Commands:
-  scan [options] [command]     Scan this computer and its repos, then show the report
+  scan [options]               Scan this computer and its repos, then show the report
   fix [options] [target] [id]  Scan, run the unattended fixes and stopgaps, then re-check (list, or
                                one id)
   report [options] [part]      The latest scan's report, a log, or the summary, in any format
@@ -384,7 +386,7 @@ Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 ### scan
 
 ```
-Usage: wpantry scan [options] [command]
+Usage: wpantry scan [options]
 
 Scan this computer and its repos, then show the report. Changes nothing.
 
@@ -444,27 +446,21 @@ Options:
                             read, findings), for programs that run wpantry; implies --no-input
   -h, --help                print this help
 
-Commands:
-  project [options] [dir]  Scan one project and the runtimes it uses, nothing else of this computer
-  help [command]           Print a command's help
-
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ```
 
 ### scan project
 
 ```
-Usage: wpantry scan project [options] [dir]
+Usage: wpantry scan [options]
 
-Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware,
-and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc,
-rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer
-is read: no other runtime, app, setting or folder. Changes nothing.
-
-Arguments:
-  dir  the project's directory (default: .)
+Scan this computer and its repos, then show the report. Changes nothing.
 
 Options:
+  --path <dir>              check only the repos and files at or under this directory, not
+                            Downloads, Desktop, Documents or temp; repeat it for more (default:
+                            every git repo under ~)
+  --no-machine              skip the machine inventory: repo checks only
   --refresh                 ignore cached answers and ask every source again
   --offline                 use only the local cache
   --txt                     the report as plain text, without colour
@@ -492,12 +488,18 @@ Options:
                             ~/.config/wpantry)
   --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
                             suspect.toml in ~/.config/wpantry)
+  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
+  --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
+                            ~/.config/wpantry)
   --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
                             items and repo programs)
   --deep                    read everything in scope (slower): every file of the computer this user
                             can read, ~ first (or each --path), for malware with every system's
                             rules and for secrets; git history's files up to 256 MB with no time
                             limit
+  --no-personal-files       never open Downloads, Desktop or Documents in any pass, finding repos
+                            included (on macOS also the other folders it asks permission for),
+                            reported as not checked (for unattended runs)
   --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
                             MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
@@ -506,6 +508,8 @@ Options:
                             more (an id may be defined once)
   --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
                             WPANTRY_ALLOW_SLEEP=1)
+  --events                  write the scan's progress to stderr as JSON Lines (steps, the path being
+                            read, findings), for programs that run wpantry; implies --no-input
   -h, --help                print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.

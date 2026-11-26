@@ -75,6 +75,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "first_epss", "REAL"),
     ("exposures", "first_epss_percentile", "REAL"),
     ("fixes", "host", "TEXT"),
+    ("fixes", "exit_code", "INTEGER"),
+    ("fixes", "error", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),

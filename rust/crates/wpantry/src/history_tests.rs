@@ -388,5 +388,43 @@ fn a_no_personal_files_scan_closes_only_the_whole_machine_scope_it_belongs_to() 
     // Its own flag-less counterpart does close it.
     record_scan(&c, 3.0, &skipped_by_choice(), &[], &Options { no_personal_files: true, ..licensed.clone() }).unwrap();
     assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
+}
+
+/// Risk: a failed fix's reason is lost once the terminal scrolls. Oracle:
+/// the remediation log (`report remediation --json`) says it, and a fix that
+/// worked has `null`s, so a reader can tell "no reason kept" from "no reason".
+#[test]
+fn a_failed_fix_keeps_its_exit_code_and_error_in_the_log() {
+    use crate::remediation::run::Failure;
+    let d = crate::utils::temp::TempDir::new("fixlog").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let failure = Failure {
+        cmd: "mise install python@3.14.10".into(),
+        exit_code: Some(1),
+        reason: String::new(),
+        stderr: "mise ERROR no such version\nsee ~/.config/mise".into(),
+    };
+    record_fix_outcome(&c, Some(1), &failure.cmd, "auto", false, &[], Some(&failure)).unwrap();
+    record_fix(&c, Some(1), "brew upgrade x", "auto", true, &[]).unwrap();
+    let stopped = Failure {
+        cmd: "slow".into(),
+        exit_code: None,
+        reason: "timed out after 30 minutes and was stopped".into(),
+        stderr: String::new(),
+    };
+    record_fix_outcome(&c, Some(1), "slow", "auto", false, &[], Some(&stopped)).unwrap();
+    let got = fixes(&c, 0.0).unwrap();
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0].exit_code, Some(1));
+    assert_eq!(got[0].error.as_deref(), Some("exit code 1\nmise ERROR no such version\nsee ~/.config/mise"));
+    assert_eq!((got[1].exit_code, got[1].error.clone()), (None, None));
+    assert_eq!(got[2].exit_code, None);
+    assert_eq!(got[2].error.as_deref(), Some("timed out after 30 minutes and was stopped"));
+    let j = got[0].to_json();
+    assert_eq!((j["exit_code"].clone(), j["ok"].clone()), (serde_json::json!(1), serde_json::json!(false)));
+    assert!(got[1].to_json()["exit_code"].is_null() && got[1].to_json()["error"].is_null());
+    // The event log carries it too.
+    let ev = events(&c, 0.0).unwrap();
+    assert_eq!(ev[0].detail["exit_code"], serde_json::json!(1));
     c.close().unwrap();
 }

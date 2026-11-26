@@ -688,6 +688,8 @@ fn ignore_takes_a_finding_or_rule_id_and_never_a_prompt() {
     assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--scope", "both"]).contains("--scope"));
     assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--reason", "a\nb"]).contains("one line"));
     assert!(usage(&["ignore", "remove", "F-xyz"]).contains("expects a rule id such as R-3fa9c01b2e"));
+    // Twelve bytes that aren't twelve characters: a usage error, not a panic.
+    assert!(usage(&["ignore", "remove", "€€€€"]).contains("expects a rule id such as R-3fa9c01b2e"));
     assert!(usage(&["ignore", "list", "x"]).contains("too many arguments"));
     assert!(usage(&["ignore"]).contains("Usage: wpantry ignore"));
 }

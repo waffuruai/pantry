@@ -80,18 +80,25 @@ pub fn updater(path: &str, name: &str) -> (String, bool) {
 ///
 /// Example: python 3.14.9 under `~/.local/share/mise/installs/python/3.14.9`
 /// fixed by 3.14.10 gives `mise install python@3.14.10` then
-/// `mise uninstall python@3.14.9`.
+/// `mise uninstall python@3.14.9`. The same Python reached through
+/// `installs/python/3.14` (a link to it) gives the same two lines.
 pub fn with_uninstall(c: &Component, cmd: String, auto: bool) -> (String, bool) {
     let Some((name, fixed)) = cmd.strip_prefix("mise install ").and_then(|r| r.split_once('@')) else {
         return (cmd, auto);
     };
     let marker = format!("/installs/{name}/");
-    // Forward slashes whatever the platform wrote the path with.
-    let path = c.path.replace('\\', "/");
+    // Where the install really is, not how PATH spells it: mise also keeps
+    // `installs/node/lts`, `installs/ruby/3.4` and `installs/python/latest`
+    // as links to an install, and `mise uninstall node@lts` removes whatever
+    // the alias means when it runs, which after the install is the fixed
+    // version. Forward slashes whatever the platform wrote the path with.
+    let path = files::strip_verbatim(&files::realpath(&c.path)).replace('\\', "/");
     let Some(at) = path.find(&marker).filter(|_| path.contains("/mise/")) else { return (cmd, auto) };
     let dir = &path[..at + marker.len()];
     let old = path[at + marker.len()..].split('/').next().unwrap_or("");
-    if old.is_empty() || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
+    // Still a link after resolving (one that goes nowhere): no version to name.
+    let alias = std::fs::symlink_metadata(format!("{dir}{old}")).is_ok_and(|m| m.file_type().is_symlink());
+    if old.is_empty() || alias || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
         return (cmd, auto);
     }
     let uninstall = format!("mise uninstall {name}@{old}");

@@ -61,7 +61,7 @@ fn entry_name(entry: &str, fp: &str) -> String {
 }
 
 fn is_root() -> bool {
-    run(&["id", "-u"], Duration::from_secs(5)).trim() == "0"
+    crate::utils::process::is_root()
 }
 
 /// The command that runs `argv` as root. As root the program is resolved as

@@ -11,7 +11,18 @@ use crate::utils::temp::TempDir;
 fn env(d: &TempDir) -> Env {
     let home = d.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
-    Env { home: home.clone(), user_file: home.join(".config/wpantry/ignore") }
+    Env { home: home.clone(), user_file: home.join(".config/wpantry/ignore"), roots: Vec::new() }
+}
+
+/// [`env`] after a scan that looked down from `roots`.
+fn scanned(d: &TempDir, roots: &[&Path]) -> Env {
+    env(d).scanned(&roots.iter().map(|r| r.to_path_buf()).collect::<Vec<_>>())
+}
+
+/// A folder the scan takes for a git repo: a `.git` with a `HEAD`.
+fn git_repo(root: &Path) {
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
 }
 
 /// A folder with a `.git`.
@@ -180,6 +191,80 @@ fn the_rule_names_one_file_and_neighbours_stay_reported() {
     assert!(skips(&a));
     assert!(!skips(&same_rule_other_file), "the same rule in another file");
     assert!(!skips(&other_rule_same_file), "another rule in the same file");
+}
+
+#[test]
+fn a_finding_in_a_nested_checkout_goes_in_the_file_of_the_repo_the_scan_reads() {
+    // Risk: the rule lands in the submodule's own .pantryignore, which no
+    // scan of the repo around it reads, and the command says it worked.
+    // Oracle: the repo `discover` finds from the scan's root, and the real
+    // filter reading the rule back from there.
+    let d = TempDir::new("ie-nested").unwrap();
+    let root = d.path().join("code/app");
+    git_repo(&root);
+    git_repo(&root.join("libs/sub"));
+    let f = lock(&root, "libs/sub/package-lock.json", "lodash", "GHSA-lodash");
+    // Scanned from the repo, and from a folder above it: the same repo.
+    let above = d.path().join("code");
+    for from in [root.as_path(), above.as_path()] {
+        assert_eq!(crate::checks::supply_chain::repos::discover(from), vec![root.clone()]);
+        // `--path` inside the nested checkout means that repo too.
+        assert_eq!(repo_for(&root.join("libs/sub"), &scanned(&d, &[from])), root);
+    }
+    let e = scanned(&d, &[&above]);
+    let (t, rules, _) = wrote(add(&req(&f, std::slice::from_ref(&f), Scope::Repo), &e).unwrap());
+    assert_eq!(t.file, root.join(FILE));
+    assert_eq!(rules[0].pattern, "/libs/sub/package-lock.json");
+    assert!(Ignore::parse(&text(&t)).skips(&f.kind, &f.vuln_id, "libs/sub/package-lock.json"));
+    assert!(!root.join("libs/sub").join(FILE).exists(), "nothing is written where no scan looks");
+}
+
+#[test]
+fn a_repo_above_the_scan_root_does_not_take_the_rule() {
+    // Risk: the rule lands above the folder a scan was pointed at, in a file
+    // that scan never reads. Oracle: the repo `discover` finds from the scan
+    // root is the one whose file is written.
+    let d = TempDir::new("ie-outer").unwrap();
+    let outer = d.path().join("dev");
+    git_repo(&outer);
+    let app = outer.join("app");
+    git_repo(&app);
+    // The same checkout scanned from the repo above it is that repo's.
+    assert_eq!(repo_for(&app, &scanned(&d, &[&outer])), outer);
+    let e = scanned(&d, &[&app]);
+    let f = lock(&app, "package-lock.json", "lodash", "GHSA-lodash");
+    let (t, _, _) = wrote(add(&req(&f, std::slice::from_ref(&f), Scope::Repo), &e).unwrap());
+    assert_eq!(crate::checks::supply_chain::repos::discover(&app), vec![app.clone()]);
+    assert_eq!(t.file, app.join(FILE));
+    assert!(!outer.join(FILE).exists());
+}
+
+#[test]
+fn a_folder_the_scan_took_for_no_repo_has_no_repo_file() {
+    // `scan --path DIR` on a folder with no git repo scans it as one
+    // project. An empty `.git` below it, as a downloaded template has, is no
+    // repo to the scan either, and ends its descent.
+    let d = TempDir::new("ie-plain").unwrap();
+    let project = d.path().join("unpacked");
+    std::fs::create_dir_all(project.join("pkg/.git")).unwrap();
+    let e = scanned(&d, &[&project]);
+    for rel in ["package-lock.json", "pkg/package-lock.json"] {
+        let f = lock(&project, rel, "lodash", "GHSA-lodash");
+        assert_eq!(refused(add(&req(&f, std::slice::from_ref(&f), Scope::Repo), &e)).code, "not-in-repo", "{rel}");
+    }
+    assert!(!project.join(FILE).exists() && !project.join("pkg").join(FILE).exists());
+}
+
+#[test]
+fn dot_dot_in_a_path_is_folded_before_the_repo_is_looked_for() {
+    let d = TempDir::new("ie-dd").unwrap();
+    let e = env(&d);
+    let app = repo(&d, "app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    let other = d.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    assert_eq!(repo_for(&app.join("src").join("../../other"), &e), repo_for(&other, &e));
+    assert_eq!(repo_for(&app.join("src/./../src"), &e), app);
 }
 
 #[test]
@@ -484,16 +569,26 @@ fn an_id_in_two_files_is_ambiguous_and_nothing_is_removed() {
 #[test]
 fn repo_for_finds_the_repo_a_path_means() {
     let d = TempDir::new("ie-repofor").unwrap();
+    let e = env(&d);
     let root = repo(&d, "app");
     let sub = root.join("a/b");
     std::fs::create_dir_all(&sub).unwrap();
-    assert_eq!(repo_for(&sub), root);
-    assert_eq!(repo_for(&root), root);
+    assert_eq!(repo_for(&sub, &e), root);
+    assert_eq!(repo_for(&root, &e), root);
     std::fs::write(sub.join(FILE), "x\n").unwrap();
-    assert_eq!(repo_for(&sub), sub, "a folder with its own file is the one meant");
+    assert_eq!(repo_for(&sub, &e), sub, "a folder with its own file is the one meant");
     let plain = d.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
-    assert_eq!(repo_for(&plain), plain);
+    assert_eq!(repo_for(&plain, &e), plain);
+    // A relative directory is the same place as its whole path: `--path .`
+    // from inside a repo is the repo, never a file beside the words typed.
+    let here = std::env::current_dir().unwrap();
+    assert_eq!(repo_for(Path::new("."), &e), repo_for(&here, &e));
+    assert!(repo_for(Path::new("."), &e).is_absolute() && repo_for(Path::new("src"), &e).is_absolute());
+    assert!(
+        !file_key(&repo_for(Path::new("src"), &e).join(FILE)).starts_with('.'),
+        "a file is known by its whole path"
+    );
 }
 
 #[test]

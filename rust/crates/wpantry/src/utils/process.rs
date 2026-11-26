@@ -165,7 +165,7 @@ pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) ->
     c
 }
 
-fn is_executable(p: &Path) -> bool {
+pub(crate) fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -219,9 +219,22 @@ pub fn tool_places_on(
     out
 }
 
-/// `name` on PATH, else in one of its [`tool_places`].
+/// `name` on PATH, else in one of its [`tool_places`]; as root, on PATH
+/// only. The places belong to whoever installed the tool (Homebrew's prefix,
+/// `~/.local/bin`), and what is found is run: as root that would run a
+/// program an unprivileged user can replace, which is why [`SYSTEM_DIRS`]
+/// names root-owned folders only. Root's PATH is root's to set.
 pub fn find_tool(name: &str) -> Option<PathBuf> {
+    if is_root() {
+        return which(name);
+    }
     find_tool_in(name, std::env::var_os("PATH"), &home(), &|k| std::env::var_os(k))
+}
+
+/// Whether this process runs as root (`id -u` is 0), asked once. Never on Windows.
+pub fn is_root() -> bool {
+    static ROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ROOT.get_or_init(|| cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0")
 }
 
 /// [`find_tool`] for a PATH value, a home directory and an environment.

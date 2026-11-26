@@ -132,7 +132,9 @@ fn an_upgrade_that_fixes_one_cve_and_not_the_other_is_gone_for_one_and_present_f
     // Still vulnerable, at the new keg: the same finding at another location.
     let still = check_id(&file, &by_id(&findings, "CVE-2026-1002").id(), scan);
     assert_eq!(still.verdict.state, State::StillPresent, "{still:?}");
-    assert!(still.verdict.detail.contains("expat/2.8.2"), "{}", still.verdict.detail);
+    // The detail spells the path the platform's way (`expat\2.8.2` on Windows).
+    let detail = still.verdict.detail.replace('\\', "/");
+    assert!(detail.contains("expat/2.8.2"), "{}", still.verdict.detail);
     // Past both fixes.
     std::fs::remove_dir_all(cellar.join("expat/2.8.2")).unwrap();
     std::fs::create_dir_all(cellar.join("expat/2.10.1")).unwrap();
@@ -317,7 +319,9 @@ fn a_finding_made_from_a_cellar_without_brew_is_read_again_as_a_catalog_tool() {
     components::components(&mut s, &inv.components).unwrap();
     let findings: Vec<Finding> = s.findings.iter().filter(|f| f.kind == "brew").cloned().collect();
     assert_eq!(findings.len(), 1, "{:?}", s.findings);
-    assert!(findings[0].fix_auto, "{findings:?}");
+    // A fix by `brew upgrade` is offered where Homebrew runs, and never on Windows
+    // (`cellar::upgrade_step`): the finding exists there, without an automatic fix.
+    assert_eq!(findings[0].fix_auto, !cfg!(windows), "{findings:?}");
     let (file, scan) = scanned(&d, s.cache, &findings);
     let id = findings[0].id();
     assert_eq!(check_id(&file, &id, scan).verdict.state, State::StillPresent);

@@ -2878,15 +2878,46 @@ fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files(
 /// never ran. Oracle: the contract's `fix` is "scan, then the unattended
 /// fixes"; when it cannot print their lines without breaking the machine
 /// output on stdout, it says on stderr that nothing was run, and stdout
-/// stays valid JSON.
+/// stays valid JSON. With `-o FILE` the fixes have a stdout to print on, so
+/// the run reaches the update plan ("Nothing to update." on an empty scan).
+///
+/// Neither run passes `--yes`: with a file for the report a `--yes` run goes
+/// on to the stopgaps, which on Linux write real files and load a real
+/// firewall rule through sudo. The second run is a dry run, which reaches
+/// the same code and changes nothing. Known bad: a build that prints the
+/// note whenever a fix or dry run is asked for fails the second half; one
+/// that returns before the update plan with `-o` fails the plan assertion.
 #[test]
 fn fix_with_a_machine_format_on_stdout_says_it_ran_nothing() {
     let t = Ctx::new();
-    let r = t.project_run("fix", &["--json", "--yes"]);
+    let r = t.project_run("fix", &["--json"]);
     assert!(r.json().is_object(), "stdout stays the envelope: {:?}", r.out);
     assert!(r.err.contains("nothing was fixed") && r.err.contains("-o FILE"), "{:?}", r.err);
+    assert!(
+        !r.out.contains("Update plan") && !r.out.contains("Nothing to update"),
+        "no fix output on stdout: {:?}",
+        r.out
+    );
     // With a file for the report the fixes have a stdout to print on: no such note.
     let out = t.tmp.join("report.json");
-    let r = t.project_run("fix", &["--json", "--yes", "-o", s(&out)]);
+    let r = t.project_run("fix", &["--json", "--dry-run", "-o", s(&out)]);
     assert!(!r.err.contains("nothing was fixed"), "{:?}", r.err);
+    assert!(r.out.contains("Nothing to update"), "the fixes were reached: {:?}", r.out);
+    assert!(out.is_file(), "the report went to the file");
+}
+
+/// Risk: a test passes `--yes` to a bare `fix` (or to the one stopgap that
+/// needs no finding) and changes the machine it runs on. Oracle: the
+/// harness refuses before it spawns anything.
+#[test]
+#[should_panic(expected = "refusing to run")]
+fn the_harness_refuses_a_bare_fix_with_yes() {
+    let t = Ctx::new();
+    t.project_run("fix", &["--json", "--yes"]);
+}
+
+#[test]
+#[should_panic(expected = "refusing to run")]
+fn the_harness_refuses_the_kernel_stopgap_with_yes() {
+    Ctx::new().run(&["fix", "cve-2026-98432", "--yes"]);
 }

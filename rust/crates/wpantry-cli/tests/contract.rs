@@ -2871,3 +2871,22 @@ fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files(
         env["checked"]
     );
 }
+
+/// Risk: `fix --json` (a machine format on stdout, no `-o FILE`) prints the
+/// scan and quietly runs no fix and no stopgap, so a caller that asked for
+/// the fixes reads the exit code of the scan as the exit code of a fix that
+/// never ran. Oracle: the contract's `fix` is "scan, then the unattended
+/// fixes"; when it cannot print their lines without breaking the machine
+/// output on stdout, it says on stderr that nothing was run, and stdout
+/// stays valid JSON.
+#[test]
+fn fix_with_a_machine_format_on_stdout_says_it_ran_nothing() {
+    let t = Ctx::new();
+    let r = t.project_run("fix", &["--json", "--yes"]);
+    assert!(r.json().is_object(), "stdout stays the envelope: {:?}", r.out);
+    assert!(r.err.contains("nothing was fixed") && r.err.contains("-o FILE"), "{:?}", r.err);
+    // With a file for the report the fixes have a stdout to print on: no such note.
+    let out = t.tmp.join("report.json");
+    let r = t.project_run("fix", &["--json", "--yes", "-o", s(&out)]);
+    assert!(!r.err.contains("nothing was fixed"), "{:?}", r.err);
+}

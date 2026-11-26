@@ -68,7 +68,7 @@ fn str_of(v: &Value, k: &str) -> String {
 /// couldn't be read, for the scan to report unchecked (incomplete metadata
 /// must never read as fewer packages).
 pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    pythons_from(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15))
+    pythons_from(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15), &owner)
 }
 
 /// Every Python on PATH or installed by a version manager, as (shown path,
@@ -104,9 +104,13 @@ fn python_names(dirs: &[String]) -> Vec<String> {
 }
 
 /// `pythons` for the interpreters `found`, each asked `PY_INFO` by `probe`.
+/// `vouched` is `owner`: who vouches for a real path, "" for nobody. An
+/// interpreter that `find_pythons` would have dropped had it been found
+/// directly is dropped here too when a shim turns out to start it.
 fn pythons_from(
     found: Vec<(String, String)>,
     probe: &(dyn Fn(&str) -> String + Sync),
+    vouched: &dyn Fn(&str) -> &'static str,
 ) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
     let probed = parallel::par_map(&found, parallel::PROBES, |(shown, _)| probe(shown));
     let mut out = Vec::new();
@@ -120,16 +124,16 @@ fn pythons_from(
         if seen.contains(&exe) {
             continue;
         }
+        let usable = Path::new(&reported).is_absolute() && Path::new(&reported).is_file();
+        if usable && !vouched(&exe).is_empty() {
+            continue;
+        }
         seen.push(exe.clone());
         // `shown` may be a version-manager shim, which starts whichever
         // Python the folder and environment pick. The probe's own
         // `sys.executable` is the interpreter that answered `managed` and
         // `sites`, so the commands name it; `shown` stays the identity.
-        let (runs, real) = if Path::new(&reported).is_absolute() && Path::new(&reported).is_file() {
-            (reported, exe)
-        } else {
-            (shown.clone(), real)
-        };
+        let (runs, real) = if usable { (reported, exe) } else { (shown.clone(), real) };
         let v = str_of(&info, "v");
         let (fix, auto) = updater(&real, "python");
         let mut c = Component::new("runtime", "python", &v, &shown);

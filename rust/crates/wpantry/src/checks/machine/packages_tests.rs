@@ -172,7 +172,7 @@ fn pythons_from_probe_answers() {
         .iter()
         .map(|p| (p.to_string(), p.to_string()))
         .collect();
-    let (got, unread) = pythons_from(found, &probe);
+    let (got, unread) = pythons_from(found, &probe, &|_| "");
     let runtimes: Vec<&str> = got.iter().filter(|c| c.kind == "runtime").map(|c| c.path.as_str()).collect();
     assert_eq!(runtimes, [plain, managed, uv], "the second path to the same interpreter is skipped");
     let rt = &got[0];
@@ -427,7 +427,7 @@ fn pip_fix_names_the_probed_interpreter_not_the_shim() {
             site.display()
         );
         let probe = move |_: &str| json.clone();
-        let (got, _) = pythons_from(vec![(shim.to_string(), "/x/mise/bin/mise".to_string())], &probe);
+        let (got, _) = pythons_from(vec![(shim.to_string(), "/x/mise/bin/mise".to_string())], &probe, &|_| "");
         let pkg = got.iter().find(|c| c.name == "pip:requests").expect("requests listed");
         assert_eq!(pkg.path, shim, "the shown location keeps its identity");
         if managed {
@@ -443,4 +443,57 @@ fn pip_fix_names_the_probed_interpreter_not_the_shim() {
             assert!(!pkg.fix.contains(shim), "{}", pkg.fix);
         }
     }
+}
+
+/// Shared setup for the shim tests: a probe that answers for a real file
+/// `exe` with one package in its site folder.
+#[cfg(unix)]
+fn shim_probe(d: &temp::TempDir, exe: &std::path::Path) -> impl Fn(&str) -> String + Sync {
+    let site = d.path().join("site-packages");
+    std::fs::create_dir_all(site.join("requests-2.32.0.dist-info")).unwrap();
+    std::fs::write(site.join("requests-2.32.0.dist-info/METADATA"), "Name: requests\nVersion: 2.32.0\n").unwrap();
+    std::fs::write(exe, "").unwrap();
+    let json = format!(
+        "{{\"v\": \"3.9.6\", \"exe\": \"{}\", \"sites\": [\"{}\"], \"managed\": false}}",
+        exe.display(),
+        site.display()
+    );
+    move |_: &str| json.clone()
+}
+
+/// Risk: a version-manager shim whose probe reports an interpreter the OS or a
+/// package manager vouches for is listed (runtime and packages) although the
+/// same interpreter found directly is dropped, so the scan offers pip and
+/// version-manager fixes for something other tools own. Oracle: the outcome
+/// equals the directly found one, which is empty; the stand-in `vouched`
+/// answers for the probed real path only, so no machine state is read.
+#[cfg(unix)]
+#[test]
+fn shim_to_a_vouched_interpreter_is_dropped_like_the_interpreter_found_directly() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyvouched").unwrap();
+    let probed = d.path().join("vouched-python3.9");
+    let probe = shim_probe(&d, &probed);
+    let real = files::realpath(&probed.display().to_string());
+    let vouched = move |p: &str| if p == real { "os" } else { "" };
+    let shim = "/x/mise/shims/python3".to_string();
+    let (got, unread) = pythons_from(vec![(shim, "/x/mise/bin/mise".to_string())], &probe, &vouched);
+    assert!(got.is_empty(), "{:?}", got.iter().map(|c| &c.name).collect::<Vec<_>>());
+    assert!(unread.is_empty());
+}
+
+/// Risk: the new filter drops too much, hiding a shim whose interpreter
+/// nobody vouches for. Oracle: that shim is still listed with its runtime and
+/// its package, as before.
+#[cfg(unix)]
+#[test]
+fn shim_to_an_unvouched_interpreter_is_still_listed() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyunvouched").unwrap();
+    let probed = d.path().join("own-python3.12");
+    let probe = shim_probe(&d, &probed);
+    let shim = "/x/mise/shims/python3".to_string();
+    let (got, _) = pythons_from(vec![(shim.clone(), "/x/mise/bin/mise".to_string())], &probe, &|_| "");
+    assert!(got.iter().any(|c| c.kind == "runtime" && c.path == shim));
+    assert!(got.iter().any(|c| c.name == "pip:requests"));
 }

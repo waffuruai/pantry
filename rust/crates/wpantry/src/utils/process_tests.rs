@@ -113,9 +113,9 @@ fn a_system_tool_runs_from_its_folder_when_path_leaves_it_out() {
     assert!(in_system(&tool), "{}", tool.display());
     let tool = resolve(OsStr::new("sysctl"), None);
     assert!(in_system(&tool), "no PATH at all: {}", tool.display());
-    // PATH has its own: the spawn finds it there, so the name stays.
+    // PATH has its own: it is spawned by the path found there, not by a name the spawn would look up again.
     executable(&d.path().join("sysctl"), "#!/bin/sh\necho mine\n");
-    assert_eq!(resolve(OsStr::new("sysctl"), Some(d.path().as_os_str())), PathBuf::from("sysctl"));
+    assert_eq!(resolve(OsStr::new("sysctl"), Some(d.path().as_os_str())), d.path().join("sysctl"));
     // A path, or a name no folder has, is left as it is; so is a tool of
     // the bin folders, which the spawn's own search already covers.
     assert_eq!(resolve(OsStr::new("./sysctl"), None), PathBuf::from("./sysctl"));
@@ -143,9 +143,9 @@ fn which_and_resolve_agree_on_where_a_tool_is() {
     std::fs::write(sbin.join("not-executable"), "data").unwrap();
     let system = [sbin.to_str().unwrap()];
     let path = bin.as_os_str();
-    // (name, `which`, `resolve`): `resolve` keeps the bare name when the
-    // spawn finds the tool by itself (PATH) or can't find it at all.
-    let on_path = |n: &str| (Some(bin.join(n)), PathBuf::from(n));
+    // (name, `which`, `resolve`): `resolve` keeps the bare name only when the tool is nowhere
+    // (the spawn then fails as it would have).
+    let on_path = |n: &str| (Some(bin.join(n)), bin.join(n));
     let in_sbin = |n: &str| (Some(sbin.join(n)), sbin.join(n));
     let nowhere = |n: &str| (None, PathBuf::from(n));
     for (name, (which, resolved)) in [
@@ -195,10 +195,13 @@ fn a_root_command_runs_the_program_the_probe_resolved() {
     let sudo = root_command(&argv, false, nope);
     assert_eq!(sudo.get_program(), "sudo");
     assert_eq!(sudo.get_args().collect::<Vec<_>>(), argv);
-    // A tool PATH has is left to the spawn's own search.
+    // A tool PATH has is spawned by the path it was found at.
     let d = TempDir::new("rootcmd").unwrap();
     executable(&d.path().join("sysctl"), "#!/bin/sh\n");
-    assert_eq!(root_command(&argv, true, Some(d.path().as_os_str())).get_program(), "sysctl");
+    assert_eq!(
+        root_command(&argv, true, Some(d.path().as_os_str())).get_program(),
+        d.path().join("sysctl").as_os_str()
+    );
 }
 
 /// Risk: only `which` left out the folders a scan must not open
@@ -303,4 +306,29 @@ fn root_finds_a_tool_on_path_alone() {
         );
     }
     assert_eq!(is_root(), cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0");
+}
+
+/// Risk: under `--no-personal-files` the lookup skips a PATH folder that is
+/// left out and finds `tool` in a later one, but hands the spawn the bare name
+/// `tool`, and the operating system then searches the whole PATH again, the
+/// left-out folder first: it opens the folder the scan promised not to touch
+/// and runs another program than the one found. Oracle: what is spawned is
+/// the file the filtered lookup found, by its path, and `which` and `resolve`
+/// name the same file.
+#[cfg(unix)]
+#[test]
+fn a_tool_found_past_a_left_out_folder_is_spawned_by_the_path_that_was_found() {
+    let d = TempDir::new("leftout-spawn").unwrap();
+    let (left, ok) = (d.path().join("Documents/bin"), d.path().join("bin"));
+    executable(&left.join("tool"), "#!/bin/sh\necho left-out copy\n");
+    executable(&ok.join("tool"), "#!/bin/sh\necho the copy that was found\n");
+    let path = std::env::join_paths([&left, &ok]).unwrap();
+    // Nothing left out: the first one on PATH, spawned by its path.
+    assert_eq!(which_in("tool", Some(&path)), Some(left.join("tool")));
+    let guard = crate::utils::privacy::leave_out(vec![d.path().join("Documents")], Vec::new());
+    let found = which_in("tool", Some(&path)).expect("the copy outside the folder is found");
+    assert_eq!(found, ok.join("tool"));
+    assert_eq!(resolve(OsStr::new("tool"), Some(&path)), found, "the spawn gets the path, not the bare name");
+    assert_eq!(root_command(&[OsStr::new("tool")], true, Some(&path)).get_program(), found.as_os_str());
+    drop(guard);
 }

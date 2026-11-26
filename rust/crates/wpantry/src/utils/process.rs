@@ -118,8 +118,8 @@ pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Opt
     system.iter().map(|d| named(Path::new(d), "")).find(|p| is_executable(p)).map(Found::System)
 }
 
-/// What a command named `prog` runs, given PATH `path`: `prog` itself when
-/// it has a slash or PATH has it (the spawn finds it there), else the copy
+/// What a command named `prog` runs, given PATH `path`: the file `which`
+/// finds (`prog` itself when it has a slash), PATH's copy before the one
 /// in a [`SYSTEM_DIRS`] folder, else `prog` (the spawn then fails as it
 /// would have).
 ///
@@ -139,8 +139,16 @@ pub fn resolve(prog: &OsStr, path: Option<&OsStr>) -> PathBuf {
 /// [`resolve`] with the system folders given (the tests' own).
 pub(crate) fn resolve_with(prog: &OsStr, path: Option<&OsStr>, system: &[&str]) -> PathBuf {
     match lookup(prog, path, system) {
-        Some(Found::System(found)) => found,
-        _ => PathBuf::from(prog),
+        // By the path found, never the bare name: the operating system would
+        // search PATH again, including the folders a scan leaves out
+        // (`--no-personal-files`), and could start another copy than the one
+        // `which` reported. An empty PATH entry (the current directory) is
+        // spelled out for the same reason.
+        Some(found) => {
+            let found = found.into_path();
+            if found.parent().is_some_and(|p| p.as_os_str().is_empty()) { Path::new(".").join(found) } else { found }
+        }
+        None => PathBuf::from(prog),
     }
 }
 

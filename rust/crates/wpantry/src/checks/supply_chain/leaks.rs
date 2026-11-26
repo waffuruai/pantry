@@ -306,7 +306,7 @@ fn read_blobs<'b>(
     deadline: Instant,
     mut each: impl FnMut(&'b Blob, Vec<u8>) -> bool,
 ) -> Result<usize> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(crate::utils::process::program(std::ffi::OsStr::new("git")));
     cmd.arg("-C").arg(repo).args(["cat-file", "--batch"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
     cmd.env("GIT_NO_LAZY_FETCH", "1");

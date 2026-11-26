@@ -17,8 +17,10 @@
 //!   compared, a copy whose version can't be read, a kind with no narrow
 //!   check, a scan that is no longer the latest. Never `gone`.
 //!
-//! Kinds with a narrow check, all of them findings with an automatic fix:
+//! Kinds with a narrow check (all but posture are findings with an automatic fix):
 //!
+//! * posture findings (machine settings): the rule's own probe, run again
+//!   alone over the same command runner ([`settings::probe_one`]);
 //! * catalog tools and runtimes ([`TOOLS`]: node, go, ruby, mise-installed
 //!   or on PATH), read by [`tools::component_at`], the function a scan reads
 //!   every copy with, and judged by the inventory's own OSV, end-of-life and
@@ -30,10 +32,11 @@
 //!
 //! Everything else says `unsupported`; the list is in specs/cli-contract.md.
 
+use super::recheck_posture as posture;
 use crate::checks::ecosystems;
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, TOOLS};
-use crate::checks::machine::{brew_cves, brew_vulns, cellar, components, software_cves, tools};
+use crate::checks::machine::{brew_cves, brew_vulns, cellar, components, settings, software_cves, tools};
 use crate::checks::{Options, Scan};
 use crate::component::Component;
 use crate::db::Cache;
@@ -88,11 +91,11 @@ impl Verdict {
         Verdict { state, reason, detail: detail.into() }
     }
 
-    fn gone(reason: &'static str, detail: impl Into<String>) -> Verdict {
+    pub(super) fn gone(reason: &'static str, detail: impl Into<String>) -> Verdict {
         Verdict::new(State::Gone, reason, detail)
     }
 
-    fn still(reason: &'static str, detail: impl Into<String>) -> Verdict {
+    pub(super) fn still(reason: &'static str, detail: impl Into<String>) -> Verdict {
         Verdict::new(State::StillPresent, reason, detail)
     }
 
@@ -257,6 +260,19 @@ pub fn recheck_many(
     stop_at_present: bool,
     answer: &mut dyn FnMut(Outcome),
 ) -> std::result::Result<(), Failed> {
+    recheck_many_with(cache, ids, scan, stop_at_present, &settings::real_runner, answer)
+}
+
+/// [`recheck_many`] with the commands the posture probes run (`defaults
+/// read` and the like) given by `runner`: the real machine, or a recording.
+pub fn recheck_many_with(
+    cache: Cache,
+    ids: &[String],
+    scan: i64,
+    stop_at_present: bool,
+    runner: settings::Runner,
+    answer: &mut dyn FnMut(Outcome),
+) -> std::result::Result<(), Failed> {
     let first = ids.first().cloned().unwrap_or_default();
     let fail = |id: &str, error: Error| Failed { id: canonical(id), error };
     let stale = (|| -> Result<Option<Verdict>> {
@@ -296,7 +312,7 @@ pub fn recheck_many(
             answer(Outcome { finding, scan, verdict: Verdict::unknown("unlisted", why), keys: Vec::new() });
             continue;
         };
-        match decide(&mut scratch, found, scan, &finding, left_out.is_some()) {
+        match decide(&mut scratch, found, scan, &finding, (left_out.is_some(), runner)) {
             Ok((verdict, keys)) => {
                 let present = verdict.state == State::StillPresent;
                 answer(Outcome { finding, scan, verdict, keys });
@@ -319,7 +335,7 @@ fn decide(
     found: &[Row],
     scan: i64,
     finding: &str,
-    left_out: bool,
+    (left_out, runner): (bool, settings::Runner),
 ) -> Result<(Verdict, Vec<String>)> {
     let mut keys: Vec<String> = found.iter().map(Row::key).collect();
     keys.sort();
@@ -327,7 +343,7 @@ fn decide(
     let mut verdicts = Vec::new();
     for row in found {
         scratch.findings.clear();
-        verdicts.push(judge(scratch, row, left_out)?);
+        verdicts.push(judge(scratch, row, left_out, runner)?);
     }
     // Gone only when every key is; one still there is still there.
     let pick = |state: State| verdicts.iter().find(|v| v.state == state).cloned();
@@ -357,7 +373,12 @@ fn unsupported(row: &Row, why: &str) -> Verdict {
 }
 
 /// One finding's verdict, from its kind.
-fn judge(scan: &mut Scan, row: &Row, personal_left_out: bool) -> Result<Verdict> {
+fn judge(scan: &mut Scan, row: &Row, personal_left_out: bool, runner: settings::Runner) -> Result<Verdict> {
+    // A machine setting is read by its own probe, whoever could fix it and
+    // however it is fixed: the answer is what the setting is now.
+    if row.kind == "posture" {
+        return Ok(posture::judge(&row.vuln_id, &row.component, runner));
+    }
     if row.kind == "secret" || row.kind == "unchecked" || !row.fix_auto || row.fix_cmd.is_empty() {
         return Ok(unsupported(row, "no automatic fix"));
     }

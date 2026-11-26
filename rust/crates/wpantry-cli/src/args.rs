@@ -466,7 +466,7 @@ fn commands() -> Cli {
                 .option("--stop-at-first-present", "with several ids: end the run after the first still_present; the ids after it are not answered")
                 .option("--json", "the answer as one JSON object per id: {schema, finding, scan, state, reason, detail, keys}")
                 .option("--no-input", "never prompt (this command never does)")
-                .after_help("States: gone (exit 0), still_present (exit 1), unknown (exit 3: could not tell, or refused: an unknown id, a scan that is no longer the latest, a finding with no narrow check). Exit 2 is a usage error. With several ids the exit code is the worst: 1 if any is still_present, else 3 if any is unknown, else 0."),
+                .after_help("States: gone (exit 0), still_present (exit 1), unknown (exit 3: could not tell, or refused: an unknown id, a scan that is no longer the latest, a finding with no narrow check, a posture rule with no probe here). Exit 2 is a usage error. With several ids the exit code is the worst: 1 if any is still_present, else 3 if any is unknown, else 0."),
         )
         .command(
             Cli::new("report")

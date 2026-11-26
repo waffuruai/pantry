@@ -143,6 +143,29 @@ fn tools() {
     assert_eq!(t.run(&["tools"]).code, r.code);
 }
 
+/// Risk: `tools` says Homebrew is missing on a machine whose PATH is short
+/// (a launchd job, an app) while the scan finds brew at its prefix and runs
+/// it, so the one place that lists what wpantry runs contradicts what it
+/// does. Oracle: a brew that sits in `$HOMEBREW_PREFIX/bin` (a standard
+/// prefix is looked in the same way) and is not on PATH is listed as found,
+/// with that path and the version it prints.
+#[cfg(unix)]
+#[test]
+fn tools_lists_the_brew_a_scan_would_find_beside_a_short_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Ctx::new();
+    let prefix = t.tmp.join("prefix");
+    mkdir(&prefix.join("bin"));
+    let brew = prefix.join("bin/brew");
+    write(&brew, "#!/bin/sh\necho 'Homebrew 9.9.9'\n");
+    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = t.run_env(&["tools", "--json"], &[("PATH", "/usr/bin:/bin"), ("HOMEBREW_PREFIX", s(&prefix))]);
+    let got = r.json();
+    let entry = arr(&got["tools"]).iter().find(|t| t["name"] == "brew").expect("brew is listed");
+    assert_eq!((entry["found"].as_bool(), str_(&entry["path"])), (Some(true), s(&brew)), "{entry}");
+    assert_eq!(str_(&entry["version"]), "9.9.9", "{entry}");
+}
+
 #[test]
 fn sources() {
     let t = Ctx::new();

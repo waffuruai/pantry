@@ -11,29 +11,161 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// PATH's directories, in order, split as the platform does (`:` on unix,
-/// `;` on Windows); an empty entry stays "" (the current directory).
+/// `;` on Windows); an empty entry stays "" (the current directory). A
+/// directory inside a folder the scan leaves out (`crate::utils::privacy`)
+/// is not among them: every PATH consumer (the tool inventory, the Python
+/// search, the browsers) goes through here, so none of them stats or lists
+/// it, which would raise the privacy prompt the flag exists to avoid.
 pub fn path_dirs() -> Vec<String> {
-    match std::env::var_os("PATH") {
-        Some(p) => std::env::split_paths(&p).map(|d| d.to_string_lossy().into_owned()).collect(),
+    path_dirs_of(std::env::var_os("PATH").as_deref())
+}
+
+/// [`path_dirs`] for the PATH value `path`.
+pub(crate) fn path_dirs_of(path: Option<&OsStr>) -> Vec<String> {
+    match path {
+        Some(p) => std::env::split_paths(p)
+            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .map(|d| d.to_string_lossy().into_owned())
+            .collect(),
         None => Vec::new(),
     }
 }
 
-/// The first executable called `name` on PATH (Python: `shutil.which`). On
-/// Windows a bare name also matches `name.exe`, `.cmd` and `.bat`.
-pub fn which(name: &str) -> Option<PathBuf> {
-    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
-        let p = PathBuf::from(name);
-        return is_executable(&p).then_some(p);
-    }
-    let path = std::env::var_os("PATH")?;
-    let suffixes: &[&str] = if cfg!(windows) && !name.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(&path)
-        .flat_map(|d| suffixes.iter().map(move |s| d.join(format!("{name}{s}"))))
-        .find(|p| is_executable(p))
+/// `dirs` without the ones inside a folder the scan leaves out: for the
+/// extra directories a caller searches beside PATH.
+pub fn reachable(dirs: Vec<String>) -> Vec<String> {
+    dirs.into_iter().filter(|d| !crate::utils::privacy::is_left_out(d)).collect()
 }
 
-fn is_executable(p: &Path) -> bool {
+/// The first executable called `name` on PATH (Python: `shutil.which`), else
+/// in a [`SYSTEM_DIRS`] folder. On Windows a bare name also matches
+/// `name.exe`, `.cmd` and `.bat`. It looks where [`resolve`] and so the
+/// spawns in this module look, in the same order (see `lookup`), so a tool
+/// this finds is one [`exec`] runs.
+pub fn which(name: &str) -> Option<PathBuf> {
+    which_in(name, std::env::var_os("PATH").as_deref())
+}
+
+/// [`which`] against the PATH `path` (`None`: no PATH at all).
+pub fn which_in(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    which_with(name, path, SYSTEM_DIRS)
+}
+
+/// [`which_in`] with the system folders given (the tests' own).
+pub(crate) fn which_with(name: &str, path: Option<&OsStr>, system: &[&str]) -> Option<PathBuf> {
+    lookup(OsStr::new(name), path, system).map(Found::into_path)
+}
+
+/// Where the system's administration tools live on Unix. A program that
+/// starts wpantry may give it a PATH without the `sbin` folders (a job
+/// runner, another program's child, `env -i`); the checks that run `spctl`,
+/// `scutil`, `system_profiler`, `cupsctl` or `sysadminctl` by name would then
+/// get nothing back and report that they couldn't tell. Root-owned folders
+/// only: a folder a user can write to (Homebrew's, mise's) does not belong
+/// here, since what is found here is run, sometimes as root.
+#[cfg(unix)]
+pub const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin"];
+/// No system folders to fall back to off Unix.
+#[cfg(not(unix))]
+pub const SYSTEM_DIRS: &[&str] = &[];
+
+/// Where [`lookup`] found a program.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// A path was given, or PATH has it: the spawn finds it there.
+    Path(PathBuf),
+    /// Only a [`SYSTEM_DIRS`] folder has it: a spawn by name would not.
+    System(PathBuf),
+}
+
+impl Found {
+    fn into_path(self) -> PathBuf {
+        match self {
+            Found::Path(p) | Found::System(p) => p,
+        }
+    }
+}
+
+/// The one lookup behind [`which`] and [`resolve`] (and so every spawn here),
+/// so they cannot disagree about whether a tool is there: a name with a
+/// separator is that path when it is executable; a bare name is the first
+/// executable of that name on `path`, else the first in the `system` folders
+/// (in order); anything not executable is skipped.
+pub(crate) fn lookup(name: &OsStr, path: Option<&OsStr>, system: &[&str]) -> Option<Found> {
+    let text = name.to_string_lossy();
+    if text.contains('/') || (cfg!(windows) && text.contains('\\')) {
+        let p = PathBuf::from(name);
+        return is_executable(&p).then_some(Found::Path(p));
+    }
+    let suffixes: &[&str] = if cfg!(windows) && !text.contains('.') { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let named = |dir: &Path, suffix: &str| {
+        let mut file = name.to_os_string();
+        file.push(suffix);
+        dir.join(file)
+    };
+    let on_path = path.and_then(|path| {
+        // A PATH folder inside a folder the scan leaves out (`crate::utils::privacy`) is not
+        // looked in: even a stat there raises a privacy prompt. The system folders are not
+        // filtered: they are fixed, root-owned places.
+        std::env::split_paths(path)
+            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .flat_map(|d| suffixes.iter().map(move |s| named(&d, s)))
+            .find(|p| is_executable(p))
+    });
+    if let Some(p) = on_path {
+        return Some(Found::Path(p));
+    }
+    system.iter().map(|d| named(Path::new(d), "")).find(|p| is_executable(p)).map(Found::System)
+}
+
+/// What a command named `prog` runs, given PATH `path`: `prog` itself when
+/// it has a slash or PATH has it (the spawn finds it there), else the copy
+/// in a [`SYSTEM_DIRS`] folder, else `prog` (the spawn then fails as it
+/// would have).
+///
+/// ```
+/// # #[cfg(unix)] {
+/// use std::ffi::OsStr;
+/// use wpantry::utils::process::resolve;
+/// // sysctl is in /usr/sbin or /sbin; PATH here has neither.
+/// let tool = resolve(OsStr::new("sysctl"), Some(OsStr::new("/nowhere")));
+/// assert!(tool.is_absolute() && tool.ends_with("sysctl"));
+/// # }
+/// ```
+pub fn resolve(prog: &OsStr, path: Option<&OsStr>) -> PathBuf {
+    resolve_with(prog, path, SYSTEM_DIRS)
+}
+
+/// [`resolve`] with the system folders given (the tests' own).
+pub(crate) fn resolve_with(prog: &OsStr, path: Option<&OsStr>, system: &[&str]) -> PathBuf {
+    match lookup(prog, path, system) {
+        Some(Found::System(found)) => found,
+        _ => PathBuf::from(prog),
+    }
+}
+
+/// [`resolve`] against this process's PATH.
+pub(crate) fn program(prog: &OsStr) -> PathBuf {
+    resolve(prog, std::env::var_os("PATH").as_deref())
+}
+
+/// The command that runs `argv` as root: directly when `root` (the program
+/// is resolved as [`exec`] resolves it, so a tool the probe found through
+/// the system folders is the one run), else through `sudo`, whose own search
+/// path applies. `path` is the PATH to resolve against.
+pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) -> Command {
+    let mut c;
+    if root {
+        c = Command::new(resolve(argv[0], path));
+        c.args(&argv[1..]);
+    } else {
+        c = Command::new("sudo");
+        c.args(argv);
+    }
+    c
+}
+
+pub(crate) fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -43,6 +175,76 @@ fn is_executable(p: &Path) -> bool {
     {
         p.is_file()
     }
+}
+
+/// Where a program's own installer puts it, tried after PATH when PATH
+/// does not have it (an app started from the Finder, a launchd job or a
+/// cron entry has a short one): `mise` in `$MISE_INSTALL_PATH` (when set)
+/// and `~/.local/bin`; `brew` in `$HOMEBREW_PREFIX/bin`; both in the three
+/// Homebrew prefixes. Other names have no standard place.
+///
+/// Example: `tool_places("brew", "/Users/x", env)` with no variables set is
+/// `/opt/homebrew/bin/brew`, `/usr/local/bin/brew` and
+/// `/home/linuxbrew/.linuxbrew/bin/brew`.
+pub fn tool_places(name: &str, home: &Path, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    tool_places_on(cfg!(windows), name, home, env)
+}
+
+/// [`tool_places`] for Windows (`windows`) or the Unixes. On Windows only
+/// `$MISE_INSTALL_PATH` is named: the Unix prefixes and `~/.local/bin` mean
+/// nothing there, there is no Homebrew, and mise's own Windows install
+/// locations are not documented well enough to guess (winget and scoop put
+/// it on PATH).
+pub fn tool_places_on(
+    windows: bool,
+    name: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if windows {
+        return if name == "mise" { set("MISE_INSTALL_PATH").into_iter().collect() } else { Vec::new() };
+    }
+    let prefixes = ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
+    let mut out = Vec::new();
+    match name {
+        "mise" => {
+            out.extend(set("MISE_INSTALL_PATH"));
+            out.push(home.join(".local/bin/mise"));
+        }
+        "brew" => out.extend(set("HOMEBREW_PREFIX").map(|p| p.join("bin/brew"))),
+        _ => return out,
+    }
+    out.extend(prefixes.iter().map(|p| Path::new(p).join("bin").join(name)));
+    out
+}
+
+/// `name` on PATH, else in one of its [`tool_places`]; as root, on PATH
+/// only. The places belong to whoever installed the tool (Homebrew's prefix,
+/// `~/.local/bin`), and what is found is run: as root that would run a
+/// program an unprivileged user can replace, which is why [`SYSTEM_DIRS`]
+/// names root-owned folders only. Root's PATH is root's to set.
+pub fn find_tool(name: &str) -> Option<PathBuf> {
+    if is_root() {
+        return which(name);
+    }
+    find_tool_in(name, std::env::var_os("PATH"), &home(), &|k| std::env::var_os(k))
+}
+
+/// Whether this process runs as root (`id -u` is 0), asked once. Never on Windows.
+pub fn is_root() -> bool {
+    static ROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ROOT.get_or_init(|| cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0")
+}
+
+/// [`find_tool`] for a PATH value, a home directory and an environment.
+pub fn find_tool_in(
+    name: &str,
+    path: Option<std::ffi::OsString>,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    which_in(name, path.as_deref()).or_else(|| tool_places(name, home, env).into_iter().find(|p| is_executable(p)))
 }
 
 /// What a finished program printed.
@@ -88,7 +290,7 @@ const ETXTBSY: i32 = -1;
 /// hold the call past `timeout` (plus a second's grace once it's killed).
 pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-    let mut cmd = Command::new(prog);
+    let mut cmd = Command::new(program(prog));
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("NO_COLOR", "1");
     for (k, v) in env {
         cmd.env(k, v);
@@ -144,8 +346,13 @@ pub fn run<S: AsRef<OsStr>>(argv: &[S], timeout: Duration) -> String {
 /// Every distinct executable called `name` on PATH, then in the `extra`
 /// directory globs, as (shown path, real path).
 pub fn on_path<S: AsRef<str>>(name: &str, extra: &[S]) -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = path_dirs();
-    dirs.extend(expand(extra));
+    on_path_in(name, path_dirs(), extra)
+}
+
+/// [`on_path`] over `dirs` (PATH's) and then the `extra` globs, none of them
+/// inside a left-out folder.
+fn on_path_in<S: AsRef<str>>(name: &str, mut dirs: Vec<String>, extra: &[S]) -> Vec<(String, String)> {
+    dirs.extend(reachable(expand(extra)));
     let mut seen = Vec::new();
     let mut out = Vec::new();
     for d in dirs {
@@ -197,7 +404,7 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
     let start = |argv: &[&OsStr], stdin: Stdio| -> Result<std::process::Child> {
         let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
-        let mut cmd = Command::new(prog);
+        let mut cmd = Command::new(program(prog));
         cmd.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
         // A read of a partial clone never makes git fetch what it's missing.
         cmd.env("GIT_NO_LAZY_FETCH", "1");
@@ -256,6 +463,19 @@ fn stream(first: &[&OsStr], second: Option<&[&OsStr]>, timeout: Duration, mut ea
 
 /// Keep the machine from sleeping while this process runs: a first scan
 /// can take an hour, and a Mac left alone sleeps through it. macOS's
+/// Whether process `pid` is running. Unix asks `kill -0` (no signal is
+/// sent); elsewhere there is no cheap way to ask, and the answer is no.
+pub fn alive(pid: u32) -> bool {
+    cfg!(unix)
+        && Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
 /// `caffeinate` holds the assertion and ends with us (`-w`); elsewhere,
 /// and when it can't start, nothing happens.
 pub fn stay_awake() {

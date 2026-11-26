@@ -356,3 +356,50 @@ fn gems_of_each_ruby() {
     assert_eq!(got[1].fix, format!("{gem} update rake"));
     assert!(got[1].auto && got[1].path == gem);
 }
+
+/// Risk: the Python search listed `python3.*` in every PATH folder, a
+/// left-out one (`~/Documents/bin`) included, which raises the macOS privacy
+/// prompt for an unattended scan. Oracle: the names it finds. A `python3.99`
+/// in the left-out folder is found when nothing is left out (the witness: the
+/// folder is listed) and not when it is; the reachable folder's is.
+#[cfg(unix)]
+#[test]
+fn the_python_search_does_not_list_a_left_out_folder() {
+    let _home = crate::utils::files::test_home();
+    let h = crate::utils::files::home();
+    for d in ["Documents/bin/python3.99", "tools/bin/python3.98"] {
+        std::fs::create_dir_all(h.join(d).parent().unwrap()).unwrap();
+        std::fs::write(h.join(d), "").unwrap();
+    }
+    let path = std::env::join_paths([h.join("Documents/bin"), h.join("tools/bin")]).unwrap();
+    let names = |path: &std::ffi::OsStr| python_names(&python_dirs(Some(path)));
+    assert_eq!(names(&path), ["python3", "python3.98", "python3.99"]);
+    let guard = crate::utils::privacy::leave_out(crate::utils::privacy::folders(&h, false), Vec::new());
+    assert_eq!(names(&path), ["python3", "python3.98"]);
+    drop(guard);
+}
+
+/// Risk: a `v` in the fix version reaches the package managers' commands
+/// (`cargo install name@v1.2.3` is not a version requirement). Oracle: the
+/// bare version in each of pip's, npm's and cargo's.
+#[test]
+fn package_fix_commands_name_the_fixed_version() {
+    use crate::checks::fix_with;
+    let template = |fix: &str| {
+        let mut c = Component::new("package", "x", "1", "/p");
+        c.fix = fix.into();
+        c
+    };
+    for safe in ["1.2.3"] {
+        for (fix, want) in [
+            (
+                "/x/bin/python3 -m pip install --upgrade 'requests>={safe}'",
+                "/x/bin/python3 -m pip install --upgrade 'requests>=1.2.3'",
+            ),
+            ("/x/npm install -g left-pad@{safe}", "/x/npm install -g left-pad@1.2.3"),
+            ("cargo install --locked ripgrep@{safe}", "cargo install --locked ripgrep@1.2.3"),
+        ] {
+            assert_eq!(fix_with(&template(fix), safe).0, want, "{fix} given {safe}");
+        }
+    }
+}

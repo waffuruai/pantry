@@ -157,7 +157,7 @@ fn inventory_local(scan: &mut Scan) -> Vec<Component> {
     // Bottles poured without the `brew` command (mise's brew: engine): read
     // from the Cellar, since `brew vulns` can't run and `tools` leaves
     // Cellar-owned binaries to it. With brew present, brew vulns covers them.
-    if process::which("brew").is_none() {
+    if process::find_tool("brew").is_none() {
         scan.status("Reading the Homebrew Cellar (no brew)");
         if let Some((cellar, inv)) = cellar::inventory() {
             scan.count("Homebrew formulae (Cellar, no brew)", inv.components.len() as i64);

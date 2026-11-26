@@ -189,7 +189,7 @@ pub fn github_latest(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) ->
 /// Example: `{"tag_name": "v1.11.3", "published_at": "2026-08-28T10:00:00Z"}`
 /// gives `("1.11.3", <2026-08-28>)`.
 pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<(String, f64)> {
-    let v = fetch::memo(cache, "github-releases", &github_key(repo), || github_fetch(net, repo), "", false, offline)?;
+    let v = github_release_info(cache, net, repo, offline)?;
     Ok(github_parts(&v))
 }
 
@@ -197,11 +197,65 @@ pub fn github_release(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -
 /// replaces. Unlike the memo, an unreachable GitHub is an error here, never
 /// the last copy: it is for a command that must not answer from an old one.
 pub fn github_latest_now(cache: &Cache, net: &dyn Net, repo: &str) -> Result<String> {
+    Ok(github_parts(&github_release_now(cache, net, repo)?).0)
+}
+
+/// [`github_release_info`] asked of GitHub now, as [`github_latest_now`]:
+/// the answer replaces the stored copy, and an unreachable GitHub is an
+/// error, never the last copy.
+pub fn github_release_now(cache: &Cache, net: &dyn Net, repo: &str) -> Result<Value> {
     fetch::on("github-releases")?;
     let v = github_fetch(net, repo)?;
     cache.put_run(&github_key(repo), "", &v)?;
     cache.commit()?;
-    Ok(github_parts(&v).0)
+    Ok(v)
+}
+
+/// How fresh a [`github_release_info_dated`] answer is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Freshness {
+    /// When the answer was fetched (epoch seconds); None when the cache
+    /// holds no row for it (an answer that was never stored).
+    pub checked_at: Option<f64>,
+    /// The answer is a stored copy past the source's refresh age (or dated
+    /// in the future). Only an offline answer can be: online asks GitHub
+    /// now, so its answer is fresh or an error.
+    pub stale: bool,
+}
+
+/// The latest release as [`github_release_info`] gives it, with when it was
+/// fetched and whether it is stale.
+///
+/// Online it is asked of GitHub now ([`github_release_now`]): the stored
+/// copy is replaced, and an unreachable GitHub is an error, never the last
+/// copy. Offline it is the last copy of any age, which is stale when it is
+/// outside the refresh window the memo uses.
+///
+/// Example: offline, a cached `"9.9.9"` stored 10 days ago gives
+/// `("9.9.9", Freshness { checked_at: Some(<10 days ago>), stale: true })`.
+pub fn github_release_info_dated(
+    cache: &Cache,
+    net: &dyn Net,
+    repo: &str,
+    offline: bool,
+) -> Result<(Value, Freshness)> {
+    let info =
+        if offline { github_release_info(cache, net, repo, true)? } else { github_release_now(cache, net, repo)? };
+    let checked_at = cache.run(&github_key(repo))?.filter(|(fp, _, _)| fp.is_empty()).map(|(_, at, _)| at);
+    let now = crate::utils::os::now();
+    let max_age = fetch::refresh_of("github-releases");
+    let stale = match checked_at {
+        Some(at) => !(at > now - max_age && at <= now + crate::db::CLOCK_SKEW),
+        None => false,
+    };
+    Ok((info, Freshness { checked_at, stale }))
+}
+
+/// The latest release's tag, publication time and uploaded asset names,
+/// refreshed daily. Older cache entries can hold only the tag or omit the
+/// asset names.
+pub fn github_release_info(cache: &Cache, net: &dyn Net, repo: &str, offline: bool) -> Result<Value> {
+    fetch::memo(cache, "github-releases", &github_key(repo), || github_fetch(net, repo), "", false, offline)
 }
 
 fn github_key(repo: &str) -> String {
@@ -218,7 +272,14 @@ fn github_fetch(net: &dyn Net, repo: &str) -> Result<Value> {
         return Err(Error::Offline(format!("{repo} has no latest release")));
     }
     let v = if tag.len() > 1 && tag.starts_with('v') && tag.as_bytes()[1].is_ascii_digit() { &tag[1..] } else { tag };
-    Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at"))}))
+    let assets: Vec<&str> = data
+        .get("assets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|asset| asset.get("name").and_then(Value::as_str))
+        .collect();
+    Ok(serde_json::json!({"version": v, "published": epoch(str_at(&data, "published_at")), "assets": assets}))
 }
 
 /// A cached answer as (version, published); a bare string is from before

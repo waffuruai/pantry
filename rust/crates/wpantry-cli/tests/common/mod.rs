@@ -82,7 +82,19 @@ impl Ctx {
 
     /// A run with these variables set over the test's environment.
     pub fn run_env(&self, argv: &[&str], env: &[(&str, &str)]) -> Out {
+        self.run_at(None, argv, env)
+    }
+
+    /// A run with `cwd` as its working directory.
+    pub fn run_in(&self, cwd: &Path, argv: &[&str]) -> Out {
+        self.run_at(Some(cwd), argv, &[])
+    }
+
+    fn run_at(&self, cwd: Option<&Path>, argv: &[&str], env: &[(&str, &str)]) -> Out {
         let mut cmd = Command::new(BIN);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.args(argv)
             .env("HOME", &self.home)
             .env("WPANTRY_DB", &self.db)
@@ -197,6 +209,7 @@ pub enum Ty {
     Bool,
     BoolOrNull,
     NumOrNull,
+    StrList,
 }
 
 impl Ty {
@@ -206,6 +219,7 @@ impl Ty {
             Ty::Bool => v.is_boolean(),
             Ty::BoolOrNull => v.is_boolean() || v.is_null(),
             Ty::NumOrNull => v.is_number() || v.is_null(),
+            Ty::StrList => v.as_array().is_some_and(|a| a.iter().all(Value::is_string)),
         }
     }
 }
@@ -233,6 +247,12 @@ pub const FINDING: &[(&str, Ty)] = &[
     ("epss_percentile", Ty::NumOrNull),
     ("epss_date", Ty::Str),
     ("epss_model", Ty::Str),
+    ("excluded", Ty::Bool),
+    ("summary", Ty::Str),
+    ("aliases", Ty::StrList),
+    ("cwe", Ty::StrList),
+    ("local_source", Ty::Str),
+    ("local_link", Ty::Str),
 ];
 
 pub const SCOPES: &[&str] = &["runtime", "dev", "optional", "unknown"];
@@ -370,6 +390,45 @@ pub const CACHE: &[(&str, &[&str])] = &[
             "epss_percentile",
             "epss_date",
             "epss_model",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe",
+            "local_source",
+            "local_link",
+        ],
+    ),
+    (
+        "run_findings",
+        &[
+            "scan_id",
+            "kind",
+            "component",
+            "version",
+            "location",
+            "vuln_id",
+            "status",
+            "fixed",
+            "kev",
+            "severity",
+            "note",
+            "fix_cmd",
+            "fix_auto",
+            "dep_scope",
+            "dep_direct",
+            "affected_range",
+            "cvss",
+            "cvss_version",
+            "epss",
+            "epss_percentile",
+            "epss_date",
+            "epss_model",
+            "excluded",
+            "summary",
+            "aliases",
+            "cwe",
+            "local_source",
+            "local_link",
         ],
     ),
     ("kev", &["cve", "added", "name", "vendor", "product"]),
@@ -452,98 +511,12 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// Raw DEFLATE (RFC 1951): one fixed-Huffman block, greedy LZ77 matches
-/// within a 32 KiB window. Small and slow, enough for test documents.
-pub fn deflate(data: &[u8]) -> Vec<u8> {
-    const LEN_BASE: [usize; 29] = [
-        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227,
-        258,
-    ];
-    const LEN_EXTRA: [u32; 29] =
-        [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-    const DIST_BASE: [usize; 30] = [
-        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097,
-        6145, 8193, 12289, 16385, 24577,
-    ];
-    const DIST_EXTRA: [u32; 30] =
-        [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
-
-    struct Bits {
-        out: Vec<u8>,
-        acc: u64,
-        n: u32,
-    }
-    impl Bits {
-        /// Header fields and extra bits, LSB first.
-        fn put(&mut self, v: u32, count: u32) {
-            self.acc |= (v as u64) << self.n;
-            self.n += count;
-            while self.n >= 8 {
-                self.out.push(self.acc as u8);
-                self.acc >>= 8;
-                self.n -= 8;
-            }
-        }
-        /// Huffman codes, MSB first.
-        fn code(&mut self, code: u32, len: u32) {
-            for i in (0..len).rev() {
-                self.put((code >> i) & 1, 1);
-            }
-        }
-        /// A literal/length symbol in the fixed code.
-        fn sym(&mut self, sym: u32) {
-            match sym {
-                0..=143 => self.code(0x30 + sym, 8),
-                144..=255 => self.code(0x190 + sym - 144, 9),
-                256..=279 => self.code(sym - 256, 7),
-                _ => self.code(0xC0 + sym - 280, 8),
-            }
-        }
-    }
-    let slot = |base: &[usize], v: usize| base.iter().rposition(|&b| b <= v).unwrap();
-
-    let mut w = Bits { out: Vec::new(), acc: 0, n: 0 };
-    w.put(1, 1); // the last block
-    w.put(1, 2); // fixed Huffman
-    let mut i = 0;
-    while i < data.len() {
-        let (mut best, mut dist) = (0, 0);
-        let max = (data.len() - i).min(258);
-        for d in 1..=i.min(32768) {
-            let len = (0..max).take_while(|&k| data[i + k] == data[i + k - d]).count();
-            if len > best {
-                (best, dist) = (len, d);
-                if len == max {
-                    break;
-                }
-            }
-        }
-        if best >= 3 {
-            let l = slot(&LEN_BASE, best);
-            w.sym(257 + l as u32);
-            w.put((best - LEN_BASE[l]) as u32, LEN_EXTRA[l]);
-            let d = slot(&DIST_BASE, dist);
-            w.code(d as u32, 5);
-            w.put((dist - DIST_BASE[d]) as u32, DIST_EXTRA[d]);
-            i += best;
-        } else {
-            w.sym(data[i] as u32);
-            i += 1;
-        }
-    }
-    w.sym(256);
-    if w.n > 0 {
-        w.put(0, 8 - w.n);
-    }
-    w.out
-}
-
 /// A zip whose members are all deflated.
 pub fn zip_deflated(members: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
     for (name, data) in members {
-        let packed = deflate(data);
+        let packed = wpantry::utils::archive::compress::deflate(data);
         let crc = crc32(data);
         let offset = out.len() as u32;
         let common = |v: &mut Vec<u8>| {

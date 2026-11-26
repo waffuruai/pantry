@@ -16,7 +16,7 @@ fn hostile_text_stays_json_data() {
         .next()
         .unwrap();
     assert!(!payload.contains(['<', '>', '&']));
-    let parsed = crate::utils::json::parse(payload.as_bytes(), usize::MAX).unwrap();
+    let parsed = crate::reporters::pack::read(payload).unwrap();
     assert_eq!(parsed["note"], hostile);
     assert!(!html.contains(TOKEN));
 }
@@ -27,11 +27,6 @@ fn fonts_are_embedded_and_no_token_is_left() {
     assert!(!html.contains("{{"), "a template token survived");
     assert_eq!(html.matches("data:font/woff2;base64,").count(), FONTS.len());
     assert!(!html.contains("http://") && !html.contains("https://fonts."), "nothing is fetched");
-    assert_eq!(base64(b""), "");
-    assert_eq!(base64(b"f"), "Zg==");
-    assert_eq!(base64(b"fo"), "Zm8=");
-    assert_eq!(base64(b"foo"), "Zm9v");
-    assert_eq!(base64(b"foobar"), "Zm9vYmFy");
 }
 
 /// Every opened element is closed, in order, outside the script and

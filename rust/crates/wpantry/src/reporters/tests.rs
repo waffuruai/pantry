@@ -139,3 +139,44 @@ fn the_latest_scan_reads_back_as_it_was() {
     assert!(render(&cache, &r, Format::Html).unwrap().contains("pantry-bundle"));
     assert!(!render(&cache, &r, Format::Jsonl).unwrap().is_empty());
 }
+
+/// `report --run ID`: an earlier scan, in every format, while the latest
+/// stays the latest.
+#[test]
+fn an_earlier_scan_is_reported_from_its_kept_findings() {
+    let d = crate::utils::temp::TempDir::new("report").unwrap();
+    let cache = Cache::open(Some(&d.path().join("c.db"))).unwrap();
+    let finding = |id: &str| crate::finding::Finding {
+        kind: "project".into(),
+        component: format!("pkg-{id}"),
+        version: "1".into(),
+        location: "/r/Cargo.lock".into(),
+        vuln_id: id.into(),
+        status: "fail".into(),
+        ..Default::default()
+    };
+    let opts = crate::checks::Options::default();
+    let mut ids = Vec::new();
+    for found in [vec![finding("CVE-2026-1"), finding("CVE-2026-2")], vec![finding("CVE-2026-9")]] {
+        cache.replace_findings(&found).unwrap();
+        ids.push(history::record_scan_totals(&cache, 1.0, &found, &[("git repos".into(), 1)], (0, 0), &opts).unwrap());
+    }
+    assert!(of_run(&cache, 99, None).unwrap().is_none(), "no such scan");
+    let r = of_run(&cache, ids[0], None).unwrap().unwrap();
+    assert_eq!(
+        (r.outcome.scan_id, r.scan.row.id, r.outcome.findings.len(), r.scan.counts.len()),
+        (ids[0], ids[0], 2, 1)
+    );
+    for format in [Format::Json, Format::Jsonl, Format::Csv, Format::Md, Format::Html] {
+        let text = render(&cache, &r, format).unwrap();
+        assert!(
+            text.contains("CVE-2026-1") && text.contains("CVE-2026-2") && !text.contains("CVE-2026-9"),
+            "{format:?}: {text}"
+        );
+    }
+    // Another connection still reads the latest: nothing in the cache changed.
+    cache.close().unwrap();
+    let cache = Cache::open(Some(&d.path().join("c.db"))).unwrap();
+    let r = latest(&cache, None).unwrap().unwrap();
+    assert_eq!((r.outcome.scan_id, r.outcome.findings[0].vuln_id.as_str()), (ids[1], "CVE-2026-9"));
+}

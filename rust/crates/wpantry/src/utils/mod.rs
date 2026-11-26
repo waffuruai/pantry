@@ -3,11 +3,12 @@
 //! threads ([`parallel`]), temporary directories ([`temp`]), Homebrew's
 //! layout ([`homebrew`]), HTTP behind the host allowlist ([`net`]), and the
 //! in-tree readers and algorithms the dependency policy keeps out of
-//! crates: [`json`], [`plist`], [`re`], [`sha256`], and crypto wallet
+//! crates: [`base64`], [`json`], [`plist`], [`re`], [`sha256`], and crypto wallet
 //! [`addresses`].
 
 pub mod addresses;
 pub mod archive;
+pub mod base64;
 pub mod cvss;
 pub mod dates;
 pub mod files;
@@ -17,6 +18,7 @@ pub mod net;
 pub mod os;
 pub mod parallel;
 pub mod plist;
+pub mod privacy;
 pub mod process;
 pub mod re;
 pub mod sha256;

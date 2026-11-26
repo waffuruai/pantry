@@ -128,7 +128,10 @@ fn is_interpreter(program: &Path) -> bool {
 pub(crate) fn program_file(argv: &[String]) -> Option<PathBuf> {
     let first = argv.first()?;
     if is_interpreter(Path::new(first))
-        && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_file())
+        && let Some(script) = argv
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-') && (crate::utils::privacy::is_left_out(a) || Path::new(a).is_file()))
     {
         return Some(PathBuf::from(script));
     }
@@ -207,6 +210,7 @@ pub fn persistence_in(home: &Path, dirs: &[PathBuf]) -> (Vec<Persisted>, usize) 
             // read, the command line is all there is.
             if let Some(p) = &program
                 && !is_interpreter(p)
+                && !crate::utils::privacy::is_left_out(p)
                 && let Ok(bytes) = files::read_capped_bytes(p, MAX_PROGRAM)
             {
                 text.push('\n');
@@ -249,7 +253,9 @@ pub fn persisted_files() -> Vec<PathBuf> {
             if !item.is_file() {
                 continue;
             }
-            if let Some(program) = program_file(&command_of(&item)).filter(|p| p.is_file()) {
+            if let Some(program) =
+                program_file(&command_of(&item)).filter(|p| !crate::utils::privacy::is_left_out(p) && p.is_file())
+            {
                 out.push(program);
             }
             out.push(item);

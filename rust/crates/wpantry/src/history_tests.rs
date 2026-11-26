@@ -31,6 +31,9 @@ fn exposures_open_touch_and_resolve_within_a_scope() {
     let two = open.iter().find(|e| e.vuln_id == "CVE-2").unwrap();
     assert!(one.resolved_at.is_none());
     assert_eq!(two.resolved_at.map(|_| true), Some(true), "not seen by the second scan of the same scope");
+    // The scope it was seen in, so a caller can scan that scope again.
+    assert_eq!(one.scope, "repos:/r");
+    assert_eq!(one.to_json()["scope"], "repos:/r");
     assert!(two.days_exposed < 0.01, "{}", two.days_exposed);
     // Another scope never resolves it.
     let other = Options { machine: true, paths: None, ..Default::default() };
@@ -90,6 +93,8 @@ fn an_incomplete_recheck_resolves_nothing() {
 fn scope_includes_what_the_scan_looked_for() {
     let repos = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
     assert_eq!(scope_of(&repos), "repos:/r");
+    // A project scan's runtimes make it another scope than the repo checks alone.
+    assert_eq!(scope_of(&Options { project: true, ..repos.clone() }), "project:/r");
     let licenses = Options { licenses: true, ..repos.clone() };
     assert_eq!(scope_of(&licenses), "repos:/r+licenses");
     let policy = Options {
@@ -161,9 +166,10 @@ fn a_personal_folder_exclusion_cannot_resolve_full_scan_exposures() {
     let background = Options { no_personal_files: true, ..full.clone() };
     assert_eq!(scope_of(&full), "machine:/r");
     assert_eq!(scope_of(&background), "machine:/r;no-personal-files");
-    // No machine pass means this flag changes no coverage.
+    // Since 2026-11-21 the flag also keeps the personal folders out
+    // of the repo walk, so a repo-only scan with it covers less too.
     let repos = Options { machine: false, ..background.clone() };
-    assert_eq!(scope_of(&repos), "repos:/r");
+    assert_eq!(scope_of(&repos), "repos:/r;no-personal-files");
     record_scan(&c, 1.0, &[finding("CVE-1", "fail")], &[], &full).unwrap();
     record_scan(&c, 2.0, &[], &[], &background).unwrap();
     assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none());
@@ -187,4 +193,387 @@ fn an_exposure_keeps_its_first_epss_score_as_the_latest_moves() {
     record_scan(&c, 2.0, &[scored(Some(0.02), Some(0.6))], &[], &opts).unwrap();
     record_scan(&c, 3.0, &[scored(Some(0.4), Some(0.99))], &[], &opts).unwrap();
     assert_eq!(first(&c), (Some(0.02), Some(0.6), Some(0.4)), "the first score stays; the latest moves");
+}
+
+/// A scan of `findings`, saved as a scan saves it.
+fn scan_of(c: &Cache, findings: &[Finding], scope: &str) -> i64 {
+    let opts = Options { paths: Some(vec![scope.into()]), ..Default::default() };
+    c.replace_findings(findings).unwrap();
+    record_scan(c, now(), findings, &[], &opts).unwrap()
+}
+
+fn latest_ids(c: &Cache) -> Vec<String> {
+    let mut ids: Vec<String> = crate::reporters::jsonl::findings(c).unwrap().into_iter().map(|f| f.vuln_id).collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn each_scan_keeps_its_findings_and_runs_lists_them_latest_first() {
+    let d = crate::utils::temp::TempDir::new("runs").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    assert_eq!((runs(&c).unwrap(), latest_scan(&c).unwrap()), (Vec::new(), None));
+    let a = scan_of(&c, &[finding("CVE-1", "fail"), finding("CVE-2", "warn")], "/a");
+    let b = scan_of(&c, &[], "/b");
+    let listed = runs(&c).unwrap();
+    let got: Vec<(i64, &str, i64, i64, i64, bool)> = listed
+        .iter()
+        .map(|r| (r.row.id, r.row.scope.as_str(), r.row.fails, r.row.warns, r.findings, r.latest))
+        .collect();
+    // A scan that found nothing is a kept scan too.
+    assert_eq!(got, [(b, "repos:/b", 0, 0, 0, true), (a, "repos:/a", 1, 1, 2, false)]);
+    assert!(is_kept(&c, a).unwrap() && !is_kept(&c, 99).unwrap());
+    let json: Value = serde_json::from_str(&runs_json(&listed)).unwrap();
+    assert_eq!(json["keeps"], KEEP_RUNS);
+    assert_eq!(json["runs"][1]["scan"], a);
+    assert_eq!(
+        (&json["runs"][1]["findings"], &json["runs"][1]["latest"], &json["runs"][1]["scope"]),
+        (&json!(2), &json!(false), &json!("repos:/a"))
+    );
+    assert!(json["runs"][0]["finished"].as_str().unwrap().ends_with(" UTC"));
+}
+
+#[test]
+fn pruning_the_latest_scan_shows_the_one_before_it_again() {
+    let d = crate::utils::temp::TempDir::new("runs").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let a = scan_of(&c, &[finding("CVE-1", "fail")], "/a");
+    let b = scan_of(&c, &[finding("CVE-2", "fail"), finding("CVE-3", "fail")], "/b");
+    let wrong = scan_of(&c, &[finding("CVE-9", "fail")], "/wrong");
+    assert_eq!((latest_scan(&c).unwrap(), latest_ids(&c)), (Some(wrong), vec!["CVE-9".to_string()]));
+    let (row, gone) = prune_run(&c, wrong).unwrap().unwrap();
+    assert_eq!((row.id, row.scope.as_str(), gone), (wrong, "repos:/wrong", 1));
+    assert_eq!((latest_scan(&c).unwrap(), latest_ids(&c)), (Some(b), vec!["CVE-2".to_string(), "CVE-3".to_string()]));
+    // An older one goes without touching what report shows.
+    assert_eq!(prune_run(&c, a).unwrap().map(|(_, n)| n), Some(1));
+    assert_eq!((latest_scan(&c).unwrap(), latest_ids(&c).len()), (Some(b), 2));
+    assert_eq!(runs(&c).unwrap().iter().map(|r| r.row.id).collect::<Vec<_>>(), [b]);
+    // Twice, or a scan there never was: nothing to prune.
+    assert_eq!(prune_run(&c, a).unwrap(), None);
+    assert_eq!(prune_run(&c, 99).unwrap(), None);
+    // The scan log keeps every row, and says what was pruned.
+    assert_eq!(scans(&c, f64::MIN).unwrap().len(), 3);
+    let pruned: Vec<Value> =
+        events(&c, 0.0).unwrap().into_iter().filter(|e| e.kind == "prune").map(|e| e.detail["scan"].clone()).collect();
+    assert_eq!(pruned, [json!(wrong), json!(a)]);
+    // The last one gone: no scan to report, and no findings left behind.
+    prune_run(&c, b).unwrap().unwrap();
+    assert_eq!((latest_scan(&c).unwrap(), latest_ids(&c)), (None, Vec::new()));
+}
+
+#[test]
+fn only_the_latest_scans_keep_their_findings() {
+    let d = crate::utils::temp::TempDir::new("runs").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let ids: Vec<i64> = (0..KEEP_RUNS + 2).map(|_| scan_of(&c, &[finding("CVE-1", "fail")], "/a")).collect();
+    let kept: Vec<i64> = runs(&c).unwrap().iter().map(|r| r.row.id).collect();
+    assert_eq!(kept.len() as i64, KEEP_RUNS);
+    assert_eq!((kept[0], *kept.last().unwrap()), (*ids.last().unwrap(), ids[2]));
+    let rows: i64 = c.conn.query_row("SELECT COUNT(*) FROM run_findings", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, KEEP_RUNS, "the two oldest scans' findings are gone");
+    assert!(!is_kept(&c, ids[0]).unwrap() && !is_kept(&c, ids[1]).unwrap());
+    assert_eq!(scans(&c, f64::MIN).unwrap().len() as i64, KEEP_RUNS + 2, "their rows stay in the scan log");
+}
+
+#[test]
+fn a_scan_that_never_ended_is_told_once_and_one_still_running_each_time() {
+    let d = crate::utils::temp::TempDir::new("runs").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    assert_eq!(unfinished(&c, &|_| panic!("nothing to ask about")).unwrap(), []);
+    // Two other processes began scans; 41's is gone, 42's is still there.
+    c.set("scan_running:41", r#"{"started_at": 86400.0, "scope": "machine:~"}"#).unwrap();
+    c.set("scan_running:42", r#"{"started_at": 90000.0, "scope": "project:/r"}"#).unwrap();
+    let found = unfinished(&c, &|pid| pid == 42).unwrap();
+    assert_eq!(
+        found,
+        [
+            Unfinished { pid: 41, started_at: 86400.0, scope: "machine:~".into(), running: false },
+            Unfinished { pid: 42, started_at: 90000.0, scope: "project:/r".into(), running: true },
+        ]
+    );
+    assert_eq!(
+        found[0].line(Some(58)),
+        "ℹ the scan of machine:~ started 1970-01-02 00:00 UTC didn't finish: nothing of it was saved, and wpantry report shows scan 58"
+    );
+    assert_eq!(
+        found[0].line(None),
+        "ℹ the scan of machine:~ started 1970-01-02 00:00 UTC didn't finish: nothing of it was saved"
+    );
+    assert_eq!(
+        found[1].line(Some(58)),
+        "ℹ the scan of project:/r started 1970-01-02 01:00 UTC is still running (pid 42): when it finishes, wpantry report shows it"
+    );
+    let again: Vec<u32> = unfinished(&c, &|pid| pid == 42).unwrap().iter().map(|u| u.pid).collect();
+    assert_eq!(again, [42], "the interrupted one was told");
+    // This process's own scan: noted at once, gone when it ends, and never "still running" to itself.
+    let opts = Options { machine: true, ..Default::default() };
+    scan_started(&c, &opts, 5.0).unwrap();
+    let mine = unfinished(&c, &|_| true).unwrap().into_iter().find(|u| u.pid == std::process::id()).unwrap();
+    assert_eq!((mine.scope.as_str(), mine.started_at, mine.running), ("machine:~", 5.0, false));
+    scan_started(&c, &opts, 6.0).unwrap();
+    scan_finished(&c).unwrap();
+    assert_eq!(unfinished(&c, &|_| true).unwrap().iter().map(|u| u.pid).collect::<Vec<_>>(), [42]);
+}
+
+#[test]
+fn targeted_fix_history_waits_for_a_complete_later_scan_of_the_same_scope() {
+    let dir = crate::utils::temp::TempDir::new("targeted-fix-history").unwrap();
+    let cache = Cache::open(Some(&dir.path().join("w.db"))).unwrap();
+    let opts = Options { machine: false, paths: Some(vec!["/r".into()]), ..Default::default() };
+    let finding = finding("CVE-1", "fail");
+    let target = key_of(&finding);
+    let before = now() - 60.0;
+    let scan = record_scan(&cache, before, std::slice::from_ref(&finding), &[], &opts).unwrap();
+    record_fix(&cache, Some(scan), "patch failed", "mitigate", false, std::slice::from_ref(&target)).unwrap();
+    record_fix(&cache, Some(scan), "patch worked", "mitigate", true, &[target]).unwrap();
+    let other = Options { paths: Some(vec!["/different".into()]), ..opts.clone() };
+    record_scan(&cache, now(), &[], &[], &other).unwrap();
+    record_scan(&cache, now(), &[gap()], &[], &opts).unwrap();
+    // It finished after the fix but started before it, so it cannot verify it.
+    record_scan(&cache, before, &[], &[], &opts).unwrap();
+    assert!(fixes(&cache, 0.0).unwrap().iter().all(|f| f.verified_scan.is_none()));
+    let verified = record_scan(&cache, now(), &[], &[], &opts).unwrap();
+    let history = fixes(&cache, 0.0).unwrap();
+    assert_eq!(history[0].verified_scan, None);
+    assert_eq!(history[1].verified_scan, Some(verified));
+}
+
+/// The two findings `--no-personal-files` adds on macOS, as the scan makes them.
+fn skipped_by_choice() -> Vec<Finding> {
+    ["Personal documents and images", "Safari settings"]
+        .iter()
+        .map(|what| Finding {
+            kind: "unchecked".into(),
+            component: (*what).into(),
+            vuln_id: "UNCHECKED".into(),
+            status: "warn".into(),
+            note: "Skipped by your choice (--no-personal-files).".into(),
+            excluded: true,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Oracle: a machine scan with `--no-personal-files` (`machine:~;no-personal-files`)
+/// carries only the user's own exclusions, so a later scan of the same
+/// scope that no longer lists an exposure resolves it and verifies the
+/// targeted fix for it. Known-bad case: the same scan with one real source
+/// failure beside the exclusions resolves and verifies nothing.
+#[test]
+fn a_chosen_exclusion_still_resolves_and_verifies_but_a_source_failure_does_not() {
+    let d = crate::utils::temp::TempDir::new("history-excluded").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let chosen = Options { machine: true, no_personal_files: true, ..Default::default() };
+    assert_eq!(scope_of(&chosen), "machine:~;no-personal-files");
+    let exposed = finding("CVE-1", "fail");
+    let target = key_of(&exposed);
+    let mut first = skipped_by_choice();
+    first.push(exposed.clone());
+    let before = now() - 60.0;
+    let s1 = record_scan(&c, before, &first, &[], &chosen).unwrap();
+    assert_eq!(scans(&c, 0.0).unwrap()[0].unchecked, 0, "a chosen exclusion is not a gap");
+    assert_eq!(events(&c, 0.0).unwrap()[0].detail["excluded"], 2);
+    record_fix(&c, Some(s1), "patch", "mitigate", true, std::slice::from_ref(&target)).unwrap();
+
+    // Known-bad: a real source failure beside the exclusions blocks both.
+    let mut broken = skipped_by_choice();
+    broken.push(gap());
+    record_scan(&c, now(), &broken, &[], &chosen).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none(), "a source outage is not a fix");
+    assert!(fixes(&c, 0.0).unwrap()[0].verified_scan.is_none());
+    assert_eq!(scans(&c, 0.0).unwrap()[1].unchecked, 1);
+
+    // Same exclusions, every source answered, the exposure gone: resolved and verified.
+    let s3 = record_scan(&c, now(), &skipped_by_choice(), &[], &chosen).unwrap();
+    let e = exposures(&c, 0.0).unwrap();
+    assert!(e[0].resolved_at.is_some(), "{e:?}");
+    assert_eq!(fixes(&c, 0.0).unwrap()[0].verified_scan, Some(s3));
+    // `fix --verify`'s path agrees: the scan counts as complete.
+    record_fix(&c, Some(s1), "brew upgrade x", "auto", true, std::slice::from_ref(&target)).unwrap();
+    assert_eq!(verify_fixes(&c, s1, s3).unwrap(), 1);
+    c.close().unwrap();
+}
+
+/// Risk: the scheduled job's scope became `machine:~;no-personal-files`, and
+/// an exposure resolves only under an identical scope, so everything a full
+/// `machine:~` scan had recorded stayed open for good once the job stopped
+/// listing it. The fix (a no-personal-files machine scan also closes what
+/// `machine:~` recorded) must never close what that scan did not read.
+/// Oracle: where each exposure is. Outside the personal folders the job read
+/// it, so its absence is real; inside them (any spelling: `..`, `~`, a
+/// different case on macOS and Windows) or in Safari's protected data it did
+/// not, so it stays open until a full scan; a full scan closes the rest.
+/// Known bad, each by one change: drop the folder test and the Documents
+/// exposures close; drop the new rule and the fixed ones stay open.
+#[test]
+fn a_no_personal_files_scan_closes_full_scan_exposures_it_could_see_and_no_others() {
+    let _home = crate::utils::files::test_home();
+    let home = crate::utils::files::home();
+    let d = crate::utils::temp::TempDir::new("closes").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let full = Options { machine: true, ..Default::default() };
+    let job = Options { no_personal_files: true, ..full.clone() };
+    assert_eq!((scope_of(&full).as_str(), scope_of(&job).as_str()), ("machine:~", "machine:~;no-personal-files"));
+    let at = |kind: &str, component: &str, location: String, id: &str| Finding {
+        kind: kind.into(),
+        component: component.into(),
+        location,
+        vuln_id: id.into(),
+        status: "fail".into(),
+        ..Default::default()
+    };
+    let p = |rel: &str| home.join(rel).to_string_lossy().into_owned();
+    // (name, finding, whether the job's scan can close it)
+    let mut cases = vec![
+        ("a repo's lockfile outside the folders", at("project", "app", p("code/app/Cargo.lock"), "CVE-1"), true),
+        ("a Homebrew formula", at("brew", "openssl@3", String::new(), "CVE-2"), true),
+        ("a lockfile in Documents", at("project", "doc", p("Documents/proj/Cargo.lock"), "CVE-3"), false),
+        ("a file in Downloads", at("malware", "x", p("Downloads/x"), "MALWARE"), false),
+        ("a path folded with ..", at("project", "dots", p("Library/../Desktop/p/Cargo.lock"), "CVE-4"), false),
+        ("a path spelled with ~", at("project", "tilde", "~/Documents/p/Cargo.lock".into(), "CVE-5"), false),
+        ("a secret in some repo (no path, only `line 3`)", at("secret", "repo/.env", "line 3".into(), "aws"), false),
+        (
+            "a document found in Downloads (no location)",
+            at("document", "~/Downloads/a.pdf", String::new(), "DOC"),
+            false,
+        ),
+        ("Safari's protected data", at("posture", "Safari", String::new(), "POSTURE-SAFARI-SAFE-FILES"), false),
+        // A note about a file is where the file is, whatever its location says.
+        (
+            "a repo's ignore file in Documents (location `line 2`)",
+            at("config", "~/Documents/proj/.pantryignore", "line 2".into(), "IGNORE-PROTECTED"),
+            false,
+        ),
+        (
+            "a repo's ignore file in Documents (no location)",
+            at("config", &p("Documents/other/.pantryignore"), String::new(), "IGNORE-FILE"),
+            false,
+        ),
+        (
+            "a repo's ignore file outside the folders",
+            at("config", "~/code/app/.pantryignore", "line 2".into(), "IGNORE-FILE"),
+            true,
+        ),
+        ("a machine setting with no file", at("config", "npm", String::new(), "NPM-SCRIPTS"), true),
+        // The folders macOS guards too are left out there, and read elsewhere.
+        (
+            "Pictures (left out on macOS only)",
+            at("project", "pics", p("Pictures/proj/Cargo.lock"), "CVE-8"),
+            !cfg!(target_os = "macos"),
+        ),
+        ("a file in Mail (macOS only)", at("malware", "m", p("Library/Mail/x"), "MALWARE"), !cfg!(target_os = "macos")),
+        // Folders compare without case where the volume does not tell them apart.
+        (
+            "Documents spelled in lower case",
+            at("project", "lower", p("documents/proj/Cargo.lock"), "CVE-6"),
+            !cfg!(any(target_os = "macos", windows)),
+        ),
+    ];
+    // The same folder from its canonical path (a symlinked home, as on macOS).
+    match std::fs::canonicalize(&home) {
+        Ok(canon) if canon != home => cases.push((
+            "Documents from the canonical home",
+            at("project", "canon", canon.join("Documents/p/Cargo.lock").to_string_lossy().into_owned(), "CVE-7"),
+            false,
+        )),
+        _ => println!("home has no other spelling here: the canonical-path case is skipped"),
+    }
+    let found: Vec<Finding> = cases.iter().map(|c| c.1.clone()).collect();
+    record_scan(&c, 1.0, &found, &[], &full).unwrap();
+    // The job reads everything outside the folders and lists none of it now.
+    record_scan(&c, 2.0, &skipped_by_choice(), &[], &job).unwrap();
+    let open = |c: &Cache| -> Vec<String> {
+        exposures(c, 0.0).unwrap().into_iter().filter(|e| e.resolved_at.is_none()).map(|e| e.component).collect()
+    };
+    let still_open = open(&c);
+    for (name, f, closes) in &cases {
+        assert_eq!(
+            !still_open.contains(&f.component),
+            *closes,
+            "{name}: the no-personal-files scan {} it (open now: {still_open:?})",
+            if *closes { "must close" } else { "must not close" }
+        );
+    }
+    // A full scan reads everything: it closes what is left.
+    record_scan(&c, 3.0, &[], &[], &full).unwrap();
+    assert!(open(&c).is_empty(), "a full scan closes the rest: {:?}", open(&c));
+    c.close().unwrap();
+}
+
+/// Risk: the new rule closing across scopes it was not meant for. Oracle:
+/// the scope strings. A scan limited by `--path`, a repo-only scan and a
+/// scan with other policy files each stay in their own scope.
+#[test]
+fn a_no_personal_files_scan_closes_only_the_whole_machine_scope_it_belongs_to() {
+    let _home = crate::utils::files::test_home();
+    let d = crate::utils::temp::TempDir::new("closes-scopes").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let outside = Finding {
+        kind: "project".into(),
+        component: "app".into(),
+        location: crate::utils::files::home().join("code/Cargo.lock").to_string_lossy().into_owned(),
+        vuln_id: "CVE-1".into(),
+        status: "fail".into(),
+        ..Default::default()
+    };
+    let full = Options { machine: true, ..Default::default() };
+    let licensed = Options { licenses: true, ..full.clone() };
+    record_scan(&c, 1.0, std::slice::from_ref(&outside), &[], &licensed).unwrap();
+    // `machine:~` is another scope than `machine:~+licenses`: no closing.
+    record_scan(&c, 2.0, &skipped_by_choice(), &[], &Options { no_personal_files: true, ..full.clone() }).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_none(), "another scope's exposure stays open");
+    // Its own flag-less counterpart does close it.
+    record_scan(&c, 3.0, &skipped_by_choice(), &[], &Options { no_personal_files: true, ..licensed.clone() }).unwrap();
+    assert!(exposures(&c, 0.0).unwrap()[0].resolved_at.is_some());
+}
+
+/// Risk: a failed fix's reason is lost once the terminal scrolls. Oracle:
+/// the remediation log (`report remediation --json`) says it, and a fix that
+/// worked has `null`s, so a reader can tell "no reason kept" from "no reason".
+#[test]
+fn a_failed_fix_keeps_its_exit_code_and_error_in_the_log() {
+    use crate::remediation::run::Failure;
+    let d = crate::utils::temp::TempDir::new("fixlog").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let failure = Failure {
+        cmd: "mise install python@3.14.10".into(),
+        exit_code: Some(1),
+        reason: String::new(),
+        stderr: "mise ERROR no such version\nsee ~/.config/mise".into(),
+    };
+    record_fix_outcome(&c, Some(1), &failure.cmd, "auto", false, &[], Some(&failure)).unwrap();
+    record_fix(&c, Some(1), "brew upgrade x", "auto", true, &[]).unwrap();
+    let stopped = Failure {
+        cmd: "slow".into(),
+        exit_code: None,
+        reason: "timed out after 30 minutes and was stopped".into(),
+        stderr: String::new(),
+    };
+    record_fix_outcome(&c, Some(1), "slow", "auto", false, &[], Some(&stopped)).unwrap();
+    let got = fixes(&c, 0.0).unwrap();
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0].exit_code, Some(1));
+    assert_eq!(got[0].error.as_deref(), Some("exit code 1\nmise ERROR no such version\nsee ~/.config/mise"));
+    assert_eq!((got[1].exit_code, got[1].error.clone()), (None, None));
+    assert_eq!(got[2].exit_code, None);
+    assert_eq!(got[2].error.as_deref(), Some("timed out after 30 minutes and was stopped"));
+    let j = got[0].to_json();
+    assert_eq!((j["exit_code"].clone(), j["ok"].clone()), (serde_json::json!(1), serde_json::json!(false)));
+    assert!(got[1].to_json()["exit_code"].is_null() && got[1].to_json()["error"].is_null());
+    // The event log carries it too.
+    let ev = events(&c, 0.0).unwrap();
+    assert_eq!(ev[0].detail["exit_code"], serde_json::json!(1));
+    c.close().unwrap();
+}
+
+#[test]
+fn the_latest_scans_paths_are_the_folders_it_was_pointed_at() {
+    let d = crate::utils::temp::TempDir::new("paths").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    assert_eq!(latest_scan_paths(&c).unwrap(), None, "no scan yet");
+    record_scan(&c, 1.0, &[], &[], &Options { machine: true, ..Default::default() }).unwrap();
+    assert_eq!(latest_scan_paths(&c).unwrap(), Some(Vec::new()), "a scan of home names no folder");
+    let pointed = Options { paths: Some(vec!["/r/a".into(), "/r/b".into()]), ..Default::default() };
+    record_scan(&c, 2.0, &[], &[], &pointed).unwrap();
+    assert_eq!(latest_scan_paths(&c).unwrap(), Some(vec!["/r/a".into(), "/r/b".into()]));
 }

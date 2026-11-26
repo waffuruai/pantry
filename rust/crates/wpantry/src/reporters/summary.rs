@@ -160,7 +160,8 @@ pub fn summary(report: &Report) -> Summary {
         hosts,
         users,
         days_without_scan: (h.since_days - days.len() as i64).max(0),
-        gaps: report.outcome.findings.iter().filter(|f| f.kind == "unchecked").map(|f| f.component.clone()).collect(),
+        // Gaps in the evidence only: an area the user left out is no gap (`Finding::is_gap`).
+        gaps: report.outcome.findings.iter().filter(|f| f.is_gap()).map(|f| f.component.clone()).collect(),
         fixes: h.fixes.clone(),
     }
 }

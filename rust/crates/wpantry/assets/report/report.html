@@ -364,8 +364,8 @@ td .badge{vertical-align:baseline}
 (function(){
 'use strict';
 
-var bundle = {runs:[]};
-try { bundle = JSON.parse(document.getElementById('pantry-bundle').textContent) || bundle; } catch(e){}
+var bundle = {runs:[]}, embedded = null;
+try { embedded = JSON.parse(document.getElementById('pantry-bundle').textContent); } catch(e){}
 var advInfo = Object.create(null);
 var runs = [];
 var PAGE_SIZES=[10,25,50,100];
@@ -404,7 +404,10 @@ function isBundle(kind){return kind==='image'||kind==='bundled'}
 function spansPlaces(kind){return kind==='project'||kind==='secret'}
 function when(ms){var d=new Date(ms);return isNaN(d.getTime())?'':d.toISOString().slice(0,16).replace('T',' ')+' UTC'}
 
-function advLinks(id){
+// A finding from a folder of OSV records of your own carries its source and its record's own link as fields (local_source, local_link; checks/mod.rs, local_fields): it gets that https link, or none, never an OSV.dev one the record doesn't give. The note starts with an advisory's free text, so no link is ever read out of it.
+function httpsLink(u){return typeof u==='string'&&/^https:\/\/[^\s<>"'`]+$/.test(u)&&u.length<=2048?u:''}
+function advLinks(id,f){
+  if(f&&typeof f.local_source==='string'&&f.local_source){var own=httpsLink(f.local_link);return own?[{id:id,url:own}]:/^CVE-/.test(id)?[{id:id,url:'https://www.cve.org/CVERecord?id='+encodeURIComponent(id)}]:[]}
   var out=[], seen=Object.create(null);
   function add(x){
     if(!x||seen[x]||isMarker(x))return; seen[x]=1;
@@ -468,22 +471,24 @@ function validReport(raw){
   if(!Object.keys(raw.checked).every(function(k){return Number.isSafeInteger(raw.checked[k]) && raw.checked[k]>=0}))return false;
   if(!['unfixed','unknown_licenses'].every(function(k){return Number.isSafeInteger(raw[k]) && raw[k]>=0}))return false;
   if(!['impl','version'].every(function(k){return typeof raw[k]==='string'}))return false;
-  return raw.findings.every(function(f){return f && typeof f==='object' && !Array.isArray(f) && ['kind','component','version','location','vuln_id','status','fixed','severity','note','fix_cmd'].every(function(k){return typeof f[k]==='string'}) && ['kev','fix_auto'].every(function(k){return typeof f[k]==='boolean'}) && (f.status==='fail'||f.status==='warn') && (f.dep_scope===undefined||typeof f.dep_scope==='string') && (f.affected_range===undefined||typeof f.affected_range==='string') && (f.dep_direct===undefined||f.dep_direct===null||typeof f.dep_direct==='boolean')});
+  return raw.findings.every(function(f){return f && typeof f==='object' && !Array.isArray(f) && ['kind','component','version','location','vuln_id','status','fixed','severity','note','fix_cmd'].every(function(k){return typeof f[k]==='string'}) && ['kev','fix_auto'].every(function(k){return typeof f[k]==='boolean'}) && (f.status==='fail'||f.status==='warn') && (f.dep_scope===undefined||typeof f.dep_scope==='string') && (f.affected_range===undefined||typeof f.affected_range==='string') && (f.dep_direct===undefined||f.dep_direct===null||typeof f.dep_direct==='boolean') && (f.local_source===undefined||typeof f.local_source==='string') && (f.local_link===undefined||typeof f.local_link==='string')});
 }
 function normalize(raw, meta){
   var fs=(raw.findings||[]).map(function(f,i){
     var kind=f.kind||'other';
     return {n:i+1, kind:kind, component:f.component||'', version:f.version||'', location:f.location||'',
-      vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?'unchecked':(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
+      vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?(f.excluded===true?'excluded':'unchecked'):(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
       cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile), epss_date:f.epss_date||'', epss_model:f.epss_model||'',
-      dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
+      dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'', local_source:typeof f.local_source==='string'?f.local_source:'', local_link:typeof f.local_link==='string'?f.local_link:'',
       key:String(i)};
   });
   var r={title:meta.title||'Scan', file:meta.file||'', source:meta.source||'json', loadedAt:meta.loadedAt||null, original:!meta.loadedAt,
     schema:raw.schema, impl:raw.impl||'', version:raw.version||'', checked:raw.checked||{}, unfixed:raw.unfixed||0,
     unknown_licenses:raw.unknown_licenses||0, findings:fs, partial:meta.source==='csv'};
-  var c={fail:0,warn:0,unchecked:0,kev:0}, advs=Object.create(null), comps=Object.create(null);
+  // Finding::is_gap(): an `unchecked` finding is a gap (state 'unchecked') unless the user
+  // left the area out (`excluded`, state 'excluded'): that is no gap and no failed source.
+  var c={fail:0,warn:0,unchecked:0,excluded:0,kev:0}, advs=Object.create(null), comps=Object.create(null);
   fs.forEach(function(f){c[f.state]++; if(f.kev)c.kev++; if(isAdvisory(f))advs[f.vuln_id]=1; if(f.state==='fail')comps[f.kind+'|'+f.component+'|'+f.version+'|'+f.location]=1;});
   c.advisories=Object.keys(advs).length; c.components=Object.keys(comps).length;
   r.counts=c;
@@ -505,7 +510,7 @@ function planFor(r){
   }
   var by=Object.create(null);
   r.findings.forEach(function(f){
-    if(!f.fix_cmd||f.state==='unchecked')return;
+    if(!f.fix_cmd||f.kind==='unchecked')return;
     var s=by[f.fix_cmd]; if(!s){s={cmd:f.fix_cmd,findings:[],auto:true,fails:false,own:false};by[f.fix_cmd]=s;steps.push(s)}
     s.findings.push(f); s.auto=s.auto&&f.fix_auto; s.fails=s.fails||f.state==='fail';
   });
@@ -564,7 +569,7 @@ function rowsOf(fs){
 }
 function areasOf(r){
   var by=Object.create(null), kinds=[];
-  r.findings.forEach(function(f){if(f.state==='unchecked')return; if(!by[f.kind]){by[f.kind]=[];kinds.push(f.kind)} by[f.kind].push(f)});
+  r.findings.forEach(function(f){if(f.kind==='unchecked')return; if(!by[f.kind]){by[f.kind]=[];kinds.push(f.kind)} by[f.kind].push(f)});
   return kinds.map(function(k){
     var fs=by[k], rows=rowsOf(fs);
     return {kind:k, label:kindLabel(k), fs:fs, rows:rows, rank:rows.length?rank(rows[0].top):999,
@@ -667,6 +672,8 @@ function scannedHTML(r,print){
   } else if(!r.partial){
     out+='<p class="ok-line">Every source answered: no coverage gaps were recorded for this scan.</p>';
   } else out+='<p class="ok-line">A CSV export does not record coverage gaps; it cannot establish complete coverage.</p>';
+  var left=r.findings.filter(function(f){return f.state==='excluded'});
+  if(left.length)out+='<p class="ok-line">Left out by your choice, so not read: '+left.map(function(f){return esc(f.component)}).join(', ')+'. That is a scope you picked, not a coverage gap.</p>';
   if(r.unknown_licenses)out+='<p class="ok-line">'+esc(plural(r.unknown_licenses,'dependency','dependencies'))+' have no license the scanner can identify.</p>';
   // scope
   function mode(key,yes,no){return sc&&typeof sc[key]==='boolean'?(sc[key]?yes:no):'Not recorded'}
@@ -710,7 +717,7 @@ function detailHTML(row,print){
   var top=row.top, out='<div class="detail">';
   if(top.note)out+='<p class="why">'+ticks(top.note)+'</p>';
   out+='<ul class="advs">'+row.fs.map(function(f){
-    var links=isAdvisory(f)?advLinks(f.vuln_id):[];
+    var links=isAdvisory(f)?advLinks(f.vuln_id,f):[];
     var wf=wordfenceLink(f);
     if(wf&&!links.some(function(l){return l.url===wf}))links=links.concat([{id:'Wordfence',url:wf}]);
     var id=links.length?links.map(function(l){return '<a href="'+esc(l.url)+'" target="_blank" rel="noopener noreferrer">'+esc(l.id)+'</a>'}).join(' '):esc(f.vuln_id||'—');
@@ -835,9 +842,10 @@ function manualHTML(r,print){
 // What a scan covered, as the command that repeats it; null when not recorded.
 function rescanCmd(sc){
   if(!sc||typeof sc.machine!=='boolean'||!Array.isArray(sc.paths))return null;
-  var cmd='wpantry scan';
-  sc.paths.forEach(function(p){if(typeof p==='string')cmd+=' --path '+(/^[\w.\/~@%+=:,-]+$/.test(shortPath(p))?shortPath(p):"'"+String(shortPath(p)).replace(/'/g,"'\\''")+"'")});
-  if(!sc.machine)cmd+=' --no-machine';
+  var cmd='wpantry scan', project=sc.project===true&&sc.paths.length===1;
+  if(project)cmd+=' project';
+  sc.paths.forEach(function(p){if(typeof p==='string')cmd+=(project?' ':' --path ')+(/^[\w.\/~@%+=:,-]+$/.test(shortPath(p))?shortPath(p):"'"+String(shortPath(p)).replace(/'/g,"'\\''")+"'")});
+  if(!sc.machine&&!project)cmd+=' --no-machine';
   if(sc.licenses===true)cmd+=' --licenses';
   if(sc.machine&&sc.personal_files===false&&!sc.paths.length)cmd+=' --no-personal-files';
   return cmd;
@@ -866,7 +874,7 @@ function fixCode(cmd){
 }
 function agentPrompt(r){
   var sc=r.original&&bundle.scope&&typeof bundle.scope==='object'?bundle.scope:null, rescan=rescanCmd(sc);
-  var what=!sc?null:(sc.machine?'this computer and ':'')+(sc.paths&&sc.paths.length?'the repos and folders under '+sc.paths.map(shortPath).join(', '):'every git repo under ~');
+  var what=!sc?null:sc.project===true&&sc.paths&&sc.paths.length===1?'the project at '+shortPath(sc.paths[0])+' and the runtimes it uses':(sc.machine?'this computer and ':'')+(sc.paths&&sc.paths.length?'the repos and folders under '+sc.paths.map(shortPath).join(', '):'every git repo under ~');
   var meta=['wpantry '+(r.version||'(version not recorded)')];
   if(r.original&&Number.isSafeInteger(bundle.scan_id))meta.push('scan #'+bundle.scan_id);
   if(r.original&&typeof bundle.generated_at==='number'){var w=when(bundle.generated_at);if(w)meta.push(w)}
@@ -1067,10 +1075,49 @@ function addText(text,name){
   render(); toast('Added '+name);
 }
 
-(Array.isArray(bundle.runs)?bundle.runs:[]).forEach(function(x){if(x && validReport(x.report) && typeof x.title==='string' && typeof x.file==='string') runs.push(normalize(x.report,{title:x.title,file:x.file,source:x.source}))});
-// open on the scan with the most to look at
-var best=0; runs.forEach(function(r,i){if(r.findings.length>runs[best].findings.length)best=i}); state.run=best;
-render();
+/* ---------- the embedded bundle (src/reporters/pack.rs) ---------- */
+// Packed: each repeated string once ("~" and its base-36 index in strings),
+// each list of alike objects as rows (["~", keys, values...]). Anything
+// else, such as a bundle written before packing, is taken as it is.
+function unpack(b){
+  if(!b||b.pantry_packed!==1||!Array.isArray(b.strings))return b;
+  var t=b.strings;
+  function s(x){return x.charAt(0)==='~'?t[parseInt(x.slice(1),36)]:x}
+  function put(o,k,v){if(k==='__proto__')Object.defineProperty(o,k,{value:v,enumerable:true,writable:true,configurable:true});else o[k]=v}
+  function v(x){
+    if(typeof x==='string')return s(x);
+    if(Array.isArray(x)){
+      if(x[0]!=='~')return x.map(v);
+      var keys=(x[1]||[]).map(s);
+      return x.slice(2).map(function(row){var o={};keys.forEach(function(k,i){put(o,k,v(row[i]))});return o});
+    }
+    if(x&&typeof x==='object'){var o={};Object.keys(x).forEach(function(k){put(o,s(k),v(x[k]))});return o}
+    return x;
+  }
+  return v(b.data);
+}
+// A large bundle is deflated as well: DecompressionStream, in Chrome and
+// Edge 103, Firefox 113 and Safari 16.4 or later, works from file:// too.
+function inflate(text){
+  var bytes=Uint8Array.from(atob(text),function(c){return c.charCodeAt(0)});
+  return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+}
+function start(b){
+  bundle=b&&typeof b==='object'?b:{runs:[]};
+  (Array.isArray(bundle.runs)?bundle.runs:[]).forEach(function(x){if(x && validReport(x.report) && typeof x.title==='string' && typeof x.file==='string') runs.push(normalize(x.report,{title:x.title,file:x.file,source:x.source}))});
+  // open on the scan with the most to look at
+  var best=0; runs.forEach(function(r,i){if(r.findings.length>runs[best].findings.length)best=i}); state.run=best;
+  render();
+}
+var ready=Promise.resolve();
+if(embedded&&typeof embedded.pantry_deflated==='string'){
+  ready=(typeof DecompressionStream==='function'?inflate(embedded.pantry_deflated):Promise.reject(new Error('no DecompressionStream')))
+    // Only a stream that will not inflate or parse is "compressed and
+    // unreadable": an error from start(), unpack() or render() is a fault in
+    // the page and is left to surface as one, not blamed on the browser.
+    .then(function(text){return JSON.parse(text)})
+    .then(function(data){start(unpack(data))},function(){$('main').innerHTML='<section class="hero"><div class="eyebrow">Pantry security scan</div><h1>This <em>report</em> is compressed</h1><p class="lede">It is a large scan, packed to keep the file small, and this browser can’t unpack it. Open it in Chrome or Edge 103, Firefox 113 or Safari 16.4 or later, or read the scan with <code>wpantry report --json</code>.</p></section>'});
+} else start(unpack(embedded));
 })();
 </script>
 </body>

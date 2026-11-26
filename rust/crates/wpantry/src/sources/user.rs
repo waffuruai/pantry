@@ -21,6 +21,10 @@ pub fn consent(
     ask: Option<crate::checks::email::Ask>,
     s: &Source,
 ) -> Result<std::result::Result<(), String>> {
+    // A file on this machine sends nothing and contacts nobody: nothing to ask.
+    if s.transport == crate::sources::file::Transport::Local {
+        return Ok(Ok(()));
+    }
     let host = s.host().unwrap_or_default();
     let known = net::HOSTS.contains(&host.as_str());
     if known && s.sends.is_empty() {
@@ -86,6 +90,7 @@ pub fn fetch_files(
         let key = format!("user:{}", s.id);
         if !path.is_file() {
             let _ = cache.unset(&format!("{key}_at"));
+            let _ = cache.unset(&format!("{key}_fp"));
         }
         match fetch::file_of(cache, net, s, &key, offline) {
             Ok(Some(body)) => {
@@ -95,7 +100,9 @@ pub fn fetch_files(
                     failed.push((s.id.clone(), e.to_string()));
                 }
             }
-            Ok(None) if !path.is_file() => failed.push((s.id.clone(), "not fetched yet".into())),
+            Ok(None) if !path.is_file() => {
+                failed.push((s.id.clone(), fetch::last_error(&s.id).unwrap_or_else(|| "not fetched yet".into())))
+            }
             Ok(None) => {}
             Err(e) => failed.push((s.id.clone(), e.to_string())),
         }

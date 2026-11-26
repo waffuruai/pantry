@@ -15,13 +15,16 @@ pub mod email;
 pub mod files;
 pub mod hidden;
 pub mod ignore;
+pub mod ignore_edit;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
+pub mod project;
 pub mod secrets;
 pub mod severity;
 pub mod supply_chain;
 pub mod suspects;
+pub mod watch;
 
 use crate::component::Component;
 use crate::component::Status;
@@ -164,8 +167,58 @@ pub fn is_kev(rec: &Value, kev: &HashSet<String>) -> bool {
 }
 
 /// OpenSSF malicious-package reports (MAL-…).
+/// An advisory finding's note, naming the user's source when a record of
+/// the group came from a folder of OSV records on this machine
+/// ([`crate::sources::osv_dir`]): `(from your source ID: LINK)` when the
+/// finding's own record did (its link, or none: never an OSV.dev one it
+/// doesn't give), `(also in your source ID)` when another of the group did.
+///
+/// ```ignore
+/// // "widget overflow (from your source team-advisories: https://example.com/TEAM-2026-0001)"
+/// ```
+pub fn local_note(note: &str, main: &Value, group: &[Value]) -> String {
+    use crate::sources::osv_dir::{SOURCE_KEY, link};
+    let source = |r: &Value| r.get(SOURCE_KEY).and_then(Value::as_str).map(str::to_string);
+    let tail = match source(main) {
+        Some(id) => match link(main) {
+            Some(url) => format!("(from your source {id}: {url})"),
+            None => format!("(from your source {id})"),
+        },
+        None => match group.iter().find_map(source) {
+            Some(id) => format!("(also in your source {id})"),
+            None => return note.to_string(),
+        },
+    };
+    if note.is_empty() { tail } else { format!("{note} {tail}") }
+}
+
+/// What a finding carries as fields when its own record came from a folder
+/// on this machine: that source's id and the record's https link ("" for
+/// none); both "" for any other record. The report reads these and never the
+/// note, which starts with the record's free text and could carry anything.
+pub fn local_fields(rec: &Value) -> (String, String) {
+    use crate::sources::osv_dir::{SOURCE_KEY, link};
+    match rec.get(SOURCE_KEY).and_then(Value::as_str) {
+        Some(id) => (id.to_string(), link(rec).unwrap_or_default()),
+        None => (String::new(), String::new()),
+    }
+}
+
 pub fn is_malicious(rec: &Value) -> bool {
     osv::ids_of(rec).iter().any(|i| i.starts_with("MAL-"))
+}
+
+/// The records of an alias group that decide what its finding says: the
+/// upstream ones when there are any, else all of them (a group of records
+/// from folders on this machine only is judged as it always was).
+///
+/// ```ignore
+/// // [upstream GHSA-x, local TEAM-1 aliasing it] -> [GHSA-x]
+/// // [local TEAM-1]                              -> [TEAM-1]
+/// ```
+fn deciding(group: &[Value]) -> Vec<&Value> {
+    let upstream: Vec<&Value> = group.iter().filter(|r| !crate::sources::osv_dir::is_local(r)).collect();
+    if upstream.is_empty() { group.iter().collect() } else { upstream }
 }
 
 /// The `Component::extra` key naming what a component's OSV release tags
@@ -181,7 +234,7 @@ pub fn fill(cmd: &str, safe: &str) -> String {
 /// named: a version that isn't one plain token never reaches a command.
 pub fn fix_with(c: &Component, safe: &str) -> (String, bool) {
     if safe.is_empty() || versions::is_safe_token(safe) {
-        (fill(&c.fix, safe), c.auto)
+        machine::tools::with_uninstall(c, fill(&c.fix, safe), c.auto)
     } else {
         ("Review the advisory: the fix version it names isn't a version, so no command is offered".to_string(), false)
     }
@@ -194,6 +247,9 @@ pub struct Options {
     pub paths: Option<Vec<PathBuf>>,
     /// Run the machine inventory, not only the repo checks.
     pub machine: bool,
+    /// `scan project`: the repo checks over `paths`, and of the machine
+    /// only the runtimes the project uses ([`project`]). Never with `machine`.
+    pub project: bool,
     /// Skip the machine's security settings (`--no-posture`); they run
     /// with the machine inventory otherwise.
     pub no_posture: bool,
@@ -224,6 +280,9 @@ pub struct Options {
     /// The user's sources file for this run (`--sources FILE`); None reads
     /// `~/.config/wpantry/sources.toml` when it exists.
     pub sources: Option<PathBuf>,
+    /// Sources files whose sources are added to the user's for this run
+    /// (`--add-sources FILE`, repeatable), in order.
+    pub add_sources: Vec<PathBuf>,
 }
 
 impl Options {
@@ -268,6 +327,10 @@ pub struct Scan<'a> {
     pub status: Status<'a>,
     /// Asks the user a yes/no question (see [`Scan::with_ask`]).
     pub asker: Option<crate::checks::email::Ask<'a>>,
+    /// Who follows the scan's steps and findings (see [`Scan::with_watch`]).
+    pub watch: &'a dyn watch::Watch,
+    /// How many of `findings` the watch has been told about.
+    watched: std::cell::Cell<usize>,
     pub home: PathBuf,
     pub repos: Vec<Repo>,
     pub findings: Vec<Finding>,
@@ -285,6 +348,9 @@ pub struct Scan<'a> {
     /// The secrets the history scan found, by file, rule and line: the
     /// deep scan of files doesn't report them again.
     pub(crate) history_secrets: HashSet<(PathBuf, String, usize)>,
+    /// The folders this scan never opens (`--no-personal-files`), left out
+    /// of every walk and lookup while the scan lives ([`crate::utils::privacy`]).
+    pub(crate) left_out: Option<crate::utils::privacy::Guard>,
 }
 
 impl<'a> Scan<'a> {
@@ -303,6 +369,8 @@ impl<'a> Scan<'a> {
             note,
             status: &crate::component::quiet,
             asker: None,
+            watch: &watch::Quiet,
+            watched: std::cell::Cell::new(0),
             home: crate::utils::files::home(),
             repos: Vec::new(),
             findings: Vec::new(),
@@ -314,6 +382,7 @@ impl<'a> Scan<'a> {
             files: None,
             malware: None,
             history_secrets: HashSet::new(),
+            left_out: None,
         }
     }
 
@@ -323,16 +392,16 @@ impl<'a> Scan<'a> {
     /// ones used are named in the counts.
     fn use_sources(&mut self) {
         use crate::sources::{file, user};
-        let path = self.opts.sources.clone().unwrap_or_else(file::user_file);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opts.sources.is_none() => None,
-            Err(e) => {
-                self.unchecked("your sources file", &format!("{}: {e}", path.display()));
-                None
+        // A file that can't be read leaves the bundled sources in effect,
+        // as one that can't be used does.
+        let files = match file::read_files(self.opts.sources.as_deref(), &self.opts.add_sources) {
+            Ok(f) => f,
+            Err((name, why)) => {
+                self.unchecked(&name, &why);
+                Vec::new()
             }
         };
-        if let Err(e) = file::configure(text.as_deref(), self.opts.deep) {
+        if let Err(e) = file::configure_files(&files, self.opts.deep) {
             self.unchecked("your sources file", &e.to_string());
         }
         let effective = file::effective();
@@ -355,6 +424,20 @@ impl<'a> Scan<'a> {
                 }
             }
         }
+        // The user's folders of OSV records, read when they changed; a
+        // source that is off or kept for --deep keeps its records.
+        let effective = file::effective();
+        let declared: Vec<file::Source> =
+            effective.sources.iter().filter(|s| effective.user.contains(&s.id)).cloned().collect();
+        let mine: Vec<file::Source> = declared.iter().filter(|s| file::active(&s.id)).cloned().collect();
+        match crate::sources::osv_dir::load(&self.cache, &mine, &declared) {
+            Ok(failed) => {
+                for (id, why) in failed {
+                    self.unchecked(&format!("the source {id} (your sources file)"), &why);
+                }
+            }
+            Err(e) => self.unchecked("your sources file's advisories", &e.to_string()),
+        }
     }
 
     /// The content checks' findings (hidden text, suspect code, MPTCP,
@@ -374,7 +457,7 @@ impl<'a> Scan<'a> {
                 yara: self.malware.as_ref().map(|m| m.loaded.clone()),
                 secrets: self.secret_engine(),
             };
-            self.files = Some(files::pass::run_with(&jobs, Some(&self.cache), &engines));
+            self.files = Some(files::pass::run_watched(&jobs, Some(&self.cache), &engines, self.watch));
         }
         self.files.as_ref().expect("the files pass just ran")
     }
@@ -455,9 +538,42 @@ impl<'a> Scan<'a> {
         self
     }
 
-    /// Say what the scan is doing now.
+    /// Tell `watch` each step as it begins, what is being read, and each
+    /// finding as its step makes it (the CLI's `scan --events`). Off by
+    /// default.
+    pub fn with_watch(mut self, watch: &'a dyn watch::Watch) -> Scan<'a> {
+        self.watch = watch;
+        self
+    }
+
+    /// Say what the scan is doing now; the findings made since the last
+    /// time go to the watch.
     pub fn status(&self, what: &str) {
+        self.tell_findings();
         (self.status)(what);
+    }
+
+    /// The next step begins: the findings the last one made go to the
+    /// watch first. `step` is one of [`watch::steps`].
+    pub fn step(&self, step: watch::Step) {
+        self.tell_findings();
+        self.watch.step(step.id);
+    }
+
+    /// The scan is reading this file or looking in this folder now.
+    pub fn at(&self, path: &Path, what: watch::At) {
+        self.watch.at(path, what);
+    }
+
+    /// The findings the watch hasn't been told about yet. Called only
+    /// between checks, so a check that amends what it just added (a
+    /// Gradle declaration's note) is done with it.
+    fn tell_findings(&self) {
+        let from = self.watched.get().min(self.findings.len());
+        for f in &self.findings[from..] {
+            self.watch.finding(f);
+        }
+        self.watched.set(self.findings.len());
     }
 
     // helpers ---------------------------------------------------------------
@@ -510,6 +626,29 @@ impl<'a> Scan<'a> {
         });
     }
 
+    /// An area the user chose to leave out of this scan (a scope flag such
+    /// as `--no-personal-files`): reported `unchecked` so it is never read
+    /// as clean, but marked `excluded`, so it doesn't count as a source
+    /// that failed. The note says it was skipped by the user's choice.
+    ///
+    /// ```ignore
+    /// scan.excluded("Safari settings", "--no-personal-files", "Include personal folders to check it.");
+    /// ```
+    pub fn excluded(&mut self, what: &str, flag: &str, how_to_include: &str) {
+        if self.findings.iter().any(|f| f.kind == "unchecked" && f.component == what) {
+            return;
+        }
+        self.add(Finding {
+            kind: "unchecked".into(),
+            component: what.into(),
+            vuln_id: "UNCHECKED".into(),
+            status: "warn".into(),
+            note: format!("Skipped by your choice ({flag}). {how_to_include}"),
+            excluded: true,
+            ..Default::default()
+        });
+    }
+
     /// `r`'s value, or `default` with the source reported unchecked; only
     /// an internal error (the cache, the filesystem) passes through.
     pub fn guard<T>(&mut self, what: &str, r: Result<T>, default: T) -> Result<T> {
@@ -543,7 +682,7 @@ impl<'a> Scan<'a> {
         }
         let answers = osv::lookup(&self.cache, self.net, items, self.opts.refresh, self.opts.offline, log, status)?;
         let mut why = answers.gaps;
-        let unreached = items.iter().any(|it| !answers.found.contains_key(it));
+        let unreached = items.iter().any(|it| !answers.found.contains_key(it) || answers.unanswered.contains(it));
         if unreached {
             why.insert(0, "OSV unreachable and not cached".into());
         }
@@ -570,28 +709,149 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
+    /// The repos in scope ([`repos::scan_scope`]), each walked without the
+    /// personal folders under `--no-personal-files`.
+    pub(crate) fn scope_repos(&mut self) {
+        let (log, note, status) = (self.log, self.note, self.status);
+        // --no-personal-files: the folders macOS guards with a prompt are
+        // left out by path before anything lists them, for the whole scan
+        // (the repo search, every walk, the persistence checks, PATH
+        // lookups). A --path inside one of them is scanned as asked, but
+        // only that path and its subtree: the folder stays left out for
+        // every other pass, so a persistence or PATH entry beside the named
+        // project is still not touched.
+        self.left_out = None;
+        if self.opts.no_personal_files {
+            let mut named: Vec<PathBuf> = Vec::new();
+            for p in self.opts.paths.iter().flatten() {
+                let typed = self.home_path(p);
+                // The search root is the canonical path (`repos::scan_scope`), so the
+                // exception is too: `--path .`, a symlink, `a/../b` or another letter
+                // case all name the folder the search then walks. Only the named path
+                // is resolved, and the search resolves it as well.
+                if let Ok(canon) = std::fs::canonicalize(&typed) {
+                    named.push(canon);
+                }
+                named.push(typed);
+            }
+            // The same path in the home folder's other spelling (the
+            // canonical one), as `privacy::folders` does for the folders.
+            if let Ok(canon) = std::fs::canonicalize(&self.home)
+                && canon != self.home
+            {
+                let more: Vec<PathBuf> =
+                    named.iter().filter_map(|p| p.strip_prefix(&self.home).ok().map(|rest| canon.join(rest))).collect();
+                named.extend(more);
+            }
+            let left = crate::utils::privacy::folders(&self.home, cfg!(target_os = "macos"));
+            // Only a named path inside a left-out folder is an exception:
+            // `--path ~` names a folder that holds them, which must not
+            // let them back in.
+            named.retain(|p| left.iter().any(|f| crate::utils::privacy::within(p, f)));
+            if !left.is_empty() {
+                note(&format!(
+                    "· left out of this scan (--no-personal-files): {}; repos there are not scanned",
+                    left_out_names(&self.home, &left)
+                ));
+                self.excluded(
+                    "Repositories in personal folders",
+                    "--no-personal-files",
+                    "Repos under Downloads, Desktop and Documents (and on macOS the other folders it asks permission for) were not looked for. Scan without --no-personal-files, or name one with --path, to check them.",
+                );
+            }
+            self.left_out = Some(crate::utils::privacy::leave_out(left, named));
+        }
+        self.repos =
+            repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
+        self.flag_named_roots_left_out();
+        // --no-personal-files keeps Downloads, Desktop and Documents out of
+        // every walk, on any scan: a repo or --path root that holds them (a
+        // home that is a git checkout, `--path ~` with no repo) is walked
+        // without them, so no files-pass, lockfile or malware job opens them.
+        for (_, root) in &self.repos {
+            let dirs = if self.opts.no_personal_files { repos::personal_under(&self.home, root) } else { Vec::new() };
+            crate::utils::walk::exclude_under(root, dirs);
+        }
+    }
+
+    /// A root the user named with `--path` that ended up left out is read as
+    /// nothing, so say it: a not-checked finding that names it, never a clean
+    /// scan of a folder nothing opened. It should not happen (the named path
+    /// is let in by its canonical spelling); this is what keeps a spelling
+    /// that slips through from reading as clean.
+    pub(crate) fn flag_named_roots_left_out(&mut self) {
+        if self.opts.paths.is_none() {
+            return;
+        }
+        let lost: Vec<String> = self
+            .repos
+            .iter()
+            .filter(|(_, root)| crate::utils::privacy::is_left_out(root))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in lost {
+            self.unchecked_until(
+                &format!("--path {name}"),
+                "it lies in a folder this scan leaves out (--no-personal-files), so nothing in it was read",
+                &format!("wpantry scan --path {name}"),
+            );
+        }
+    }
+
+    /// A `--path` as the repo search reads it: `~/x` under this scan's home.
+    fn home_path(&self, p: &Path) -> PathBuf {
+        match p.strip_prefix("~") {
+            Ok(rest) => self.home.join(rest),
+            Err(_) => p.to_path_buf(),
+        }
+    }
+
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
+        crate::history::scan_started(&self.cache, &self.opts, started_at)?;
         crate::utils::walk::forget_walks();
+        self.step(watch::SOURCES);
         self.use_sources();
         self.load_kev()?;
         self.status("Fetching EPSS's exploit predictions");
         let epss = crate::sources::epss::refresh(&self.cache, self.net, self.opts.offline);
         self.guard("EPSS (exploit predictions)", epss, 0)?;
-        let (log, note, status) = (self.log, self.note, self.status);
-        self.repos = repos::scope(self.opts.paths.as_deref(), &self.home, log, note, status);
+        self.step(watch::REPOS);
+        match self.opts.paths.as_deref() {
+            Some(paths) => paths.iter().for_each(|p| self.at(p, watch::At::Dir)),
+            None => self.at(&self.home, watch::At::Dir),
+        }
+        self.scope_repos();
+        self.watch.repos(self.repos.len());
         let git = self.repos.iter().filter(|(_, r)| repos::is_git(r)).count() as i64;
         self.count("git repos", git);
         self.status("Listing the repos' files");
-        crate::utils::walk::prewalk(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>());
-        let found: Vec<Component> = if self.opts.machine { machine::run(&mut self)? } else { Vec::new() };
+        let w = self.watch;
+        let seen = |dir: &Path, files: usize| {
+            w.at(dir, watch::At::Dir);
+            w.listed(files);
+        };
+        crate::utils::walk::prewalk_seen(&self.repos.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(), &seen);
+        let found: Vec<Component> = if self.opts.machine {
+            self.step(watch::MACHINE);
+            machine::run(&mut self)?
+        } else if self.opts.project {
+            project::run(&mut self)?
+        } else {
+            Vec::new()
+        };
         supply_chain::run(&mut self, &found)?;
         if !self.opts.no_malware {
+            self.step(watch::MALWARE);
             crate::checks::malware::run(&mut self);
         }
         if self.opts.deep {
+            self.step(watch::FILE_SECRETS);
             crate::checks::secrets::files::report(&mut self);
         }
+        // Before the ignore files: the watch was told every finding as it
+        // was made, and the report says which stayed.
+        self.step(watch::RATING);
         crate::checks::ignore::apply(&mut self);
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);
@@ -606,6 +866,7 @@ impl<'a> Scan<'a> {
             totals,
             &self.opts,
         )?;
+        crate::history::scan_finished(&self.cache)?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,
@@ -641,11 +902,17 @@ impl<'a> Scan<'a> {
         let mut failing = false;
         let mut seen = HashSet::new();
         for group in groups.iter().filter(|g| !g.is_empty()) {
-            let main = group.iter().find(|r| display_id(r).starts_with("CVE-")).unwrap_or(&group[0]);
+            // What the finding says comes from the upstream records when the
+            // group holds any: a record from a folder on this machine may be
+            // added to a group (its note, its link) but never decides its id,
+            // severity, fix or malicious status, so it cannot lower a severity,
+            // mark something fixed or hide an upstream finding.
+            let decide = deciding(group);
+            let main = *decide.iter().find(|r| display_id(r).starts_with("CVE-")).unwrap_or(&decide[0]);
             if !seen.insert(display_id(main)) {
                 continue; // the same CVE from two databases
             }
-            if let Some(bad) = group.iter().find(|r| is_malicious(r)) {
+            if let Some(bad) = decide.iter().find(|r| is_malicious(r)) {
                 failing = true;
                 let who = c.osv.as_ref().map(|o| o.1.as_str()).unwrap_or(&c.name);
                 let summary = str_at(bad, "summary");
@@ -654,8 +921,10 @@ impl<'a> Scan<'a> {
                     status: "fail".into(),
                     kev: true,
                     severity: "MALICIOUS".into(),
-                    note: if summary.is_empty() { "known malicious package".into() } else { summary.into() },
+                    note: local_note(if summary.is_empty() { "known malicious package" } else { summary }, bad, group),
                     fix_cmd: REMOVE.replace("{}", who),
+                    local_source: local_fields(bad).0,
+                    local_link: local_fields(bad).1,
                     ..Finding::of(c)
                 });
                 continue;
@@ -667,7 +936,7 @@ impl<'a> Scan<'a> {
             // only the highest of them repairs the group: a distro's first,
             // incomplete update and its CVE record are aliases with different
             // fixes (Ubuntu's USN-8477-1 for tar, then UBUNTU-CVE-2026-5704).
-            let safe = group
+            let safe = decide
                 .iter()
                 .filter_map(|r| {
                     let fixes: Vec<String> = asked
@@ -683,7 +952,7 @@ impl<'a> Scan<'a> {
                 // High or exploited in the wild. A warning with the
                 // mitigation, and `wpantry watch` asks again often.
                 let severity = severity_of(main);
-                let kev = group.iter().any(|r| is_kev(r, &self.kev));
+                let kev = decide.iter().any(|r| is_kev(r, &self.kev));
                 if high_impact(&severity) || kev {
                     let id = display_id(main);
                     let step = mitigation(&id).unwrap_or_else(|| {
@@ -694,22 +963,28 @@ impl<'a> Scan<'a> {
                         status: "warn".into(),
                         kev,
                         severity,
-                        note: format!(
-                            "{} (no fix released for {} yet)",
-                            str_at(main, "summary"),
-                            if eco.is_empty() { "it" } else { &eco }
+                        note: local_note(
+                            &format!(
+                                "{} (no fix released for {} yet)",
+                                str_at(main, "summary"),
+                                if eco.is_empty() { "it" } else { &eco }
+                            ),
+                            main,
+                            group,
                         ),
                         fix_cmd: step,
+                        local_source: local_fields(main).0,
+                        local_link: local_fields(main).1,
                         ..Finding::of(c)
                     });
                 }
                 continue;
             };
             failing = failing || status == "fail";
-            let kev = group.iter().any(|r| is_kev(r, &self.kev));
-            // The range the installed version fell in, from whichever record
-            // of the group names one.
-            let affected_range = group
+            let kev = decide.iter().any(|r| is_kev(r, &self.kev));
+            // The range the installed version fell in, from whichever
+            // deciding record of the group names one.
+            let affected_range = decide
                 .iter()
                 .flat_map(|r| asked.iter().map(move |(e, p, v)| (r, e, p, v)))
                 .map(|(r, e, p, v)| osv::affected_range(r, e, p, v, |a, b| order.cmp(a, b)))
@@ -721,6 +996,13 @@ impl<'a> Scan<'a> {
                 Some(p) => safe.strip_prefix(p.as_str()).map(str::to_string).unwrap_or(safe),
                 None => safe,
             };
+            // A git tag's `v` (`v3.14.10`, python's release tags) is not part
+            // of the version a person reads ("update to 3.14.10") or a
+            // version manager's documentation writes. (Whether mise refuses
+            // `python@v3.14.10` is not documented; the failure that was
+            // reported was mise not being found: #330.) The one place that
+            // wants a `v` (`go get mod@v1.2.3`) spells it itself.
+            let safe = versions::bare(&safe).to_string();
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
             self.add(Finding {
                 vuln_id: display_id(main),
@@ -728,10 +1010,12 @@ impl<'a> Scan<'a> {
                 fixed: safe.clone(),
                 kev,
                 severity: severity_of(main),
-                note: str_at(main, "summary").into(),
+                note: local_note(str_at(main, "summary"), main, group),
                 fix_cmd,
                 fix_auto,
                 affected_range,
+                local_source: local_fields(main).0,
+                local_link: local_fields(main).1,
                 ..Finding::of(c)
             });
         }
@@ -760,7 +1044,7 @@ impl<'a> Scan<'a> {
             let mut f = Finding {
                 vuln_id: "OUTDATED".into(),
                 status: "warn".into(),
-                fixed: res.latest.clone(),
+                fixed: versions::bare(&res.latest).to_string(),
                 fix_cmd,
                 fix_auto,
                 note: format!("behind {}, the latest {product} {cycle} release", res.latest),
@@ -783,6 +1067,24 @@ pub fn as_source(e: Error) -> Error {
         Error::Io(io) => Error::Invalid(io.to_string()),
         e => e,
     }
+}
+
+/// The left-out folders as `~/Documents, ~/Desktop, ...`, each once (the
+/// list holds the home folder's canonical spelling too).
+///
+/// Example: home `/h`, folders `/h/Downloads`, `/private/h/Downloads`
+/// give `~/Downloads`.
+fn left_out_names(home: &Path, folders: &[PathBuf]) -> String {
+    let canon = std::fs::canonicalize(home).ok();
+    let mut names: Vec<String> = Vec::new();
+    for f in folders {
+        let rel = f.strip_prefix(home).ok().or_else(|| canon.as_deref().and_then(|c| f.strip_prefix(c).ok()));
+        let name = rel.map_or_else(|| f.display().to_string(), |r| format!("~/{}", r.display()));
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.join(", ")
 }
 
 #[cfg(test)]

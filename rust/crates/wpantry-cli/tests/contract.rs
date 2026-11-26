@@ -7,6 +7,7 @@
 //!     cargo test -p wpantry-cli --test contract [--release]
 
 mod common;
+mod scan_events;
 
 use common::*;
 use rusqlite::types::Value as Sql;
@@ -101,7 +102,7 @@ fn html_bundle(path: &Path) -> Value {
     let marker = r#"<script id="pantry-bundle" type="application/json">"#;
     assert_eq!(text.matches(marker).count(), 1);
     let json = text.split_once(marker).unwrap().1.split_once("</script>").unwrap().0;
-    serde_json::from_str(json).unwrap()
+    wpantry::reporters::pack::read(json).expect("a bundle the page can read")
 }
 
 // version, tools, skill, licenses ---------------------------------------
@@ -163,6 +164,7 @@ fn sources() {
                 "tier",
                 "host",
                 "transport",
+                "path",
                 "user",
                 "license",
                 "redistribute",
@@ -171,12 +173,19 @@ fn sources() {
                 "last_attempt",
                 "last_success",
                 "fresh",
-                "error"
+                "error",
+                "records",
+                "skipped"
             ])
         );
         assert!(["default", "deep", "off"].contains(&str_(&s["tier"])), "{s}");
-        assert!(["https", "git"].contains(&str_(&s["transport"])), "{s}");
-        assert_eq!(s["host"].is_null(), s["transport"] == "git", "{s}");
+        assert!(["https", "git", "local"].contains(&str_(&s["transport"])), "{s}");
+        assert_eq!(s["host"].is_null(), s["transport"] == "git" || s["transport"] == "local", "{s}");
+        assert_eq!(s["path"].is_null(), s["transport"] != "local", "{s}");
+        // Counts only for a folder of OSV records on this machine.
+        if s["format"] != "osv-dir" {
+            assert_eq!(pick(s, &["records", "skipped"]), json!([null, null]), "{s}");
+        }
     }
     let r = t.run(&["sources"]);
     assert_eq!(r.code, 0);
@@ -187,7 +196,8 @@ fn sources() {
     write(
         &mine,
         "[[source]]\nid = \"cisa-kev\"\ntier = \"off\"\n\n\
-         [[source]]\nid = \"team-rules\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example.com/t.yar\"\n",
+         [[source]]\nid = \"team-rules\"\nkind = \"yara\"\nformat = \"yara\"\nurl = \"https://rules.example.com/t.yar\"\n\n\
+         [[source]]\nid = \"team-hashes\"\nkind = \"hashes\"\nformat = \"lines\"\npath = \"~/lists/bad.txt\"\n",
     );
     let r = t.run(&["sources", "--sources", s(&mine), "--json"]);
     assert_eq!(r.code, 0);
@@ -196,6 +206,14 @@ fn sources() {
     assert_eq!(by_id["cisa-kev"]["tier"], "off");
     assert!(truthy(&by_id["team-rules"]["user"]));
     assert_eq!(by_id["team-rules"]["host"], "rules.example.com");
+    assert_eq!(by_id["team-rules"]["path"], Value::Null);
+    // A source on this machine: no host, its path as written.
+    let local = &by_id["team-hashes"];
+    assert_eq!(pick(local, &["transport", "host", "path"]), json!(["local", null, "~/lists/bad.txt"]), "{local}");
+    let r = t.run(&["sources", "--sources", s(&mine)]);
+    assert_eq!(r.code, 0);
+    let line = r.out.lines().find(|l| l.starts_with("team-hashes")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(line.contains("~/lists/bad.txt (yours)"), "the path where a host would be: {line}");
     write(&mine, "[[source]]\nid = \"cisa-kev\"\nurl = \"https://evil.example/kev.json\"\n");
     let r = t.run(&["sources", "--sources", s(&mine)]);
     assert_eq!(r.code, 2);
@@ -639,11 +657,13 @@ fn report_keeps_scan_history() {
     assert_eq!(r.code, 0, "{}", r.err);
     let data = r.json();
     let mut want = set(ENVELOPE);
-    want.insert("history".into());
+    want.extend(["history", "scan", "fix_plan"].map(str::to_owned));
     assert_eq!(keys(&data), want);
     assert_eq!(keys(&data["history"]), set(&["since_days", "exposures", "fixes", "scans", "events"]));
     let scans = arr(&data["history"]["scans"]);
     assert_eq!(scans.len(), 2, "{scans:?}");
+    assert_eq!(&data["scan"], scans.last().unwrap());
+    assert!(arr(&data["fix_plan"]).is_empty());
     assert!(scans.iter().all(|s| str_(&s["scope"]).starts_with("repos:")));
     let kinds: Vec<&str> = arr(&data["history"]["events"]).iter().map(|e| str_(&e["kind"])).collect();
     assert_eq!(kinds, ["scan", "scan"]);
@@ -785,6 +805,18 @@ fn schedule_dry_run_and_cache_prune() {
     let r = t.run_env(&["schedule", "status"], &[("XDG_STATE_HOME", s(&state))]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("last run: never"));
+    // The JSON keeps every documented field, `program` included (null or
+    // a path: the temp HOME holds no job, but cron and Task Scheduler are
+    // per-user tables outside it, so either may answer).
+    let r = t.run_env(&["schedule", "status", "--json"], &[("XDG_STATE_HOME", s(&state))]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let doc = r.json();
+    for key in ["schema", "installed", "enabled", "loaded", "backend", "interval", "every", "at", "last_run", "program"]
+    {
+        assert!(doc.get(key).is_some(), "{key} missing: {doc}");
+    }
+    assert!(doc["program"].is_null() || doc["program"].is_string(), "{doc}");
+    assert!(doc["installed"] == json!(true) || doc["program"].is_null(), "no job, no program: {doc}");
     t.project_run("scan", &[]);
     let r = t.run(&["cache", "prune", "--older-than", "1"]);
     assert_eq!(r.code, 0, "{}", r.err);
@@ -825,6 +857,94 @@ fn update_check_offline_reports_and_exits_0_or_10() {
     assert!(r.out.contains("built from a checkout"));
     let r = t.run(&["update", "--version", "nope", "--offline"]);
     assert_eq!(r.code, 3, "{}{}", r.out, r.err);
+}
+
+/// Oracle (contract "Programs that drive wpantry"): `update --check --json` says
+/// how old its answer is. `checked_at` is the cached fetch time as
+/// `YYYY-MM-DD HH:MM UTC`; `stale` is true when the answer is past its
+/// refresh age, which only an offline answer can be (here: a month-old
+/// entry and `--offline`), false for a fresh one. Online it asks GitHub
+/// now: an unreachable GitHub is an error, never the stored copy, however
+/// old or new. Exit codes are unchanged (0: not newer). Known bad: before
+/// the fix the month-old entry printed `available: false` with neither key,
+/// indistinguishable from a fresh "up to date".
+#[test]
+fn update_check_json_says_when_its_answer_is_stale() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let put = |at: f64| {
+        t.conn()
+            .execute(
+                "INSERT OR REPLACE INTO runs VALUES (?, ?, ?, ?)",
+                rusqlite::params!["github-latest:waffuruai/pantry", "", at, r#"{"version": "0.0.1", "assets": []}"#],
+            )
+            .unwrap();
+    };
+    put(now() - 30.0 * 86400.0);
+    // Online and unreachable: an error, not the month-old copy as the answer.
+    let r = t.run_env(&["update", "--check", "--json"], UNREACHABLE);
+    assert_eq!(r.code, 3, "{}{}", r.out, r.err);
+    assert!(!r.out.contains("\"latest\""), "{}", r.out);
+    // --offline reads the old copy: stale, with when it was checked.
+    let r = t.run(&["update", "--check", "--json", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    assert_eq!(v["available"], json!(false), "{v}");
+    assert_eq!(v["stale"], json!(true), "a month-old copy offline: {v}");
+    let at = v["checked_at"].as_str().unwrap_or_else(|| panic!("checked_at: {v}"));
+    assert!(regex_search(r"^\d{4}-\d\d-\d\d \d\d:\d\d UTC$", at), "{at}");
+    put(now());
+    // A fresh copy is still not an online answer.
+    let r = t.run_env(&["update", "--check", "--json"], UNREACHABLE);
+    assert_eq!(r.code, 3, "{}{}", r.out, r.err);
+    assert!(!r.out.contains("\"latest\""), "{}", r.out);
+    let r = t.run(&["update", "--check", "--json", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = r.json();
+    assert_eq!(v["stale"], json!(false), "a fresh copy: {v}");
+    assert!(v["checked_at"].is_string(), "{v}");
+    for k in ["current", "latest", "available", "assets"] {
+        assert!(v.get(k).is_some(), "{k} kept: {v}");
+    }
+}
+
+/// Oracle: the `--json` form's `stale`. The text form of an old cached
+/// answer (offline) says it could not check and when it last did, never
+/// "the latest release"; a fresh answer still says "the latest release".
+/// Online and unreachable it says it couldn't check, whatever is stored.
+/// Known bad: before, the text read the same month-old copy as a fresh "no".
+#[test]
+fn update_check_text_says_when_its_answer_is_stale() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let put = |at: f64| {
+        t.conn()
+            .execute(
+                "INSERT OR REPLACE INTO runs VALUES (?, ?, ?, ?)",
+                rusqlite::params!["github-latest:waffuruai/pantry", "", at, r#"{"version": "0.0.1", "assets": []}"#],
+            )
+            .unwrap();
+    };
+    put(now() - 30.0 * 86400.0);
+    let r = t.run_env(&["update", "--check"], UNREACHABLE);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("couldn't check for a newer release"), "{}", r.out);
+    assert!(!r.out.contains("is the latest release"), "{}", r.out);
+    let r = t.run(&["update", "--check", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("couldn't check for a newer release just now (last checked "), "{}", r.out);
+    assert!(regex_search(r"last checked \d{4}-\d\d-\d\d \d\d:\d\d UTC\)", &r.out), "{}", r.out);
+    assert!(!r.out.contains("is the latest release"), "{}", r.out);
+    put(now());
+    // Online asks GitHub now, past the fresh copy.
+    let r = t.run_env(&["update", "--check"], UNREACHABLE);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("couldn't check for a newer release"), "{}", r.out);
+    assert!(!r.out.contains("is the latest release"), "{}", r.out);
+    let r = t.run(&["update", "--check", "--offline"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("is the latest release"), "{}", r.out);
+    assert!(!r.out.contains("couldn't check"), "{}", r.out);
 }
 
 /// harden is gone: its two fixes are fix's, by name.
@@ -1012,6 +1132,141 @@ fn mitigate_runs_the_unattended_fix_for_an_advisory_by_id_or_alias() {
     let r = t.run(&["fix", "GHSA-other", "--yes"]);
     assert_eq!(r.code, 1, "{}{}", r.out, r.err);
     assert!(r.out.contains(&format!("failed: {bad}")), "{}", r.out);
+}
+
+/// A cache whose latest scan has one finding with an unattended fix that
+/// touches `marker`; returns (finding id, scan id). The marker is how the
+/// tests below see whether the fix ran.
+#[cfg(unix)]
+fn one_auto_fix(t: &Ctx, marker: &Path) -> (String, i64) {
+    t.project_run("scan", &[]);
+    let conn = t.conn();
+    conn.execute("DELETE FROM findings", []).unwrap();
+    let cmd = format!("touch {}", s(marker));
+    insert_finding(
+        &conn,
+        (
+            "app",
+            "demo",
+            "1.0.0",
+            "/opt/demo",
+            "GHSA-demo",
+            "fail",
+            "1.0.1",
+            0,
+            "HIGH",
+            "demo bug",
+            &cmd,
+            1,
+            "",
+            None,
+            "",
+        ),
+    );
+    let scan: i64 = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0)).unwrap();
+    drop(conn);
+    let list = t.run(&["fix", "list", "--json"]).json();
+    let id = list["items"][0]["id"].as_str().expect("one item with an id").to_string();
+    (id, scan)
+}
+
+/// Oracle (contract "Programs that drive wpantry"): `fix F-… --from-scan N`
+/// with no one to ask runs only with `--yes`; `--no-input` alone, or no
+/// terminal and no `--yes`, is a usage error (exit 2) and the fix's command
+/// never runs (the marker file stays absent). Known bad: before the fix,
+/// `--no-input` without `--yes` exited 0 and created the marker.
+#[cfg(unix)]
+#[test]
+fn fix_from_scan_needs_yes_without_a_terminal() {
+    let t = Ctx::new();
+    let marker = t.tmp.join("ran");
+    let (id, scan) = one_auto_fix(&t, &marker);
+    let n = scan.to_string();
+    for argv in [vec!["fix", &id, "--from-scan", &n, "--no-input"], vec!["fix", &id, "--from-scan", &n]] {
+        let r = t.run(&argv);
+        assert_eq!(r.code, 2, "{argv:?} {}{}", r.out, r.err);
+        assert!(r.err.contains("--yes"), "{}", r.err);
+        assert!(!marker.exists(), "{argv:?} ran the fix");
+    }
+    let r = t.run(&["fix", &id, "--from-scan", &n, "--dry-run", "--json"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!marker.exists(), "a dry run ran the fix");
+    // Positive control: the approved form runs it, so the marker can tell.
+    let r = t.run(&["fix", &id, "--from-scan", &n, "--yes", "--no-input"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(marker.exists(), "the approved fix ran: {}", r.out);
+}
+
+/// Oracle (contract "Programs that drive wpantry"): `fix … --from-scan N` runs only
+/// one finding's automatic fix. A committed secret, a finding without an
+/// automatic fix, and an id that matches two findings are each refused,
+/// for the dry run too, and the command never runs (the marker stays
+/// absent). Known bad: drop any one of the guards and its case runs
+/// `touch` (checked by hand on a mutant of each).
+#[cfg(unix)]
+#[test]
+fn fix_from_scan_refuses_secrets_manual_fixes_and_ambiguous_ids() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let marker = t.tmp.join("ran");
+    let cmd = format!("touch {}", s(&marker));
+    let conn = t.conn();
+    conn.execute("DELETE FROM findings", []).unwrap();
+    let row = |kind: &'static str, location: &'static str, id: &'static str, auto: i64| {
+        (kind, "demo", "1.0.0", location, id, "fail", "1.0.1", 0, "HIGH", "demo", cmd.as_str(), auto, "", None, "")
+    };
+    insert_finding(&conn, row("secret", "/p/.env", "SECRET-DEMO", 1));
+    insert_finding(&conn, row("app", "/opt/manual", "GHSA-manual", 0));
+    // The same finding twice (one id, two rows): which one is meant is
+    // not clear, so neither runs.
+    insert_finding(&conn, row("app", "/opt/twice", "GHSA-twice", 1));
+    insert_finding(&conn, row("app", "/opt/twice", "GHSA-twice", 1));
+    let scan: i64 = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0)).unwrap();
+    drop(conn);
+    let n = scan.to_string();
+    // The finding ids, as a program that drives wpantry reads them from the report.
+    let report = t.run(&["report", "all", "--json"]).json();
+    let id_of = |location: &str| {
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["location"] == location)
+            .and_then(|f| f["id"].as_str())
+            .unwrap_or_else(|| panic!("no finding at {location}: {report}"))
+            .to_string()
+    };
+    let (secret, manual, twice) = (id_of("/p/.env"), id_of("/opt/manual"), id_of("/opt/twice"));
+    let shared = report["findings"].as_array().unwrap().iter().filter(|f| f["id"] == twice.as_str()).count();
+    assert_eq!(shared, 2, "the fixture has two findings with one id: {report}");
+    for id in [secret.as_str(), manual.as_str(), twice.as_str()] {
+        for extra in [&["--yes", "--no-input"][..], &["--dry-run", "--json"][..]] {
+            let mut argv = vec!["fix", id, "--from-scan", &n];
+            argv.extend_from_slice(extra);
+            let r = t.run(&argv);
+            assert_ne!(r.code, 0, "{argv:?} {}{}", r.out, r.err);
+            assert!(r.err.contains("no automatic fix in the selected scan"), "{argv:?} {}", r.err);
+            assert!(!marker.exists(), "{argv:?} ran the fix");
+        }
+    }
+}
+
+/// Oracle (contract "Programs that drive wpantry": "A changed scan ... is an error
+/// before a command runs"): once a newer scan exists, `fix F-… --from-scan
+/// <old> --yes --no-input` fails naming the newer scan and the fix's command
+/// never runs. Known bad: a build that skips the latest-scan comparison runs
+/// the old scan's fix and creates the marker (checked by hand on a mutant).
+#[cfg(unix)]
+#[test]
+fn fix_from_scan_refuses_when_a_newer_scan_exists() {
+    let t = Ctx::new();
+    let marker = t.tmp.join("ran");
+    let (id, scan) = one_auto_fix(&t, &marker);
+    t.conn().execute("INSERT INTO scans (started_at, finished_at) VALUES (?1, ?1)", rusqlite::params![now()]).unwrap();
+    let r = t.run(&["fix", &id, "--from-scan", &scan.to_string(), "--yes", "--no-input"]);
+    assert_ne!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.err.contains("A newer scan is available"), "{}", r.err);
+    assert!(!marker.exists(), "the stale scan's fix ran");
 }
 
 /// CVE-2026-98432's stopgap: on Linux --dry-run reports the kernel,
@@ -1523,6 +1778,121 @@ fn path_scopes_and_skips_missing_dirs() {
     assert_eq!(envelope(&r.out)["checked"]["git repos"], 1);
     assert!(r.err.contains("skipping --path"), "{}", r.err);
     assert!(r.err.contains("missing"));
+}
+
+/// `scan project DIR`: that directory's repos and the runtimes it pins, as
+/// its own scope; nothing of the machine.
+#[test]
+fn scan_project_covers_one_directory_and_its_runtimes() {
+    let t = Ctx::new();
+    let app = git_repo(&t.home.join("app"), false);
+    write(&app.join(".ruby-version"), "3.1.4\n");
+    git_repo(&t.home.join("elsewhere"), false);
+    let r = t.run(&["scan", "project", s(&app), "--offline", "--json", "--no-input"]);
+    let env = envelope(&r.out);
+    assert_eq!(env["checked"]["git repos"], 1, "{}", r.err);
+    assert_eq!(env["checked"]["project runtimes"], 1);
+    assert!(env["checked"].get("tools, runtimes and packages").is_none(), "no machine inventory");
+    // Offline with an empty cache, the pinned Ruby can't be asked about: not checked, never clean.
+    assert!(arr(&env["findings"]).iter().any(|f| f["kind"] == "unchecked"), "{}", r.out);
+    let scope: String =
+        t.conn().query_row("SELECT scope FROM scans ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(scope, format!("project:{}", s(&std::fs::canonicalize(&app).unwrap())));
+    // A directory after `scan` alone says how one is scanned.
+    let bare = t.run(&["scan", s(&app)]);
+    assert_eq!(bare.code, 2);
+    assert!(bare.err.contains("wpantry scan project DIR"), "{}", bare.err);
+    assert_eq!(t.run(&["scan", "project", s(&t.home.join("missing"))]).code, 2);
+}
+
+/// `runs`, `report --run ID` and `prune ID`: each scan keeps its findings,
+/// an earlier one can be shown, and pruning the latest shows the one before.
+#[test]
+fn runs_are_listed_reported_and_pruned() {
+    let t = Ctx::new();
+    assert_eq!(t.run(&["runs"]).out, "no scan yet: run wpantry scan\n");
+    let a = git_repo(&t.home.join("a"), false);
+    let b = git_repo(&t.home.join("b"), false);
+    let scan = |dir: &Path| t.run(&["scan", "project", s(dir), "--offline", "--json", "--no-input"]);
+    let first = envelope(&scan(&a).out);
+    write(&b.join(".ruby-version"), "3.1.4\n");
+    let second = envelope(&scan(&b).out);
+    assert!(
+        arr(&second["findings"]).len() > arr(&first["findings"]).len(),
+        "b has a runtime that can't be checked offline"
+    );
+    let listed = t.run(&["runs", "--json"]).json();
+    assert_eq!(listed["keeps"], 30);
+    let runs = arr(&listed["runs"]);
+    assert_eq!(
+        (runs.len(), &runs[0]["scan"], &runs[0]["latest"], &runs[1]["scan"], &runs[1]["latest"]),
+        (2, &json!(2), &json!(true), &json!(1), &json!(false))
+    );
+    assert_eq!(runs[0]["findings"], arr(&second["findings"]).len());
+    assert!(str_(&runs[1]["scope"]).starts_with("project:") && Path::new(str_(&runs[1]["scope"])).ends_with("a"));
+    let table = t.run(&["runs"]).out;
+    assert!(table.starts_with("scan  finished") && table.contains("\n2 *  ") && table.contains("\n1    "), "{table}");
+    // The latest by default; an earlier one by its number, byte for byte what its scan printed.
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), second);
+    assert_eq!(envelope(&t.run(&["report", "--run", "1", "--json"]).out), first);
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), second, "showing one changes nothing");
+    let none = t.run(&["report", "--run", "9"]);
+    assert_eq!(none.code, 1);
+    assert!(none.err.contains("no scan 9 with its findings kept: wpantry runs lists them"), "{}", none.err);
+    // Pruning the latest: report is the scan before it again.
+    let pruned = t.run(&["prune", "2"]);
+    assert_eq!(pruned.code, 0, "{}", pruned.err);
+    assert!(
+        pruned.out.starts_with("pruned scan 2 (project:") && pruned.out.ends_with("wpantry report now shows scan 1\n"),
+        "{}",
+        pruned.out
+    );
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), first);
+    assert_eq!(arr(&t.run(&["runs", "--json"]).json()["runs"]).len(), 1);
+    let again = t.run(&["prune", "2"]);
+    assert_eq!(again.code, 1);
+    assert!(again.err.contains("no scan 2 with its findings kept"), "{}", again.err);
+    assert_eq!(t.run(&["prune", "two"]).code, 2);
+    // The scan log keeps both.
+    let audit = t.run(&["report", "audit", "--json"]).json();
+    assert_eq!(arr(&audit["scans"]).len(), 2);
+    assert!(arr(&audit["events"]).iter().any(|e| e["kind"] == "prune" && e["detail"]["scan"] == 2), "{audit}");
+    t.run(&["prune", "1"]);
+    assert_eq!(t.run(&["report"]).code, 1, "no scan left to report");
+}
+
+/// A scan that was interrupted saved nothing, and the next command says so, once.
+#[test]
+fn an_interrupted_scan_is_told_by_the_next_command() {
+    let t = Ctx::new();
+    t.project_run("scan", &["--json"]);
+    assert!(!t.run(&["runs"]).err.contains("didn't finish"), "a scan that ended leaves no note");
+    // What a scan killed mid-way leaves: its start, under a process id that is gone.
+    t.conn()
+        .execute(
+            "INSERT INTO meta VALUES ('scan_running:2147483646', '{\"started_at\": 86400.0, \"scope\": \"machine:~\"}')",
+            [],
+        )
+        .unwrap();
+    let r = t.run(&["report", "--json"]);
+    assert!(
+        r.err.contains("the scan of machine:~ started 1970-01-02 00:00 UTC didn't finish: nothing of it was saved, and wpantry report shows scan 1"),
+        "{}",
+        r.err
+    );
+    assert_eq!(envelope(&r.out)["schema"], 1, "stdout is still the report alone");
+    assert!(!t.run(&["report", "--json"]).err.contains("didn't finish"), "told once");
+    // The fix commands that read the latest scan say so too.
+    for argv in [&["fix", "list"][..], &["fix", "next", "--json"][..]] {
+        t.conn()
+            .execute(
+                "INSERT INTO meta VALUES ('scan_running:2147483646', '{\"started_at\": 86400.0, \"scope\": \"machine:~\"}')",
+                [],
+            )
+            .unwrap();
+        let r = t.run(argv);
+        assert!(r.err.contains("didn't finish: nothing of it was saved"), "{argv:?}: {}", r.err);
+    }
 }
 
 #[test]
@@ -2242,4 +2612,377 @@ fn dryrun_changes_nothing() {
     assert!([0, 1].contains(&r2.code));
     assert!(!r2.out.contains("Re-checking"));
     assert_eq!(r.out.contains("Update plan"), r2.out.contains("Update plan"));
+}
+
+// ignore ------------------------------------------------------------------
+
+/// Two repos under the temp home, each with a lockfile holding minimist
+/// 1.2.5 (advisory CVE-2026-7), and the first one qs 6.0.0 too (CVE-2026-8),
+/// with the answers in the cache: the same advisory in two repos, and
+/// another advisory in one file.
+fn ignore_fixture(t: &Ctx) -> (std::path::PathBuf, std::path::PathBuf) {
+    t.project_run("scan", &[]);
+    let lock = |pkgs: &[(&str, &str)]| {
+        let entries: Vec<String> =
+            pkgs.iter().map(|(n, v)| format!(r#""node_modules/{n}": {{"version": "{v}"}}"#)).collect();
+        format!(r#"{{"lockfileVersion": 3, "packages": {{"": {{}}, {}}}}}"#, entries.join(", "))
+    };
+    let app = git_repo(&t.home.join("app"), false);
+    let other = git_repo(&t.home.join("other"), false);
+    write(&app.join("package-lock.json"), lock(&[("minimist", "1.2.5"), ("qs", "6.0.0")]));
+    write(&other.join("package-lock.json"), lock(&[("minimist", "1.2.5")]));
+    let conn = t.conn();
+    for (ghsa, cve, pkg, fixed) in
+        [("GHSA-m", "CVE-2026-7", "minimist", "1.2.6"), ("GHSA-q", "CVE-2026-8", "qs", "6.0.1")]
+    {
+        let rec = json!({"id": ghsa, "aliases": [cve], "summary": format!("{pkg} flaw"),
+                         "database_specific": {"severity": "MODERATE"},
+                         "affected": [{"package": {"ecosystem": "npm", "name": pkg},
+                                       "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": fixed}]}]}]});
+        insert_vuln(&conn, "INSERT", [ghsa, cve, str_(&rec["summary"]), "", "MODERATE", "", "", "", &rec.to_string()]);
+    }
+    let at = now();
+    insert_query(&conn, "INSERT", "npm", "minimist", "1.2.5", at, "GHSA-m");
+    insert_query(&conn, "INSERT", "npm", "qs", "6.0.0", at, "GHSA-q");
+    (app, other)
+}
+
+fn scan_projects(t: &Ctx) -> Value {
+    envelope(&t.project_run("scan", &["--json"]).out)
+}
+
+/// The ids of the `project` findings, sorted.
+fn project_ids(env: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = of_kind(env, "project").iter().map(|f| str_(&f["id"]).to_string()).collect();
+    ids.sort();
+    ids
+}
+
+/// The id of the finding for `pkg` in the repo folder `repo`.
+fn project_id(env: &Value, pkg: &str, repo: &str) -> String {
+    of_kind(env, "project")
+        .iter()
+        .find(|f| f["component"] == pkg && str_(&f["location"]).contains(&format!("/{repo}/")))
+        .map(|f| str_(&f["id"]).to_string())
+        .unwrap_or_else(|| panic!("no {pkg} in {repo}: {}", env["findings"]))
+}
+
+fn checked(env: &Value, what: &str) -> i64 {
+    env["checked"][what].as_i64().unwrap_or(0)
+}
+
+#[test]
+fn ignore_in_a_repo_leaves_out_one_finding_and_remove_brings_it_back() {
+    let t = Ctx::new();
+    let (app, _other) = ignore_fixture(&t);
+    let before = scan_projects(&t);
+    let ids = project_ids(&before);
+    assert_eq!(ids.len(), 3, "{}", before["findings"]);
+    let target = project_id(&before, "minimist", "app");
+    let r = t.run(&["ignore", "add", &target, "--scope", "repo", "--reason", "not reachable", "--json", "--no-input"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!(
+        keys(&v),
+        set(&[
+            "schema",
+            "impl",
+            "version",
+            "action",
+            "changed",
+            "finding",
+            "scope",
+            "file",
+            "rules",
+            "reason",
+            "all_places",
+            "left_out"
+        ])
+    );
+    assert_eq!((v["schema"].clone(), v["action"].clone(), v["changed"].clone()), (json!(1), json!("add"), json!(true)));
+    assert_eq!(keys(&v["finding"]), set(&["id", "kind", "component", "location", "vuln_id"]));
+    assert_eq!(keys(&v["rules"][0]), set(&["id", "section", "pattern", "place"]));
+    assert_eq!(
+        (v["rules"][0]["section"].clone(), v["rules"][0]["pattern"].clone(), v["reason"].clone()),
+        (json!("project CVE-2026-7"), json!("/package-lock.json"), json!("not reachable"))
+    );
+    let file = read(&app.join(".pantryignore"));
+    assert!(
+        file.starts_with(&format!("[project CVE-2026-7]\n/package-lock.json\n# wpantry ignore: {target} | ")),
+        "{file}"
+    );
+    assert!(file.ends_with(" | not reachable\n"), "{file}");
+    // The next scan leaves out that finding: the same advisory in the other repo, and the other advisory in this file, stay.
+    let after = scan_projects(&t);
+    assert_eq!(project_ids(&after), ids.iter().filter(|i| **i != target).cloned().collect::<Vec<_>>());
+    assert_eq!(checked(&after, "findings skipped by a repo's .pantryignore"), 1, "{}", after["checked"]);
+    // list shows it, by hand-written and command-written alike.
+    write(&app.join(".pantryignore"), format!("# mine\nvendor/\n{file}"));
+    let r = t.run(&["ignore", "list", "--path", s(&app), "--json"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!(keys(&v), set(&["schema", "impl", "version", "action", "files", "rules", "removed_by_hand"]));
+    assert_eq!(keys(&v["files"][0]), set(&["scope", "file", "exists", "error"]));
+    let rules = arr(&v["rules"]);
+    assert_eq!(
+        strs(&rules.iter().collect::<Vec<_>>(), &["source", "pattern"]),
+        [["hand", "vendor/"], ["command", "/package-lock.json"]]
+    );
+    assert_eq!(
+        keys(&rules[1]),
+        set(&[
+            "id",
+            "scope",
+            "file",
+            "line",
+            "section",
+            "active",
+            "pattern",
+            "source",
+            "finding_id",
+            "added",
+            "reason"
+        ])
+    );
+    assert_eq!((rules[1]["finding_id"].clone(), rules[1]["reason"].clone()), (json!(target), json!("not reachable")));
+    assert!(
+        t.run(&["ignore", "list", "--path", s(&app)]).out.contains("written by wpantry ignore for"),
+        "the text form"
+    );
+    // Remove by finding id: only our block goes, and the next scan reports it again.
+    let r = t.run(&["ignore", "remove", &target, "--json"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!(keys(&v), set(&["schema", "impl", "version", "action", "id", "changed", "removed"]));
+    assert_eq!(keys(&v["removed"][0]), set(&["id", "scope", "file", "section", "pattern", "finding_id"]));
+    assert_eq!(read(&app.join(".pantryignore")), "# mine\nvendor/\n");
+    assert_eq!(project_ids(&scan_projects(&t)), ids);
+    // The log: both actions, with the finding, scope, file and reason.
+    let log = t.run(&["report", "audit", "--json"]).json();
+    let events: Vec<&Value> = arr(&log["events"]).iter().filter(|e| e["kind"] == "ignore").collect();
+    assert_eq!(events.len(), 2, "{log}");
+    assert_eq!(
+        (events[0]["detail"]["action"].clone(), events[1]["detail"]["action"].clone()),
+        (json!("add"), json!("remove"))
+    );
+    assert_eq!(
+        pick(&events[0]["detail"], &["scope", "reason", "finding_id"]),
+        json!(["repo", "not reachable", target])
+    );
+    assert_eq!(events[0]["detail"]["finding"]["vuln_id"], "CVE-2026-7");
+    assert!(Path::new(str_(&events[0]["detail"]["file"])).ends_with("app/.pantryignore"));
+    assert!(t.run(&["report", "audit", "--md"]).out.contains("| ignore |"), "the Markdown audit lists them too");
+}
+
+#[test]
+fn ignore_in_your_file_is_private_idempotent_and_can_cover_every_place() {
+    let t = Ctx::new();
+    ignore_fixture(&t);
+    let before = scan_projects(&t);
+    let target = project_id(&before, "qs", "app");
+    let r = t.run(&["ignore", "add", &target]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains(&format!("ignored {target}")), "{}", r.out);
+    let user = t.home.join(".config/wpantry/ignore");
+    let text = read(&user);
+    assert!(text.starts_with("[project CVE-2026-8]\n"), "{text}");
+    #[cfg(unix)]
+    {
+        let location =
+            of_kind(&before, "project").iter().find(|f| f["id"] == target.as_str()).unwrap()["location"].clone();
+        // The path as a person reads it: `~/` under the home folder, else the whole path.
+        let home = format!("{}/", s(&t.home));
+        let want = str_(&location).strip_prefix(&home).map_or(str_(&location).to_string(), |r| format!("~/{r}"));
+        assert_eq!(text.lines().nth(1).unwrap(), want);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&user), mode(user.parent().unwrap())), (0o600, 0o700));
+    }
+    let again = t.run(&["ignore", "add", &target, "--no-input"]);
+    assert_eq!(again.code, 0);
+    assert!(again.out.contains("already"), "{}", again.out);
+    assert_eq!(read(&user), text, "nothing changed");
+    let after = scan_projects(&t);
+    assert_eq!(project_ids(&after).len(), 2);
+    assert_eq!(checked(&after, "findings skipped by your ignore file"), 1);
+    // --all-places: every lockfile with minimist, one rule each.
+    let min = project_id(&after, "minimist", "app");
+    let r = t.run(&["ignore", "add", &min, "--all-places", "--json"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let v = r.json();
+    assert_eq!((arr(&v["rules"]).len(), v["all_places"].clone(), arr(&v["left_out"]).len()), (2, json!(true), 0));
+    assert!(project_ids(&scan_projects(&t)).is_empty());
+    // One remove by the finding id asked takes both rules.
+    let r = t.run(&["ignore", "remove", &min, "--json"]);
+    assert_eq!(arr(&r.json()["removed"]).len(), 2);
+    assert_eq!(project_ids(&scan_projects(&t)).len(), 2);
+    // A rule id from `list` removes one rule.
+    let listed = t.run(&["ignore", "list", "--json"]).json();
+    let id = str_(&listed["rules"][0]["id"]).to_string();
+    assert!(id.starts_with("R-"), "{id}");
+    let r = t.run(&["ignore", "remove", &id]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(project_ids(&scan_projects(&t)).len(), 3);
+    assert_eq!(t.run(&["ignore", "remove", &id]).code, 1, "gone: nothing matches");
+}
+
+#[test]
+fn ignore_refuses_what_it_cannot_do_and_writes_nothing() {
+    let t = Ctx::new();
+    // Before any scan.
+    let r = t.run(&["ignore", "add", "F-0000000000", "--json"]);
+    assert_eq!(r.code, 1, "{}", r.err);
+    assert_eq!(r.json()["refused"]["code"], "no-scan");
+    assert!(r.err.contains("no scan yet"), "{}", r.err);
+    let (app, _other) = ignore_fixture(&t);
+    scan_projects(&t);
+    let r = t.run(&["ignore", "add", "F-0000000000", "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("not-found")));
+    assert_eq!(r.json()["changed"], false);
+    // A repo can't hide what protects you from it; your file can.
+    let clone = git_repo(&t.home.join("clone"), false);
+    mkdir(&clone.join(".claude"));
+    write(
+        &clone.join(".claude").join("settings.json"),
+        r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node .github/init.js || bun .github/init.js"}]}]}}"#,
+    );
+    mkdir(&clone.join(".github"));
+    write(&clone.join(".github").join("init.js"), "console.log('hi')\n");
+    let env = scan_projects(&t);
+    let hook = of_kind(&env, "repo-hook").first().map(|f| str_(&f["id"]).to_string()).expect("a repo hook finding");
+    let r = t.run(&["ignore", "add", &hook, "--scope", "repo", "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("repo-cannot-skip")));
+    assert!(r.err.contains("--scope user"), "{}", r.err);
+    assert!(!clone.join(".pantryignore").exists());
+    let r = t.run(&["ignore", "add", &hook, "--scope", "user"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(of_kind(&scan_projects(&t), "repo-hook").is_empty(), "your file may skip it");
+    // Outside any repo, a repo's file has no meaning.
+    let loose = t.home.join("loose");
+    mkdir(&loose);
+    write(
+        &loose.join("package-lock.json"),
+        r#"{"lockfileVersion": 3, "packages": {"": {}, "node_modules/qs": {"version": "6.0.0"}}}"#,
+    );
+    let env = envelope(&t.run(&["scan", "--json", "--no-input", "--offline", "--no-machine", "--path", s(&loose)]).out);
+    let id = of_kind(&env, "project")
+        .iter()
+        .find(|f| str_(&f["location"]).contains("/loose/"))
+        .map(|f| str_(&f["id"]).to_string())
+        .expect("the loose lockfile's finding");
+    let r = t.run(&["ignore", "add", &id, "--scope", "repo", "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("not-in-repo")));
+    assert!(!app.join(".pantryignore").exists() && !loose.join(".pantryignore").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn ignore_never_writes_through_a_link_that_leaves_the_config_folder() {
+    let t = Ctx::new();
+    ignore_fixture(&t);
+    let env = scan_projects(&t);
+    let id = project_id(&env, "qs", "app");
+    let outside = t.tmp.join("elsewhere");
+    write(&outside, "keep me\n");
+    let user = t.home.join(".config/wpantry/ignore");
+    mkdir(user.parent().unwrap());
+    std::os::unix::fs::symlink(&outside, &user).unwrap();
+    let r = t.run(&["ignore", "add", &id, "--json"]);
+    assert_eq!((r.code, r.json()["refused"]["code"].clone()), (1, json!("unsafe-file")), "{}", r.err);
+    assert_eq!(read(&outside), "keep me\n");
+}
+
+#[test]
+fn ignore_usage_errors_exit_2() {
+    let t = Ctx::new();
+    for argv in [
+        vec!["ignore"],
+        vec!["ignore", "add"],
+        vec!["ignore", "add", "banana"],
+        vec!["ignore", "add", "F-3fa9c01b2e", "--scope", "both"],
+        vec!["ignore", "add", "F-3fa9c01b2e", "--reason", "two\nlines"],
+        vec!["ignore", "remove", "banana"],
+        vec!["ignore", "remove"],
+        vec!["ignore", "list", "--bogus"],
+    ] {
+        let r = t.run(&argv);
+        assert_eq!(r.code, 2, "{argv:?}: {}", r.err);
+        assert!(r.err.contains("Usage:") && r.err.contains("error: "), "{argv:?}: {}", r.err);
+    }
+    let r = t.run(&["ignore", "add", "banana"]);
+    assert!(r.err.contains("F-3fa9c01b2e"), "names the id's form: {}", r.err);
+    let r = t.run(&["ignore", "--help"]);
+    assert_eq!(r.code, 0);
+    assert!(r.out.contains("add") && r.out.contains("list") && r.out.contains("remove"), "{}", r.out);
+}
+
+/// Risk: `cd ~/Documents/proj && wpantry scan --no-personal-files --path .`
+/// (or a symlink to the project, or `~/documents/proj` on a volume that
+/// ignores case) left the project out of the scan, which read nothing and
+/// reported no problem. Oracle: the envelope's `checked` counts, which say
+/// what was read (`project dependencies`: the lockfile) and the findings
+/// (no not-checked finding for the root the user named). The run is the
+/// binary's own, with its working directory in the project, as a user's is;
+/// the folder next to it stays left out in every run.
+/// Known bad: the exception for the named path built from the path as typed
+/// (the run reads no lockfile).
+#[cfg(unix)]
+#[test]
+fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files() {
+    let t = Ctx::new();
+    let proj = t.home.join("Documents/proj");
+    mkdir(&proj);
+    write(
+        &proj.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"itoa\"\nversion = \"1.0.9\"\n\
+         source = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+    );
+    let other = t.home.join("Documents/other");
+    mkdir(&other);
+    write(&other.join("Cargo.lock"), std::fs::read(proj.join("Cargo.lock")).unwrap());
+    std::os::unix::fs::symlink(&proj, t.home.join("link")).unwrap();
+    let flags = ["scan", "--no-machine", "--no-personal-files", "--offline", "--json", "--no-input", "--path"];
+    let run = |cwd: &Path, path: &str| {
+        let mut argv = flags.to_vec();
+        argv.push(path);
+        envelope(&t.run_in(cwd, &argv).out)
+    };
+    let mut spellings = vec![
+        ("--path . from inside the project", proj.clone(), ".".to_string()),
+        ("a symlink to it", t.home.clone(), "link".to_string()),
+        ("a path with ..", t.home.clone(), "Documents/other/../proj".to_string()),
+    ];
+    // Another case, on a file system that ignores it (macOS by default).
+    if t.home.join("documents/proj").exists() {
+        spellings.push(("another letter case", t.home.clone(), "documents/proj".to_string()));
+    } else {
+        eprintln!("the letter-case spelling is skipped: this file system tells `documents` from `Documents`");
+    }
+    for (what, cwd, path) in spellings {
+        let env = run(&cwd, &path);
+        assert_eq!(env["checked"]["project dependencies"], 1, "{what}: the lockfile was not read: {}", env["checked"]);
+        let said: Vec<&str> = findings(&env).iter().map(|f| str_(&f["component"])).collect();
+        assert!(!said.iter().any(|c| c.starts_with("--path")), "{what}: {said:?}");
+    }
+    // The folder's other project is not what was named: left out, not read.
+    let env = run(&t.home, "Documents/other");
+    assert_eq!(env["checked"]["project dependencies"], 1, "a path named in full is read");
+    let env = envelope(
+        &t.run(&[
+            "scan",
+            "--no-machine",
+            "--no-personal-files",
+            "--offline",
+            "--json",
+            "--no-input",
+            "--path",
+            s(&t.home),
+        ])
+        .out,
+    );
+    assert!(
+        env["checked"].get("project dependencies").is_none(),
+        "the home folder's scan read a personal folder: {}",
+        env["checked"]
+    );
 }

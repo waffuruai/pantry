@@ -2,6 +2,8 @@
 
 Pantry inventories what is installed on your computer and what your git repos lock, then asks a few public sources about only those exact versions. This page lists every check and every source.
 
+On macOS the default search for repos under `~` skips `~/Pictures`, `~/Music`, `~/Movies` and Photos or Music libraries, which hold no code and would raise a privacy prompt. Give `--path` to scan inside one.
+
 See also: [usage.md](usage.md) (running it), [install.md](install.md), [architecture.md](architecture.md).
 
 ## What it checks
@@ -30,7 +32,7 @@ See also: [usage.md](usage.md) (running it), [install.md](install.md), [architec
 | Java and MySQL against CVE records | Every `java` and `mysql` the tool inventory finds, against Oracle's CVE records for Oracle Java SE and MySQL Server, from [CIRCL Vulnerability-Lookup](https://vulnerability.circl.lu) (OSV has no advisories for either; OpenJDK builds are matched to Java SE, whose records are the CVEs for that code). MySQL's `8.4.0-8.4.13` is read as a range with both ends included, a bare `26.10` as that version. Oracle lists Java SE's last affected version per release train (`17.0.21.0.3`, `8u511b33`), so a Java at or below it in its train warns. Java 8 is compared by quarterly update, since OpenJDK numbers each one above Oracle's (OpenJDK 8u412 is Oracle's 8u411); a record naming Java 8 only as Performance Pack (`8u511b33-perf`) doesn't apply to it. MySQL entries written `8.0.30 and prior` are read as up to that version. Oracle lists the supported versions a flaw affects, so a train a record leaves out is clean when it was out and still supported (endoflife.date's `releaseDate` and `eol`) on the day the record was published, like Java 27 in October 2026's records. A train out of support then, out only later, or with either date unknown, and a Java 8 whose update number isn't known, is "not checked". A CVE OSV already reported for the same install isn't repeated. Oracle's records name no fixed version, so these warn rather than fail |
 | PHP and Rust against CVE records | Every `php` and `rust` the tool inventory finds, when OSV's answer for its release tag (php-src, rust-lang/rust) names no CVE: those GIT ranges miss most PHP 8.3 and 8.4 releases and Rust before 1.77, and for PHP 8.1 and 8.2 the answer is often a lone OSS-Fuzz record, so neither an empty answer nor one without a CVE is taken as clean. The records are PHP's (`PHP Group` / `PHP`, `PHP` / `PHP`, `php` / `php`) and Rust's (`rust-lang` / `rust`, and `Rust Project` / `std` for the standard library each `rustc` ships), from [CIRCL Vulnerability-Lookup](https://vulnerability.circl.lu). PHP writes a release train as `8.3.*` or `7.4.x` with its fix in `lessThan`, or in words (`7.2.x below 7.2.30`); Rust's records write `< 1.77.2`. A version past its own train's fix is clean. When a record says unlisted versions are affected, a train newer than every one it lists is clean if that train was first released (endoflife.date's `releaseDate`) after the record was published; otherwise, or with either date unknown, it is "not checked". With the index unreachable and nothing cached, PHP and Rust are "not checked". Every "versions not comparable" row names each install, the records and why: numbered another way, no range for its line, a train left out of support, or a version written in a form Pantry can't read |
 | Homebrew formulae against CVE records | Every homebrew-core formula in the Cellar (with or without `brew`) whose stable URL, head URL or homepage names a GitHub, GitLab or Codeberg repo (formulae.brew.sh's `urls` and `homepage`; there is no CPE or vendor field). OSV is asked for that repo (as the formula writes it, and lowercased: OSV's GIT names are case-sensitive) at the installed version; an answer naming a CVE is left to `brew vulns` and OSV. With none named, every OSV record for the repo is read, and each CVE record's own ranges decide: OSV's records generated from the CVE list carry only a GIT range and a partial tag list (openshot-qt's CVE-2026-134704 lists no 3.x tag, though its record says up to 4.1.1), so OSV's answer misses every version the list leaves out. The ranges are those OSV extracted from the record (`extracted_events`): the CNA's own `lessThan` / `lessThanOrEqual` first, else NVD's CPE range, else the description's. In range with a fix fails; with no fix named, the formula's current release is the fix when the range leaves it out, else it warns. A version or range that isn't dotted numbers is "not checked". A record with no version range is left to OSV's commit answer. A CVE found is checked against [Homebrew's advisory database](https://github.com/Homebrew/advisory-database) (`BREW-<formula>-<CVE>`, the CVEs a formula's patch resolves): patched in the installed revision (`2.7.1_1`), it isn't reported; patched in a later one, that revision is the fix. A CVE `brew vulns` or OSV already reported for the formula isn't repeated. With formulae.brew.sh or OSV unreachable and nothing cached, the formulae are "not checked" |
-| Homebrew without `brew` | Bottles poured into the Cellar by mise's `brew:` engine (no `brew` command, so no `brew vulns`): each formula the tool catalog knows is checked against OSV and endoflife.date; the rest are reported "not checked" |
+| Homebrew without `brew` | Bottles poured into the Cellar by mise's `brew:` engine, when no `brew` is found on PATH or at `$HOMEBREW_PREFIX`, `/opt/homebrew`, `/usr/local` or `/home/linuxbrew/.linuxbrew` (a service or an app starts with a short PATH; with brew found, `brew vulns` runs instead). Each formula the tool catalog knows is checked against OSV and endoflife.date; the rest are reported "not checked". The fix names the owner: `brew upgrade <formula>` for a keg with a Homebrew receipt (never described as poured without brew), `mise upgrade brew:<formula>` for mise's engine, else both commands |
 | End of life | Runtimes and datastores past their end-of-life date fail |
 | Certificate authorities | System, OpenSSL, Homebrew, certifi, pip and Node trust stores against the leaked eMudhra CAs (`wpantry fix ca-trust` distrusts them until the OS update ships). pip's store is `PIP_CERT`, else its config's `global.cert`, else its vendored bundle; a vendored bundle that trusts them is fixed unattended by pointing pip at a bundle this scan found clean, Homebrew's first, then the system's (`pip config --user set global.cert`, undone with `pip config --user unset global.cert`) |
 | Clipboard clippers | Found in files; Pantry never reads or writes the clipboard. Every launch agent and daemon, autostart entry and user service is read for the program it runs: touching the clipboard with wallet addresses (EVM, Bitcoin, Tron, Solana, XRP, Stellar and more) or the patterns that recognise them fails (`CLIPPER-PERSISTENCE`); touching it from a temporary or hidden place warns. A browser extension asking for both `clipboardRead` and `clipboardWrite` warns (`CLIPPER-EXTENSION`) and fails when its code has the clipper shape (`SUSPECT-CLIPBOARD-SWAP`). Watching the clipboard live is a resident watchdog's job |
@@ -114,6 +116,55 @@ A sources file of your own, `~/.config/wpantry/sources.toml` (or `--sources FILE
 - add YARA rules; hash, host and file-name lists; an indicator set in Maltrail's `trails.csv` format; an OSV-compatible API; or a hash lookup.
 
 A source of yours on a host Pantry doesn't already ask, or one that sends anything (a hash lookup may send a flagged file's SHA-256, nothing else), is used only after you say yes, once. With `--no-input` and no yes, it is reported not checked. Details: [the sources file](../../specs/design/sources-file.md).
+
+`--add-sources FILE` on `scan`, `fix` and `sources` adds a file's sources to yours for one run, instead of replacing your file as `--sources` does. Repeat it for more files. An `id` may be defined once across all of them. An added file may add sources and may turn a bundled source up (`off` to `deep` or `default`, `deep` to `default`: more checking), never down or off; an entry that would is refused with an error naming the file, the id and the rule, and nothing from that file is applied. Your own sources file keeps full control of every `tier`.
+
+### Sources on this machine
+
+A source of yours may read a file or folder on this machine with `path` instead of `url`: rules copied to an offline machine, a team's own rule repository checked out next to your code, or lists a program that runs `wpantry` has already downloaded and checked. It works for YARA rules, for hash, host, file-name and indicator lists, and for a folder of advisories. A local source sends nothing and reaches no host, so it is used without asking, with `--no-input` and `--offline` too. Its `tier` still holds.
+
+A folder of YARA rules: every `.yar` file directly in it, joined in name order. Subfolders and symlinks inside it are not read. Rules must be UTF-8 text: a file in another encoding (Latin-1, UTF-16) fails the source, which the scan reports as unchecked, naming the file.
+
+```toml
+[[source]]
+id = "team-rules"
+kind = "yara"
+format = "yara"
+path = "~/src/team-rules/yara"
+```
+
+A hash list, pinned so that only the copy you checked is used:
+
+```toml
+[[source]]
+id = "offline-hashes"
+kind = "hashes"
+format = "lines"
+path = "/mnt/transfer/hashes.txt"
+sha256 = "<the file's SHA-256>"
+```
+
+A path is absolute, or starts with `~/`; on Windows, write it as a literal string (`path = 'C:\rules\team'`). Relative paths and `..` are refused. Pantry reads the source again when the file (or a `.yar` file in the folder) changes size or modification time. A file that is missing, over its `max_bytes` or fails its pin keeps the last good copy, and `wpantry sources` says why.
+
+A folder of advisories in the [OSV format](https://ossf.github.io/osv-schema/), one record per `.json` file: advisories copied to an offline machine, a team's advisories for its internal packages, or advisories a program that runs `wpantry` has already downloaded and checked. Pantry checks your packages against them as it does against OSV's, offline too.
+
+```toml
+[[source]]
+id = "team-advisories"
+kind = "advisories"
+format = "osv-dir"
+path = "~/advisories"
+```
+
+The smallest record that works names an id and an affected range (`~/advisories/TEAM-2026-0001.json`):
+
+```json
+{"id": "TEAM-2026-0001",
+ "affected": [{"package": {"ecosystem": "npm", "name": "acme-internal-widget"},
+               "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.2.4"}]}]}]}
+```
+
+Records may sit directly in the folder or one folder down (`npm/TEAM-2026-0001.json`); deeper folders and symlinks are not read. A finding from one of them names your source in its note and links the record's first `ADVISORY` or `WEB` reference, or nothing when it has none. A file that isn't an OSV record is skipped, and `wpantry sources` says how many records were loaded and how many files were skipped. A folder over 100,000 files or 1 GiB keeps its last good load. A `sha256` pin covers every file and its path; [the sources file spec](../../specs/design/sources-file.md#advisories-on-this-machine) shows how to compute it.
 
 ### Third-party sources
 

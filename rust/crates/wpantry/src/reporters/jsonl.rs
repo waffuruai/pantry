@@ -10,6 +10,7 @@
 //! rows too (their `status` is the last one seen, `resolved_at` is set):
 //! that is where "fixed, N days later" comes from.
 
+use crate::checks::severity::{Advisories, fill_text, is_advisory};
 use crate::db::Cache;
 use crate::error::Result;
 use crate::finding::Finding;
@@ -51,16 +52,24 @@ fn from_exposure(e: &Exposure) -> Row {
         epss_percentile: e.epss_percentile,
         epss_date: String::new(),
         epss_model: String::new(),
+        // Exposures never hold `unchecked` findings.
+        excluded: false,
+        ..Default::default()
     };
     from_finding(f)
 }
 
 /// The latest scan's findings, as saved.
 pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
+    findings_in(cache, &mut Advisories::default())
+}
+
+/// [`findings`], asking the cache about each advisory through `advisories`.
+fn findings_in(cache: &Cache, advisories: &mut Advisories) -> Result<Vec<Finding>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, fixed, kev, severity, note, fix_cmd, fix_auto, \
-         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model \
-         FROM findings",
+         dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, epss_date, epss_model, \
+         excluded, summary, aliases, cwe, local_source, local_link FROM findings",
     )?;
     let rows = stmt.query_map([], |r| {
         let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
@@ -86,19 +95,56 @@ pub fn findings(cache: &Cache) -> Result<Vec<Finding>> {
             epss_percentile: r.get(18)?,
             epss_date: s(19)?,
             epss_model: s(20)?,
+            excluded: r.get::<_, Option<i64>>(21)?.unwrap_or(0) != 0,
+            summary: s(22)?,
+            aliases: s(23)?.split_whitespace().map(str::to_string).collect(),
+            cwe: s(24)?.split_whitespace().map(str::to_string).collect(),
+            local_source: s(25)?,
+            local_link: s(26)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut out: Vec<Finding> = rows.collect::<rusqlite::Result<_>>()?;
+    with_text_in(cache, advisories, &mut out);
+    Ok(out)
 }
 
-/// The OSV record for a finding's id: the record with that id, or the one
-/// that lists it as an alias.
-fn record(cache: &Cache, vuln_id: &str) -> Result<Option<Value>> {
+/// Fill the summary, aliases and weakness types of findings saved without
+/// them (a scan from before they were kept) from the advisory records the
+/// cache still holds. Nothing is fetched.
+pub fn with_text(cache: &Cache, findings: &mut [Finding]) {
+    with_text_in(cache, &mut Advisories::default(), findings);
+}
+
+/// [`with_text`] through a memo shared with the caller's other lookups.
+fn with_text_in(cache: &Cache, advisories: &mut Advisories, findings: &mut [Finding]) {
+    for f in findings.iter_mut() {
+        let bare = f.summary.is_empty() && f.aliases.is_empty() && f.cwe.is_empty();
+        if bare && f.kind != "unchecked" && is_advisory(&f.vuln_id) {
+            let text = advisories.text(cache, &f.vuln_id);
+            fill_text(f, &text);
+        }
+    }
+}
+
+/// The OSV record for a finding, and where it came from: from OSV's cached
+/// records first (the one with the finding's id, else the one that lists it
+/// as an alias), and only when OSV has none, from the user's folder of OSV
+/// records ([`crate::sources::osv_dir`]) the finding came from, whose link
+/// (`Some`, "" for none) is the record's own.
+///
+/// A local record is used only for a finding that names its source
+/// (`local_source`: it was produced from a source of the user's in use that
+/// scan) and only a record of that source that names the finding's package,
+/// so an OSV finding that shares a CVE id with some local record, one for
+/// another package or one of a source that is off, never takes its record,
+/// aliases or url.
+fn record(cache: &Cache, f: &Finding) -> Result<Option<(Value, Option<String>)>> {
+    let vuln_id = f.vuln_id.as_str();
     if vuln_id.is_empty() {
         return Ok(None);
     }
     if let Some(r) = cache.vuln(vuln_id)? {
-        return Ok(Some(r));
+        return Ok(Some((r, None)));
     }
     let found: Option<String> = cache
         .conn
@@ -108,7 +154,14 @@ fn record(cache: &Cache, vuln_id: &str) -> Result<Option<Value>> {
             |r| r.get(0),
         )
         .optional()?;
-    Ok(found.and_then(|t| serde_json::from_str(&t).ok()))
+    if let Some(r) = found.and_then(|t| serde_json::from_str(&t).ok()) {
+        return Ok(Some((r, None)));
+    }
+    if f.local_source.is_empty() {
+        return Ok(None);
+    }
+    Ok(crate::sources::osv_dir::for_finding(cache, &f.local_source, vuln_id, &f.component)?
+        .map(|(r, url)| (r, Some(url))))
 }
 
 /// The exposure row for a finding's key, if scans have been recorded.
@@ -138,6 +191,9 @@ fn exposure(cache: &Cache, key: &str) -> Result<Option<Life>> {
 /// The latest fix `wpantry fix` ran for this command, and whether a later scan
 /// verified it (the exposure resolved in that scan).
 fn fix(cache: &Cache, command: &str, resolved_scan: Option<i64>) -> Result<Option<Value>> {
+    // A fix of several steps is logged a step at a time: the first is the
+    // one that runs unattended, and the one the fix is known by.
+    let command = crate::remediation::first_step(command);
     if command.is_empty() {
         return Ok(None);
     }
@@ -145,7 +201,7 @@ fn fix(cache: &Cache, command: &str, resolved_scan: Option<i64>) -> Result<Optio
         .conn
         .query_row(
             "SELECT at, mode, ok, verified_scan FROM fixes WHERE command = ? ORDER BY at DESC LIMIT 1",
-            [command],
+            [&command],
             |r| Ok((r.get::<_, Option<f64>>(0)?.unwrap_or(0.0), r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
@@ -166,19 +222,29 @@ fn resolved_scan(cache: &Cache, key: &str) -> Result<Option<i64>> {
 
 fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
     let f = &row.finding;
-    let rec = record(cache, &f.vuln_id)?;
+    let found = record(cache, f)?;
     let wordfence = crate::sources::wordfence::link_in(&f.note).filter(|_| f.kind == crate::sources::wordfence::KIND);
-    let (aliases, url) = match &rec {
+    let cve = || format!("https://www.cve.org/CVERecord?id={}", f.vuln_id);
+    let (aliases, url) = match &found {
         _ if wordfence.is_some() => (Vec::new(), wordfence.unwrap_or_default().to_string()),
-        Some(r) => {
+        Some((r, local)) => {
             let mut ids = crate::sources::osv::ids_of(r);
             ids.retain(|i| i != &f.vuln_id);
-            (ids, format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")))
+            for a in &f.aliases {
+                if !ids.contains(a) {
+                    ids.push(a.clone());
+                }
+            }
+            let url = match local {
+                // A record of the user's own: its own link, never OSV.dev's.
+                Some(u) if u.is_empty() && f.vuln_id.starts_with("CVE-") => cve(),
+                Some(u) => u.clone(),
+                None => format!("https://osv.dev/vulnerability/{}", crate::utils::json::str_at(r, "id")),
+            };
+            (ids, url)
         }
-        None if f.vuln_id.starts_with("CVE-") => {
-            (Vec::new(), format!("https://www.cve.org/CVERecord?id={}", f.vuln_id))
-        }
-        None => (Vec::new(), String::new()),
+        None if f.vuln_id.starts_with("CVE-") => (f.aliases.clone(), cve()),
+        None => (f.aliases.clone(), String::new()),
     };
     let life = exposure(cache, &row.key)?;
     let now = crate::utils::os::now();
@@ -201,7 +267,9 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
         "epss_date": f.epss_date, "epss_model": f.epss_model,
         "note": f.note, "fix_cmd": f.fix_cmd, "fix_auto": f.fix_auto,
         "dep_scope": f.dep_scope_name(), "dep_direct": f.dep_direct, "affected_range": f.affected_range,
-        "aliases": aliases, "url": url, "record": rec,
+        "excluded": f.excluded, "summary": f.summary, "cwe": f.cwe,
+        "local_source": f.local_source, "local_link": f.local_link,
+        "aliases": aliases, "url": url, "record": found.map(|(r, _)| r),
         "first_seen": first_seen, "last_seen": last_seen, "resolved_at": resolved_at, "days_exposed": days,
         "first_epss": first_epss, "first_epss_percentile": first_epss_percentile,
         "fix": fix,
@@ -211,12 +279,18 @@ fn row_json(cache: &Cache, row: &Row) -> Result<Value> {
 /// The export as JSON Lines: the latest findings, plus (with `all`) the
 /// resolved exposures no longer among them. Returns the text and the row count.
 pub fn jsonl(cache: &Cache, all: bool) -> Result<(String, usize)> {
-    let mut rows: Vec<Row> = findings(cache)?.into_iter().map(from_finding).collect();
+    // One memo for the whole export: an advisory's records are read once,
+    // however many rows name it.
+    let mut advisories = Advisories::default();
+    let mut rows: Vec<Row> = findings_in(cache, &mut advisories)?.into_iter().map(from_finding).collect();
     if all {
         let have: Vec<String> = rows.iter().map(|r| r.key.clone()).collect();
         for e in history::exposures(cache, 0.0)? {
-            let r = from_exposure(&e);
+            let mut r = from_exposure(&e);
+            // The filter first: an exposure that is still open, or that
+            // the latest scan lists, is not a row and costs no lookup.
             if e.resolved_at.is_some() && !have.contains(&r.key) {
+                with_text_in(cache, &mut advisories, std::slice::from_mut(&mut r.finding));
                 rows.push(r);
             }
         }

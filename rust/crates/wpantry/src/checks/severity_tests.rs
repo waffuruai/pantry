@@ -117,3 +117,124 @@ fn a_failing_outdated_finding_is_high() {
     assert_eq!(own(&finding("app", "OUTDATED", "warn", "")), "LOW");
     assert_eq!(own(&finding("app", "BROWSER", "fail", "")), own(&finding("runtime", "OUTDATED", "fail", "")));
 }
+
+/// Oracle: the contract's caps. An advisory with 13 aliases and 9 weakness
+/// types gives the first 12 and 8 (CVE ids first), no more.
+#[test]
+fn advisory_text_caps_aliases_at_12_and_weaknesses_at_8() {
+    let (_d, c) = crate::sources::testing::cache();
+    let aliases: Vec<String> = (1..=13).map(|n| format!("CVE-2026-{n:04}")).collect();
+    let cwes: Vec<String> = [20, 22, 77, 78, 79, 89, 94, 287, 502].iter().map(|n| format!("CWE-{n}")).collect();
+    c.put_vuln(&serde_json::json!({
+        "id": "GHSA-aaaa-bbbb-cccc", "aliases": aliases, "summary": "Many names",
+        "database_specific": {"cwe_ids": cwes},
+    }))
+    .unwrap();
+    let text = advisory_text(&c, "GHSA-aaaa-bbbb-cccc");
+    assert_eq!(text.aliases, aliases[..12], "{:?}", text.aliases);
+    assert_eq!(text.cwe, cwes[..8], "{:?}", text.cwe);
+}
+
+/// Oracle: an area the scan could not check is not an advisory, even when
+/// its id has an advisory's shape and the cache holds that advisory: it
+/// never gains a summary, aliases or weakness types, in the scan's own
+/// step or when an old report is read back. Known bad: drop the
+/// `kind != "unchecked"` guard and it reads like a security notice.
+#[test]
+fn an_unchecked_finding_never_gains_advisory_text() {
+    let (_d, c) = crate::sources::testing::cache();
+    c.put_vuln(&serde_json::json!({
+        "id": "CVE-2026-4242", "aliases": ["GHSA-aaaa-bbbb-cccc"], "summary": "Remote code execution",
+        "database_specific": {"cwe_ids": ["CWE-94"]},
+    }))
+    .unwrap();
+    let mut scanned = vec![finding("unchecked", "CVE-2026-4242", "warn", "")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut scanned);
+    let mut read_back = vec![finding("unchecked", "CVE-2026-4242", "warn", "")];
+    crate::reporters::jsonl::with_text(&c, &mut read_back);
+    for f in scanned.iter().chain(&read_back) {
+        assert!(f.summary.is_empty() && f.aliases.is_empty() && f.cwe.is_empty(), "{f:?}");
+    }
+    // Positive control: the same id on a real finding gains the text.
+    let mut real = vec![finding("runtime", "CVE-2026-4242", "fail", "")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut real);
+    assert_eq!(real[0].summary, "Remote code execution");
+    assert_eq!(real[0].cwe, ["CWE-94"]);
+}
+
+/// Risk: `enrich` read an advisory's records for the scores and again for
+/// its text: each read is an unindexed `aliases LIKE` scan of `vulns`
+/// (seconds on a real cache). Oracle: the count of those reads, taken at the
+/// one function that makes them. N findings sharing M ids cost M reads, and
+/// an unchecked finding costs none. Known bad: drop the shared memo and the
+/// count is 2 * M.
+#[test]
+fn enrich_reads_each_advisorys_records_once_for_scores_and_text() {
+    let (_d, c) = crate::sources::testing::cache();
+    c.put_vuln(&serde_json::json!({"id": "GHSA-aaaa-bbbb-cccc", "aliases": ["CVE-2026-1"], "summary": "one"})).unwrap();
+    let mut all: Vec<Finding> = Vec::new();
+    for (i, id) in ["CVE-2026-1", "GHSA-aaaa-bbbb-cccc", "CVE-2026-9"].iter().cycle().take(9).enumerate() {
+        all.push(finding("runtime", id, "fail", ["", "HIGH", ""][i % 3]));
+        all[i].component = format!("c{i}");
+    }
+    all.push(finding("unchecked", "CVE-2026-77", "warn", ""));
+    super::lookups::reset();
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
+    assert_eq!(super::lookups::taken(), 3, "9 findings over 3 ids, plus an unchecked one that is never looked up");
+    // The memo does not change what the findings get.
+    assert_eq!(all[0].summary, "one");
+}
+
+const V98: &str = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
+const V50: &str = "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:L/I:L/A:L";
+
+/// A record of a source on this machine, as a load leaves it, with a CVSS
+/// vector and the package `x` the test findings are about.
+fn local_record(c: &Cache, source: &str, id: &str, vector: &str) {
+    let rec = serde_json::json!({"id": id, "severity": [{"type": "CVSS_V3", "score": vector}],
+        "affected": [{"package": {"ecosystem": "npm", "name": "x"}}]});
+    c.conn
+        .execute(
+            "INSERT INTO local_vulns VALUES (?, ?, 'a.json', '', '', ?)",
+            rusqlite::params![source, id, rec.to_string()],
+        )
+        .unwrap();
+    c.conn.execute("INSERT INTO local_vuln_names VALUES (?, ?, 'x')", rusqlite::params![source, id]).unwrap();
+}
+
+/// Risk (the same class as a local record deciding an OSV finding): a
+/// finding from a source on this machine goes without its CVSS score and
+/// version though its record carries a vector, or is rated from an OSV
+/// record that merely shares its id; or a local record moves an OSV
+/// finding's rating. Oracle: `enrich`'s cvss and version per finding: a local
+/// finding takes its own record's, an OSV finding keeps OSV's, whatever the
+/// local table holds for the same id.
+#[test]
+fn a_local_finding_is_rated_from_its_own_record_and_an_osv_one_from_osvs() {
+    let (_d, c) = cache();
+    c.conn
+        .execute(
+            "INSERT INTO vulns (id, aliases, record) VALUES ('CVE-2026-5', '', ?)",
+            [serde_json::json!({"id": "CVE-2026-5", "severity": [{"type": "CVSS_V3", "score": V98}]}).to_string()],
+        )
+        .unwrap();
+    local_record(&c, "t-src", "CVE-2026-5", V50);
+    local_record(&c, "t-src", "TEAM-1", V98);
+    local_record(&c, "t-src", "TEAM-2", "");
+    let local = |id: &str| Finding { local_source: "t-src".into(), ..finding("project", id, "fail", "") };
+    let mut all =
+        vec![local("TEAM-1"), local("CVE-2026-5"), finding("project", "CVE-2026-5", "fail", ""), local("TEAM-2")];
+    enrich(&c, &crate::utils::net::Fake::offline(), true, &mut all);
+    let got: Vec<(Option<f64>, &str, &str)> =
+        all.iter().map(|f| (f.cvss, f.cvss_version.as_str(), f.severity.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Some(9.8), "3.1", "CRITICAL"),
+            (Some(5.5), "3.1", "MEDIUM"),
+            (Some(9.8), "3.1", "CRITICAL"),
+            (None, "", "HIGH"),
+        ],
+        "own record for a local finding (not OSV's same id), OSV's for an OSV finding, none and wpantry's own rating for a record with no score"
+    );
+}

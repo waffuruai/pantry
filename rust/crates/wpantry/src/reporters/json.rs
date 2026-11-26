@@ -48,6 +48,9 @@ pub fn report(report: &Report) -> J {
         Part::All => {
             let mut out = envelope(&report.outcome);
             if let J::Obj(pairs) = &mut out {
+                pairs.push(("scan".into(), J::from(&report.scan.row.to_json())));
+                let plan = crate::remediation::queue::items(&report.outcome.findings);
+                pairs.push(("fix_plan".into(), J::Arr(plan.iter().map(|item| item.to_json()).collect())));
                 pairs.push(("history".into(), logs(Part::All)));
             }
             out

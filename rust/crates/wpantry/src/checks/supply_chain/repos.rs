@@ -6,7 +6,8 @@
 
 use crate::component::Status;
 use crate::utils::files::short;
-use crate::utils::walk::{skip, walk};
+use crate::utils::privacy;
+use crate::utils::walk::{MAC_MEDIA_FOLDERS, media_bundle, skip, walk};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -49,7 +50,64 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
 
 /// [`discover`], saying which directory it is looking in.
 pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
-    fn visit(d: &Path, level: usize, found: &mut Vec<PathBuf>, status: Status) {
+    discover_excluding(root, &Excluded::default(), status)
+}
+
+/// What the default search of `$HOME` leaves out beyond the name rules:
+/// whole folders by path, and on macOS the media library bundles.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Excluded {
+    pub paths: Vec<PathBuf>,
+    pub media_bundles: bool,
+}
+
+/// [`Excluded`] for a search: nothing when the user named `--path`s (they
+/// are walked as asked); for the default search of `home`, the personal
+/// folders with `--no-personal-files` (on macOS every folder it guards,
+/// [`privacy::folders`]), and on macOS (`mac`) the media folders and
+/// library bundles.
+pub(crate) fn default_excluded(home: &Path, explicit_paths: bool, no_personal_files: bool, mac: bool) -> Excluded {
+    if explicit_paths {
+        return Excluded::default();
+    }
+    let mut paths = Vec::new();
+    if no_personal_files {
+        paths.extend(privacy::folders(home, mac));
+    }
+    if mac {
+        paths.extend(MAC_MEDIA_FOLDERS.iter().map(|folder| home.join(folder)));
+    }
+    Excluded { paths, media_bundles: mac }
+}
+
+/// The folders an unattended scan leaves out ([`privacy::folders`]: the
+/// personal ones, and on macOS the other guarded ones) that lie strictly
+/// under `root`, spelled from `home` as given and from its canonical path
+/// (a `--path` root is canonical, `home` may not be). A root inside or
+/// equal to one of them gives nothing: a folder the user named is scanned.
+///
+/// Example: home `/h`, root `/h` gives `/h/Downloads`, `/h/Desktop`,
+/// `/h/Documents` (and on macOS `/h/Pictures`, `/h/Library/Mail`, ...);
+/// root `/h/Documents/x` gives none.
+pub(crate) fn personal_under(home: &Path, root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for f in privacy::folders(home, cfg!(target_os = "macos")) {
+        if f != root && f.starts_with(root) && !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+fn discover_excluding(root: &Path, excluded: &Excluded, status: Status) -> Vec<PathBuf> {
+    fn visit(d: &Path, level: usize, found: &mut Vec<PathBuf>, excluded: &Excluded, status: Status) {
+        // By path, before the folder is listed: listing it raises the prompt.
+        if excluded.paths.iter().any(|path| d.starts_with(path)) || privacy::is_left_out(d) {
+            return;
+        }
+        if excluded.media_bundles && d.file_name().is_some_and(|n| media_bundle(&n.to_string_lossy())) {
+            return;
+        }
         status(&format!("Looking for git repos in {} ({} found)", short(&d.to_string_lossy()), found.len()));
         let Ok(rd) = std::fs::read_dir(d) else { return };
         let entries: Vec<std::fs::DirEntry> = rd.filter_map(|e| e.ok()).collect();
@@ -67,7 +125,7 @@ pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
         for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
             if e.file_type().is_ok_and(|t| t.is_dir()) && !skip(&parent, &name) {
-                visit(&e.path(), level + 1, found, status);
+                visit(&e.path(), level + 1, found, excluded, status);
             }
         }
     }
@@ -77,7 +135,7 @@ pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(root) else { return found };
     let entries: Vec<std::fs::DirEntry> = rd.filter_map(|e| e.ok()).collect();
     if entries.iter().any(|e| e.file_name() == ".git") {
-        visit(root, 0, &mut found, status);
+        visit(root, 0, &mut found, excluded, status);
     } else if DISCOVER_DEPTH > 0 {
         let parent = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let mut tops: Vec<PathBuf> = entries
@@ -85,13 +143,14 @@ pub fn discover_with(root: &Path, status: Status) -> Vec<PathBuf> {
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .filter(|e| !skip(&parent, &e.file_name().to_string_lossy()))
             .map(|e| e.path())
+            .filter(|p| !excluded.paths.iter().any(|x| p.starts_with(x)) && !privacy::is_left_out(p))
             .collect();
         tops.sort();
         status(&format!("Looking for git repos in {} ({} folders)", short(&root.to_string_lossy()), tops.len()));
         let seen = std::sync::atomic::AtomicUsize::new(0);
         let per_top = crate::utils::parallel::par_map(&tops, crate::utils::parallel::PROBES, |top| {
             let mut mine = Vec::new();
-            visit(top, 1, &mut mine, &crate::component::quiet);
+            visit(top, 1, &mut mine, excluded, &crate::component::quiet);
             let n = seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             status(&format!(
                 "Looking for git repos in {} ({}/{} folders)",
@@ -121,6 +180,17 @@ pub fn scope(
     note: &dyn Fn(&str),
     status: Status,
 ) -> Vec<Repo> {
+    scan_scope(paths, home, false, log, note, status)
+}
+
+pub(crate) fn scan_scope(
+    paths: Option<&[PathBuf]>,
+    home: &Path,
+    no_personal_files: bool,
+    log: &dyn Fn(&str),
+    note: &dyn Fn(&str),
+    status: Status,
+) -> Vec<Repo> {
     let mut roots = Vec::new();
     match paths {
         None => roots.push(home.to_path_buf()),
@@ -136,8 +206,15 @@ pub fn scope(
         }
     }
     let mut found = BTreeSet::new();
+    let defaults = default_excluded(home, paths.is_some(), no_personal_files, cfg!(target_os = "macos"));
     for root in &roots {
-        let repos = discover_with(root, status);
+        // A --path that holds a personal folder (`--path ~`) leaves it out
+        // under --no-personal-files too; a --path inside one is walked as asked.
+        let mut excluded = Excluded { paths: defaults.paths.clone(), media_bundles: defaults.media_bundles };
+        if no_personal_files && paths.is_some() {
+            excluded.paths.extend(personal_under(home, root));
+        }
+        let repos = discover_excluding(root, &excluded, status);
         if repos.is_empty() {
             if paths.is_some() {
                 found.insert(root.clone());

@@ -55,6 +55,63 @@ fn default_scope_walks_home_and_prunes_caches() {
 }
 
 #[test]
+fn limited_machine_scan_does_not_discover_projects_in_personal_folders() {
+    let tmp = TempDir::new("personal-scope").unwrap();
+    let home = tmp.path();
+    let code = git_repo(&home.join("code/app"), false);
+    let docs = git_repo(&home.join("Documents/private/app"), false);
+    git_repo(&home.join("Desktop/app"), false);
+    git_repo(&home.join("Downloads/app"), false);
+    let quiet = |_: &str| {};
+    let limited = scan_scope(None, home, true, &quiet, &quiet, &quiet);
+    assert_eq!(limited.into_iter().map(|(_, path)| path).collect::<Vec<_>>(), [code]);
+    assert_eq!(scan_scope(None, home, false, &quiet, &quiet, &quiet).len(), 4);
+    let explicit = scan_scope(Some(std::slice::from_ref(&docs)), home, true, &quiet, &quiet, &quiet);
+    assert_eq!(explicit[0].1, docs.canonicalize().unwrap());
+}
+
+/// Oracle: which repos the search returns from a home holding a repo in
+/// each media place. On macOS the default search of `$HOME` leaves out
+/// `~/Pictures`, `~/Music`, `~/Movies` and any `*.photoslibrary` or
+/// `*.musiclibrary` bundle; a `--path` inside one is walked as asked; other
+/// platforms keep them. Known-bad check: the same home searched with no
+/// exclusions finds every planted repo, so the tree really holds them.
+#[test]
+fn the_default_macos_search_leaves_out_media_folders_and_library_bundles() {
+    let tmp = TempDir::new("media-scope").unwrap();
+    let home = tmp.path();
+    let code = git_repo(&home.join("code/app"), false);
+    let pictures = git_repo(&home.join("Pictures/app"), false);
+    git_repo(&home.join("Music/app"), false);
+    git_repo(&home.join("Movies/app"), false);
+    git_repo(&home.join("elsewhere/Photos Library.photoslibrary/app"), false);
+    git_repo(&home.join("elsewhere/Music Library.musiclibrary/app"), false);
+    // A folder merely named like a bundle's suffix is not one.
+    let plain = git_repo(&home.join("elsewhere/.photoslibrary-notes"), false);
+    let quiet = |_: &str| {};
+    let found = |ex: &Excluded| {
+        let mut f = discover_excluding(home, ex, &quiet);
+        f.sort();
+        f
+    };
+    assert_eq!(found(&Excluded::default()).len(), 7, "every planted repo is findable");
+    let mac = default_excluded(home, false, false, true);
+    assert_eq!(mac.paths, ["Pictures", "Music", "Movies"].map(|d| home.join(d)));
+    let mut want = vec![code.clone(), plain.clone()];
+    want.sort();
+    assert_eq!(found(&mac), want);
+    // Elsewhere, and with explicit paths, nothing extra is left out.
+    assert_eq!(default_excluded(home, false, false, false), Excluded::default());
+    assert_eq!(default_excluded(home, true, true, true), Excluded::default());
+    // The real search: a --path inside ~/Pictures is walked on every platform.
+    let explicit = scan_scope(Some(std::slice::from_ref(&pictures)), home, true, &quiet, &quiet, &quiet);
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit[0].1, pictures.canonicalize().unwrap());
+    let default = scan_scope(None, home, false, &quiet, &quiet, &quiet).len();
+    assert_eq!(default, if cfg!(target_os = "macos") { 2 } else { 7 });
+}
+
+#[test]
 fn path_scopes_to_those_dirs_and_skips_missing_ones() {
     let tmp = TempDir::new("scope").unwrap();
     let h = tmp.path().join("home");
@@ -201,4 +258,27 @@ fn a_module_lockfile_covers_the_catalog() {
             "single/gradle/libs.versions.toml"
         ]
     );
+}
+
+/// Oracle: under `--no-personal-files` an explicit `--path` that
+/// holds `~/Documents` (here the home folder itself) finds no repo inside
+/// it, while a `--path` inside Documents is scanned as asked; without the
+/// flag both are found. Known bad: before the fix explicit paths excluded
+/// nothing, so `--path ~` found the Documents repo too.
+#[test]
+fn no_personal_files_keeps_documents_out_of_a_path_that_holds_it() {
+    let tmp = TempDir::new("scope").unwrap();
+    let h = tmp.path().join("home");
+    let code = git_repo(&h.join("code/a"), false);
+    let docs = git_repo(&h.join("Documents/b"), false);
+    git_repo(&h.join("Desktop/c"), false);
+    let quiet = |_: &str| {};
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+    let roots = |r: Vec<Repo>| r.into_iter().map(|(_, p)| p).collect::<Vec<_>>();
+    let home = [h.clone()];
+    assert_eq!(roots(scan_scope(Some(&home), &h, true, &quiet, &quiet, &quiet)), [canon(&code)]);
+    assert_eq!(roots(scan_scope(Some(&home), &h, false, &quiet, &quiet, &quiet)).len(), 3);
+    let inside = [docs.clone()];
+    assert_eq!(roots(scan_scope(Some(&inside), &h, true, &quiet, &quiet, &quiet)), [canon(&docs)]);
+    assert_eq!(personal_under(&h, &h.join("Documents")), Vec::<PathBuf>::new(), "a named folder is scanned");
 }

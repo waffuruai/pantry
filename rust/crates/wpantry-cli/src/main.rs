@@ -7,13 +7,14 @@
 //! error.
 
 mod args;
+mod events;
 mod progress;
 mod schedule;
 mod style;
 mod tui;
 mod update;
 
-use args::{Check, Command, Parsed, Show, Shown, Target};
+use args::{Check, Command, IgnoreAction, Parsed, Show, Shown, Target};
 use std::io::{IsTerminal, Write};
 use style::Style;
 use wpantry::checks::{Options, Outcome, Policy, Scan};
@@ -58,19 +59,52 @@ fn show(line: &str) {
     println!("{}", Style::stdout().line(&style::clean(line)));
 }
 
+/// Say, on stderr, which scans began and never finished: one interrupted
+/// (Ctrl-C, a closed terminal, a crash) saved nothing, and one still
+/// running will replace what `report` shows. Each interrupted scan is told
+/// once.
+fn tell_unfinished() -> Result<()> {
+    let cache = Cache::open(None)?;
+    let found = wpantry::history::unfinished(&cache, &wpantry::utils::process::alive)?;
+    let latest = wpantry::history::latest_scan(&cache)?;
+    cache.close()?;
+    for scan in found {
+        tell(&Style::stderr().line(&style::clean(&scope_shown(&scan.line(latest)))));
+    }
+    Ok(())
+}
+
+/// A one-line note on stderr, or the events' `note` under `scan --events`.
+fn tell(line: &str) {
+    match events::active() {
+        Some(ev) => ev.note(&style::clean(line)),
+        None => eprintln!("{line}"),
+    }
+}
+
 /// One scan with a live progress line; the line is gone before this returns.
-fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result<Outcome> {
-    let progress = progress::Progress::start();
+/// Under `scan --events` (`watch`) no line: the events say what it does.
+fn scan(
+    opts: Options,
+    json: bool,
+    net: &dyn wpantry::utils::net::Net,
+    watch: Option<&dyn wpantry::checks::watch::Watch>,
+) -> Result<Outcome> {
+    let progress = if watch.is_some() { progress::Progress::new(false) } else { progress::Progress::start() };
     let log = |m: &str| {
         if !json {
             progress.println(&Style::stdout().line(m));
         }
     };
-    let note = |m: &str| progress.eprintln(&Style::stderr().line(m));
+    let note = |m: &str| match events::active().filter(|_| watch.is_some()) {
+        Some(ev) => ev.note(&style::clean(m)),
+        None => progress.eprintln(&Style::stderr().line(m)),
+    };
     // WPANTRY_TIMINGS=1: every step with the seconds since the scan began,
-    // on stderr, so a slow run says where the time went.
+    // on stderr, so a slow run says where the time went. Not under
+    // --events, whose steps carry their times.
     let started = std::time::Instant::now();
-    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some();
+    let timings = std::env::var_os("WPANTRY_TIMINGS").is_some() && watch.is_none();
     // One line per step, not per file: a step whose message starts the same
     // way as the last one within a quarter second is the same step.
     let last = std::sync::Mutex::new((String::new(), std::time::Instant::now()));
@@ -87,7 +121,11 @@ fn scan(opts: Options, json: bool, net: &dyn wpantry::utils::net::Net) -> Result
     };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
-    let out = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask).run();
+    let mut s = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask);
+    if let Some(w) = watch {
+        s = s.with_watch(w);
+    }
+    let out = s.run();
     progress.finish();
     out
 }
@@ -111,23 +149,20 @@ fn quiet(show: &Show) -> bool {
 }
 
 fn cmd_scan(a: Check) -> Result<i32> {
-    // A report file that can't be written fails now, before the scan.
-    if let Some(path) = &a.show.out {
-        drop(Output::new(path)?);
+    if let Some(code) = check_added_sources(a.sources.as_deref(), &a.add_sources) {
+        return Ok(code);
     }
-    if !a.allow_sleep {
-        wpantry::utils::process::stay_awake();
-    }
-    let net = wpantry::utils::net::Http::new();
     let quiet = quiet(&a.show);
     let opts = Options {
         paths: a.path.clone(),
         machine: !a.no_machine,
+        project: a.project,
         no_posture: a.no_posture,
         no_malware: a.no_malware,
         deep: a.deep,
         no_online_hash: a.no_online_hash,
         sources: a.sources.clone(),
+        add_sources: a.add_sources.clone(),
         no_personal_files: a.no_personal_files,
         policy: Policy {
             secret_rules: a.secret_rules.clone(),
@@ -142,15 +177,39 @@ fn cmd_scan(a: Check) -> Result<i32> {
         offline: a.offline,
         jobs: a.jobs,
         licenses: a.check_licenses,
-        ask: !(quiet || a.dry_run || a.no_input),
+        // --events: a program reads stderr, so nobody answers a question.
+        ask: !(quiet || a.dry_run || a.no_input || a.events),
     };
-    let first = scan(opts.clone(), quiet, &net)?;
+    let ev = a.events.then(|| {
+        let home = wpantry::utils::files::home();
+        let paths = opts.paths.clone().filter(|p| !p.is_empty()).unwrap_or_else(|| vec![home]);
+        events::start(wpantry::checks::watch::steps(&opts), &paths)
+    });
+    // A report file that can't be written fails now, before the scan. After
+    // `start` (under --events), so the failure is `done`'s error, exit 3,
+    // and a program reading the stream sees a whole one.
+    if let Some(path) = &a.show.out {
+        drop(Output::new(path)?);
+    }
+    if !a.allow_sleep {
+        wpantry::utils::process::stay_awake();
+    }
+    tell_unfinished()?;
+    let net = wpantry::utils::net::Http::new();
+    let first = scan(opts.clone(), quiet, &net, ev.map(|e| e as &dyn wpantry::checks::watch::Watch))?;
     // The scan is done; what it found is shown as `wpantry report` shows it.
+    if let Some(ev) = ev {
+        ev.outcome(&first.findings, first.scan_id);
+        wpantry::checks::watch::Watch::step(ev, events::REPORT.id);
+    }
     let status = cmd_report(&a.show)?;
     if a.show.format == Shown::Tui
         && let Some(n) = update::notice(&net, a.offline)
     {
-        eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}")));
+        match ev {
+            Some(ev) => ev.note(&style::clean(&format!("ℹ {n}"))),
+            None => eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}"))),
+        }
     }
     if quiet || !(a.fix || a.dry_run) {
         return Ok(status);
@@ -180,10 +239,11 @@ fn cmd_scan(a: Check) -> Result<i32> {
             let targets: Vec<String> = first
                 .findings
                 .iter()
-                .filter(|f| f.fix_auto && f.fix_cmd == *cmd)
+                .filter(|f| f.fix_auto && remediation::is_step_of(&f.fix_cmd, cmd))
                 .map(wpantry::history::key_of)
                 .collect();
-            wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets)?;
+            let failure = applied.failures.iter().find(|x| x.cmd == *cmd);
+            wpantry::history::record_fix_outcome(&cache, Some(first.scan_id), cmd, "auto", *ok, &targets, failure)?;
         }
         for (cmd, ok, targets) in &stopgaps_ran {
             wpantry::history::record_fix(&cache, Some(first.scan_id), cmd, "stopgap", *ok, targets)?;
@@ -191,7 +251,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         cache.close()?;
     }
     say("\nRe-checking after the updates…");
-    let again = scan(Options { refresh: false, ask: false, ..opts.clone() }, false, &net)?;
+    let again = scan(Options { refresh: false, ask: false, ..opts.clone() }, false, &net, None)?;
     if !applied.ran.is_empty() {
         let cache = Cache::open(None)?;
         wpantry::history::verify_fixes(&cache, first.scan_id, again.scan_id)?;
@@ -394,7 +454,22 @@ fn cmd_report(show: &Show) -> Result<i32> {
     let cache = Cache::open(None)?;
     // The logs, when the report shows them; the HTML page always carries them.
     let days = (show.part.logs() || show.format == Shown::Html).then_some(show.since);
-    let found = match wpantry::reporters::latest(&cache, days)? {
+    let found = match show.run {
+        Some(id) => match wpantry::reporters::of_run(&cache, id, days)? {
+            Some(report) => Some(report),
+            None => {
+                cache.close()?;
+                eprintln!(
+                    "{}",
+                    Style::stderr()
+                        .red(&format!("✗ wpantry: no scan {id} with its findings kept: wpantry runs lists them"))
+                );
+                return Ok(EXIT_FAIL);
+            }
+        },
+        None => wpantry::reporters::latest(&cache, days)?,
+    };
+    let found = match found {
         // A log needs no scan: a fix can be run, and logged, before one.
         None if !show.part.findings() && show.part != wpantry::reporters::Part::Summary => {
             Some(wpantry::reporters::logs_only(&cache, show.since)?)
@@ -427,7 +502,7 @@ fn cmd_report(show: &Show) -> Result<i32> {
     match &show.out {
         Some(path) => {
             Output::new(path)?.write(&text)?;
-            eprintln!("{}", Style::stderr().line(&format!("✓ wrote the report to {}", path.display())));
+            tell(&Style::stderr().line(&format!("✓ wrote the report to {}", path.display())));
         }
         None => {
             // A pipe that closes early (`| head`) ends the output, not the process.
@@ -445,7 +520,7 @@ fn cmd_report(show: &Show) -> Result<i32> {
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     // The user's tiers hold here as in a scan: a source turned off isn't fetched.
-    if let Some(code) = use_sources_file(None) {
+    if let Some(code) = use_sources_file(None, &[]) {
         return Ok(code);
     }
     let net = wpantry::utils::net::Http::new();
@@ -509,14 +584,14 @@ fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     Ok(if synced.failed.is_empty() { EXIT_OK } else { EXIT_FAIL })
 }
 
-fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool) -> Result<i32> {
+fn cmd_schedule(action: &str, every: &str, at: &str, dry_run: bool, json: bool) -> Result<i32> {
     match action {
         "install" => {
             let every = schedule::Every::parse(every).expect("validated");
             let (h, m) = at.split_once(':').expect("validated");
             schedule::install(every, (h.parse().expect("validated"), m.parse().expect("validated")), dry_run)
         }
-        "status" => schedule::status(),
+        "status" => schedule::status(json),
         "uninstall" => schedule::uninstall(),
         _ => schedule::run(),
     }
@@ -537,6 +612,98 @@ fn cmd_cache_prune(days: i64) -> Result<i32> {
         file.display()
     ));
     Ok(EXIT_OK)
+}
+
+/// How long a scan took: `45s`, `3m 07s`, `1h 02m`.
+fn took(seconds: f64) -> String {
+    let s = seconds.max(0.0).round() as i64;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// A scan's scope with the home directory as `~`: `project:~/code/app`.
+fn scope_shown(scope: &str) -> String {
+    let home = wpantry::utils::files::home().to_string_lossy().into_owned();
+    if home.len() > 1 { scope.replace(&home, "~") } else { scope.to_string() }
+}
+
+/// `runs`: the scans whose findings are kept, the latest first.
+fn cmd_runs(json: bool) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let runs = wpantry::history::runs(&cache)?;
+    cache.close()?;
+    if json {
+        emit(&wpantry::history::runs_json(&runs));
+        return Ok(EXIT_OK);
+    }
+    if runs.is_empty() {
+        say("no scan yet: run wpantry scan");
+        return Ok(EXIT_OK);
+    }
+    let rows: Vec<[String; 7]> = runs
+        .iter()
+        .map(|r| {
+            [
+                format!("{}{}", r.row.id, if r.latest { " *" } else { "" }),
+                wpantry::history::stamp(r.row.finished_at),
+                took(r.row.finished_at - r.row.started_at),
+                r.row.fails.to_string(),
+                r.row.warns.to_string(),
+                r.row.unchecked.to_string(),
+                scope_shown(&r.row.scope),
+            ]
+        })
+        .collect();
+    let head = ["scan", "finished", "took", "fails", "warns", "not checked", "scope"].map(String::from);
+    let width = |i: usize| rows.iter().chain([&head]).map(|r| r[i].chars().count()).max().unwrap_or(0);
+    for row in [&head].into_iter().chain(&rows) {
+        let cells: Vec<String> = (0..7)
+            .map(|i| match i {
+                // Numbers to the right, the scope (last) as long as it is.
+                2..=5 => format!("{:>w$}", row[i], w = width(i)),
+                6 => row[i].clone(),
+                _ => format!("{:<w$}", row[i], w = width(i)),
+            })
+            .collect();
+        println!("{}", cells.join("  ").trim_end());
+    }
+    say(&format!(
+        "* is what wpantry report shows; report --run N shows another, prune N forgets one. The latest {} are kept.",
+        wpantry::history::KEEP_RUNS
+    ));
+    Ok(EXIT_OK)
+}
+
+/// `prune ID...`: forget those scans' findings; exit 1 when one isn't kept.
+fn cmd_prune(ids: &[i64]) -> Result<i32> {
+    let cache = Cache::open(None)?;
+    let mut status = EXIT_OK;
+    for id in ids {
+        match wpantry::history::prune_run(&cache, *id)? {
+            Some((row, gone)) => say(&format!(
+                "pruned scan {id} ({}, {}): {gone} findings",
+                scope_shown(&row.scope),
+                wpantry::history::stamp(row.finished_at)
+            )),
+            None => {
+                eprintln!(
+                    "{}",
+                    Style::stderr()
+                        .red(&format!("✗ wpantry: no scan {id} with its findings kept: wpantry runs lists them"))
+                );
+                status = EXIT_FAIL;
+            }
+        }
+    }
+    match wpantry::history::latest_scan(&cache)? {
+        Some(latest) => say(&format!("wpantry report now shows scan {latest}")),
+        None => say("no scan is kept now: run wpantry scan"),
+    }
+    cache.close()?;
+    Ok(status)
 }
 
 fn mb(bytes: u64) -> String {
@@ -596,7 +763,9 @@ fn cmd_watch(json: bool, offline: bool) -> Result<i32> {
 /// What `fix ID` does: the dry run, the yes, whether it may ask, the undo,
 /// and what a stopgap is told (`--bundle`, `--hours`).
 struct FixOne {
+    from_scan: Option<i64>,
     dry_run: bool,
+    json: bool,
     yes: bool,
     no_input: bool,
     undo: bool,
@@ -609,9 +778,21 @@ struct FixOne {
 /// need a person printed. Exit 1 when a step is left, a fix failed, or
 /// nothing is known for the id here.
 fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
-    let FixOne { dry_run, yes, no_input, undo, ref settings } = o;
+    let FixOne { from_scan, dry_run, json, yes, no_input, undo, ref settings } = o;
     use wpantry::remediation::mitigate::{self, Done, Mode};
+    // with no terminal to ask on, a --from-scan fix needs --yes (the
+    // parser already refuses --no-input without it). Usage error, exit 2,
+    // before the cache is read or anything runs.
+    if from_scan.is_some() && !yes && !dry_run && !std::io::stdin().is_terminal() {
+        eprintln!("wpantry: error: {}", args::FROM_SCAN_NEEDS_YES);
+        return Ok(EXIT_USAGE);
+    }
     let cache = Cache::open(None)?;
+    if let Some(expected) = from_scan
+        && wpantry::history::latest_scan(&cache)? != Some(expected)
+    {
+        return Err(wpantry::Error::Failed("A newer scan is available. Refresh and preview the fix again.".into()));
+    }
     // the id, its aliases, and the records that list it as one
     let mut ids: Vec<String> = vec![id.to_string()];
     {
@@ -641,6 +822,27 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
             }
         })
         .collect();
+    if from_scan.is_some()
+        && (findings.len() != 1
+            || !findings[0].fix_auto
+            || findings[0].fix_cmd.is_empty()
+            || findings[0].kind == "secret")
+    {
+        return Err(wpantry::Error::Failed("This finding has no automatic fix in the selected scan.".into()));
+    }
+    if let Some(scan) = from_scan
+        && dry_run
+        && json
+    {
+        let (commands, _, _) = remediation::plan(&findings);
+        let [command] = commands.as_slice() else {
+            return Err(wpantry::Error::Failed("This finding has no automatic fix in the selected scan.".into()));
+        };
+        // serde_json is only a dev-dependency here: the bin builds its JSON with J.
+        say(&obj([("schema", J::Int(SCHEMA)), ("scan", J::Int(scan)), ("command", command.as_str().into())]).dumps());
+        cache.close()?;
+        return Ok(EXIT_OK);
+    }
     // A committed secret is fixed at a terminal, step by step.
     if by_finding && findings.first().is_some_and(|f| f.kind == "secret") {
         cache.close()?;
@@ -686,9 +888,13 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
         let auto: Vec<wpantry::finding::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
         let applied = remediation::apply(&auto, dry_run, &confirm, &mut |l| show(l));
         for (cmd, ok) in &applied.ran {
-            let targets: Vec<String> =
-                auto.iter().filter(|f| f.fix_cmd == *cmd).map(wpantry::history::key_of).collect();
-            wpantry::history::record_fix(&cache, None, cmd, "mitigate", *ok, &targets)?;
+            let targets: Vec<String> = auto
+                .iter()
+                .filter(|f| remediation::is_step_of(&f.fix_cmd, cmd))
+                .map(wpantry::history::key_of)
+                .collect();
+            let failure = applied.failures.iter().find(|x| x.cmd == *cmd);
+            wpantry::history::record_fix_outcome(&cache, from_scan, cmd, "mitigate", *ok, &targets, failure)?;
         }
         did_something = dry_run || !applied.ran.is_empty();
         if applied.status != 0 {
@@ -1045,7 +1251,7 @@ fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
 /// `--update` fetches YARA Forge's package first.
 fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     use wpantry::checks::malware;
-    if let Some(code) = use_sources_file(None) {
+    if let Some(code) = use_sources_file(None, &[]) {
         return Ok(code);
     }
     let cache = Cache::open(None)?;
@@ -1068,9 +1274,7 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
         progress.finish();
     }
     let dir = malware::yara::rules_dir(&cache);
-    let active = |id: &str| wpantry::sources::file::active(id);
-    let loaded = malware::yara::load(&dir, false, &active);
-    let all = malware::yara::load(&dir, true, &active);
+    let (loaded, all) = rules_loads(&dir);
     cache.close()?;
     let stats = all.rules.stats();
     if json {
@@ -1106,20 +1310,62 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// The two loads `rules` reports, `(this system's, all)`. The sources are
+/// configured for a scan that isn't `--deep`, so the load of all rules
+/// asks which sources a `--deep` scan uses: with the default `active` a
+/// `tier = "deep"` source would be left out of "all", and the compiled
+/// copy of all rules, named by the files it was made from, would differ
+/// from `scan --deep`'s, so each run replaced the other's.
+fn rules_loads(
+    dir: &std::path::Path,
+) -> (wpantry::checks::malware::yara::Loaded, wpantry::checks::malware::yara::Loaded) {
+    use wpantry::checks::malware::yara;
+    use wpantry::sources::file;
+    let this_system = yara::load(dir, false, &|id: &str| file::active(id));
+    let all = yara::load(dir, true, &|id: &str| file::active_when_deep(id));
+    (this_system, all)
+}
+
 /// Use the sources file (`file`, else `~/.config/wpantry/sources.toml` when
-/// there is one) for this run; the exit code when it can't be used.
-fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
+/// there is one) and the `added` ones (`--add-sources FILE`) for this run;
+/// the exit code when they can't be used.
+fn use_sources_file(file: Option<&std::path::Path>, added: &[std::path::PathBuf]) -> Option<i32> {
     use wpantry::sources::file as sources;
-    let path = file.map(std::path::Path::to_path_buf).unwrap_or_else(sources::user_file);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && file.is_none() => None,
-        Err(e) => {
-            eprintln!("wpantry: error: {}: {e}", path.display());
+    let files = match sources::read_files(file, added) {
+        Ok(f) => f,
+        Err((_, why)) => {
+            eprintln!("wpantry: error: {why}");
             return Some(EXIT_USAGE);
         }
     };
-    if let Err(e) = sources::configure(text.as_deref(), false) {
+    if let Err(e) = sources::configure_files(&files, false) {
+        eprintln!("wpantry: error: {e}");
+        return Some(EXIT_USAGE);
+    }
+    None
+}
+
+/// For a scan with `--add-sources`: a usage error, before the scan, when an
+/// added file can't be read or used (an option given must not be passed
+/// over quietly). A fault in the user's own file alone is left to the scan,
+/// which reports it as without `--add-sources`.
+fn check_added_sources(file: Option<&std::path::Path>, added: &[std::path::PathBuf]) -> Option<i32> {
+    use wpantry::sources::file as sources;
+    if added.is_empty() {
+        return None;
+    }
+    let files = match sources::read_files(file, added) {
+        Ok(f) => f,
+        Err((name, _)) if name == sources::USER_FILE_NAME => return None,
+        Err((_, why)) => {
+            eprintln!("wpantry: error: {why}");
+            return Some(EXIT_USAGE);
+        }
+    };
+    if sources::merged_files(&files[..files.len() - added.len()]).is_err() {
+        return None;
+    }
+    if let Err(e) = sources::merged_files(&files) {
         eprintln!("wpantry: error: {e}");
         return Some(EXIT_USAGE);
     }
@@ -1127,14 +1373,22 @@ fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
 }
 
 /// `sources`: every outside source and what its fetches came to.
-fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+fn cmd_sources(json: bool, file: Option<std::path::PathBuf>, added: &[std::path::PathBuf]) -> Result<i32> {
     use wpantry::sources::file as sources;
-    if let Some(code) = use_sources_file(file.as_deref()) {
+    if let Some(code) = use_sources_file(file.as_deref(), added) {
         return Ok(code);
     }
     let user = sources::effective().user.clone();
     let cache = Cache::open(None)?;
     let all = wpantry::sources::fetch::listing(&cache)?;
+    // A folder of OSV records: how many records its last good read holds,
+    // and how many of its files were skipped.
+    let mut counts = std::collections::HashMap::new();
+    for l in all.iter().filter(|l| wpantry::sources::osv_dir::is_osv_dir(&l.source)) {
+        if let Some(n) = wpantry::sources::osv_dir::counts(&cache, &l.source.id)? {
+            counts.insert(l.source.id.clone(), n);
+        }
+    }
     cache.close()?;
     let now = wpantry::utils::os::now();
     let when = |t: f64| if t > 0.0 { J::Float(t) } else { J::Null };
@@ -1149,9 +1403,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
                     ("format", s.format.as_str().into()),
                     ("tier", s.tier.as_str().into()),
                     ("host", s.host().map_or(J::Null, |h| h.as_str().into())),
+                    ("transport", s.transport.as_str().into()),
                     (
-                        "transport",
-                        if s.transport == wpantry::sources::file::Transport::Git { "git" } else { "https" }.into(),
+                        "path",
+                        if s.transport == wpantry::sources::file::Transport::Local {
+                            s.url.as_str().into()
+                        } else {
+                            J::Null
+                        },
                     ),
                     ("user", J::Bool(user.contains(&s.id))),
                     ("license", s.license.as_str().into()),
@@ -1162,6 +1421,8 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
                     ("last_success", when(l.state.success)),
                     ("fresh", J::Bool(l.fresh)),
                     ("error", if l.state.error.is_empty() { J::Null } else { l.state.error.as_str().into() }),
+                    ("records", counts.get(&s.id).map_or(J::Null, |n| J::Int(n.0 as i64))),
+                    ("skipped", counts.get(&s.id).map_or(J::Null, |n| J::Int(n.1 as i64))),
                 ])
             })
             .collect();
@@ -1179,7 +1440,10 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
         } else {
             "never fetched".to_string()
         };
-        let host = s.host().unwrap_or_else(|| "git".into());
+        let host = match s.transport {
+            wpantry::sources::file::Transport::Local => s.url.clone(),
+            _ => s.host().unwrap_or_else(|| "git".into()),
+        };
         let host = if user.contains(&s.id) { format!("{host} (yours)") } else { host };
         show(&format!("{:<28} {:<18} {:<7} {:<34} {}", s.id, s.kind, s.tier.as_str(), host, fetched));
         show(&format!(
@@ -1188,6 +1452,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
             s.license,
             if s.redistribute { "" } else { " (fetched here, never redistributed)" }
         ));
+        if let Some((records, skipped)) = counts.get(&s.id) {
+            show(&format!(
+                "{:<28} {records} {} loaded, {skipped} {} skipped",
+                "",
+                if *records == 1 { "record" } else { "records" },
+                if *skipped == 1 { "file" } else { "files" }
+            ));
+        }
         if !l.state.error.is_empty() {
             show(&format!("{:<28} last error: {}", "", l.state.error));
         }
@@ -1269,6 +1541,44 @@ fn cmd_rules_gen(
 
 /// `skill` and `licenses`: a bundled text on stdout, as is. A reader that
 /// stops early (`wpantry licenses | head`) ends it quietly, as with `cat`.
+/// `ignore add | list | remove`: the library decides and logs; this prints
+/// its JSON (also for a refusal, with the message on stderr) or its lines.
+fn cmd_ignore(action: IgnoreAction, json: bool) -> Result<i32> {
+    use wpantry::checks::ignore_edit::Env;
+    let cache = Cache::open(None)?;
+    // A repo's file is the one the latest scan read, which depends on where it started.
+    let env = match wpantry::history::latest_scan_paths(&cache)? {
+        Some(paths) => Env::real().scanned(&paths),
+        None => Env::real(),
+    };
+    let reply = match &action {
+        IgnoreAction::Add { id, scope, reason, all_places } => wpantry::remediation::dismiss::add(
+            &cache,
+            &env,
+            id,
+            *scope,
+            reason.as_deref(),
+            *all_places,
+            wpantry::utils::os::now(),
+        ),
+        IgnoreAction::List { path } => wpantry::remediation::dismiss::list(&cache, &env, path.as_deref()),
+        IgnoreAction::Remove { id, path } => wpantry::remediation::dismiss::remove(&cache, &env, id, path.as_deref()),
+    };
+    cache.close()?;
+    let reply = reply?;
+    if json {
+        say(&reply.json.dumps_indent(1));
+    } else {
+        for line in &reply.lines {
+            show(line);
+        }
+    }
+    if let Some(e) = &reply.error {
+        eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: {}", style::clean(e))));
+    }
+    Ok(reply.code)
+}
+
 fn cmd_print(text: &str) -> Result<i32> {
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -1290,34 +1600,45 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_print(wpantry::SKILL),
         Command::Licenses => cmd_print(NOTICES),
-        Command::Sources { json, file } => cmd_sources(json, file),
+        Command::Ignore { action, json } => cmd_ignore(action, json),
+        Command::Sources { json, file, added } => cmd_sources(json, file, &added),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),
             _ => cmd_rules(update, json),
         },
-        Command::Report(show) => cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now())),
+        Command::Report(show) => tell_unfinished()
+            .and_then(|()| cmd_report(&resolve(show, std::io::stdout().is_terminal(), wpantry::utils::os::now()))),
         Command::Sync { refresh, json } => cmd_sync(refresh, json),
-        Command::Schedule { action, every, at, dry_run } => cmd_schedule(&action, &every, &at, dry_run),
+        Command::Schedule { action, every, at, dry_run, json } => cmd_schedule(&action, &every, &at, dry_run, json),
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
-        Command::Update { check, yes, no_input, offline, version } => {
-            update::run(update::Update { check, yes, no_input, offline, version })
+        Command::Runs { json } => tell_unfinished().and_then(|()| cmd_runs(json)),
+        Command::Prune { ids } => cmd_prune(&ids),
+        Command::Update { check, json, yes, no_input, offline, version } => {
+            update::run(update::Update { check, json, yes, no_input, offline, version })
         }
-        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json } => match target {
-            Target::List => cmd_fix_list(json),
-            Target::Next => cmd_fix_next(json),
-            Target::Secret(id) => cmd_fix_secret(&id, dry_run, no_input),
-            Target::Id(id) => cmd_mitigate(
-                &id,
-                FixOne {
-                    dry_run,
-                    yes,
-                    no_input,
-                    undo,
-                    settings: wpantry::remediation::mitigate::Settings { bundle, hours },
-                },
-            ),
-        },
+        Command::Mitigate { target, dry_run, yes, no_input, undo, bundle, hours, json, from_scan } => {
+            // fix list, next and ID read the latest kept scan: say when a
+            // scan since then never finished, as report does.
+            tell_unfinished()?;
+            match target {
+                Target::List => cmd_fix_list(json),
+                Target::Next => cmd_fix_next(json),
+                Target::Secret(id) => cmd_fix_secret(&id, dry_run, no_input),
+                Target::Id(id) => cmd_mitigate(
+                    &id,
+                    FixOne {
+                        from_scan,
+                        dry_run,
+                        json,
+                        yes,
+                        no_input,
+                        undo,
+                        settings: wpantry::remediation::mitigate::Settings { bundle, hours },
+                    },
+                ),
+            }
+        }
     }
 }
 
@@ -1337,13 +1658,28 @@ fn main() {
             Ok(Ok(code)) => code,
             // The cache can't be opened or written, a file we need is gone.
             Ok(Err(e)) => {
-                eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: {e}")));
+                match events::active() {
+                    // `done` carries it: stderr is the events' stream.
+                    Some(ev) => ev.finish(EXIT_INTERNAL, Some(&e.to_string())),
+                    None => eprintln!("{}", Style::stderr().red(&format!("✗ wpantry: {e}"))),
+                }
                 EXIT_INTERNAL
             }
             Err(_) => EXIT_INTERNAL,
         },
     };
     let _ = std::io::stdout().flush();
+    // `scan --events`: `done` is the last line, with the exit code.
+    if let Some(ev) = events::active() {
+        ev.finish(code, None);
+        // A crash is named in `done.error`; its text is also the last line, as
+        // plain text after `done` (the panic hook that would have printed it
+        // is replaced). A failed write to a reader that is gone is ignored.
+        if let Some(text) = ev.trailer() {
+            let _ =
+                writeln!(std::io::stderr(), "{}", Style::stderr().red(&format!("✗ wpantry: {}", style::clean(&text))));
+        }
+    }
     std::process::exit(code);
 }
 

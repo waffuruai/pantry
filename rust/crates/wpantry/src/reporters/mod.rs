@@ -11,6 +11,7 @@ pub mod html;
 pub mod json;
 pub mod jsonl;
 pub mod md;
+pub mod pack;
 pub mod summary;
 pub mod view;
 pub mod yara;
@@ -183,6 +184,22 @@ pub fn history(cache: &Cache, days: i64) -> Result<History> {
 /// `history_days` days when asked; `None` before the first scan.
 pub fn latest(cache: &Cache, history_days: Option<i64>) -> Result<Option<Report>> {
     let Some(id) = history::latest_scan(cache)? else { return Ok(None) };
+    report_of(cache, id, history_days)
+}
+
+/// Scan `id`, one of those whose findings are kept (`wpantry runs`), as
+/// [`latest`] gives the latest; `None` when it keeps none. From here on
+/// this cache connection reads that scan's findings as the findings
+/// ([`Cache::show_findings_of`]), so every format renders it.
+pub fn of_run(cache: &Cache, id: i64, history_days: Option<i64>) -> Result<Option<Report>> {
+    if !history::is_kept(cache, id)? {
+        return Ok(None);
+    }
+    cache.show_findings_of(id)?;
+    report_of(cache, id, history_days)
+}
+
+fn report_of(cache: &Cache, id: i64, history_days: Option<i64>) -> Result<Option<Report>> {
     let Some(scan) = history::scan_detail(cache, id)? else { return Ok(None) };
     let outcome = Outcome {
         scan_id: id,

@@ -9,6 +9,7 @@
 //! A tool in [`READ_BINARY`] is never run: its version is read from the
 //! strings its binary holds.
 
+use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{READ_BINARY, TOOLS, Tool};
 use crate::component::Component;
 use crate::utils::files::home;
@@ -27,7 +28,13 @@ pub fn tag(fmt: &str, v: &str) -> String {
     let v3 = if v.matches('.').count() >= 2 { v.to_string() } else { format!("{v}.0") };
     let u = v.replace('.', "_");
     let ssh = u.replace('p', "_P");
-    fmt.replace("{v3}", &v3).replace("{v}", v).replace("{u}", &u).replace("{ssh}", &ssh)
+    // Ruby 4 switched its upstream tags from underscores to dots.
+    let ruby = if v.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= 4) {
+        v
+    } else {
+        &u
+    };
+    fmt.replace("{v3}", &v3).replace("{v}", v).replace("{u}", &u).replace("{ssh}", &ssh).replace("{ruby}", ruby)
 }
 
 /// (path marker, update command, safe to run unattended). "{safe}" is the
@@ -64,6 +71,44 @@ pub fn updater(path: &str, name: &str) -> (String, bool) {
     (format!("Upgrade {name} at {path} to {{safe}}"), false)
 }
 
+/// A mise runtime's fix, leaving no vulnerable install behind: install the
+/// fixed version, then `mise uninstall` the old one (a second line, which
+/// the plan never runs unattended: a mise.toml or .tool-versions may still
+/// pin it). When the fixed version is already installed beside it, the fix
+/// is the uninstall alone, also for a person to run. Any other command is
+/// returned as it was.
+///
+/// Example: python 3.14.9 under `~/.local/share/mise/installs/python/3.14.9`
+/// fixed by 3.14.10 gives `mise install python@3.14.10` then
+/// `mise uninstall python@3.14.9`. The same Python reached through
+/// `installs/python/3.14` (a link to it) gives the same two lines.
+pub fn with_uninstall(c: &Component, cmd: String, auto: bool) -> (String, bool) {
+    let Some((name, fixed)) = cmd.strip_prefix("mise install ").and_then(|r| r.split_once('@')) else {
+        return (cmd, auto);
+    };
+    let marker = format!("/installs/{name}/");
+    // Where the install really is, not how PATH spells it: mise also keeps
+    // `installs/node/lts`, `installs/ruby/3.4` and `installs/python/latest`
+    // as links to an install, and `mise uninstall node@lts` removes whatever
+    // the alias means when it runs, which after the install is the fixed
+    // version. Forward slashes whatever the platform wrote the path with.
+    let path = files::strip_verbatim(&files::realpath(&c.path)).replace('\\', "/");
+    let Some(at) = path.find(&marker).filter(|_| path.contains("/mise/")) else { return (cmd, auto) };
+    let dir = &path[..at + marker.len()];
+    let old = path[at + marker.len()..].split('/').next().unwrap_or("");
+    // Still a link after resolving (one that goes nowhere): no version to name.
+    let alias = std::fs::symlink_metadata(format!("{dir}{old}")).is_ok_and(|m| m.file_type().is_symlink());
+    if old.is_empty() || alias || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
+        return (cmd, auto);
+    }
+    let uninstall = format!("mise uninstall {name}@{old}");
+    if Path::new(&format!("{dir}{fixed}")).is_dir() {
+        (uninstall, false)
+    } else {
+        (format!("{cmd}\n{uninstall}"), auto)
+    }
+}
+
 /// The largest binary read for its embedded version.
 pub const MAX_BINARY: u64 = 64 << 20;
 
@@ -97,6 +142,18 @@ pub fn embedded(path: &str, prefix: &str) -> String {
 
 /// Components for one catalog tool.
 pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
+    find_owned(t, extra_dirs, false)
+}
+
+/// Every copy of one catalog tool, whoever installed it: PATH first, then
+/// the version managers' folders. A project scan asks this: it runs no
+/// `brew vulns` or OS update check to leave the vouched-for copies to.
+pub fn find_any(t: &Tool) -> Vec<Component> {
+    find_owned(t, &[], true)
+}
+
+/// [`find`]; with `any`, the copies something else vouches for as well.
+fn find_owned(t: &Tool, extra_dirs: &[String], any: bool) -> Vec<Component> {
     let re = Regex::with_flags(t.pattern, "m");
     let mut dirs: Vec<String> = t.paths.iter().map(|p| p.to_string()).collect();
     dirs.extend(extra_dirs.iter().cloned());
@@ -104,7 +161,7 @@ pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
     for b in t.bins {
         for (shown, real) in on_path(b, &dirs) {
             let who = owner(&real);
-            if !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
+            if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
                 continue;
             }
             let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {

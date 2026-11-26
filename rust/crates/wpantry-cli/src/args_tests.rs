@@ -62,13 +62,24 @@ fn malware_options_and_the_rules_command() {
     assert!(usage(&["rules", "goodware", "x"]).contains("too many arguments for 'goodware'"));
     assert!(help(&["scan"]).contains("--no-malware") && help(&["scan"]).contains("--deep"));
     assert!(help(&["rules"]).contains("--update") && help(&["rules"]).contains("gen [options] <sample...>"));
-    assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false, file: None }));
-    assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true, file: None }));
+    assert_eq!(p(&["sources"]), Parsed::Run(Command::Sources { json: false, file: None, added: vec![] }));
+    assert_eq!(p(&["sources", "--json"]), Parsed::Run(Command::Sources { json: true, file: None, added: vec![] }));
     assert_eq!(
         p(&["sources", "--sources", "/s.toml"]),
-        Parsed::Run(Command::Sources { json: false, file: Some("/s.toml".into()) })
+        Parsed::Run(Command::Sources { json: false, file: Some("/s.toml".into()), added: vec![] })
     );
     assert_eq!(scan(&["scan", "--sources", "/s.toml"]).sources, Some("/s.toml".into()));
+    // --add-sources repeats, in order, on scan, fix and sources; sync and rules don't take it.
+    let added: Vec<std::path::PathBuf> = vec!["/a.toml".into(), "/b.toml".into()];
+    assert_eq!(scan(&["scan", "--add-sources", "/a.toml", "--add-sources", "/b.toml"]).add_sources, added);
+    assert_eq!(scan(&["fix", "--add-sources", "/a.toml", "--add-sources", "/b.toml"]).add_sources, added);
+    assert_eq!(scan(&["scan"]).add_sources, Vec::<std::path::PathBuf>::new());
+    assert_eq!(
+        p(&["sources", "--add-sources", "/a.toml", "--add-sources", "/b.toml"]),
+        Parsed::Run(Command::Sources { json: false, file: None, added })
+    );
+    assert!(usage(&["sync", "--add-sources", "/a.toml"]).contains("add-sources"));
+    assert!(usage(&["rules", "--add-sources", "/a.toml"]).contains("add-sources"));
     assert!(usage(&["sources", "extra"]).contains("too many arguments for 'sources'"));
 }
 
@@ -97,7 +108,16 @@ fn no_arguments_print_the_help_and_the_version_is_one_flag() {
     let c = scan(&["scan", "--path", "/a", "--path=/b", "--no-machine", "--json"]);
     assert_eq!(c.path, Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]));
     assert!(c.no_machine && c.show.format == Shown::Json && !c.offline && !c.check_licenses);
-    assert!(usage(&["scan", "--path", "/a", "/b"]).contains("too many arguments for 'scan'"), "one directory a --path");
+    // A bare directory isn't a scope: the error says how to scan one.
+    let bare = usage(&["scan", "--path", "/a", "/b"]);
+    assert!(bare.contains("unknown command '/b'"), "one directory a --path: {bare}");
+    assert!(
+        bare.ends_with(
+            "To scan one directory: wpantry scan project DIR (or scan --path DIR, which keeps the machine inventory)\n"
+        ),
+        "{bare}"
+    );
+    assert!(!usage(&["report", "nothing"]).contains("To scan one directory"));
     let c = scan(&["scan", "--licenses", "--json"]);
     assert!(c.check_licenses && c.licenses.is_none(), "--licenses alone uses the bundled allowlist");
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
@@ -131,7 +151,7 @@ fn usage_errors_name_the_closest_spelling() {
     let msg = usage(&["scan", "--no-machin"]);
     assert!(
         msg.starts_with(
-            "Usage: wpantry scan [options]\nerror: unknown option '--no-machin'\n(Did you mean --no-machine?)"
+            "Usage: wpantry scan [options] [command]\nerror: unknown option '--no-machin'\n(Did you mean --no-machine?)"
         ),
         "{msg}"
     );
@@ -185,7 +205,7 @@ fn scan_and_fix() {
     assert_eq!(p(&["fix", "--dry-run", "--yes"]), fix(true, true));
     assert!(usage(&["scan", "--dry-run"]).contains("unknown option '--dry-run'"), "scan changes nothing");
     let text = help(&["scan"]);
-    assert!(text.starts_with("Usage: wpantry scan [options]\n") && text.contains("Exit codes:"), "{text}");
+    assert!(text.starts_with("Usage: wpantry scan [options] [command]\n") && text.contains("Exit codes:"), "{text}");
     let text = help(&["fix"]);
     assert!(text.starts_with("Usage: wpantry fix [options] [target] [id]\n") && text.contains("--dry-run"), "{text}");
 }
@@ -199,8 +219,8 @@ fn every_command_has_help() {
         assert_eq!(p(same), Parsed::Help(top.clone()), "{same:?}");
     }
     for cmd in [
-        "scan", "fix", "report", "search", "watch", "sync", "schedule", "rules", "sources", "breach", "cache",
-        "update", "version", "tools", "skill", "licenses",
+        "scan", "fix", "report", "runs", "prune", "search", "watch", "sync", "schedule", "rules", "sources", "ignore",
+        "breach", "cache", "update", "version", "tools", "skill", "licenses",
     ] {
         let text = help(&[cmd]);
         assert!(top.contains(&format!("\n  {cmd}")), "{cmd} is listed");
@@ -212,6 +232,7 @@ fn every_command_has_help() {
         }
     }
     assert_eq!(p(&["help", "schedule", "install"]), Parsed::Help(help(&["schedule", "install"])));
+    assert_eq!(p(&["help", "scan", "project"]), Parsed::Help(help(&["scan", "project"])));
     assert!(root.help_for(&["check"]).is_none());
     assert!(usage(&["help", "scna"]).contains("unknown command 'scna'"));
 }
@@ -244,7 +265,7 @@ fn check_options_and_their_errors() {
     assert_eq!(expand("~"), wpantry::utils::files::home());
     assert_eq!(expand("/x"), PathBuf::from("/x"));
     for (bad, msg) in [
-        (&["scan", "extra"][..], "too many arguments for 'scan'. Expected 0 arguments but got 1: extra"),
+        (&["scan", "extra"][..], "unknown command 'extra'"),
         (&["scan", "--jobs", "0"], "option '--jobs' expects a number of 1 or more, got '0'"),
         (&["scan", "--jobs", "many"], "option '--jobs' expects a number of 1 or more, got 'many'"),
         (&["scan", "--repo-hooks", "~/missing.txt"], "option '--repo-hooks': no such file: ~/missing.txt"),
@@ -308,7 +329,8 @@ fn report_options() {
             format: Shown::Csv,
             out: Some("r.csv".into()),
             stdout: false,
-            since: 30
+            since: 30,
+            run: None,
         }))
     );
     assert_eq!(
@@ -333,7 +355,13 @@ fn report_options() {
 #[test]
 fn schedule_cache_and_update() {
     let sched = |every: &str, at: &str, dry_run: bool| {
-        Parsed::Run(Command::Schedule { action: "install".into(), every: every.into(), at: at.into(), dry_run })
+        Parsed::Run(Command::Schedule {
+            action: "install".into(),
+            every: every.into(),
+            at: at.into(),
+            dry_run,
+            json: false,
+        })
     };
     assert_eq!(p(&["schedule", "install"]), sched("day", "09:30", false));
     assert_eq!(
@@ -352,6 +380,7 @@ fn schedule_cache_and_update() {
     assert_eq!(
         p(&["update", "--check", "--yes", "--no-input", "--offline", "--version", "v1.2.3"]),
         Parsed::Run(Command::Update {
+            json: false,
             check: true,
             yes: true,
             no_input: true,
@@ -384,7 +413,17 @@ fn schedule_cache_and_update() {
 #[test]
 fn fix_one_thing() {
     let one = |target: Target, dry_run: bool, yes: bool, no_input: bool, undo: bool| {
-        Parsed::Run(Command::Mitigate { target, dry_run, yes, no_input, undo, bundle: None, hours: 72, json: false })
+        Parsed::Run(Command::Mitigate {
+            target,
+            dry_run,
+            yes,
+            no_input,
+            undo,
+            bundle: None,
+            hours: 72,
+            json: false,
+            from_scan: None,
+        })
     };
     assert_eq!(p(&["fix", "cve-2026-98432"]), one(Target::Id("CVE-2026-98432".into()), false, false, false, false));
     assert_eq!(p(&["fix", "list"]), one(Target::List, false, false, false, false));
@@ -468,4 +507,202 @@ fn policy_files_come_from_the_config_folder_unless_an_option_names_one() {
         text.contains("option '--posture-policy'") && text.contains("posture.toml: not a TOML policy file"),
         "{text}"
     );
+}
+
+#[test]
+fn scan_project_is_one_directory_and_never_the_machine() {
+    let _home = wpantry::utils::files::test_home();
+    let dir = wpantry::utils::files::home().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    let whole = std::fs::canonicalize(&dir).unwrap();
+    let c = scan(&["scan", "project", "~/app", "--offline", "--json"]);
+    assert_eq!(c.path, Some(vec![whole.clone()]));
+    assert!(c.project && c.no_machine && c.offline && !c.fix);
+    assert_eq!(c.show.format, Shown::Json);
+    // No directory: here, by its whole path.
+    let here = scan(&["scan", "project"]);
+    assert_eq!(here.path, Some(vec![std::fs::canonicalize(".").unwrap()]));
+    // A plain scan isn't one.
+    assert!(!scan(&["scan", "--path", "~/app", "--no-machine"]).project);
+    assert!(usage(&["scan", "project", "~/nowhere"]).contains("argument 'dir': no such directory: ~/nowhere"));
+    assert!(usage(&["scan", "project", "--path", "~/app"]).contains("takes its directory as an argument, not --path"));
+    assert!(usage(&["scan", "project", "~/app", "~/app"]).contains("too many arguments"));
+    // The machine's options reach this command from `scan`, hidden from its
+    // help: each is refused, so none changes what a project scan covers.
+    for (flag, value) in [
+        ("--no-machine", None),
+        ("--no-posture", None),
+        ("--no-personal-files", None),
+        ("--posture-policy", Some("~/p.toml")),
+    ] {
+        let argv: Vec<&str> = ["scan", "project", "~/app", flag].into_iter().chain(value).collect();
+        let text = usage(&argv);
+        assert!(text.contains(&format!("option '{flag}' is for a scan of this computer")), "{flag}: {text}");
+    }
+    // A posture policy that doesn't parse fails a machine scan, and never a
+    // project scan, which runs no posture check and so never reads it.
+    if std::env::var_os("XDG_CONFIG_HOME").is_none_or(|v| v.is_empty()) {
+        let config = wpantry::utils::files::home().join(".config/wpantry");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("posture.toml"), "FIREWALL\n").unwrap();
+        assert!(usage(&["scan"]).contains("posture.toml: not a TOML policy file"), "{}", usage(&["scan"]));
+        let c = scan(&["scan", "project", "~/app"]);
+        assert!(c.project && c.posture_policy.is_none());
+    }
+    // Its help offers the scan's options, without the machine's.
+    let text = help(&["scan", "project"]);
+    assert!(text.starts_with("Usage: wpantry scan project [options] [dir]\n"), "{text}");
+    for gone in ["--path", "--no-machine", "--no-posture", "--posture-policy", "--no-personal-files"] {
+        assert!(!text.contains(&format!("\n  {gone}")), "{gone}");
+    }
+    for kept in ["--deep", "--licenses [file]", "--json", "--offline", "--no-malware"] {
+        assert!(text.contains(&format!("\n  {kept}")), "{kept}");
+    }
+    assert!(help(&["scan"]).contains("\n  project [options] [dir]"));
+}
+
+#[test]
+fn runs_prune_and_one_run_reported() {
+    assert_eq!(p(&["runs"]), Parsed::Run(Command::Runs { json: false }));
+    assert_eq!(p(&["runs", "--json"]), Parsed::Run(Command::Runs { json: true }));
+    assert_eq!(p(&["prune", "61", "#62"]), Parsed::Run(Command::Prune { ids: vec![61, 62] }));
+    assert!(usage(&["prune"]).contains("missing required argument 'id'"), "{}", usage(&["prune"]));
+    for bad in ["latest", "0", "-3", "1.5"] {
+        let text = usage(&["prune", "--", bad]);
+        assert!(text.contains(&format!("expects a scan's number (wpantry runs lists them), got '{bad}'")), "{text}");
+    }
+    assert_eq!(
+        p(&["report", "--run", "61", "--md"]),
+        Parsed::Run(Command::Report(Show { run: Some(61), format: Shown::Md, ..Show::default() }))
+    );
+    assert!(usage(&["report", "--run", "last"]).contains("option '--run' expects a scan's number"));
+    // A scan reports itself: it takes no --run.
+    assert!(usage(&["scan", "--run", "3"]).contains("unknown option '--run'"));
+    assert!(help(&["report"]).contains("\n  --run <id>"));
+    assert!(help(&[]).contains("\n  runs [options]") && help(&[]).contains("\n  prune <id...>"));
+}
+
+#[test]
+fn the_top_level_help_says_how_one_directory_is_scanned() {
+    let top = help(&[]);
+    // In the command list, and first of all as commands to copy.
+    assert!(top.contains("or one project (scan project DIR)"), "{top}");
+    let examples = top.split("\nExamples:\n").nth(1).expect("an Examples section").split("\n\n").next().unwrap();
+    assert!(top.find("\nExamples:\n") < top.find("\nCommands:\n"), "before the commands");
+    for line in ["  wpantry scan project ", "  wpantry scan --path ~/code ", "  wpantry runs ", "  wpantry scan  "] {
+        assert!(examples.lines().any(|l| l.starts_with(line)), "{line}: {examples}");
+    }
+    assert!(top.trim_end().ends_with("3 internal error."), "the exit codes close it");
+    // Every example is a command line wpantry takes, here and under scan.
+    let scan = help(&["scan"]);
+    let scans = scan.split("\nExamples:\n").nth(1).expect("scan's examples").split("\n\n").next().unwrap();
+    for line in examples.lines().chain(scans.lines()).filter(|l| l.starts_with("  wpantry ")) {
+        let words: Vec<&str> = line.trim_start().split("  ").next().unwrap().split_whitespace().skip(1).collect();
+        match p(&words) {
+            Parsed::Run(_) | Parsed::Help(_) => {}
+            Parsed::Usage(text) if text.contains("no such directory") => {}
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+    assert!(scan.contains("For one project and nothing else, wpantry scan project DIR."), "{scan}");
+    assert!(scan.contains("The machine inventory still runs: for one"), "{scan}");
+}
+
+#[test]
+fn the_scans_options_read_by_what_they_are_for() {
+    let scan = help(&["scan"]);
+    let at = |title: &str| scan.find(&format!("\n{title}:\n")).unwrap_or_else(|| panic!("{title}: {scan}"));
+    let (scope, report, policy, rest) =
+        (at("Scope options"), at("Report options"), at("Policy options"), at("Options"));
+    assert!(scope < report && report < policy && policy < rest, "{scan}");
+    let under = |from: usize, to: usize, flag: &str| scan[from..to].contains(&format!("\n  {flag}"));
+    assert!(
+        under(scope, report, "--path <dir>") && under(scope, report, "--deep") && under(scope, report, "--no-machine")
+    );
+    assert!(under(report, policy, "--json") && under(report, policy, "-o, --out <file>"));
+    assert!(under(policy, rest, "--secret-rules <file>") && under(policy, rest, "--sources <file>"));
+    assert!(under(rest, scan.len(), "--offline") && under(rest, scan.len(), "-h, --help"));
+    // Every group names options the scan has, and a project scan keeps the groups it has options for.
+    let names: Vec<String> = scan_opts().iter().map(|o| o.name()).collect();
+    for (group, of) in GROUPS {
+        for name in of {
+            assert!(names.iter().any(|n| n == name), "{group}: {name}");
+        }
+    }
+    let project = help(&["scan", "project"]);
+    assert!(project.contains("\nScope options:\n") && !project.contains("--no-machine"), "{project}");
+    // report has the same formats, as plain options: it has nothing else to tell them from.
+    assert!(!help(&["report"]).contains("Report options"));
+    assert!(help(&["report"]).contains("\nParts:\n  findings     the latest scan's findings\n"));
+}
+
+#[test]
+fn ignore_takes_a_finding_or_rule_id_and_never_a_prompt() {
+    use wpantry::checks::ignore_edit::Scope;
+    let run = |action: IgnoreAction, json: bool| Parsed::Run(Command::Ignore { action, json });
+    assert_eq!(
+        p(&["ignore", "add", "F-3FA9C01B2E"]),
+        run(
+            IgnoreAction::Add { id: "F-3fa9c01b2e".into(), scope: Scope::User, reason: None, all_places: false },
+            false
+        ),
+        "the id is kept lower case, the scope is your file"
+    );
+    assert_eq!(
+        p(&[
+            "ignore",
+            "add",
+            "F-3fa9c01b2e",
+            "--scope",
+            "repo",
+            "--reason",
+            "  revoked  ",
+            "--all-places",
+            "--json",
+            "--no-input"
+        ]),
+        run(
+            IgnoreAction::Add {
+                id: "F-3fa9c01b2e".into(),
+                scope: Scope::Repo,
+                reason: Some("revoked".into()),
+                all_places: true
+            },
+            true
+        )
+    );
+    assert_eq!(p(&["ignore", "list"]), run(IgnoreAction::List { path: None }, false));
+    assert_eq!(
+        p(&["ignore", "list", "--path", "/r", "--json"]),
+        run(IgnoreAction::List { path: Some("/r".into()) }, true)
+    );
+    assert_eq!(
+        p(&["ignore", "remove", "R-3FA9C01B2E", "--path", "/r"]),
+        run(IgnoreAction::Remove { id: "R-3fa9c01b2e".into(), path: Some("/r".into()) }, false)
+    );
+    assert_eq!(
+        p(&["ignore", "remove", "f-3fa9c01b2e", "--no-input", "--json"]),
+        run(IgnoreAction::Remove { id: "F-3fa9c01b2e".into(), path: None }, true)
+    );
+    assert!(usage(&["ignore", "add", "CVE-2026-1"]).contains("expects a finding id such as F-3fa9c01b2e"));
+    assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--scope", "both"]).contains("--scope"));
+    assert!(usage(&["ignore", "add", "F-3fa9c01b2e", "--reason", "a\nb"]).contains("one line"));
+    assert!(usage(&["ignore", "remove", "F-xyz"]).contains("expects a rule id such as R-3fa9c01b2e"));
+    // Twelve bytes that aren't twelve characters: a usage error, not a panic.
+    assert!(usage(&["ignore", "remove", "€€€€"]).contains("expects a rule id such as R-3fa9c01b2e"));
+    assert!(usage(&["ignore", "list", "x"]).contains("too many arguments"));
+    assert!(usage(&["ignore"]).contains("Usage: wpantry ignore"));
+}
+
+/// Oracle: the parser refuses `fix F-… --from-scan N --no-input`
+/// without `--yes` or `--dry-run`, and accepts either. Known bad: before the
+/// fix it parsed, and the fix ran unasked.
+#[test]
+fn from_scan_with_no_input_needs_yes_or_dry_run() {
+    let id = "F-0123456789";
+    assert!(usage(&["fix", id, "--from-scan", "3", "--no-input"]).contains(FROM_SCAN_NEEDS_YES));
+    for ok in [["--no-input", "--yes"], ["--no-input", "--dry-run"]] {
+        let argv: Vec<&str> = ["fix", id, "--from-scan", "3"].into_iter().chain(ok).collect();
+        assert!(matches!(p(&argv), Parsed::Run(_)), "{argv:?}");
+    }
 }

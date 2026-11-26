@@ -87,3 +87,49 @@ fn a_job_the_pass_was_not_given_runs_on_demand() {
     assert_eq!(got[0].0, d.path().join("a.sh"));
     assert!(got[0].1.hits.is_empty() && got[0].1.seen.is_some(), "read, nothing found, its hashes kept");
 }
+
+/// What a watch hears from the pass, in order.
+#[derive(Default)]
+struct Heard(std::sync::Mutex<Vec<(PathBuf, At)>>, std::sync::atomic::AtomicUsize);
+
+impl Watch for Heard {
+    fn at(&self, path: &Path, what: At) {
+        self.0.lock().unwrap().push((path.to_path_buf(), what));
+    }
+    fn listed(&self, n: usize) {
+        self.1.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Risk: the pass looks over every file and plans every job before it
+/// reads one, and with a warm cache reads none, so a follower hears
+/// nothing for that whole time. Oracle: the folders it names first, and
+/// on the second run (everything cached) still the folder and the root.
+#[test]
+fn the_pass_names_the_folders_it_looks_over_before_and_without_reading() {
+    let d = TempDir::new("pass-heard").unwrap();
+    let root = d.path().join("repo");
+    for rel in ["a/one.txt", "a/two.js", "b/three.txt"] {
+        std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(root.join(rel), "text\n").unwrap();
+    }
+    let cache = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let jobs = [Job::new(Check::Hidden, &root, hidden::DEPTH), Job::new(Check::Documents, &root, 6)];
+    let engines = Engines { yara: None, secrets: None };
+    for run in ["cold", "warm"] {
+        crate::utils::walk::forget_walks();
+        let heard = Heard::default();
+        run_watched(&jobs, Some(&cache), &engines, &heard);
+        let at = heard.0.into_inner().unwrap();
+        let first_file = at.iter().position(|(_, w)| *w == At::File).unwrap_or(at.len());
+        let dirs: Vec<&PathBuf> = at[..first_file].iter().filter(|(_, w)| *w == At::Dir).map(|(p, _)| p).collect();
+        assert!(dirs.iter().any(|p| p.ends_with("a")) && dirs.iter().any(|p| p.ends_with("b")), "{run}: {at:?}");
+        assert!(dirs.contains(&&root), "{run}: the root planned and finished: {at:?}");
+        // 3, or a multiple when another test dropped the shared walk memo meanwhile.
+        let listed = heard.1.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(listed >= 3 && listed % 3 == 0, "{run}: the walk's files: {listed}");
+        if run == "warm" {
+            assert_eq!(first_file, at.len(), "warm: nothing read again: {at:?}");
+        }
+    }
+}

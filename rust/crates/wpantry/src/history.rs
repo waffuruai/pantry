@@ -9,7 +9,14 @@
 //! repo says nothing about the others, and a scan without `--licenses` or
 //! with other policy files says nothing about what those would have found.
 //! A scan with an `unchecked` source resolves nothing: a gap in the evidence
-//! is not a fix. A fix is verified only by a complete scan after it ran
+//! is not a fix. An area the user left out on purpose (an `unchecked`
+//! finding marked `excluded`, such as `--no-personal-files`) is not a gap:
+//! it is part of the scope string, so a later scan with the same exclusion
+//! resolves what an earlier one found. The one exception is the whole-machine
+//! scan with `--no-personal-files` (the scheduled job's on macOS): it also
+//! resolves what a full `machine:~` scan recorded and it no longer lists,
+//! except in the folders it leaves out and the Safari check it did not read.
+//! A fix is verified only by a complete scan after it ran
 //! that no longer lists what it addressed; a failed fix never is.
 
 use crate::checks::Options;
@@ -18,7 +25,7 @@ use crate::error::Result;
 use crate::finding::Finding;
 use crate::utils::dates::civil_from_days;
 use crate::utils::os::now;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 
 pub const SCHEMA: &str = "
@@ -39,22 +46,39 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY, at REAL, kind TEXT, detail TEXT);
 ";
 
+/// How many scans keep their findings, the latest included: a month of
+/// daily scans. An older one keeps its row in the scan log only.
+pub const KEEP_RUNS: i64 = 30;
+
 /// The scope a scan covers, as a string two scans can be compared by:
 /// what it looked at, and what it looked for (`--licenses`, the policy
 /// files). Two scans with different scopes say nothing about each other.
 pub fn scope_of(opts: &Options) -> String {
+    scope_with(opts, opts.no_personal_files)
+}
+
+/// [`scope_of`], as it would read with `--no-personal-files` set or not.
+fn scope_with(opts: &Options, no_personal_files: bool) -> String {
     let mut paths: Vec<String> =
         opts.paths.as_deref().unwrap_or(&[]).iter().map(|p| p.to_string_lossy().into_owned()).collect();
     paths.sort();
     let mut scope = format!(
         "{}:{}",
-        if opts.machine { "machine" } else { "repos" },
+        if opts.machine {
+            "machine"
+        } else if opts.project {
+            "project"
+        } else {
+            "repos"
+        },
         if paths.is_empty() { "~".into() } else { paths.join(",") }
     );
     if opts.licenses {
         scope.push_str("+licenses");
     }
-    if opts.machine && opts.no_personal_files {
+    // Any scan with --no-personal-files: it leaves the personal folders out
+    // of the repo walk too, so it says nothing about what a full one found there.
+    if no_personal_files {
         scope.push_str(";no-personal-files");
     }
     let policy: Vec<String> = [
@@ -107,14 +131,17 @@ pub fn record_scan_totals(
     let scope = scope_of(opts);
     let fails = findings.iter().filter(|f| f.status == "fail").count() as i64;
     let warns = findings.iter().filter(|f| f.status == "warn").count() as i64;
-    let unchecked = findings.iter().filter(|f| f.kind == "unchecked").count() as i64;
+    // Only real gaps count: an area skipped by the user's choice is already
+    // in the scope, and counting it would stop every such scan resolving.
+    let unchecked = findings.iter().filter(|f| f.is_gap()).count() as i64;
+    let excluded = findings.iter().filter(|f| f.kind == "unchecked" && f.excluded).count() as i64;
     let counts_json = Value::Object(counts.iter().map(|(k, n)| (k.clone(), json!(n))).collect()).to_string();
     // The counts again in the order they were counted, for the report.
     let checked = Value::Array(counts.iter().map(|(k, n)| json!([k, n])).collect()).to_string();
     let options = crate::reporters::html::scope_json(opts).dumps();
     cache.conn.execute(
         "INSERT INTO scans (started_at, finished_at, host, user, version, scope, counts, fails, warns, unchecked, \
-         checked, unfixed, unknown_licenses, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         checked, unfixed, unknown_licenses, options, kept) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
         params![
             started_at,
             at,
@@ -133,6 +160,8 @@ pub fn record_scan_totals(
         ],
     )?;
     let id = cache.conn.last_insert_rowid();
+    cache.keep_findings(id, findings)?;
+    trim_runs(cache, KEEP_RUNS)?;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for f in findings.iter().filter(|f| f.kind != "unchecked") {
         let key = key_of(f);
@@ -180,23 +209,133 @@ pub fn record_scan_totals(
     // Open exposures of this scope the scan didn't list are over, when every
     // source answered: a source that couldn't be asked may be where they were.
     if unchecked == 0 {
-        let mut stmt = cache.conn.prepare("SELECT key FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
-        let open: Vec<String> = stmt.query_map([&scope], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        drop(stmt);
-        for key in open.iter().filter(|k| !seen.contains(*k)) {
-            cache.conn.execute(
-                "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?",
-                params![id, at, key],
-            )?;
+        resolve_unseen(cache, &scope, id, at, &seen, |_| true)?;
+        // The whole-machine scan with --no-personal-files (the scheduled
+        // job's) is a full scan of `machine:~` minus the personal folders,
+        // so it also closes what `machine:~` recorded there before the job
+        // took that flag (its scope changed with it), outside those folders.
+        if opts.no_personal_files && opts.machine && !opts.scoped() {
+            let full = scope_with(opts, false);
+            let home = crate::utils::files::home();
+            resolve_unseen(cache, &full, id, at, &seen, |e| closable_without_personal_files(&home, e))?;
         }
+        verify_targeted_fixes(cache, id, &scope, started_at)?;
     }
     event(
         cache,
         "scan",
         &json!({"scan": id, "scope": scope, "fails": fails, "warns": warns, "unchecked": unchecked,
-                "seconds": (at - started_at).round()}),
+                "excluded": excluded, "seconds": (at - started_at).round()}),
     )?;
     Ok(id)
+}
+
+/// An open exposure, as far as closing it by another scope's scan needs.
+struct OpenExposure {
+    key: String,
+    kind: String,
+    component: String,
+    location: String,
+    vuln_id: String,
+}
+
+/// The exposures of `scope` that `scan` no longer lists, closed when
+/// `may_close` says the scan could have seen them.
+fn resolve_unseen(
+    cache: &Cache,
+    scope: &str,
+    scan: i64,
+    at: f64,
+    seen: &std::collections::HashSet<String>,
+    may_close: impl Fn(&OpenExposure) -> bool,
+) -> Result<()> {
+    let mut stmt = cache.conn.prepare(
+        "SELECT key, kind, location, vuln_id, component FROM exposures WHERE scope = ? AND resolved_at IS NULL",
+    )?;
+    let open: Vec<OpenExposure> = stmt
+        .query_map([scope], |r| {
+            let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
+            Ok(OpenExposure { key: s(0)?, kind: s(1)?, location: s(2)?, vuln_id: s(3)?, component: s(4)? })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for e in open.iter().filter(|e| !seen.contains(&e.key) && may_close(e)) {
+        cache.conn.execute(
+            "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ?",
+            params![scan, at, e.key],
+        )?;
+    }
+    Ok(())
+}
+
+/// The kinds of the machine inventory, whose exposures a scan finds without
+/// reading the user's folders: an installed tool, app or setting has no
+/// path under Documents for the scan to have missed.
+const MACHINE_KINDS: &[&str] = &[
+    "brew",
+    "os",
+    "posture",
+    "app",
+    "browser",
+    "tool",
+    "harness",
+    "datastore",
+    "runtime",
+    "pkgmgr",
+    "manager",
+    "compiler",
+    "account",
+    "config",
+    "package",
+    "extension",
+];
+
+/// Whether a scan with `--no-personal-files` that no longer lists `e` can
+/// say it is gone. Only when it looked where `e` was: not in a folder it
+/// leaves out (`~/Downloads`, `~/Desktop`, `~/Documents` and, on macOS, the
+/// others `utils::privacy::folders` lists: a path there stays open for a scan
+/// that reads them), and not the Safari check it skips. A location that is no path (`line 12`, empty) says nothing about
+/// where in the repos or folders it was, so only the machine inventory's
+/// kinds close on it. Every doubt keeps the exposure open: closing wrongly
+/// hides a live exposure, leaving one open costs only a later full scan.
+fn closable_without_personal_files(home: &std::path::Path, e: &OpenExposure) -> bool {
+    if e.vuln_id == "POSTURE-SAFARI-SAFE-FILES" {
+        return false;
+    }
+    // `~/x` is how a report spells a path under home.
+    let as_path = |text: &str| {
+        let text = crate::utils::files::strip_verbatim(text);
+        let path = match text.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                home.join(rest.trim_start_matches(['/', '\\']))
+            }
+            _ => std::path::PathBuf::from(&text),
+        };
+        path.is_absolute().then_some(path)
+    };
+    if let Some(path) = as_path(&e.location) {
+        return !in_left_out_folder(home, &path);
+    }
+    // A note about a file (a repo's `.pantryignore`, `~/.npmrc`) names the
+    // file as its component and a line, or nothing, as its location: it is
+    // where that file is, which may be a repo this scan never walked.
+    if e.kind == "config"
+        && let Some(path) = as_path(&e.component)
+    {
+        return !in_left_out_folder(home, &path);
+    }
+    MACHINE_KINDS.contains(&e.kind.as_str())
+}
+
+/// Whether `path` is at or under a folder a scan with `--no-personal-files`
+/// leaves out of `home` ([`crate::utils::privacy::folders`]: Downloads,
+/// Desktop and Documents, on macOS the other folders it guards too), by
+/// spelling: `..` folded, and without regard to case on macOS and Windows
+/// (`privacy::within`). The path need not exist and nothing under it is opened.
+fn in_left_out_folder(home: &std::path::Path, path: &std::path::Path) -> bool {
+    crate::utils::privacy::folders(home, cfg!(target_os = "macos"))
+        .iter()
+        .any(|folder| crate::utils::privacy::within(path, folder))
 }
 
 /// Record one applied (or dry-run) fix command, its outcome, and the
@@ -209,15 +348,33 @@ pub fn record_fix(
     ok: bool,
     targets: &[String],
 ) -> Result<()> {
+    record_fix_outcome(cache, scan_id, command, mode, ok, targets, None)
+}
+
+/// [`record_fix`], with why the command failed when it did: its exit code
+/// (None when it never ran or was stopped) and the bounded, home-shortened
+/// end of its stderr (`error`, "" when it printed none).
+pub fn record_fix_outcome(
+    cache: &Cache,
+    scan_id: Option<i64>,
+    command: &str,
+    mode: &str,
+    ok: bool,
+    targets: &[String],
+    failure: Option<&crate::remediation::run::Failure>,
+) -> Result<()> {
+    let exit_code = failure.and_then(|f| f.exit_code);
+    let error = failure.map(|f| f.summary());
     cache.conn.execute(
-        "INSERT INTO fixes (scan_id, at, command, mode, ok, verified_scan, targets, user, host) \
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
-        params![scan_id, now(), command, mode, ok as i64, json!(targets).to_string(), user(), host()],
+        "INSERT INTO fixes (scan_id, at, command, mode, ok, verified_scan, targets, user, host, exit_code, error) \
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+        params![scan_id, now(), command, mode, ok as i64, json!(targets).to_string(), user(), host(), exit_code, error],
     )?;
     event(
         cache,
         "fix",
-        &json!({"scan": scan_id, "command": command, "mode": mode, "ok": ok, "targets": targets, "user": user(), "host": host()}),
+        &json!({"scan": scan_id, "command": command, "mode": mode, "ok": ok, "targets": targets, "user": user(), "host": host(),
+                "exit_code": exit_code, "error": error}),
     )
 }
 
@@ -265,6 +422,40 @@ pub fn verify_fixes(cache: &Cache, applied_in: i64, verified_by: i64) -> Result<
     Ok(verified)
 }
 
+/// A later complete scan can verify a targeted fix tied to an earlier scan.
+fn verify_targeted_fixes(cache: &Cache, scan: i64, scope: &str, started_at: f64) -> Result<()> {
+    let mut pending = cache.conn.prepare(
+        "SELECT f.id, f.targets, f.at FROM fixes f JOIN scans s ON s.id = f.scan_id \
+         WHERE s.scope = ? AND f.at <= ? AND f.mode = 'mitigate' AND f.ok = 1 AND f.verified_scan IS NULL",
+    )?;
+    let mut groups = pending.query(params![scope, started_at])?;
+    let mut resolved =
+        cache.conn.prepare("SELECT EXISTS(SELECT 1 FROM exposures WHERE key = ? AND scope = ? AND resolved_at >= ? AND resolved_scan <= ?)")?;
+    let mut verified = Vec::new();
+    while let Some(row) = groups.next()? {
+        let encoded: Option<String> = row.get(1)?;
+        let applied_at: f64 = row.get(2)?;
+        let targets: Vec<String> = encoded.and_then(|encoded| serde_json::from_str(&encoded).ok()).unwrap_or_default();
+        if targets.is_empty() {
+            continue;
+        }
+        let mut cleared = true;
+        for target in targets {
+            if !resolved.query_row(params![target, scope, applied_at, scan], |r| r.get::<_, bool>(0))? {
+                cleared = false;
+                break;
+            }
+        }
+        if cleared {
+            verified.push(row.get::<_, i64>(0)?);
+        }
+    }
+    for id in verified {
+        cache.conn.execute("UPDATE fixes SET verified_scan = ? WHERE id = ?", params![scan, id])?;
+    }
+    Ok(())
+}
+
 pub fn event(cache: &Cache, kind: &str, detail: &Value) -> Result<()> {
     cache
         .conn
@@ -287,15 +478,176 @@ pub fn tried_since(cache: &Cache, scan_id: i64) -> Result<std::collections::Hash
     Ok(out)
 }
 
-pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
-    Ok(cache.conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get::<_, Option<i64>>(0))?)
+/// The folders the latest scan was pointed at (each `--path`), as it
+/// recorded them: `Some` of none when it scanned home, `None` before any scan.
+pub fn latest_scan_paths(cache: &Cache) -> Result<Option<Vec<std::path::PathBuf>>> {
+    let Some(id) = latest_scan(cache)? else { return Ok(None) };
+    let Some(scan) = scan_detail(cache, id)? else { return Ok(None) };
+    let paths = scan.options.get("paths").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or_default();
+    Ok(Some(paths.iter().filter_map(Value::as_str).map(std::path::PathBuf::from).collect()))
 }
 
-fn host() -> String {
+pub fn latest_scan(cache: &Cache) -> Result<Option<i64>> {
+    Ok(cache.conn.query_row("SELECT MAX(id) FROM scans WHERE kept = 1", [], |r| r.get::<_, Option<i64>>(0))?)
+}
+
+/// The cache key a running scan leaves under its process id until it ends.
+const RUNNING: &str = "scan_running:";
+
+/// A scan that began and never recorded its end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unfinished {
+    pub pid: u32,
+    pub started_at: f64,
+    pub scope: String,
+    /// Its process is still there: it may yet finish.
+    pub running: bool,
+}
+
+impl Unfinished {
+    /// One line for the user. An interrupted scan saved nothing (a scan
+    /// writes its findings and its row together, at the end); one still
+    /// running will become the latest when it finishes.
+    pub fn line(&self, latest: Option<i64>) -> String {
+        let what = format!("the scan of {} started {}", self.scope, stamp(self.started_at));
+        if self.running {
+            return format!("ℹ {what} is still running (pid {}): when it finishes, wpantry report shows it", self.pid);
+        }
+        match latest {
+            Some(id) => format!("ℹ {what} didn't finish: nothing of it was saved, and wpantry report shows scan {id}"),
+            None => format!("ℹ {what} didn't finish: nothing of it was saved"),
+        }
+    }
+}
+
+/// Note that this process began a scan, kept at once (whatever else the
+/// scan writes waits for its end): a scan that is interrupted can't say so
+/// itself, so the next command does ([`unfinished`]).
+pub fn scan_started(cache: &Cache, opts: &Options, started_at: f64) -> Result<()> {
+    let detail = json!({"started_at": started_at, "scope": scope_of(opts)}).to_string();
+    cache.set(&format!("{RUNNING}{}", std::process::id()), &detail)?;
+    cache.commit()
+}
+
+/// This process's scan ended, and recorded itself.
+pub fn scan_finished(cache: &Cache) -> Result<()> {
+    cache.conn.execute("DELETE FROM meta WHERE key = ?", [format!("{RUNNING}{}", std::process::id())])?;
+    Ok(())
+}
+
+/// The scans that began and didn't end, the oldest first; `alive` says
+/// whether a process is still there. One whose process is gone is
+/// forgotten here: it is told once.
+pub fn unfinished(cache: &Cache, alive: &dyn Fn(u32) -> bool) -> Result<Vec<Unfinished>> {
+    let mut stmt = cache.conn.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?1) = ?2")?;
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map(params![RUNNING.len() as i64, RUNNING], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for (key, value) in rows {
+        let detail: Value = value.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(Value::Null);
+        let pid = key[RUNNING.len()..].parse::<u32>().unwrap_or(0);
+        let running = pid != 0 && pid != std::process::id() && alive(pid);
+        if !running {
+            cache.conn.execute("DELETE FROM meta WHERE key = ?", [&key])?;
+        }
+        out.push(Unfinished {
+            pid,
+            started_at: detail["started_at"].as_f64().unwrap_or(0.0),
+            scope: detail["scope"].as_str().unwrap_or("").to_string(),
+            running,
+        });
+    }
+    out.sort_by(|a, b| a.started_at.total_cmp(&b.started_at));
+    Ok(out)
+}
+
+/// A scan whose findings are kept (`wpantry runs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Run {
+    pub row: ScanRow,
+    /// How many findings it keeps.
+    pub findings: i64,
+    /// The one `report` shows.
+    pub latest: bool,
+}
+
+impl Run {
+    pub fn to_json(&self) -> Value {
+        json!({"scan": self.row.id, "started": stamp(self.row.started_at), "finished": stamp(self.row.finished_at),
+               "seconds": (self.row.finished_at - self.row.started_at).max(0.0).round() as i64,
+               "host": self.row.host, "user": self.row.user, "version": self.row.version, "scope": self.row.scope,
+               "fails": self.row.fails, "warns": self.row.warns, "unchecked": self.row.unchecked,
+               "findings": self.findings, "latest": self.latest})
+    }
+}
+
+/// `runs --json`: `{"keeps": N, "runs": [run…]}`, the latest first.
+pub fn runs_json(runs: &[Run]) -> String {
+    json!({"keeps": KEEP_RUNS, "runs": runs.iter().map(Run::to_json).collect::<Vec<_>>()}).to_string()
+}
+
+/// The scans whose findings are kept, the latest first.
+pub fn runs(cache: &Cache) -> Result<Vec<Run>> {
+    let latest = latest_scan(cache)?;
+    let mut out = Vec::new();
+    for row in scans(cache, f64::MIN)?.into_iter().rev() {
+        let (kept, findings): (Option<i64>, i64) = cache.conn.query_row(
+            "SELECT kept, (SELECT COUNT(*) FROM run_findings WHERE scan_id = scans.id) FROM scans WHERE id = ?",
+            [row.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if kept == Some(1) {
+            out.push(Run { latest: Some(row.id) == latest, row, findings });
+        }
+    }
+    Ok(out)
+}
+
+/// Whether scan `id` keeps its findings.
+pub fn is_kept(cache: &Cache, id: i64) -> Result<bool> {
+    let kept: Option<Option<i64>> =
+        cache.conn.query_row("SELECT kept FROM scans WHERE id = ?", [id], |r| r.get(0)).optional()?;
+    Ok(kept.flatten() == Some(1))
+}
+
+/// Forget the findings of every kept scan but the newest `keep`.
+fn trim_runs(cache: &Cache, keep: i64) -> Result<()> {
+    let mut stmt = cache.conn.prepare("SELECT id FROM scans WHERE kept = 1 ORDER BY id DESC LIMIT -1 OFFSET ?")?;
+    let old: Vec<i64> = stmt.query_map([keep], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for id in old {
+        cache.drop_findings(id)?;
+        cache.conn.execute("UPDATE scans SET kept = 0 WHERE id = ?", [id])?;
+    }
+    Ok(())
+}
+
+/// Forget scan `id`'s findings (`wpantry prune ID`): it leaves `wpantry
+/// runs`, and when it was the latest, `report` shows the kept scan before
+/// it again. Its row stays in the scan log, and the exposure and
+/// remediation logs keep what they recorded, as a `prune` event says.
+/// Returns its row and how many findings went; `None` when no such scan
+/// keeps findings.
+pub fn prune_run(cache: &Cache, id: i64) -> Result<Option<(ScanRow, usize)>> {
+    if !is_kept(cache, id)? {
+        return Ok(None);
+    }
+    let Some(row) = scans(cache, f64::MIN)?.into_iter().find(|s| s.id == id) else { return Ok(None) };
+    let was_latest = latest_scan(cache)? == Some(id);
+    let gone = cache.drop_findings(id)?;
+    cache.conn.execute("UPDATE scans SET kept = 0 WHERE id = ?", [id])?;
+    if was_latest {
+        cache.restore_findings(latest_scan(cache)?)?;
+    }
+    event(cache, "prune", &json!({"scan": id, "findings": gone, "user": user(), "host": host()}))?;
+    Ok(Some((row, gone)))
+}
+
+pub(crate) fn host() -> String {
     crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string()
 }
 
-fn user() -> String {
+pub(crate) fn user() -> String {
     std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default()
 }
 
@@ -304,6 +656,8 @@ fn user() -> String {
 /// One exposure, open or over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Exposure {
+    /// The scope of the scan that last saw it (`scope_of`).
+    pub scope: String,
     pub kind: String,
     pub component: String,
     pub version: String,
@@ -351,6 +705,13 @@ pub struct Fix {
     /// wpantry kept them).
     pub user: String,
     pub host: String,
+    /// The command's exit code when it failed and had one; None otherwise
+    /// (it succeeded, never started, timed out, or was recorded before
+    /// wpantry kept it).
+    pub exit_code: Option<i64>,
+    /// Why it failed: the exit code or reason, then the end of its stderr,
+    /// home shortened to `~`; None when it succeeded or nothing was kept.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -381,7 +742,7 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
     let mut stmt = cache.conn.prepare(
         "SELECT kind, component, version, location, vuln_id, status, severity, kev, fixed, note, first_at, last_at, resolved_at, \
          dep_scope, dep_direct, affected_range, fix_cmd, cvss, cvss_version, epss, epss_percentile, \
-         first_epss, first_epss_percentile \
+         first_epss, first_epss_percentile, scope \
          FROM exposures WHERE last_at >= ? OR resolved_at >= ? OR resolved_at IS NULL \
          ORDER BY resolved_at IS NOT NULL, first_at",
     )?;
@@ -414,6 +775,7 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
             epss_percentile: r.get(20)?,
             first_epss: r.get(21)?,
             first_epss_percentile: r.get(22)?,
+            scope: r.get::<_, Option<String>>(23)?.unwrap_or_default(),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -421,7 +783,7 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
 
 pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
     let mut stmt = cache.conn.prepare(
-        "SELECT at, command, mode, ok, scan_id, verified_scan, targets, user, host FROM fixes WHERE at >= ? ORDER BY at",
+        "SELECT at, command, mode, ok, scan_id, verified_scan, targets, user, host, exit_code, error FROM fixes WHERE at >= ? ORDER BY at",
     )?;
     let rows = stmt.query_map([since], |r| {
         let targets: Option<String> = r.get(6)?;
@@ -435,6 +797,8 @@ pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
             targets: targets.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
             user: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
             host: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            exit_code: r.get(9)?,
+            error: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -443,6 +807,20 @@ pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
 pub fn events(cache: &Cache, since: f64) -> Result<Vec<Event>> {
     let mut stmt = cache.conn.prepare("SELECT at, kind, detail FROM events WHERE at >= ? ORDER BY at")?;
     let rows = stmt.query_map([since], |r| {
+        let detail: Option<String> = r.get(2)?;
+        Ok(Event {
+            at: r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
+            kind: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            detail: detail.and_then(|d| serde_json::from_str(&d).ok()).unwrap_or(Value::Null),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Every event of one `kind`, oldest first, however old.
+pub fn events_of(cache: &Cache, kind: &str) -> Result<Vec<Event>> {
+    let mut stmt = cache.conn.prepare("SELECT at, kind, detail FROM events WHERE kind = ? ORDER BY at, id")?;
+    let rows = stmt.query_map([kind], |r| {
         let detail: Option<String> = r.get(2)?;
         Ok(Event {
             at: r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
@@ -513,13 +891,15 @@ pub fn scans(cache: &Cache, since: f64) -> Result<Vec<ScanRow>> {
 
 impl Exposure {
     pub fn to_json(&self) -> Value {
-        json!({"kind": self.kind, "component": self.component, "version": self.version, "location": self.location,
+        let id = Finding::id_for(&self.kind, &self.component, &self.location, &self.vuln_id);
+        json!({"id": id, "kind": self.kind, "component": self.component, "version": self.version, "location": self.location,
                "vuln_id": self.vuln_id, "status": self.status, "severity": self.severity, "kev": self.kev,
                "fixed": self.fixed, "note": self.note, "first_at": self.first_at, "last_at": self.last_at,
                "resolved_at": self.resolved_at, "days_exposed": self.days_exposed,
                "first": stamp(self.first_at), "resolved": self.resolved_at.map(stamp),
                "dep_scope": if self.dep_scope.is_empty() { "unknown" } else { self.dep_scope.as_str() },
-               "dep_direct": self.dep_direct, "affected_range": self.affected_range, "fix_cmd": self.fix_cmd})
+               "dep_direct": self.dep_direct, "affected_range": self.affected_range, "fix_cmd": self.fix_cmd,
+               "scope": self.scope})
     }
 }
 
@@ -527,7 +907,7 @@ impl Fix {
     pub fn to_json(&self) -> Value {
         json!({"at": self.at, "when": stamp(self.at), "command": self.command, "mode": self.mode, "ok": self.ok,
                "scan_id": self.scan_id, "verified_scan": self.verified_scan, "targets": self.targets,
-               "user": self.user, "host": self.host})
+               "user": self.user, "host": self.host, "exit_code": self.exit_code, "error": self.error})
     }
 }
 

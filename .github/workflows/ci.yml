@@ -71,11 +71,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      # ops#201: bootstrap checks mise's release bundle with `packslip verify`,
-      # since `packslip install` fails on mise's release list, now over
-      # packslip's 8 MiB page limit (jdx/packslip#346). Move this to ops' main
-      # once #201 lands there.
-      OPS_REF: 0f942b678d9315438b09ce44d87c11ef57003ca8
+      # ops#245: packslip 1.11.5, whose `packslip install` lists mise's
+      # releases past the 8 MiB page cap. Move this to ops' main once a
+      # release carries it.
+      OPS_REF: 18f2c8beeb64e2411a845fefed98bd270e7347da
       IMAGE: waffuru-bootstrap:ci
     steps:
       - name: Check for the ops deploy key

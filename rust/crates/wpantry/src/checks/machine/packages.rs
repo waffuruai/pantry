@@ -74,8 +74,22 @@ pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
 /// Every Python on PATH or installed by a version manager, as (shown path,
 /// real path), without the ones the OS or a package manager vouches for.
 fn find_pythons() -> Vec<(String, String)> {
-    let mut dirs: Vec<String> = crate::utils::process::path_dirs();
-    dirs.extend(expand(PYTHON_DIRS));
+    let names = python_names(&python_dirs(std::env::var_os("PATH").as_deref()));
+    names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect()
+}
+
+/// Where to look for Pythons: PATH's folders (`path_dirs_of` leaves out the
+/// ones a scan skips) and the version managers', filtered the same, before any
+/// is listed.
+fn python_dirs(path: Option<&std::ffi::OsStr>) -> Vec<String> {
+    let mut dirs = crate::utils::process::path_dirs_of(path);
+    dirs.extend(crate::utils::process::reachable(expand(PYTHON_DIRS)));
+    dirs
+}
+
+/// `python3`, then every `python3.N` found in `dirs` (each is listed, so a
+/// folder in `dirs` is touched).
+fn python_names(dirs: &[String]) -> Vec<String> {
     let minor = Regex::new(r"python3\.\d+");
     let mut names: Vec<String> = dirs
         .iter()
@@ -86,7 +100,7 @@ fn find_pythons() -> Vec<(String, String)> {
     names.sort();
     names.dedup();
     names.insert(0, "python3".into());
-    names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect()
+    names
 }
 
 /// `pythons` for the interpreters `found`, each asked `PY_INFO` by `probe`.

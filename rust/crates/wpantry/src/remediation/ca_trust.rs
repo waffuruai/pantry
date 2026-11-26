@@ -18,37 +18,13 @@ use std::time::Duration;
 /// from a bundle the OS has not fixed yet.
 pub const ROOTS: &str = include_str!("../../assets/distrusted-ca/roots.pem");
 
-/// Standard base64 (what PEM carries); None for a character outside it.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in text.bytes() {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            b' ' | b'\t' | b'\r' | b'\n' => continue,
-            _ => return None,
-        };
-        acc = (acc << 6) | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
-}
-
 /// A certificate's SHA-256 fingerprint (of its DER bytes), upper-case hex
 /// without colons: what `openssl x509 -fingerprint -sha256` prints, joined.
 pub fn fingerprint(pem: &str) -> Option<String> {
     let body: String = pem.lines().filter(|l| !l.starts_with("-----")).map(str::trim).collect();
-    base64_decode(&body).filter(|d| !d.is_empty()).map(|d| crate::utils::sha256::hex(&d).to_ascii_uppercase())
+    crate::utils::base64::decode(&body)
+        .filter(|d| !d.is_empty())
+        .map(|d| crate::utils::sha256::hex(&d).to_ascii_uppercase())
 }
 
 /// A bundle's entries: each certificate with the comment lines above it,
@@ -85,22 +61,21 @@ fn entry_name(entry: &str, fp: &str) -> String {
 }
 
 fn is_root() -> bool {
-    run(&["id", "-u"], Duration::from_secs(5)).trim() == "0"
+    crate::utils::process::is_root()
+}
+
+/// The command that runs `argv` as root. As root the program is resolved as
+/// `run` resolves it (PATH, then the system folders), so a tool the checks
+/// found (`update-ca-certificates` in `/usr/sbin`) is the one that runs.
+fn root_cmd(argv: &[&OsStr], root: bool, path: Option<&OsStr>) -> std::process::Command {
+    crate::utils::process::root_command(argv, root, path)
 }
 
 /// Runs `argv` as root: directly when we are, else through sudo on the
 /// terminal (it prompts there). Nothing is captured, so the prompt shows.
 fn as_root(argv: &[&OsStr]) -> Result<()> {
     let shown = argv.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
-    let mut cmd = if is_root() {
-        let mut c = std::process::Command::new(argv[0]);
-        c.args(&argv[1..]);
-        c
-    } else {
-        let mut c = std::process::Command::new("sudo");
-        c.args(argv);
-        c
-    };
+    let mut cmd = root_cmd(argv, is_root(), std::env::var_os("PATH").as_deref());
     let status =
         cmd.stdout(std::process::Stdio::null()).status().map_err(|e| Error::Failed(format!("{shown}: {e}")))?;
     if status.success() { Ok(()) } else { Err(Error::Failed(format!("{shown} failed ({status})"))) }
@@ -326,6 +301,18 @@ fn blocklist_dir(parent: &str) -> PathBuf {
     if old.is_dir() && !new.is_dir() { old } else { new }
 }
 
+/// Debian's config file for the trust store.
+const CA_CERTIFICATES_CONF: &str = "/etc/ca-certificates.conf";
+
+/// Whether this is a Debian-style store: its config file `conf` is there
+/// and `find` knows its refresh tool (`update-ca-certificates`, in
+/// `/usr/sbin`, which a PATH without the `sbin` folders leaves out). `find`
+/// is [`which`], the lookup `exec` runs the tool by, so the gate and the run
+/// agree.
+fn debian_style(conf: &Path, find: &dyn Fn(&str) -> Option<PathBuf>) -> bool {
+    conf.is_file() && find("update-ca-certificates").is_some()
+}
+
 /// Where [`fix`] distrusts the roots: `bundle`, or this system's trust
 /// store; an error where wpantry doesn't know it.
 pub fn store(bundle: Option<&Path>) -> Result<String> {
@@ -344,7 +331,7 @@ pub fn store(bundle: Option<&Path>) -> Result<String> {
             return Ok(what.into());
         }
     }
-    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+    if debian_style(Path::new(CA_CERTIFICATES_CONF), &which) {
         return Ok("the system trust store (/etc/ca-certificates.conf, update-ca-certificates)".into());
     }
     Err(Error::Failed(format!(
@@ -381,7 +368,7 @@ pub fn fix(bundle: Option<&Path>, say: &dyn Fn(&str)) -> Result<()> {
             say,
         );
     }
-    if Path::new("/etc/ca-certificates.conf").is_file() && which("update-ca-certificates").is_some() {
+    if debian_style(Path::new(CA_CERTIFICATES_CONF), &which) {
         return fix_ca_certificates_conf(&drop, say);
     }
     Err(Error::Failed(format!(

@@ -172,6 +172,10 @@ fn file_of_with(
     offline: bool,
     headers: &[(&str, &str)],
 ) -> Result<Option<Vec<u8>>> {
+    // On this machine: read when changed, offline too (it contacts nobody).
+    if s.transport == file::Transport::Local {
+        return crate::sources::local::copy(cache, s, key);
+    }
     if offline || cache.fresh(&format!("{key}_at"), s.refresh)? {
         return Ok(None);
     }
@@ -249,6 +253,12 @@ pub fn prefetch(
         }
     }
     cache.commit()
+}
+
+/// How long a memo of source `id` stays fresh, in seconds (its `refresh`,
+/// as the user's sources file sets it).
+pub fn refresh_of(id: &str) -> f64 {
+    in_effect(id).refresh
 }
 
 /// Write this process's outcomes for the sources the file declares into the

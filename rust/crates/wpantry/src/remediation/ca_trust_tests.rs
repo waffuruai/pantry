@@ -50,9 +50,6 @@ fn fingerprints_match_openssl() {
         let theirs: String = said.split('=').nth(1).unwrap_or("").trim().replace(':', "");
         assert_eq!(fingerprint(c).unwrap(), theirs.to_ascii_uppercase(), "{said}");
     }
-    assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
-    assert_eq!(base64_decode("aGVs\nbG8gd29ybGQ=").unwrap(), b"hello world");
-    assert!(base64_decode("a*b").is_none());
     assert!(fingerprint("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").is_none());
     let e = entries(
         "# one\nx\n-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n# two\n-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\ntail\n",
@@ -61,4 +58,47 @@ fn fingerprints_match_openssl() {
     assert!(e[0].starts_with("# one\nx\n") && e[1].starts_with("# two\n") && e[2] == "tail\n");
     assert_eq!(entry_name(&e[0], "ABCDEF0123456789XX"), "one");
     assert_eq!(entry_name("-----BEGIN", "ABCDEF0123456789XX"), "sha256 ABCDEF0123456789\u{2026}");
+}
+
+/// Risk: the Debian-style gate asks PATH alone for `update-ca-certificates`
+/// (it lives in `/usr/sbin`), so under a PATH without the sbin folders the
+/// store is "unknown" though `exec` would run the tool. Oracle: the gate
+/// looks the tool up as `which` does (PATH, then the system folders, here a
+/// folder of the test's own with an executable copy), so a PATH with only
+/// /nowhere in it still finds it; the config file and the tool are both
+/// needed.
+#[cfg(unix)]
+#[test]
+fn the_debian_gate_finds_its_tool_in_a_system_folder_when_path_has_none() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TempDir::new("catrust-gate").unwrap();
+    let (conf, sbin) = (d.path().join("ca-certificates.conf"), d.path().join("sbin"));
+    std::fs::create_dir_all(&sbin).unwrap();
+    std::fs::write(&conf, "mozilla/Example.crt\n").unwrap();
+    let find =
+        |name: &str| crate::utils::process::which_with(name, Some(OsStr::new("/nowhere")), &[sbin.to_str().unwrap()]);
+    assert!(!debian_style(&conf, &find), "no tool in any folder");
+    let tool = sbin.join("update-ca-certificates");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(debian_style(&conf, &find), "the tool is in a system folder");
+    assert!(!debian_style(&d.path().join("absent.conf"), &find), "no config file: not a Debian-style store");
+    assert!(
+        !debian_style(&conf, &|name| crate::utils::process::which_with(name, Some(OsStr::new("/nowhere")), &[])),
+        "no system folder to look in: the gate does not guess"
+    );
+}
+
+/// Risk: the root spawn takes the bare name, so a tool the gate accepted
+/// (found in `/usr/sbin`) fails to start. Oracle: the program the command
+/// starts is the one `resolve` gives for the same PATH.
+#[cfg(unix)]
+#[test]
+fn the_root_spawn_runs_the_resolved_tool() {
+    let nope = Some(OsStr::new("/nowhere"));
+    let argv = [OsStr::new("sysctl"), OsStr::new("-n"), OsStr::new("kern.ostype")];
+    let cmd = root_cmd(&argv, true, nope);
+    assert_eq!(Path::new(cmd.get_program()), crate::utils::process::resolve(OsStr::new("sysctl"), nope));
+    assert!(Path::new(cmd.get_program()).is_absolute(), "{:?}", cmd.get_program());
+    assert_eq!(root_cmd(&argv, false, nope).get_program(), "sudo");
 }

@@ -36,7 +36,7 @@ Both verify the release before installing anything. New to mise? [Install](docs/
 
 ```bash
 wpantry scan                              # this computer and every git repo under ~
-wpantry scan --path ~/code/app            # one project
+wpantry scan project ~/code/app           # one project and its runtimes, nothing else
 wpantry report --html                     # the latest scan as one offline page
 wpantry report summary --md               # one page for a CSO or an auditor
 wpantry fix --dry-run                     # the update plan; changes nothing

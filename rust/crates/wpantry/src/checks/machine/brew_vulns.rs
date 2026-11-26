@@ -12,8 +12,8 @@ use crate::finding::Finding;
 use crate::sources::osv;
 use crate::utils::json::{self, arr_at, str_at};
 use crate::utils::process::exec;
+use crate::utils::process::find_tool;
 use crate::utils::process::run;
-use crate::utils::process::which;
 use crate::utils::sha256;
 use serde_json::{Value, json};
 use std::ffi::OsStr;
@@ -67,7 +67,7 @@ impl BrewJob {
 }
 
 pub fn brew_job(cache: &Cache, refresh: bool, offline: bool) -> Result<Option<BrewJob>> {
-    let Some(exe) = which("brew") else { return Ok(None) };
+    let Some(exe) = find_tool("brew") else { return Ok(None) };
     let listing = cellar(&exe).unwrap_or_else(|| {
         run(&[exe.as_os_str(), OsStr::new("list"), OsStr::new("--versions")], Duration::from_secs(60))
     });

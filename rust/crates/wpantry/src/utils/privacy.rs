@@ -148,11 +148,12 @@ const MAX_LINKS: usize = 40;
 /// program is about to be looked up, stat'ed or opened at.
 ///
 /// ```
-/// use std::path::Path;
 /// use wpantry::utils::privacy::{leave_out, reaches_left_out};
-/// let guard = leave_out(vec![Path::new("/nonexistent-home/Documents").to_path_buf()], vec![]);
-/// assert!(reaches_left_out("/nonexistent-home/Documents/bin"));
-/// assert!(!reaches_left_out("/nonexistent-home/bin"));
+/// // Absolute on each platform (a path with no drive is relative on Windows).
+/// let home = std::path::PathBuf::from(if cfg!(windows) { r"C:\nonexistent-home" } else { "/nonexistent-home" });
+/// let guard = leave_out(vec![home.join("Documents")], vec![]);
+/// assert!(reaches_left_out(home.join("Documents").join("bin")));
+/// assert!(!reaches_left_out(home.join("bin")));
 /// drop(guard);
 /// ```
 pub fn reaches_left_out(path: impl AsRef<Path>) -> bool {

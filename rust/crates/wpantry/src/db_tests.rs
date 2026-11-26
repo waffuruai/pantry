@@ -347,3 +347,42 @@ fn prune_keeps_an_advisory_only_an_older_kept_scan_refers_to() {
     assert!(c.vuln("CVE-2026-0001").unwrap().is_some(), "the older kept scan's");
     assert!(c.vuln("CVE-2026-0002").unwrap().is_none());
 }
+
+/// Risk: a scan holds the cache's write lock for the length of its run
+/// (network time included), so a program that runs `report`, `ignore` or
+/// `cache prune` while a scan is in flight waits the busy timeout (60 s) and
+/// fails, where it used to slip in between the scan's writes; or two scans
+/// run at once and one removes what the other loaded (a scan with other
+/// sources forgets a source of the first), or fail with "database is locked".
+/// Oracle: with a scan's cache open and having written, another command's
+/// cache writes at once and a read sees the scan's committed write; a second
+/// scan does not get the cache until the first lets go, and then it does.
+#[test]
+fn a_scan_does_not_hold_the_database_lock_and_scans_take_turns() {
+    use std::sync::mpsc;
+    let dir = crate::utils::temp::TempDir::new("db").unwrap();
+    let file = dir.path().join("w.db");
+    let scan = Cache::open_for_scan(Some(&file)).unwrap();
+    scan.set("a", "1").unwrap();
+    // Another command's write is not held up by the scan, and sees its write.
+    let other = Cache::open(Some(&file)).unwrap();
+    let started = std::time::Instant::now();
+    other.set("b", "2").unwrap();
+    other.commit().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "a write waited for the scan");
+    assert_eq!(other.get("a").unwrap().as_deref(), Some("1"), "the scan's write is committed");
+    drop(other);
+    // A second scan waits for the first.
+    let (tx, rx) = mpsc::channel();
+    let f2 = file.clone();
+    let second = std::thread::spawn(move || {
+        let c = Cache::open_for_scan(Some(&f2)).unwrap();
+        tx.send(()).unwrap();
+        c
+    });
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(700)).is_err(), "the second scan got the cache early");
+    scan.close().unwrap();
+    rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the second scan gets the cache when the first ends");
+    let c = second.join().unwrap();
+    assert_eq!(c.get("a").unwrap().as_deref(), Some("1"));
+}

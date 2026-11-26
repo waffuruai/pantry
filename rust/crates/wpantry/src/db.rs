@@ -105,7 +105,12 @@ fn migrate(conn: &Connection) -> Result<()> {
         let have: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         if !have.iter().any(|c| c == column) {
-            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+            // Another process opening the same new cache may add it first.
+            if let Err(e) = conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))
+                && !e.to_string().contains("duplicate column name")
+            {
+                return Err(e.into());
+            }
         }
     }
     // The newest scan with no word on whether its findings are kept was
@@ -161,11 +166,44 @@ fn path_from(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
     base.join("wpantry").join("wpantry.db")
 }
 
+/// The longest a scan waits for another scan on the same cache to end.
+pub const SCAN_QUEUE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Take the lock file of the scan that has the cache at `db`, waiting for it
+/// to end. The lock is the operating system's (`flock`, `LockFileEx`): a scan
+/// that is killed lets it go.
+fn lock_scans(db: &Path) -> Result<std::fs::File> {
+    let mut name = db.as_os_str().to_os_string();
+    name.push(".scan-lock");
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(PathBuf::from(name))?;
+    let start = std::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < SCAN_QUEUE => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::Failed(format!(
+                    "another scan has had the cache for {} minutes ({})",
+                    SCAN_QUEUE.as_secs() / 60,
+                    db.display()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+    }
+}
+
 pub struct Cache {
     pub conn: Connection,
     /// Whether SQLite has FTS5 (the bundled one does).
     pub fts: bool,
     file: PathBuf,
+    /// Opened by [`Cache::open_for_scan`]: each transaction takes the write lock when it begins.
+    writer: bool,
+    /// The lock file that keeps other scans out while this one has the cache.
+    _scan_lock: Option<std::fs::File>,
 }
 
 impl Cache {
@@ -174,6 +212,23 @@ impl Cache {
     /// [`Cache::close`], as Python's sqlite3 does; dropping a cache without
     /// closing it discards what wasn't committed.
     pub fn open(file: Option<&Path>) -> Result<Cache> {
+        Cache::open_as(file, false)
+    }
+
+    /// [`Cache::open`] for a scan. Scans on one cache run one after the
+    /// other: this waits (up to [`SCAN_QUEUE`]) for the scan that has the
+    /// cache, through a lock file beside it that the operating system lets go
+    /// when that scan ends however it ends. The scan's own writes are not one
+    /// long transaction: each waits for the database lock it needs and lets
+    /// it go, so `report`, `ignore`, `cache prune` and the rest are not held
+    /// up for the length of a scan, as they were not before. Scans are
+    /// serialised because they replace each other's data (a scan with other
+    /// sources removes what the first one loaded).
+    pub fn open_for_scan(file: Option<&Path>) -> Result<Cache> {
+        Cache::open_as(file, true)
+    }
+
+    fn open_as(file: Option<&Path>, writer: bool) -> Result<Cache> {
         let file = file.map(Path::to_path_buf).unwrap_or_else(path);
         if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
             let mut builder = std::fs::DirBuilder::new();
@@ -185,6 +240,7 @@ impl Cache {
             }
             builder.create(dir)?;
         }
+        let scan_lock = if writer { Some(lock_scans(&file)?) } else { None };
         let conn = Connection::open(&file)?;
         // The cache names what is installed and where secrets sit: ours only.
         #[cfg(unix)]
@@ -220,16 +276,41 @@ impl Cache {
                  id, aliases, summary, details, packages, tokenize='porter')",
             )
             .is_ok();
-        conn.execute_batch("BEGIN")?;
-        Ok(Cache { conn, fts, file })
+        if !writer {
+            conn.execute_batch("BEGIN")?;
+        }
+        Ok(Cache { conn, fts, file, writer, _scan_lock: scan_lock })
     }
 
     pub fn file(&self) -> &Path {
         &self.file
     }
 
+    /// Run `f` as one transaction that holds the write lock only while it
+    /// runs. A scan's cache is in autocommit (each write waits for the lock
+    /// it needs and lets go, so another command can write between them); the
+    /// scan's result goes in together.
+    pub fn atomically<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        if !self.writer {
+            return f();
+        }
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f() {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     pub fn commit(&self) -> Result<()> {
-        self.conn.execute_batch("COMMIT; BEGIN")?;
+        if !self.writer {
+            self.conn.execute_batch("COMMIT; BEGIN")?;
+        }
         Ok(())
     }
 
@@ -237,7 +318,9 @@ impl Cache {
     /// ([`crate::sources::fetch::save`]).
     pub fn close(self) -> Result<()> {
         crate::sources::fetch::save(&self)?;
-        self.conn.execute_batch("COMMIT")?;
+        if !self.writer {
+            self.conn.execute_batch("COMMIT")?;
+        }
         self.conn.close().map_err(|(_, e)| Error::Cache(e))
     }
 

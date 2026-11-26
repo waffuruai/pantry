@@ -157,6 +157,10 @@ fn ledger(events: &[Event]) -> Vec<Logged> {
 }
 
 fn log(cache: &Cache, detail: Value) -> Result<()> {
+    // The ignore file was edited after the cache was read; a write that follows
+    // a read in one transaction fails at once with "database is locked" when a
+    // scan has committed since. A transaction that starts with the write waits.
+    cache.commit()?;
     history::event(cache, EVENT, &detail)
 }
 

@@ -750,3 +750,47 @@ fn recheck_help_names_the_several_ids_form() {
     assert!(r.out.contains("Usage: wpantry recheck [options] <id...>"), "{}", r.out);
     assert!(r.out.contains("--stop-at-first-present"), "{}", r.out);
 }
+
+/// Size: 42 and 178 advisories of one formula on a 30,000-finding cache, one
+/// process per id and one call. Run with `cargo test --release --test
+/// recheck -- --ignored --nocapture`.
+#[test]
+#[ignore = "measures a 30,000-finding cache"]
+fn many_ids_on_thirty_thousand_findings_cost_one_cache_open() {
+    for n in [42usize, 178] {
+        let lab = Lab::new();
+        let formula = brew_many(n);
+        brew_answer_many(&lab, &formula);
+        mkdir(&lab.cellar.join("foo/1.2.6"));
+        let mut findings: Vec<Finding> = (0..30_000)
+            .map(|i| Finding {
+                kind: "app".into(),
+                component: format!("app{i}"),
+                version: "1.0".into(),
+                location: format!("/opt/app{i}"),
+                vuln_id: format!("GHSA-{i}"),
+                status: "fail".into(),
+                fixed: "1.1".into(),
+                ..Default::default()
+            })
+            .collect();
+        findings.extend(formula.clone());
+        let scan = lab.scan_of(&findings, false).to_string();
+        let ids: Vec<String> = formula.iter().map(Finding::id).collect();
+        let start = std::time::Instant::now();
+        for id in &ids {
+            lab.run(&["recheck", id, "--from-scan", &scan, "--json", "--no-input"]);
+        }
+        let apart = start.elapsed();
+        // A second lab with the same cache state for the one call.
+        let lab2 = Lab::new();
+        brew_answer_many(&lab2, &formula);
+        mkdir(&lab2.cellar.join("foo/1.2.6"));
+        assert_eq!(lab2.scan_of(&findings, false).to_string(), scan);
+        let start = std::time::Instant::now();
+        let r = lab2.run(&args_many(&ids, &scan, &[]));
+        let together = start.elapsed();
+        assert_eq!(r.out.lines().count(), n);
+        eprintln!("{n} ids on {} findings: one process per id {apart:?}, one call {together:?}", findings.len());
+    }
+}

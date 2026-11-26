@@ -72,3 +72,9 @@ who = "Waffuru AI, Inc. <security@waffuru.ai>"
 criteria = "safe-to-deploy"
 delta = "0.1.0 -> 0.1.2"
 notes = "Our own crate. Read the source diff (0.1.0 to 0.1.2, through 0.1.1); the registry sources match the v0.1.2 tag of waffuruai/wcli (598841811e62). Adds Opt::required, Command::one_of, Matches::count and an opt-in completions command whose bash, zsh and fish scripts are built as strings from the command tree, with words single-quoted, and returned for the program to print. Still no dependencies, build script (build = false), proc macros or unsafe; no process, env, network or filesystem access."
+
+[[audits.wcli]]
+who = "Waffuru AI, Inc. <security@waffuru.ai>"
+criteria = "safe-to-deploy"
+delta = "0.1.2 -> 0.1.6"
+notes = "Our own crate. Read the source diff (0.1.2 to 0.1.6; 0.1.3 and 0.1.4 were never on crates.io, 0.1.5 changed only the release workflow); the registry sources match the v0.1.6 tag of waffuruai/wcli (cb86dde2ff5b). Adds Opt::group and Command::example, which only add titled sections to the generated help text, and after_help keeps a line's leading spaces; the rest is rustfmt's trailing commas on match arms. Parsing and the completion scripts are unchanged. Still no dependencies, build script (build = false), proc macros or unsafe; no env, network or filesystem access, and the only process call is Exit::exit's std::process::exit, as before."

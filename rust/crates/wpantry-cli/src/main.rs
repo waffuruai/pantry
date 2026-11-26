@@ -1421,8 +1421,12 @@ fn cmd_rules_gen(
 /// its JSON (also for a refusal, with the message on stderr) or its lines.
 fn cmd_ignore(action: IgnoreAction, json: bool) -> Result<i32> {
     use wpantry::checks::ignore_edit::Env;
-    let env = Env::real();
     let cache = Cache::open(None)?;
+    // A repo's file is the one the latest scan read, which depends on where it started.
+    let env = match wpantry::history::latest_scan_paths(&cache)? {
+        Some(paths) => Env::real().scanned(&paths),
+        None => Env::real(),
+    };
     let reply = match &action {
         IgnoreAction::Add { id, scope, reason, all_places } => wpantry::remediation::dismiss::add(
             &cache,

@@ -289,7 +289,7 @@ fn already(id: &str, target: &Target) -> Reply {
 fn files(env: &Env, path: Option<&Path>) -> Vec<Target> {
     let mut v = vec![Target::user(env)];
     if let Some(dir) = path {
-        v.push(Target::repo(&edit::repo_for(dir)));
+        v.push(Target::repo(&edit::repo_for(dir, env)));
     }
     v
 }

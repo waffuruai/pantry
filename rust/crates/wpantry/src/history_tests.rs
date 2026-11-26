@@ -426,3 +426,15 @@ fn a_failed_fix_keeps_its_exit_code_and_error_in_the_log() {
     assert_eq!(ev[0].detail["exit_code"], serde_json::json!(1));
     c.close().unwrap();
 }
+
+#[test]
+fn the_latest_scans_paths_are_the_folders_it_was_pointed_at() {
+    let d = crate::utils::temp::TempDir::new("paths").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    assert_eq!(latest_scan_paths(&c).unwrap(), None, "no scan yet");
+    record_scan(&c, 1.0, &[], &[], &Options { machine: true, ..Default::default() }).unwrap();
+    assert_eq!(latest_scan_paths(&c).unwrap(), Some(Vec::new()), "a scan of home names no folder");
+    let pointed = Options { paths: Some(vec!["/r/a".into(), "/r/b".into()]), ..Default::default() };
+    record_scan(&c, 2.0, &[], &[], &pointed).unwrap();
+    assert_eq!(latest_scan_paths(&c).unwrap(), Some(vec!["/r/a".into(), "/r/b".into()]));
+}

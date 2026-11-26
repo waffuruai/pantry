@@ -36,7 +36,7 @@ impl Rig {
         testing::write(&root, "sub/package-lock.json", LOCK_SUB);
         let name = root.to_string_lossy().into_owned();
         let h = crate::utils::files::home();
-        let env = Env { user_file: h.join(".config/wpantry/ignore"), home: h };
+        let env = Env { user_file: h.join(".config/wpantry/ignore"), home: h, roots: Vec::new() };
         Rig { d, _home: home, env, root, name, net: testing::osv_net(&[("npm", "lodash"), ("npm", "left-pad")]) }
     }
 

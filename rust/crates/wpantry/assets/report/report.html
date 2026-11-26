@@ -404,7 +404,10 @@ function isBundle(kind){return kind==='image'||kind==='bundled'}
 function spansPlaces(kind){return kind==='project'||kind==='secret'}
 function when(ms){var d=new Date(ms);return isNaN(d.getTime())?'':d.toISOString().slice(0,16).replace('T',' ')+' UTC'}
 
-function advLinks(id){
+// A finding from a folder of OSV records of your own carries its source and its record's own link as fields (local_source, local_link; checks/mod.rs, local_fields): it gets that https link, or none, never an OSV.dev one the record doesn't give. The note starts with an advisory's free text, so no link is ever read out of it.
+function httpsLink(u){return typeof u==='string'&&/^https:\/\/[^\s<>"'`]+$/.test(u)&&u.length<=2048?u:''}
+function advLinks(id,f){
+  if(f&&typeof f.local_source==='string'&&f.local_source){var own=httpsLink(f.local_link);return own?[{id:id,url:own}]:/^CVE-/.test(id)?[{id:id,url:'https://www.cve.org/CVERecord?id='+encodeURIComponent(id)}]:[]}
   var out=[], seen=Object.create(null);
   function add(x){
     if(!x||seen[x]||isMarker(x))return; seen[x]=1;
@@ -468,7 +471,7 @@ function validReport(raw){
   if(!Object.keys(raw.checked).every(function(k){return Number.isSafeInteger(raw.checked[k]) && raw.checked[k]>=0}))return false;
   if(!['unfixed','unknown_licenses'].every(function(k){return Number.isSafeInteger(raw[k]) && raw[k]>=0}))return false;
   if(!['impl','version'].every(function(k){return typeof raw[k]==='string'}))return false;
-  return raw.findings.every(function(f){return f && typeof f==='object' && !Array.isArray(f) && ['kind','component','version','location','vuln_id','status','fixed','severity','note','fix_cmd'].every(function(k){return typeof f[k]==='string'}) && ['kev','fix_auto'].every(function(k){return typeof f[k]==='boolean'}) && (f.status==='fail'||f.status==='warn') && (f.dep_scope===undefined||typeof f.dep_scope==='string') && (f.affected_range===undefined||typeof f.affected_range==='string') && (f.dep_direct===undefined||f.dep_direct===null||typeof f.dep_direct==='boolean')});
+  return raw.findings.every(function(f){return f && typeof f==='object' && !Array.isArray(f) && ['kind','component','version','location','vuln_id','status','fixed','severity','note','fix_cmd'].every(function(k){return typeof f[k]==='string'}) && ['kev','fix_auto'].every(function(k){return typeof f[k]==='boolean'}) && (f.status==='fail'||f.status==='warn') && (f.dep_scope===undefined||typeof f.dep_scope==='string') && (f.affected_range===undefined||typeof f.affected_range==='string') && (f.dep_direct===undefined||f.dep_direct===null||typeof f.dep_direct==='boolean') && (f.local_source===undefined||typeof f.local_source==='string') && (f.local_link===undefined||typeof f.local_link==='string')});
 }
 function normalize(raw, meta){
   var fs=(raw.findings||[]).map(function(f,i){
@@ -477,7 +480,7 @@ function normalize(raw, meta){
       vuln_id:f.vuln_id||'', status:f.status||'', state:kind==='unchecked'?(f.excluded===true?'excluded':'unchecked'):(f.status==='fail'?'fail':'warn'), fixed:f.fixed||'', kev:!!f.kev,
       severity:f.severity||'', note:f.note||'', fix_cmd:f.fix_cmd||'', fix_auto:!!f.fix_auto,
       cvss:num(f.cvss), cvss_version:f.cvss_version||'', epss:num(f.epss), epss_percentile:num(f.epss_percentile), epss_date:f.epss_date||'', epss_model:f.epss_model||'',
-      dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'',
+      dep_scope:f.dep_scope||'unknown', dep_direct:typeof f.dep_direct==='boolean'?f.dep_direct:null, affected_range:f.affected_range||'', local_source:typeof f.local_source==='string'?f.local_source:'', local_link:typeof f.local_link==='string'?f.local_link:'',
       key:String(i)};
   });
   var r={title:meta.title||'Scan', file:meta.file||'', source:meta.source||'json', loadedAt:meta.loadedAt||null, original:!meta.loadedAt,
@@ -714,7 +717,7 @@ function detailHTML(row,print){
   var top=row.top, out='<div class="detail">';
   if(top.note)out+='<p class="why">'+ticks(top.note)+'</p>';
   out+='<ul class="advs">'+row.fs.map(function(f){
-    var links=isAdvisory(f)?advLinks(f.vuln_id):[];
+    var links=isAdvisory(f)?advLinks(f.vuln_id,f):[];
     var wf=wordfenceLink(f);
     if(wf&&!links.some(function(l){return l.url===wf}))links=links.concat([{id:'Wordfence',url:wf}]);
     var id=links.length?links.map(function(l){return '<a href="'+esc(l.url)+'" target="_blank" rel="noopener noreferrer">'+esc(l.id)+'</a>'}).join(' '):esc(f.vuln_id||'—');

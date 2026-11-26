@@ -111,7 +111,8 @@ pub fn vet(r: &Roots, program: &Path) -> Vetted {
 
 /// Check every persisted program (four at a time).
 pub fn vet_all(r: &Roots, inv: &Inventory) -> BTreeMap<PathBuf, Vetted> {
-    let progs: Vec<PathBuf> = programs(inv).into_iter().filter(|p| p.exists()).collect();
+    let progs: Vec<PathBuf> =
+        programs(inv).into_iter().filter(|p| !crate::utils::privacy::is_left_out(p) && p.exists()).collect();
     let results = parallel::par_map(&progs, 4, |p| vet(r, p));
     progs.into_iter().zip(results).collect()
 }

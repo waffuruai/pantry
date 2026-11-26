@@ -172,6 +172,10 @@ fn file_of_with(
     offline: bool,
     headers: &[(&str, &str)],
 ) -> Result<Option<Vec<u8>>> {
+    // On this machine: read when changed, offline too (it contacts nobody).
+    if s.transport == file::Transport::Local {
+        return crate::sources::local::copy(cache, s, key);
+    }
     if offline || cache.fresh(&format!("{key}_at"), s.refresh)? {
         return Ok(None);
     }

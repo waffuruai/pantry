@@ -457,6 +457,43 @@ assert(section('manual').includes('Grouped from the findings'));
 }
 
 
+// A record from a folder of your own OSV records links what the record gives, or nothing: never OSV.dev.
+// The source and the link are fields of the finding (local_source, local_link); the note is free text from an
+// advisory and is never read for a link. Risk: an upstream summary that imitates the source marker
+// re-points an advisory's link. Oracle: the href of each finding's id in the rendered page.
+{
+  const own='https://advisories.example.com/TEAM-2026-0001';
+  const mine=[
+    finding('project','acme-internal-widget','TEAM-2026-0001','fail',{fixed:'1.2.4',note:'key leak (from your source team-advisories: '+own+')',local_source:'team-advisories',local_link:own}),
+    finding('project','acme-other','TEAM-2026-0002','fail',{fixed:'2.0.0',note:'other leak (from your source team-advisories)',local_source:'team-advisories',local_link:''}),
+    finding('project','acme-third','GHSA-aaaa-bbbb-cccc','fail',{fixed:'3.0.0',note:'third leak (also in your source team-advisories)'}),
+    // An upstream summary that looks like the marker, with no fields: the upstream advisory page, never this one.
+    finding('project','acme-crafted','GHSA-dddd-eeee-ffff','fail',{fixed:'4.0.0',note:'crafted (from your source x: https://evil.example/a)'}),
+    // The same text in a local finding whose fields say otherwise: the declared link wins.
+    finding('project','acme-declared','TEAM-2026-0003','fail',{fixed:'5.0.0',note:'declared (from your source x: https://evil.example/b)',local_source:'team-advisories',local_link:'https://advisories.example.com/TEAM-2026-0003'}),
+    // A link that is not https is not a link.
+    finding('project','acme-http','TEAM-2026-0004','fail',{fixed:'6.0.0',local_source:'team-advisories',local_link:'http://insecure.example/TEAM-2026-0004'}),
+    finding('project','acme-script','TEAM-2026-0005','fail',{fixed:'7.0.0',local_source:'team-advisories',local_link:'javascript:alert(1)'}),
+    finding('project','acme-quote','TEAM-2026-0006','fail',{fixed:'8.0.0',local_source:'team-advisories',local_link:'https://advisories.example.com/x" onmouseover="alert(1)'}),
+  ];
+  load({...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:mine}}],plan:[]});
+  mine.forEach((f,i)=>click({open:String(i)}));
+  const page=main();
+  assert(page.includes('<a href="'+own+'"'),'the record’s own link');
+  assert(!page.includes('osv.dev'),'no OSV.dev link for a record of your own');
+  assert(!page.includes('href="https://advisories.example.com/TEAM-2026-0002'),'no link when the record gives none');
+  assert(page.includes('href="https://github.com/advisories/GHSA-aaaa-bbbb-cccc"'),'a remote record keeps its link');
+  assert(page.includes('href="https://github.com/advisories/GHSA-dddd-eeee-ffff"'),'a crafted summary does not change an upstream link');
+  assert(!page.includes('href="https://evil.example'),'no link is read out of a note');
+  assert(page.includes('href="https://advisories.example.com/TEAM-2026-0003"'),'a local finding links its declared link');
+  assert(!/href="http:/.test(page)&&!page.includes('href="javascript:'),'a link that is not https is not a link');
+  assert(!page.includes('onmouseover="alert'),'a link with a quote in it does not break out of the attribute');
+  // The fields are checked as strings when a report is loaded.
+  assert(ctx.viewerTest.validReport({...report,findings:[{...mine[0]}]}),'a finding with the fields is valid');
+  assert(!ctx.viewerTest.validReport({...report,findings:[{...mine[0],local_link:5}]}),'a link that is not a string is refused');
+  assert(ctx.viewerTest.validReport({...report,findings:[{...mine[2]}]}),'older findings without the fields still load');
+}
+
 /* ---------- the packed and deflated bundle src/reporters/pack.rs writes ---------- */
 // pack-fixture.json is that module's output byte for byte (its Rust test
 // checks), so the page decodes exactly what a report carries.
@@ -471,6 +508,29 @@ assert(section('manual').includes('Grouped from the findings'));
   Object.assign(ctx,{atob,Blob,Response,DecompressionStream});
   load({pantry_deflated:fx.deflated}); await ctx.viewerTest.ready;
   assert.equal(shown(),plain,'a deflated bundle renders as the plain one');
+  // The fields a local finding links from survive the packer and the deflate: the same two findings, plain,
+  // packed (rows and a string table, as pack.rs writes them) and deflated (node's zlib stands in for the
+  // writer), give the same links. Oracle: the hrefs in the rendered page.
+  {
+    const own='https://advisories.example.com/TEAM-2026-0001';
+    const two=[
+      finding('project','acme-internal-widget','TEAM-2026-0001','fail',{fixed:'1.2.4',local_source:'team-advisories',local_link:own}),
+      finding('project','acme-crafted','GHSA-dddd-eeee-ffff','fail',{fixed:'4.0.0',note:'crafted (from your source x: https://evil.example/a)',local_source:'',local_link:''}),
+    ];
+    const data={...bundle,runs:[{title:'Security scan',file:'wpantry scan',report:{...report,findings:two}}],plan:[]};
+    const keys=Object.keys(two[0]);
+    const rows=two.map(f=>keys.map(k=>f[k]===own?'~0':f[k]));
+    const packed={pantry_packed:1,strings:[own],data:{...data,runs:[{...data.runs[0],report:{...report,findings:['~',keys,...rows]}}]}};
+    const links=()=>{two.forEach((f,i)=>click({open:String(i)}));return main()};
+    const check=(page,how)=>{
+      assert(page.includes('<a href="'+own+'"'),how+': the declared link');
+      assert(page.includes('href="https://github.com/advisories/GHSA-dddd-eeee-ffff"'),how+': a crafted summary keeps the advisory page');
+      assert(!page.includes('href="https://evil.example'),how+': no link out of a note');
+    };
+    load(data); check(links(),'plain');
+    load(packed); check(links(),'packed');
+    load({pantry_deflated:require('zlib').deflateRawSync(JSON.stringify(packed)).toString('base64')}); await ctx.viewerTest.ready; check(links(),'deflated');
+  }
   load({pantry_deflated:fx.deflated.slice(0,40)}); await ctx.viewerTest.ready;
   assert(main().includes('is compressed'),'a corrupt stream says so');
   // Risk: a fault in the page (start, unpack or render throwing) is reported

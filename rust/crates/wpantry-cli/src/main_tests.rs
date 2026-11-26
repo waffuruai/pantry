@@ -80,3 +80,62 @@ fn a_format_on_a_terminal_goes_to_a_dated_file_and_a_pipe_gets_stdout() {
     let csv = resolve(Show { format: Shown::Csv, ..Show::default() }, true, t);
     assert_eq!(csv.out.unwrap().to_string_lossy(), "pantry_report_20251105T143000Z.csv");
 }
+
+/// A sources file of the person's own with one local YARA source on `tier`.
+fn rules_source(tier: &str) -> (String, String) {
+    let text = format!(
+        "[[source]]\nid = \"t-deep-rules\"\nkind = \"yara\"\nformat = \"yara\"\npath = '/srv/t-deep-rules'\ntier = \"{tier}\"\n"
+    );
+    (wpantry::sources::file::USER_FILE_NAME.to_string(), text)
+}
+
+fn compiled_all(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("compiled-all-"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Risk (a regression): `wpantry rules` configures the sources for a scan
+/// that isn't `--deep`, so a `tier = "deep"` source is left out of the
+/// count of all rules, and the compiled bundle it keeps is named for a
+/// different set of files than `scan --deep`'s, so each evicts the other's.
+/// Oracle: the source's rules are in "all" and not in this system's count;
+/// running `rules`, then a deep scan's own load (the sources configured
+/// for `--deep`), then `rules` again, leaves one compiled bundle of all
+/// rules, the same file throughout (the cache key is the file's name, and
+/// its being read back rather than rebuilt is that name being unchanged).
+#[test]
+fn rules_counts_a_deep_source_and_shares_its_bundle_with_a_deep_scan() {
+    use wpantry::checks::malware::yara;
+    use wpantry::sources::file;
+    let d = wpantry::utils::temp::TempDir::new("rules-deep").unwrap();
+    let dir = d.path().to_path_buf();
+    std::fs::write(dir.join("hand.yar"), "rule Hand_Rule { strings: $a = \"hand\" condition: $a }").unwrap();
+    std::fs::write(dir.join("user-t-deep-rules.yar"), "rule Deep_Rule { strings: $a = \"deep\" condition: $a }")
+        .unwrap();
+    let source = [rules_source("deep")];
+    // As `rules` configures: a scan that isn't --deep.
+    file::configure_files(&source, false).unwrap();
+    let (this_system, all) = rules_loads(&dir);
+    let named = |l: &yara::Loaded| l.sources.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+    assert_eq!(named(&this_system), ["hand.yar"], "a deep source is not for this system's count");
+    assert_eq!(named(&all), ["hand.yar", "user-t-deep-rules.yar"], "but it is in the count of all rules");
+    assert!(all.rules.rules().iter().any(|r| r.name == "Deep_Rule"));
+    let bundle = compiled_all(&dir);
+    assert_eq!(bundle.len(), 1, "{bundle:?}");
+    // As `scan --deep` configures and loads.
+    file::configure_files(&source, true).unwrap();
+    let scan = yara::load(&dir, true, &|id: &str| file::active(id));
+    assert_eq!(scan.hash, all.hash, "the same files, the same rules");
+    assert_eq!(compiled_all(&dir), bundle, "the deep scan reads the bundle `rules` kept: no rebuild, no eviction");
+    // And back.
+    file::configure_files(&source, false).unwrap();
+    rules_loads(&dir);
+    assert_eq!(compiled_all(&dir), bundle, "`rules` after a deep scan keeps it too");
+    file::configure_files(&[], false).unwrap();
+}

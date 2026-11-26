@@ -149,6 +149,9 @@ fn quiet(show: &Show) -> bool {
 }
 
 fn cmd_scan(a: Check) -> Result<i32> {
+    if let Some(code) = check_added_sources(a.sources.as_deref(), &a.add_sources) {
+        return Ok(code);
+    }
     let quiet = quiet(&a.show);
     let opts = Options {
         paths: a.path.clone(),
@@ -159,6 +162,7 @@ fn cmd_scan(a: Check) -> Result<i32> {
         deep: a.deep,
         no_online_hash: a.no_online_hash,
         sources: a.sources.clone(),
+        add_sources: a.add_sources.clone(),
         no_personal_files: a.no_personal_files,
         policy: Policy {
             secret_rules: a.secret_rules.clone(),
@@ -515,7 +519,7 @@ fn cmd_report(show: &Show) -> Result<i32> {
 /// `sync`: refresh what the cache knows, with the progress line.
 fn cmd_sync(refresh: bool, json: bool) -> Result<i32> {
     // The user's tiers hold here as in a scan: a source turned off isn't fetched.
-    if let Some(code) = use_sources_file(None) {
+    if let Some(code) = use_sources_file(None, &[]) {
         return Ok(code);
     }
     let net = wpantry::utils::net::Http::new();
@@ -1242,7 +1246,7 @@ fn cmd_fix_secret(id: &str, dry_run: bool, no_input: bool) -> Result<i32> {
 /// `--update` fetches YARA Forge's package first.
 fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     use wpantry::checks::malware;
-    if let Some(code) = use_sources_file(None) {
+    if let Some(code) = use_sources_file(None, &[]) {
         return Ok(code);
     }
     let cache = Cache::open(None)?;
@@ -1265,9 +1269,7 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
         progress.finish();
     }
     let dir = malware::yara::rules_dir(&cache);
-    let active = |id: &str| wpantry::sources::file::active(id);
-    let loaded = malware::yara::load(&dir, false, &active);
-    let all = malware::yara::load(&dir, true, &active);
+    let (loaded, all) = rules_loads(&dir);
     cache.close()?;
     let stats = all.rules.stats();
     if json {
@@ -1303,20 +1305,62 @@ fn cmd_rules(update: bool, json: bool) -> Result<i32> {
     Ok(if failed.is_some() { EXIT_FAIL } else { EXIT_OK })
 }
 
+/// The two loads `rules` reports, `(this system's, all)`. The sources are
+/// configured for a scan that isn't `--deep`, so the load of all rules
+/// asks which sources a `--deep` scan uses: with the default `active` a
+/// `tier = "deep"` source would be left out of "all", and the compiled
+/// copy of all rules, named by the files it was made from, would differ
+/// from `scan --deep`'s, so each run replaced the other's.
+fn rules_loads(
+    dir: &std::path::Path,
+) -> (wpantry::checks::malware::yara::Loaded, wpantry::checks::malware::yara::Loaded) {
+    use wpantry::checks::malware::yara;
+    use wpantry::sources::file;
+    let this_system = yara::load(dir, false, &|id: &str| file::active(id));
+    let all = yara::load(dir, true, &|id: &str| file::active_when_deep(id));
+    (this_system, all)
+}
+
 /// Use the sources file (`file`, else `~/.config/wpantry/sources.toml` when
-/// there is one) for this run; the exit code when it can't be used.
-fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
+/// there is one) and the `added` ones (`--add-sources FILE`) for this run;
+/// the exit code when they can't be used.
+fn use_sources_file(file: Option<&std::path::Path>, added: &[std::path::PathBuf]) -> Option<i32> {
     use wpantry::sources::file as sources;
-    let path = file.map(std::path::Path::to_path_buf).unwrap_or_else(sources::user_file);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && file.is_none() => None,
-        Err(e) => {
-            eprintln!("wpantry: error: {}: {e}", path.display());
+    let files = match sources::read_files(file, added) {
+        Ok(f) => f,
+        Err((_, why)) => {
+            eprintln!("wpantry: error: {why}");
             return Some(EXIT_USAGE);
         }
     };
-    if let Err(e) = sources::configure(text.as_deref(), false) {
+    if let Err(e) = sources::configure_files(&files, false) {
+        eprintln!("wpantry: error: {e}");
+        return Some(EXIT_USAGE);
+    }
+    None
+}
+
+/// For a scan with `--add-sources`: a usage error, before the scan, when an
+/// added file can't be read or used (an option given must not be passed
+/// over quietly). A fault in the user's own file alone is left to the scan,
+/// which reports it as without `--add-sources`.
+fn check_added_sources(file: Option<&std::path::Path>, added: &[std::path::PathBuf]) -> Option<i32> {
+    use wpantry::sources::file as sources;
+    if added.is_empty() {
+        return None;
+    }
+    let files = match sources::read_files(file, added) {
+        Ok(f) => f,
+        Err((name, _)) if name == sources::USER_FILE_NAME => return None,
+        Err((_, why)) => {
+            eprintln!("wpantry: error: {why}");
+            return Some(EXIT_USAGE);
+        }
+    };
+    if sources::merged_files(&files[..files.len() - added.len()]).is_err() {
+        return None;
+    }
+    if let Err(e) = sources::merged_files(&files) {
         eprintln!("wpantry: error: {e}");
         return Some(EXIT_USAGE);
     }
@@ -1324,14 +1368,22 @@ fn use_sources_file(file: Option<&std::path::Path>) -> Option<i32> {
 }
 
 /// `sources`: every outside source and what its fetches came to.
-fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
+fn cmd_sources(json: bool, file: Option<std::path::PathBuf>, added: &[std::path::PathBuf]) -> Result<i32> {
     use wpantry::sources::file as sources;
-    if let Some(code) = use_sources_file(file.as_deref()) {
+    if let Some(code) = use_sources_file(file.as_deref(), added) {
         return Ok(code);
     }
     let user = sources::effective().user.clone();
     let cache = Cache::open(None)?;
     let all = wpantry::sources::fetch::listing(&cache)?;
+    // A folder of OSV records: how many records its last good read holds,
+    // and how many of its files were skipped.
+    let mut counts = std::collections::HashMap::new();
+    for l in all.iter().filter(|l| wpantry::sources::osv_dir::is_osv_dir(&l.source)) {
+        if let Some(n) = wpantry::sources::osv_dir::counts(&cache, &l.source.id)? {
+            counts.insert(l.source.id.clone(), n);
+        }
+    }
     cache.close()?;
     let now = wpantry::utils::os::now();
     let when = |t: f64| if t > 0.0 { J::Float(t) } else { J::Null };
@@ -1346,9 +1398,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
                     ("format", s.format.as_str().into()),
                     ("tier", s.tier.as_str().into()),
                     ("host", s.host().map_or(J::Null, |h| h.as_str().into())),
+                    ("transport", s.transport.as_str().into()),
                     (
-                        "transport",
-                        if s.transport == wpantry::sources::file::Transport::Git { "git" } else { "https" }.into(),
+                        "path",
+                        if s.transport == wpantry::sources::file::Transport::Local {
+                            s.url.as_str().into()
+                        } else {
+                            J::Null
+                        },
                     ),
                     ("user", J::Bool(user.contains(&s.id))),
                     ("license", s.license.as_str().into()),
@@ -1359,6 +1416,8 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
                     ("last_success", when(l.state.success)),
                     ("fresh", J::Bool(l.fresh)),
                     ("error", if l.state.error.is_empty() { J::Null } else { l.state.error.as_str().into() }),
+                    ("records", counts.get(&s.id).map_or(J::Null, |n| J::Int(n.0 as i64))),
+                    ("skipped", counts.get(&s.id).map_or(J::Null, |n| J::Int(n.1 as i64))),
                 ])
             })
             .collect();
@@ -1376,7 +1435,10 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
         } else {
             "never fetched".to_string()
         };
-        let host = s.host().unwrap_or_else(|| "git".into());
+        let host = match s.transport {
+            wpantry::sources::file::Transport::Local => s.url.clone(),
+            _ => s.host().unwrap_or_else(|| "git".into()),
+        };
         let host = if user.contains(&s.id) { format!("{host} (yours)") } else { host };
         show(&format!("{:<28} {:<18} {:<7} {:<34} {}", s.id, s.kind, s.tier.as_str(), host, fetched));
         show(&format!(
@@ -1385,6 +1447,14 @@ fn cmd_sources(json: bool, file: Option<std::path::PathBuf>) -> Result<i32> {
             s.license,
             if s.redistribute { "" } else { " (fetched here, never redistributed)" }
         ));
+        if let Some((records, skipped)) = counts.get(&s.id) {
+            show(&format!(
+                "{:<28} {records} {} loaded, {skipped} {} skipped",
+                "",
+                if *records == 1 { "record" } else { "records" },
+                if *skipped == 1 { "file" } else { "files" }
+            ));
+        }
         if !l.state.error.is_empty() {
             show(&format!("{:<28} last error: {}", "", l.state.error));
         }
@@ -1521,8 +1591,8 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Tools { json } => cmd_tools(json),
         Command::Skill => cmd_print(wpantry::SKILL),
         Command::Licenses => cmd_print(NOTICES),
-        Command::Sources { json, file } => cmd_sources(json, file),
         Command::Ignore { action, json } => cmd_ignore(action, json),
+        Command::Sources { json, file, added } => cmd_sources(json, file, &added),
         Command::Rules { action, samples, update, json, category, family, name, out } => match action.as_str() {
             "gen" => cmd_rules_gen(&samples, &category, family.as_deref(), name.as_deref(), out.as_deref()),
             "goodware" => cmd_rules_goodware().map(|_| EXIT_OK),

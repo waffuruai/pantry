@@ -196,6 +196,16 @@ wpantry search "tarfile traversal"            # rank cached advisories (FTS5: "e
 wpantry search openssl --applicable --json    # only those that apply here
 ```
 
+## macOS privacy prompts
+
+macOS asks before a program opens some folders, and a scan started by a GUI program or a scheduled job has nobody to answer. With `--no-personal-files` (what a scheduled run uses) a scan never lists or opens:
+
+- `~/Documents`, `~/Desktop` and `~/Downloads`, in any pass: finding repos, the files pass, the malware scan, the programs that start at login, the PATH;
+- iCloud Drive and other cloud drives (`~/Library/Mobile Documents`, `~/Library/CloudStorage`), `~/Pictures`, `~/Music` and `~/Movies`;
+- other apps' data: `~/Library/Mail`, `Messages`, `Safari`, `Calendars`, `Application Support/AddressBook`, `Containers` and `Group Containers`.
+
+They are left out by path, before anything touches them, and the report says so as "Skipped by your choice" (`Repositories in personal folders`, `Personal documents and images`). A repo kept in one of them is not scanned. To include them, run the scan without `--no-personal-files` at a terminal that can answer the prompt, or name the folder: `wpantry scan --path ~/Documents/project` scans that path and what is under it even with the flag; the rest of that folder stays left out for every pass, the login programs and PATH included. A login program (a launch agent's, for one) that sits in a left-out folder is not opened or checked, and the report lists it as not checked, naming the item and the program. A folder the system refuses to list (a denied prompt, no Full Disk Access) is reported as not checked and the scan goes on. On Linux and Windows the flag leaves out the same three folders under your home folder.
+
 ## Fixing
 
 ```bash
@@ -418,8 +428,9 @@ Scope options:
   --deep               read everything in scope (slower): every file of the computer this user can
                        read, ~ first (or each --path), for malware with every system's rules and for
                        secrets; git history's files up to 256 MB with no time limit
-  --no-personal-files  leave Downloads, Desktop and Documents out of the document and malware
-                       passes, reported as not checked (for unattended runs)
+  --no-personal-files  never open Downloads, Desktop or Documents in any pass, finding repos
+                       included (on macOS also the other folders it asks permission for), reported
+                       as not checked (for unattended runs)
 
 Report options:
   --txt             the report as plain text, without colour
@@ -450,17 +461,19 @@ Policy options:
                             when it exists)
 
 Options:
-  --refresh         ignore cached answers and ask every source again
-  --offline         use only the local cache
-  --no-input        never prompt
-  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
-  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
-                    once otherwise)
-  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
-                    WPANTRY_ALLOW_SLEEP=1)
-  --events          write the scan's progress to stderr as JSON Lines (steps, the path being read,
-                    findings), for programs that run wpantry; implies --no-input
-  -h, --help        print this help
+  --refresh             ignore cached answers and ask every source again
+  --offline             use only the local cache
+  --no-input            never prompt
+  --jobs <n>            repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar
+                        (asked once otherwise)
+  --add-sources <file>  add this sources file's sources to yours for this run; repeat it for more
+                        (an id may be defined once)
+  --allow-sleep         let the Mac idle-sleep during the scan (kept awake otherwise; or
+                        WPANTRY_ALLOW_SLEEP=1)
+  --events              write the scan's progress to stderr as JSON Lines (steps, the path being
+                        read, findings), for programs that run wpantry; implies --no-input
+  -h, --help            print this help
 
 Commands:
   project [options] [dir]  Scan one project and the runtimes it uses, nothing else of this computer
@@ -518,15 +531,17 @@ Scope options:
                      secrets; git history's files up to 256 MB with no time limit
 
 Options:
-  --refresh         ignore cached answers and ask every source again
-  --offline         use only the local cache
-  --no-input        never prompt
-  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
-  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
-                    once otherwise)
-  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
-                    WPANTRY_ALLOW_SLEEP=1)
-  -h, --help        print this help
+  --refresh             ignore cached answers and ask every source again
+  --offline             use only the local cache
+  --no-input            never prompt
+  --jobs <n>            repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar
+                        (asked once otherwise)
+  --add-sources <file>  add this sources file's sources to yours for this run; repeat it for more
+                        (an id may be defined once)
+  --allow-sleep         let the Mac idle-sleep during the scan (kept awake otherwise; or
+                        WPANTRY_ALLOW_SLEEP=1)
+  -h, --help            print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ```
@@ -564,8 +579,9 @@ Scope options:
   --deep               read everything in scope (slower): every file of the computer this user can
                        read, ~ first (or each --path), for malware with every system's rules and for
                        secrets; git history's files up to 256 MB with no time limit
-  --no-personal-files  leave Downloads, Desktop and Documents out of the document and malware
-                       passes, reported as not checked (for unattended runs)
+  --no-personal-files  never open Downloads, Desktop or Documents in any pass, finding repos
+                       included (on macOS also the other folders it asks permission for), reported
+                       as not checked (for unattended runs)
 
 Report options:
   --txt             the report as plain text, without colour
@@ -596,21 +612,23 @@ Policy options:
                             when it exists)
 
 Options:
-  --dry-run         print what would run or be written; change nothing
-  --yes             run the fixes and write the stopgaps without asking
-  --from-scan <id>  with a finding id: require this latest scan and an automatic fix
-  --undo            with an id: take wpantry's stopgap away once the real fix is installed
-  --bundle <file>   ca-trust: rewrite this PEM bundle instead of the system trust store
-  --hours <n>       extension-cooldown: the cooldown (default: 72)
-  --refresh         ignore cached answers and ask every source again
-  --offline         use only the local cache
-  --no-input        never prompt
-  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
-  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
-                    once otherwise)
-  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
-                    WPANTRY_ALLOW_SLEEP=1)
-  -h, --help        print this help
+  --dry-run             print what would run or be written; change nothing
+  --yes                 run the fixes and write the stopgaps without asking
+  --from-scan <id>      with a finding id: require this latest scan and an automatic fix
+  --undo                with an id: take wpantry's stopgap away once the real fix is installed
+  --bundle <file>       ca-trust: rewrite this PEM bundle instead of the system trust store
+  --hours <n>           extension-cooldown: the cooldown (default: 72)
+  --refresh             ignore cached answers and ask every source again
+  --offline             use only the local cache
+  --no-input            never prompt
+  --jobs <n>            repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash      never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar
+                        (asked once otherwise)
+  --add-sources <file>  add this sources file's sources to yours for this run; repeat it for more
+                        (an id may be defined once)
+  --allow-sleep         let the Mac idle-sleep during the scan (kept awake otherwise; or
+                        WPANTRY_ALLOW_SLEEP=1)
+  -h, --help            print this help
 
 Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage
 error, 3 internal error.
@@ -828,9 +846,11 @@ Every outside source wpantry reads: its kind, tier, host and licence, when it wa
 whether that is fresh, and what last went wrong.
 
 Options:
-  --json            the sources as JSON
-  --sources <file>  your sources file (default: ~/.config/wpantry/sources.toml when it exists)
-  -h, --help        print this help
+  --json                the sources as JSON
+  --sources <file>      your sources file (default: ~/.config/wpantry/sources.toml when it exists)
+  --add-sources <file>  add this sources file's sources to yours; repeat it for more (an id may be
+                        defined once)
+  -h, --help            print this help
 ```
 
 ### ignore

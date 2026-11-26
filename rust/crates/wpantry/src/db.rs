@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS run_findings (
   status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
   fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT, cvss REAL,
   cvss_version TEXT, epss REAL, epss_percentile REAL, epss_date TEXT, epss_model TEXT,
-  excluded INTEGER, summary TEXT, aliases TEXT, cwe TEXT);
+  excluded INTEGER, summary TEXT, aliases TEXT, cwe TEXT, local_source TEXT, local_link TEXT);
 CREATE INDEX IF NOT EXISTS run_findings_scan ON run_findings (scan_id);
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, added TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS eol (
@@ -90,10 +90,12 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("findings", "summary", "TEXT"),
     ("findings", "aliases", "TEXT"),
     ("findings", "cwe", "TEXT"),
+    ("findings", "local_source", "TEXT"),
+    ("findings", "local_link", "TEXT"),
 ];
 
 /// A finding's columns, in `findings` and in `run_findings`.
-pub const FINDING_COLUMNS: &str = "kind, component, version, location, vuln_id, status, fixed, kev, severity, note,      fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile,      epss_date, epss_model, excluded, summary, aliases, cwe";
+pub const FINDING_COLUMNS: &str = "kind, component, version, location, vuln_id, status, fixed, kev, severity, note,      fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile,      epss_date, epss_model, excluded, summary, aliases, cwe, local_source, local_link";
 
 fn migrate(conn: &Connection) -> Result<()> {
     for (table, column, kind) in ADDED {
@@ -189,6 +191,7 @@ impl Cache {
         conn.execute_batch(crate::checks::malware::rulegen::SCHEMA)?;
         conn.execute_batch(crate::sources::hash_lookups::VERDICT_SCHEMA)?;
         conn.execute_batch(crate::sources::wordfence::SCHEMA)?;
+        conn.execute_batch(crate::sources::osv_dir::SCHEMA)?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS queries_checked_at ON queries(checked_at);\
              CREATE INDEX IF NOT EXISTS vulns_modified ON vulns(modified);",
@@ -535,7 +538,7 @@ impl Cache {
     fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {
         let mut stmt = self.conn.prepare(&format!(
             "INSERT INTO {table} ({FINDING_COLUMNS}{}) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{})",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{})",
             if scan_id.is_some() { ", scan_id" } else { "" },
             if scan_id.is_some() { ", ?" } else { "" },
         ))?;
@@ -566,6 +569,8 @@ impl Cache {
                 f.summary.clone().into(),
                 f.aliases.join(" ").into(),
                 f.cwe.join(" ").into(),
+                f.local_source.clone().into(),
+                f.local_link.clone().into(),
             ];
             row.extend(scan_id.map(rusqlite::types::Value::from));
             stmt.execute(rusqlite::params_from_iter(row))?;

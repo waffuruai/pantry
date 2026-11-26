@@ -56,3 +56,19 @@ fn file_sources_land_in_their_places_and_leave_when_dropped() {
         "unreachable with no copy: said so"
     );
 }
+
+/// Risk: a local source is asked about (so `--no-input` and the scheduled
+/// scan skip it) or a URL-keyed answer is looked up for it. Oracle: a
+/// local source reaches no host and sends nothing, so it is used with no
+/// question and nothing kept; a remote one on a new host still needs a yes.
+#[test]
+fn a_local_source_is_used_without_a_question() {
+    let (d, c) = cache();
+    let rules = d.path().join("team-rules");
+    let s = user(&format!("id = \"team-local\"\nkind = \"yara\"\nformat = \"yara\"\npath = '{}'", rules.display()));
+    let never = |q: &str| -> Option<bool> { panic!("asked: {q}") };
+    assert_eq!(consent(&c, None, &s).unwrap(), Ok(()), "--no-input: used");
+    assert_eq!(consent(&c, Some(&never), &s).unwrap(), Ok(()), "nothing asked");
+    assert_eq!(c.get("source_consent:team-local").unwrap(), None, "no answer kept");
+    assert!(is_file(&s));
+}

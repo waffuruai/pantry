@@ -19,11 +19,13 @@ pub mod homebrew_formulae;
 pub mod indicator_lists;
 pub mod indicator_store;
 pub mod kev;
+pub mod local;
 pub mod malicious_packages;
 #[cfg(test)]
 mod mutate;
 pub mod osv;
 pub mod osv_changes;
+pub mod osv_dir;
 pub mod package_licenses;
 pub mod releases;
 #[cfg(test)]

@@ -277,6 +277,61 @@ pub(crate) fn spawn(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     }
 }
 
+/// Kill `child` and every process it started that is still running: a
+/// program that times out is usually a wrapper (a package manager, a shell
+/// script) whose own children keep working, holding locks and writing into
+/// what the report says was stopped. The tree is read before anything is
+/// killed, since a parent's death hands its children to init. A process that
+/// left the tree (a daemon, a double fork) is out of reach.
+pub(crate) fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let below = descendants(child.id());
+        // The program first: a shell that outlives the children it started
+        // reports "Killed" on its own stderr, which would end up in the report.
+        let _ = child.kill();
+        if !below.is_empty() {
+            let mut cmd = Command::new(program(OsStr::new("kill")));
+            cmd.arg("-KILL").args(below.iter().map(u32::to_string));
+            cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            let _ = cmd.status();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+}
+
+/// The pids below `root`, from one `ps` listing; none when `ps` can't run.
+#[cfg(unix)]
+fn descendants(root: u32) -> Vec<u32> {
+    let mut cmd = Command::new(program(OsStr::new("ps")));
+    cmd.args(["-A", "-o", "pid=,ppid="]).stdin(Stdio::null()).stderr(Stdio::null());
+    let Ok(out) = cmd.output() else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let pairs: Vec<(u32, u32)> = text
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?))
+        })
+        .collect();
+    let mut found = vec![root];
+    let mut i = 0;
+    while i < found.len() {
+        let parent = found[i];
+        let kids: Vec<u32> = pairs
+            .iter()
+            .filter(|(_, ppid)| *ppid == parent)
+            .map(|(pid, _)| *pid)
+            .filter(|p| !found.contains(p))
+            .collect();
+        found.extend(kids);
+        i += 1;
+    }
+    found.remove(0);
+    found
+}
+
 /// errno for "text file busy" on Linux and the BSDs (macOS included).
 #[cfg(unix)]
 const ETXTBSY: i32 = 26;
@@ -316,7 +371,7 @@ pub fn exec(argv: &[&OsStr], env: &[(&str, &str)], timeout: Duration) -> Result<
             break status;
         }
         if start.elapsed() > timeout {
-            let _ = child.kill();
+            kill_tree(&mut child);
             let _ = child.wait();
             return Err(timed_out());
         }

@@ -370,3 +370,40 @@ fn a_removal_waits_on_the_install_that_replaces_it() {
     assert_eq!(first_step("brew upgrade a"), "brew upgrade a");
     assert_eq!(first_step(""), "");
 }
+
+/// Risk: a fix that hangs is "stopped" after the deadline by killing the
+/// program wpantry started, but the programs it started (an installer's
+/// downloader or compiler) go on running, holding their locks and writing
+/// into the install the report says was stopped. Oracle: after the deadline
+/// the child and the process it started are both gone, the pid the shell
+/// wrote down is not alive, and the report still says what happened.
+#[cfg(unix)]
+#[test]
+fn a_fix_that_times_out_does_not_leave_the_programs_it_started_running() {
+    let d = crate::utils::temp::TempDir::new("timeout-tree").unwrap();
+    let pidfile = d.path().join("grandchild.pid");
+    let script = format!("sleep 60 & echo $! > '{}'; wait", pidfile.display());
+    let argv = vec!["sh".to_string(), "-c".to_string(), script];
+    let r = run::run_bounded(&argv, std::time::Duration::from_millis(500));
+    assert_eq!(r.reason, "timed out after 500 ms and was stopped");
+    let pid = std::fs::read_to_string(&pidfile).expect("the script wrote the pid of its child").trim().to_string();
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    // A killed process can take a moment to be reaped.
+    let gone = (0..50).any(|_| {
+        let gone = !alive(&pid);
+        if !gone {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        gone
+    });
+    if !gone {
+        let _ = std::process::Command::new("kill").args(["-KILL", &pid]).status();
+    }
+    assert!(gone, "the command's own child {pid} was left running after the timeout");
+}

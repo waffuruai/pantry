@@ -113,7 +113,7 @@ pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
+                crate::utils::process::kill_tree(&mut child);
                 let _ = child.wait();
                 break None;
             }

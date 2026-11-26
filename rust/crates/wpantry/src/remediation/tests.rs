@@ -469,3 +469,35 @@ fn a_hostile_requirement_is_not_pasted_into_the_why_line() {
         assert!(whys(&f.lines()).len() == 1);
     }
 }
+
+/// Risk: `fix <ID>` for one finding runs only that advisory's own (lowest)
+/// fix, so the component's other advisories stay open. Oracle: the plan the
+/// list shows for the same five findings, one step at the highest version.
+#[test]
+fn one_finding_fix_is_the_components_covering_fix() {
+    let five: Vec<Finding> = ["2.8.4", "2.9.0", "2.10.0", "3.0.2", "4.0.0"]
+        .iter()
+        .enumerate()
+        .map(|(i, safe)| Finding {
+            kind: "package".into(),
+            component: "pip:soupsieve".into(),
+            version: "2.8.3".into(),
+            location: "/x/bin/python3".into(),
+            vuln_id: format!("CVE-{i}"),
+            fixed: safe.to_string(),
+            ..f(&format!("/x/bin/python3 -m pip install --user --upgrade 'soupsieve>={safe}'"), true, "fail")
+        })
+        .collect();
+    let other = Finding { component: "pip:other".into(), ..f("/x/bin/python3 -m pip install other", true, "fail") };
+    let manual = Finding { fix_auto: false, ..five[0].clone() };
+    let all: Vec<Finding> = five.iter().cloned().chain([other, manual]).collect();
+    let want = "/x/bin/python3 -m pip install --user --upgrade 'soupsieve>=4.0.0'";
+    for one in &five {
+        let fixes = component_fixes(&all, one);
+        assert_eq!(fixes.len(), 5, "only this component's unattended fixes: {fixes:?}");
+        assert_eq!(plan(&fixes).0, [want], "{}", one.vuln_id);
+    }
+    assert_eq!(plan(&[five[0].clone()]).0, ["/x/bin/python3 -m pip install --user --upgrade 'soupsieve>=2.8.4'"]);
+    // A finding with no unattended fix of its own gets no company.
+    assert_eq!(component_fixes(&all, &five[0]).iter().filter(|f| !f.fix_auto).count(), 0);
+}

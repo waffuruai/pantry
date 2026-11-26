@@ -48,7 +48,7 @@ fn brew_job_is_nothing_without_brew_and_not_stale_offline() {
         assert_eq!(job.fingerprint.len(), 64);
         assert!(brew_job(&c, true, false).unwrap().unwrap().stale, "--refresh always does");
     } else {
-        assert!(which("brew").is_none());
+        assert!(crate::utils::process::find_tool("brew").is_none());
     }
 }
 

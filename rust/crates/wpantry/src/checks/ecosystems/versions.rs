@@ -116,6 +116,20 @@ pub fn is_safe_token(v: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || ".+~_:-".contains(c))
 }
 
+/// A version without the `v` a git tag puts before it (`v3.14.10` is
+/// release 3.14.10): the form every fix command and every "update to"
+/// sentence wants, bar the few that spell the tag themselves (`go get
+/// mod@v1.2.3` adds its own `v`; `docker pull image:v{safe}` too). Only a
+/// `v` or `V` straight before a digit goes, so `vim` or `v` stay as they are.
+///
+/// Example: `v3.14.10` gives `3.14.10`; `3.14.10` and `OTP-27.3.3` are as is.
+pub fn bare(v: &str) -> &str {
+    match v.as_bytes() {
+        [b'v' | b'V', d, ..] if d.is_ascii_digit() => &v[1..],
+        _ => v,
+    }
+}
+
 pub fn lt(a: &str, b: &str) -> bool {
     cmp(a, b) == Ordering::Less
 }

@@ -68,3 +68,23 @@ fn java_8s_two_spellings_compare_as_one() {
     assert!(!current("node", "1.8.0_412", "8u472"), "other tools compare as before");
     assert!(!current("node", "18.0.0", "18.1.0"));
 }
+
+/// Risk: a git tag's `v` reaches a command or a sentence ("update to
+/// v3.14.10"). Oracle: the release's own number, as a person writes it.
+#[test]
+fn bare_takes_a_tags_v_and_nothing_else() {
+    for (given, want) in [
+        ("v3.14.10", "3.14.10"),
+        ("V3.14.10", "3.14.10"),
+        ("3.14.10", "3.14.10"),
+        ("v2", "2"),
+        ("OTP-27.3.3", "OTP-27.3.3"),
+        ("vim", "vim"),
+        ("v", "v"),
+        ("", ""),
+        ("vv1.2", "vv1.2"),
+        ("1.0.0-v2", "1.0.0-v2"),
+    ] {
+        assert_eq!(bare(given), want, "{given:?}");
+    }
+}

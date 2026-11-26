@@ -301,3 +301,49 @@ fn a_kept_scans_findings_have_every_findings_column() {
     assert_eq!(kept, findings);
     assert_eq!(listed, findings);
 }
+
+/// A wpantry that stopped between copying an older cache's findings and
+/// marking the scan kept left rows under a scan that still says nothing:
+/// the next open replaces them, so nothing is kept twice.
+#[test]
+fn an_adoption_cut_short_is_done_again_whole() {
+    let d = crate::utils::temp::TempDir::new("migrate").unwrap();
+    let file = d.path().join("w.db");
+    let c = Cache::open(Some(&file)).unwrap();
+    let f = crate::finding::Finding { kind: "project".into(), vuln_id: "CVE-1".into(), ..Default::default() };
+    c.replace_findings(std::slice::from_ref(&f)).unwrap();
+    let id = crate::history::record_scan(&c, 1.0, std::slice::from_ref(&f), &[], &Default::default()).unwrap();
+    // As the interrupted process left it: the copy made, the mark not.
+    c.conn.execute("UPDATE scans SET kept = NULL WHERE id = ?", [id]).unwrap();
+    c.close().unwrap();
+    for _ in 0..2 {
+        let c = Cache::open(Some(&file)).unwrap();
+        let rows: i64 =
+            c.conn.query_row("SELECT COUNT(*) FROM run_findings WHERE scan_id = ?", [id], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1, "one copy, however many times it is opened");
+        assert!(crate::history::is_kept(&c, id).unwrap());
+        c.close().unwrap();
+    }
+}
+
+/// `cache prune` keeps the advisory a kept scan's finding names, even when
+/// the latest scan and every cached answer have moved on: `report --run`
+/// exports its record.
+#[test]
+fn prune_keeps_an_advisory_only_an_older_kept_scan_refers_to() {
+    let d = crate::utils::temp::TempDir::new("prune-runs").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    for id in ["CVE-2026-0001", "CVE-2026-0002"] {
+        c.put_vuln(&serde_json::json!({"id": id, "summary": "s"})).unwrap();
+    }
+    let f = crate::finding::Finding { kind: "project".into(), vuln_id: "CVE-2026-0001".into(), ..Default::default() };
+    c.replace_findings(std::slice::from_ref(&f)).unwrap();
+    crate::history::record_scan(&c, 1.0, std::slice::from_ref(&f), &[], &Default::default()).unwrap();
+    // A later scan finds nothing: the latest findings no longer name it.
+    c.replace_findings(&[]).unwrap();
+    crate::history::record_scan(&c, 2.0, &[], &[], &Default::default()).unwrap();
+    let (_, gone, _) = c.prune(0.0).unwrap();
+    assert_eq!(gone, 1, "the advisory nothing refers to");
+    assert!(c.vuln("CVE-2026-0001").unwrap().is_some(), "the older kept scan's");
+    assert!(c.vuln("CVE-2026-0002").unwrap().is_none());
+}

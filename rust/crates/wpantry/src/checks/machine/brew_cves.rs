@@ -211,10 +211,8 @@ pub fn fixer(has_brew: bool, mise_installs: PathBuf, cellar: PathBuf) -> impl Fn
                 Some(m) => (m.to_string(), false),
                 None => (format!("brew upgrade {formula}"), true),
             }
-        } else if safe && mise_installs.join(format!("brew-{formula}")).is_dir() {
-            (format!("mise upgrade brew:{formula}"), false)
         } else {
-            (format!("Upgrade {formula} in the Cellar at {} (mise's brew: engine or brew)", cellar.display()), false)
+            cellar::upgrade_step(formula, &cellar, &mise_installs)
         }
     }
 }
@@ -223,7 +221,7 @@ pub fn fixer(has_brew: bool, mise_installs: PathBuf, cellar: PathBuf) -> impl Fn
 pub fn run(scan: &mut Scan) -> Result<()> {
     let Some(dir) = cellar::find_cellar() else { return Ok(()) };
     let formulae = installed(&dir);
-    let fix = fixer(crate::utils::process::which("brew").is_some(), cellar::mise_installs(), dir);
+    let fix = fixer(crate::utils::process::find_tool("brew").is_some(), cellar::mise_installs(), dir);
     check(scan, &formulae, &fix)
 }
 

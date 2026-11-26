@@ -177,6 +177,63 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
+/// Where a program's own installer puts it, tried after PATH when PATH
+/// does not have it (an app started from the Finder, a launchd job or a
+/// cron entry has a short one): `mise` in `$MISE_INSTALL_PATH` (when set)
+/// and `~/.local/bin`; `brew` in `$HOMEBREW_PREFIX/bin`; both in the three
+/// Homebrew prefixes. Other names have no standard place.
+///
+/// Example: `tool_places("brew", "/Users/x", env)` with no variables set is
+/// `/opt/homebrew/bin/brew`, `/usr/local/bin/brew` and
+/// `/home/linuxbrew/.linuxbrew/bin/brew`.
+pub fn tool_places(name: &str, home: &Path, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    tool_places_on(cfg!(windows), name, home, env)
+}
+
+/// [`tool_places`] for Windows (`windows`) or the Unixes. On Windows only
+/// `$MISE_INSTALL_PATH` is named: the Unix prefixes and `~/.local/bin` mean
+/// nothing there, there is no Homebrew, and mise's own Windows install
+/// locations are not documented well enough to guess (winget and scoop put
+/// it on PATH).
+pub fn tool_places_on(
+    windows: bool,
+    name: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if windows {
+        return if name == "mise" { set("MISE_INSTALL_PATH").into_iter().collect() } else { Vec::new() };
+    }
+    let prefixes = ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
+    let mut out = Vec::new();
+    match name {
+        "mise" => {
+            out.extend(set("MISE_INSTALL_PATH"));
+            out.push(home.join(".local/bin/mise"));
+        }
+        "brew" => out.extend(set("HOMEBREW_PREFIX").map(|p| p.join("bin/brew"))),
+        _ => return out,
+    }
+    out.extend(prefixes.iter().map(|p| Path::new(p).join("bin").join(name)));
+    out
+}
+
+/// `name` on PATH, else in one of its [`tool_places`].
+pub fn find_tool(name: &str) -> Option<PathBuf> {
+    find_tool_in(name, std::env::var_os("PATH"), &home(), &|k| std::env::var_os(k))
+}
+
+/// [`find_tool`] for a PATH value, a home directory and an environment.
+pub fn find_tool_in(
+    name: &str,
+    path: Option<std::ffi::OsString>,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    which_in(name, path.as_deref()).or_else(|| tool_places(name, home, env).into_iter().find(|p| is_executable(p)))
+}
+
 /// What a finished program printed.
 #[derive(Debug, Default)]
 pub struct Output {

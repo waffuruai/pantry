@@ -1882,6 +1882,17 @@ fn an_interrupted_scan_is_told_by_the_next_command() {
     );
     assert_eq!(envelope(&r.out)["schema"], 1, "stdout is still the report alone");
     assert!(!t.run(&["report", "--json"]).err.contains("didn't finish"), "told once");
+    // The fix commands that read the latest scan say so too.
+    for argv in [&["fix", "list"][..], &["fix", "next", "--json"][..]] {
+        t.conn()
+            .execute(
+                "INSERT INTO meta VALUES ('scan_running:2147483646', '{\"started_at\": 86400.0, \"scope\": \"machine:~\"}')",
+                [],
+            )
+            .unwrap();
+        let r = t.run(argv);
+        assert!(r.err.contains("didn't finish: nothing of it was saved"), "{argv:?}: {}", r.err);
+    }
 }
 
 #[test]

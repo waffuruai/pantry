@@ -378,3 +378,28 @@ fn the_python_search_does_not_list_a_left_out_folder() {
     assert_eq!(names(&path), ["python3", "python3.98"]);
     drop(guard);
 }
+
+/// Risk: a `v` in the fix version reaches the package managers' commands
+/// (`cargo install name@v1.2.3` is not a version requirement). Oracle: the
+/// bare version in each of pip's, npm's and cargo's.
+#[test]
+fn package_fix_commands_name_the_fixed_version() {
+    use crate::checks::fix_with;
+    let template = |fix: &str| {
+        let mut c = Component::new("package", "x", "1", "/p");
+        c.fix = fix.into();
+        c
+    };
+    for safe in ["1.2.3"] {
+        for (fix, want) in [
+            (
+                "/x/bin/python3 -m pip install --upgrade 'requests>={safe}'",
+                "/x/bin/python3 -m pip install --upgrade 'requests>=1.2.3'",
+            ),
+            ("/x/npm install -g left-pad@{safe}", "/x/npm install -g left-pad@1.2.3"),
+            ("cargo install --locked ripgrep@{safe}", "cargo install --locked ripgrep@1.2.3"),
+        ] {
+            assert_eq!(fix_with(&template(fix), safe).0, want, "{fix} given {safe}");
+        }
+    }
+}

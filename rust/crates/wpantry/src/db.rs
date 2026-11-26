@@ -82,6 +82,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("exposures", "first_epss", "REAL"),
     ("exposures", "first_epss_percentile", "REAL"),
     ("fixes", "host", "TEXT"),
+    ("fixes", "exit_code", "INTEGER"),
+    ("fixes", "error", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),
@@ -111,10 +113,25 @@ fn migrate(conn: &Connection) -> Result<()> {
     // scan before the upgrade, or an older wpantry run since): `findings`
     // is that scan's, and it becomes a kept scan. A scan whose findings
     // were pruned or trimmed says so (0) and is left alone.
+    //
+    // One write transaction, taken before the scan is read again: a
+    // process that stops midway leaves nothing behind, and of two that open
+    // together the second waits and finds the scan already kept. Rows left
+    // under that scan by anything else are replaced, never added to.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let adopted = adopt_newest(conn);
+    conn.execute_batch(if adopted.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
+    adopted
+}
+
+/// Inside the caller's write transaction: make the newest scan a kept one
+/// when it doesn't say whether it is.
+fn adopt_newest(conn: &Connection) -> Result<()> {
     let newest: Option<(i64, Option<i64>)> = conn
         .query_row("SELECT id, kept FROM scans ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
     if let Some((id, None)) = newest {
+        conn.execute("DELETE FROM run_findings WHERE scan_id = ?", [id])?;
         conn.execute(
             &format!("INSERT INTO run_findings (scan_id, {FINDING_COLUMNS}) SELECT ?, {FINDING_COLUMNS} FROM findings"),
             [id],
@@ -357,7 +374,9 @@ impl Cache {
             for ids in stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten() {
                 keep.extend(ids.split_whitespace().map(str::to_string));
             }
-            let mut stmt = self.conn.prepare("SELECT vuln_id FROM findings")?;
+            // The latest scan's, and every kept scan's: `report --run ID`
+            // exports an advisory's record as the latest report does.
+            let mut stmt = self.conn.prepare("SELECT vuln_id FROM findings UNION SELECT vuln_id FROM run_findings")?;
             keep.extend(stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten());
         }
         let mut gone: Vec<String> = Vec::new();

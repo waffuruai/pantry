@@ -169,10 +169,25 @@ fn path_from(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
 /// The longest a scan waits for another scan on the same cache to end.
 pub const SCAN_QUEUE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+/// The two waits of a scan's cache.
+#[derive(Clone, Copy)]
+pub(crate) struct Limits {
+    /// How long to queue for the scan that has the cache.
+    pub queue: std::time::Duration,
+    /// How long one write waits for the database lock.
+    pub busy: std::time::Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { queue: SCAN_QUEUE, busy: std::time::Duration::from_secs(60) }
+    }
+}
+
 /// Take the lock file of the scan that has the cache at `db`, waiting for it
 /// to end. The lock is the operating system's (`flock`, `LockFileEx`): a scan
 /// that is killed lets it go.
-fn lock_scans(db: &Path) -> Result<std::fs::File> {
+fn lock_scans(db: &Path, queue: std::time::Duration) -> Result<std::fs::File> {
     let mut name = db.as_os_str().to_os_string();
     name.push(".scan-lock");
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(PathBuf::from(name))?;
@@ -180,13 +195,17 @@ fn lock_scans(db: &Path) -> Result<std::fs::File> {
     loop {
         match lock.try_lock() {
             Ok(()) => return Ok(lock),
-            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < SCAN_QUEUE => {
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < queue => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(Error::Failed(format!(
-                    "another scan has had the cache for {} minutes ({})",
-                    SCAN_QUEUE.as_secs() / 60,
+                    "another scan has had the cache for {} ({})",
+                    if queue.as_secs() >= 120 {
+                        format!("{} minutes", queue.as_secs() / 60)
+                    } else {
+                        format!("{} s", queue.as_secs())
+                    },
                     db.display()
                 )));
             }
@@ -212,7 +231,7 @@ impl Cache {
     /// [`Cache::close`], as Python's sqlite3 does; dropping a cache without
     /// closing it discards what wasn't committed.
     pub fn open(file: Option<&Path>) -> Result<Cache> {
-        Cache::open_as(file, false)
+        Cache::open_as(file, false, Limits::default())
     }
 
     /// [`Cache::open`] for a scan. Scans on one cache run one after the
@@ -225,10 +244,17 @@ impl Cache {
     /// serialised because they replace each other's data (a scan with other
     /// sources removes what the first one loaded).
     pub fn open_for_scan(file: Option<&Path>) -> Result<Cache> {
-        Cache::open_as(file, true)
+        Cache::open_for_scan_within(file, Limits::default())
     }
 
-    fn open_as(file: Option<&Path>, writer: bool) -> Result<Cache> {
+    /// [`Cache::open_for_scan`] with its two waits set: how long to queue for
+    /// another scan, and how long one write waits for the database lock.
+    /// Tests shorten them to see what a wait longer than either does.
+    pub(crate) fn open_for_scan_within(file: Option<&Path>, limits: Limits) -> Result<Cache> {
+        Cache::open_as(file, true, limits)
+    }
+
+    fn open_as(file: Option<&Path>, writer: bool, limits: Limits) -> Result<Cache> {
         let file = file.map(Path::to_path_buf).unwrap_or_else(path);
         if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
             let mut builder = std::fs::DirBuilder::new();
@@ -240,7 +266,7 @@ impl Cache {
             }
             builder.create(dir)?;
         }
-        let scan_lock = if writer { Some(lock_scans(&file)?) } else { None };
+        let scan_lock = if writer { Some(lock_scans(&file, limits.queue)?) } else { None };
         let conn = Connection::open(&file)?;
         // The cache names what is installed and where secrets sit: ours only.
         #[cfg(unix)]
@@ -250,7 +276,7 @@ impl Cache {
         }
         // Readers and the writer coexist (a scheduled scan beside a manual
         // one), and a minute of waiting beats failing a scan outright.
-        conn.busy_timeout(std::time::Duration::from_secs(60))?;
+        conn.busy_timeout(limits.busy)?;
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::history::SCHEMA)?;

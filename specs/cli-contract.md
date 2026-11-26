@@ -199,6 +199,8 @@ The steps, by `id`, with their titles. `start` lists only the ones this run take
 
 The files pass, one read of each file for every content check and the malware scan, runs in the first step that needs it: `machine` on a machine scan, else `repo-files`. Its `at` lines name that step. Before it reads the first file it lists the folders not listed yet, looks over every file (its size and time) and looks each one up in the cache: those `at` lines have `kind: "dir"` (the folder of the file being looked over, then each root), and with a warm cache the pass may read no file at all. The `repos` step lists every repo's folders once (`at` lines with `kind: "dir"`, and `listed` growing).
 
+Scans on one cache run one after the other: a scan started while another has the cache waits for it (up to 30 minutes, then exit 3 naming the other scan) and then runs in full. Other commands that use the cache are not held up by a scan.
+
 ## `scan --json`
 
 ```json

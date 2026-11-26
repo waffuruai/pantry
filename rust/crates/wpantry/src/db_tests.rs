@@ -386,3 +386,69 @@ fn a_scan_does_not_hold_the_database_lock_and_scans_take_turns() {
     let c = second.join().unwrap();
     assert_eq!(c.get("a").unwrap().as_deref(), Some("1"));
 }
+
+/// Risk: a scan that waits for another longer than the database busy timeout
+/// (60 s in production) fails with "database is locked", or gets the cache
+/// and loses what it writes. Production waits are shortened here (busy 1 s)
+/// and the first scan keeps the cache for 3 s while it and another command
+/// keep writing; the wait is a lock file's, so the busy timeout is not the
+/// limit. Oracle: the second scan, queued well past the busy timeout, gets
+/// the cache without error, its writes land and the first scan's stay.
+#[test]
+fn a_scan_that_waits_longer_than_the_busy_timeout_still_runs() {
+    use std::time::{Duration, Instant};
+    let dir = crate::utils::temp::TempDir::new("db").unwrap();
+    let file = dir.path().join("w.db");
+    let limits = Limits { queue: Duration::from_secs(60), busy: Duration::from_secs(1) };
+    let first = Cache::open_for_scan_within(Some(&file), limits).unwrap();
+    first.set("first", "1").unwrap();
+    let f2 = file.clone();
+    let waited = std::thread::spawn(move || {
+        let t = Instant::now();
+        let c = Cache::open_for_scan_within(Some(&f2), limits).unwrap();
+        let took = t.elapsed();
+        c.set("second", "2").unwrap();
+        c.close().unwrap();
+        took
+    });
+    for i in 0..6 {
+        std::thread::sleep(Duration::from_millis(500));
+        first.set("tick", &i.to_string()).unwrap();
+    }
+    first.close().unwrap();
+    let took = waited.join().unwrap();
+    assert!(took > limits.busy * 2, "it waited {took:?}, not past the busy timeout");
+    let c = Cache::open(Some(&file)).unwrap();
+    assert_eq!(c.get("first").unwrap().as_deref(), Some("1"));
+    assert_eq!(c.get("second").unwrap().as_deref(), Some("2"));
+    assert_eq!(c.get("tick").unwrap().as_deref(), Some("5"));
+}
+
+/// Risk: a scan that has waited its whole queue time goes on without the
+/// cache and reports an empty or `unchecked` result with exit 0, or fails
+/// with a bare "database is locked". Oracle: it returns an error that names
+/// the other scan (the CLI turns any error from opening the cache into exit
+/// 3), after about the queue time and not much more, and it wrote nothing.
+#[test]
+fn a_scan_that_waits_out_the_queue_fails_and_says_why() {
+    use std::time::{Duration, Instant};
+    let dir = crate::utils::temp::TempDir::new("db").unwrap();
+    let file = dir.path().join("w.db");
+    let first = Cache::open_for_scan(Some(&file)).unwrap();
+    first.set("first", "1").unwrap();
+    let limits = Limits { queue: Duration::from_secs(1), busy: Duration::from_secs(1) };
+    let t = Instant::now();
+    let err = match Cache::open_for_scan_within(Some(&file), limits) {
+        Ok(_) => panic!("the second scan got the cache while the first had it"),
+        Err(e) => e,
+    };
+    let took = t.elapsed();
+    assert!(matches!(err, crate::Error::Failed(_)), "{err:?}");
+    let text = err.to_string();
+    assert!(text.contains("another scan has had the cache for 1 s"), "{text}");
+    assert!(!text.contains("database is locked"), "{text}");
+    assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(5), "{took:?}");
+    first.close().unwrap();
+    let c = Cache::open(Some(&file)).unwrap();
+    assert_eq!(c.get("first").unwrap().as_deref(), Some("1"));
+}

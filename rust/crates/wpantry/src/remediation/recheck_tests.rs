@@ -324,7 +324,13 @@ fn a_finding_made_from_a_cellar_without_brew_is_read_again_as_a_catalog_tool() {
     assert_eq!(findings[0].fix_auto, !cfg!(windows), "{findings:?}");
     let (file, scan) = scanned(&d, s.cache, &findings);
     let id = findings[0].id();
-    assert_eq!(check_id(&file, &id, scan).verdict.state, State::StillPresent);
+    let out = check_id(&file, &id, scan);
+    if cfg!(windows) {
+        // Without an automatic fix there is nothing to re-check: the answer is `unsupported`.
+        assert_eq!((out.verdict.state, out.verdict.reason), (State::Unknown, "unsupported"), "{out:?}");
+        return;
+    }
+    assert_eq!(out.verdict.state, State::StillPresent, "{out:?}");
     // Upgraded to a version OSV was never asked about: the record's ranges decide.
     std::fs::remove_dir_all(cellar.join("go/1.26.10")).unwrap();
     std::fs::create_dir_all(cellar.join("go/1.26.11")).unwrap();
@@ -333,7 +339,8 @@ fn a_finding_made_from_a_cellar_without_brew_is_read_again_as_a_catalog_tool() {
     // Still inside the range.
     std::fs::remove_dir_all(cellar.join("go/1.26.11")).unwrap();
     std::fs::create_dir_all(cellar.join("go/1.26.9")).unwrap();
-    assert_eq!(check_id(&file, &id, scan).verdict.state, State::StillPresent);
+    let out = check_id(&file, &id, scan);
+    assert_eq!(out.verdict.state, State::StillPresent, "{out:?}");
 }
 
 /// OSV for Go: one advisory for 1.26.10 under `stdlib` and `toolchain`,

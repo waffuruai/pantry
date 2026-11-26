@@ -222,6 +222,7 @@ pub fn record_scan_totals(
 struct OpenExposure {
     key: String,
     kind: String,
+    component: String,
     location: String,
     vuln_id: String,
 }
@@ -236,13 +237,13 @@ fn resolve_unseen(
     seen: &std::collections::HashSet<String>,
     may_close: impl Fn(&OpenExposure) -> bool,
 ) -> Result<()> {
-    let mut stmt = cache
-        .conn
-        .prepare("SELECT key, kind, location, vuln_id FROM exposures WHERE scope = ? AND resolved_at IS NULL")?;
+    let mut stmt = cache.conn.prepare(
+        "SELECT key, kind, location, vuln_id, component FROM exposures WHERE scope = ? AND resolved_at IS NULL",
+    )?;
     let open: Vec<OpenExposure> = stmt
         .query_map([scope], |r| {
             let s = |i: usize| r.get::<_, Option<String>>(i).map(Option::unwrap_or_default);
-            Ok(OpenExposure { key: s(0)?, kind: s(1)?, location: s(2)?, vuln_id: s(3)? })
+            Ok(OpenExposure { key: s(0)?, kind: s(1)?, location: s(2)?, vuln_id: s(3)?, component: s(4)? })
         })?
         .collect::<rusqlite::Result<_>>()?;
     drop(stmt);
@@ -289,15 +290,26 @@ fn closable_without_personal_files(home: &std::path::Path, e: &OpenExposure) -> 
     if e.vuln_id == "POSTURE-SAFARI-SAFE-FILES" {
         return false;
     }
-    let text = crate::utils::files::strip_verbatim(&e.location);
     // `~/x` is how a report spells a path under home.
-    let path = match text.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
-            home.join(rest.trim_start_matches(['/', '\\']))
-        }
-        _ => std::path::PathBuf::from(&text),
+    let as_path = |text: &str| {
+        let text = crate::utils::files::strip_verbatim(text);
+        let path = match text.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                home.join(rest.trim_start_matches(['/', '\\']))
+            }
+            _ => std::path::PathBuf::from(&text),
+        };
+        path.is_absolute().then_some(path)
     };
-    if path.is_absolute() {
+    if let Some(path) = as_path(&e.location) {
+        return !in_left_out_folder(home, &path);
+    }
+    // A note about a file (a repo's `.pantryignore`, `~/.npmrc`) names the
+    // file as its component and a line, or nothing, as its location: it is
+    // where that file is, which may be a repo this scan never walked.
+    if e.kind == "config"
+        && let Some(path) = as_path(&e.component)
+    {
         return !in_left_out_folder(home, &path);
     }
     MACHINE_KINDS.contains(&e.kind.as_str())

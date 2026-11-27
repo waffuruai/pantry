@@ -101,3 +101,37 @@ fn an_unreadable_source_is_unread_not_empty() {
     assert!(!inv.read.contains(&Source::SystemExtension));
     assert!(inv.read.contains(&Source::LoginItem), "the app bundles are read from disk");
 }
+
+/// Risk: the library `launchctl` says is inserted into every app was stat'ed
+/// (`exists`) when the spelling said it was outside the left-out folders, so
+/// one behind `~/lib -> ~/Documents/lib` was stat'ed inside `~/Documents`.
+/// Oracle: the folder is mode 000, so such a stat fails and the item loses its
+/// program; asked through the link first, the program is kept without any
+/// stat. Notices a stat whose failure steers the answer, not one whose result
+/// is thrown away. Skipped as root. Known bad: `is_left_out` in place of
+/// `reaches_left_out`.
+#[cfg(unix)]
+#[test]
+fn an_inserted_library_behind_a_link_into_a_left_out_folder_is_kept_without_a_stat() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    if crate::utils::process::is_root() {
+        return;
+    }
+    let d = temp::TempDir::new("dyld-link").unwrap();
+    let home = std::fs::canonicalize(d.path()).unwrap().join("home");
+    let lib = home.join("lib/x.dylib");
+    let value = lib.to_string_lossy().into_owned();
+    let runner = move |argv: &[&str]| {
+        if argv.join(" ") == "launchctl getenv DYLD_INSERT_LIBRARIES" { value.clone() } else { String::new() }
+    };
+    let r = roots(&std::fs::canonicalize(d.path()).unwrap(), true, &runner);
+    write(&home.join("Documents/x.dylib"), "x");
+    symlink("Documents", home.join("lib")).unwrap();
+    let _guard = crate::utils::privacy::leave_out(vec![home.join("Documents")], Vec::new());
+    let _reopen = crate::utils::temp::Reopen(home.join("Documents"));
+    std::fs::set_permissions(home.join("Documents"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mut inv = Inventory::default();
+    launchd_env(&r, &mut inv);
+    assert_eq!(inv.items.len(), 1);
+    assert_eq!(inv.items[0].program.as_deref(), Some(lib.as_path()));
+}

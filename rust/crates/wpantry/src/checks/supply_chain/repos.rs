@@ -130,6 +130,11 @@ fn discover_excluding(root: &Path, excluded: &Excluded, status: Status) -> Vec<P
         }
     }
     let mut found = Vec::new();
+    // A root that is a left-out folder, or a link into one, is not listed: the
+    // folders below it are checked by path as they come, but this one is read first.
+    if privacy::reaches_left_out(root) {
+        return found;
+    }
     // The top level fans out: each of root's folders is searched on its own
     // thread (a home directory has a few dozen, each a tree of its own).
     let Ok(rd) = std::fs::read_dir(root) else { return found };

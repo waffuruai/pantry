@@ -15,8 +15,8 @@ name: Commit hygiene
 # the checker is judged by the base's rules; its change takes effect after it
 # merges. (This file itself still comes from the PR, as for any `pull_request`
 # workflow, so CODEOWNERS requires an owner's review of changes to it.) The one
-# exception is a base with no checker yet, the PR that adds it: then the head's
-# copy runs, and the job says so.
+# exception is a base without the canonical checker yet (none, or an older
+# one), the PR that adds it: then the head's copy runs, and the job says so.
 #
 # On push to dev and main it is a backstop: it reports commits that reached the
 # branch anyway (an admin bypass, a direct push), but cannot block or undo a
@@ -50,11 +50,11 @@ jobs:
           persist-credentials: false
 
       # The self-check: the checker is the base commit's, unmodified. Only when
-      # the base has none (the PR that adds it) is the head's copy fetched.
+      # the base has no canonical copy (the PR that adds it) is the head's fetched.
       - name: Pick the checker (the base's)
         run: |
           [ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), not the base $CHECKER_SHA"; exit 1; }
-          if [ -f scripts/commit_hygiene.py ]; then
+          if grep -q "Canonical copy: waffuruai/pantry" scripts/commit_hygiene.py 2>/dev/null; then
             git diff --quiet HEAD -- scripts/commit_hygiene.py || { echo "::error::the checker differs from the base"; exit 1; }
             echo "CHECKER=scripts/commit_hygiene.py" >> "$GITHUB_ENV"
             echo "Checker: scripts/commit_hygiene.py at the base, $CHECKER_SHA"
@@ -62,7 +62,7 @@ jobs:
             git fetch --no-tags --depth=1 origin "$HEAD_SHA"
             git show "$HEAD_SHA:scripts/commit_hygiene.py" > "$RUNNER_TEMP/commit_hygiene.py"
             echo "CHECKER=$RUNNER_TEMP/commit_hygiene.py" >> "$GITHUB_ENV"
-            echo "::warning::the base $CHECKER_SHA has no checker yet; running the head's copy ($HEAD_SHA) for this bootstrap PR"
+            echo "::warning::the base $CHECKER_SHA has no canonical checker yet; running the head's copy ($HEAD_SHA) for this bootstrap PR"
           fi
 
       # The runner's python3: the script uses the standard library and gh only.

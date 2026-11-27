@@ -76,7 +76,7 @@ pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
     let env = python_layout::Env::here();
     pythons_with_uv(
         find_pythons(),
-        &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15),
+        &ask_python,
         &owner,
         &|shown, real| python_layout::read(shown, real, &env),
         &uv_pythons::ask,
@@ -240,12 +240,8 @@ pub(crate) fn pythons_with_uv(
             }
         } else {
             let v = str_of(&a.info, "v");
-            let (fix, auto) = updater(&a.real, "python");
-            let mut c = Component::new("runtime", "python", &v, &a.shown);
-            c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
-            c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
-            c.fix = fix.clone();
-            c.auto = auto;
+            let mut c = runtime_component(&a.shown, &a.real, &v);
+            let (fix, auto) = (c.fix.clone(), c.auto);
             let (mut pkgs, gaps) = pip(&a.shown, &a.runs, &a.sites, managed, (fix.clone(), auto));
             if auto && fix == uv_pythons::UPGRADE {
                 // uv-managed: what uv can install decides the fix, where the
@@ -271,6 +267,61 @@ pub(crate) fn pythons_with_uv(
         }
     }
     (out, unread)
+}
+
+/// The runtime component for a Python shown as `shown`, whose interpreter
+/// is at `real` and reports version `v`: how OSV and endoflife.date know it,
+/// and how it is updated. The one place it is built: a scan builds every
+/// Python through it, and `wpantry recheck` builds the one it asks about.
+fn runtime_component(shown: &str, real: &str, v: &str) -> Component {
+    let (fix, auto) = updater(real, "python");
+    let mut c = Component::new("runtime", "python", v, shown);
+    c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
+    c.eol = Some(("python".into(), Cycle::Minor.of(v)));
+    c.fix = fix;
+    c.auto = auto;
+    c
+}
+
+/// What asking the Python shown as a path gave, as a scan reads it.
+pub(crate) enum PythonNow {
+    /// It did not answer with a version.
+    Unreadable,
+    /// Something else vouches for the interpreter that answered (its owner:
+    /// `brew`, `os`, ...), so a scan reports no runtime for it.
+    Vouched(&'static str),
+    /// The runtime a scan would report at that path (a shim reads as the
+    /// interpreter it starts now).
+    Runtime(Box<Component>),
+}
+
+/// The Python at `shown` read again the way a scan reads it: asked
+/// [`PY_INFO`] by `probe` (the version and the interpreter that answered,
+/// nothing else is run), then judged vouched-for or not by `vouched`.
+pub(crate) fn python_now(
+    shown: &str,
+    probe: &dyn Fn(&str) -> String,
+    vouched: &dyn Fn(&str) -> &'static str,
+) -> PythonNow {
+    let raw = probe(shown);
+    let Some(info) = json_in(raw.trim().lines().last().unwrap_or(""), '{', '}') else { return PythonNow::Unreadable };
+    let v = str_of(&info, "v");
+    if v.is_empty() {
+        return PythonNow::Unreadable;
+    }
+    let reported = str_of(&info, "exe");
+    let usable = Path::new(&reported).is_absolute() && Path::new(&reported).is_file();
+    let real = if usable { files::realpath(&reported) } else { files::realpath(shown) };
+    let who = vouched(&real);
+    if !who.is_empty() {
+        return PythonNow::Vouched(who);
+    }
+    PythonNow::Runtime(Box::new(runtime_component(shown, &real, &v)))
+}
+
+/// [`PY_INFO`] asked of the interpreter at `shown`, as a scan asks it.
+pub(crate) fn ask_python(shown: &str) -> String {
+    sh(&[shown, "-I", "-S", "-c", PY_INFO], 15)
 }
 
 /// The user site directory the probe named, as a real path, when the

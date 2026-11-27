@@ -611,6 +611,19 @@ pub fn scan_finished(cache: &Cache) -> Result<()> {
     Ok(())
 }
 
+/// A scan another process is running on this cache now, by its pid (the
+/// first when there are several). Reads only: a mark whose process is gone
+/// is left for [`unfinished`] to tell.
+pub fn running_scan(cache: &Cache, alive: &dyn Fn(u32) -> bool) -> Result<Option<u32>> {
+    let mut stmt = cache.conn.prepare("SELECT key FROM meta WHERE substr(key, 1, ?1) = ?2")?;
+    let keys: Vec<String> =
+        stmt.query_map(params![RUNNING.len() as i64, RUNNING], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(keys
+        .iter()
+        .filter_map(|k| k[RUNNING.len()..].parse::<u32>().ok())
+        .find(|pid| *pid != 0 && *pid != std::process::id() && alive(*pid)))
+}
+
 /// The scans that began and didn't end, the oldest first; `alive` says
 /// whether a process is still there. One whose process is gone is
 /// forgotten here: it is told once.

@@ -265,6 +265,12 @@ pub fn recheck_many(
         if !exists {
             return Ok(Some(Verdict::unknown("stale", format!("there is no scan {scan}"))));
         }
+        if let Some(pid) = crate::history::running_scan(&cache, &crate::utils::process::alive)? {
+            let why = format!(
+                "A scan is running (pid {pid}) and will replace scan {scan}'s findings: re-check once it has finished."
+            );
+            return Ok(Some(Verdict::unknown("scanning", why)));
+        }
         if crate::history::latest_scan(&cache)? != Some(scan) {
             let why = "A newer scan is available: a re-check answers for the latest scan only.";
             return Ok(Some(Verdict::unknown("stale", why)));
@@ -296,6 +302,23 @@ pub fn recheck_many(
             answer(Outcome { finding, scan, verdict: Verdict::unknown("unlisted", why), keys: Vec::new() });
             continue;
         };
+        // A scan that started since the last id: answer nothing more. Read
+        // first in this id's transaction, so a scan that marks itself
+        // running after it makes the gone write below fail, not interleave.
+        match crate::history::running_scan(&scratch.cache, &crate::utils::process::alive) {
+            Ok(Some(pid)) => {
+                let why = format!(
+                    "A scan is running (pid {pid}) and will replace scan {scan}'s findings: re-check once it has finished."
+                );
+                answer(Outcome { finding, scan, verdict: Verdict::unknown("scanning", why), keys: Vec::new() });
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = scratch.cache.close();
+                return Err(fail(id, e));
+            }
+        }
         match decide(&mut scratch, found, scan, &finding, left_out.is_some()) {
             Ok((verdict, keys)) => {
                 let present = verdict.state == State::StillPresent;
@@ -555,12 +578,9 @@ fn classify(scan: &Scan, row: &Row, c: &Component, same_place: bool) -> Verdict 
         })
         // The CVE records were never cached: nothing could have come from them.
         .filter(|g| g.component != cve_records_not_cached)
-        // OSV's answers are older than a day: the advisory this finding is
-        // about was in them when the scan ran, and an answer can't lose it.
-        .filter(|g| {
-            !(g.vuln_id == "UNCHECKED"
-                && g.note.split("; ").all(|part| part.contains(crate::sources::osv::OUT_OF_DATE)))
-        })
+        // An answer older than a day counts as a gap, as it does in a scan:
+        // the cached answer for the version now installed may predate an
+        // advisory that affects it, and a re-check never asks again.
         .collect();
     if let Some(g) = gaps.first() {
         let reason = if gaps.iter().any(|g| g.vuln_id == "UNREACHABLE") { "uncached" } else { "unchecked" };

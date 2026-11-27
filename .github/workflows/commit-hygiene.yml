@@ -6,8 +6,17 @@ name: Commit hygiene
 # commit. It re-runs on `edited`, so fixing the PR text clears it.
 #
 # Fork-safe: `pull_request` (never `pull_request_target`), a read-only token, no
-# secrets. It reads the PR through the API and only prints and annotates; it
-# never edits the PR or comments.
+# secrets. It reads the PR's commits and text through the API, as data, and
+# only prints and annotates; it never edits the PR or comments.
+#
+# The checker runs from the BASE commit, never from the pull request: the job
+# checks out `pull_request.base.sha` and asserts that is what it runs, so a PR
+# cannot edit the script or its patterns and pass itself. A PR that changes
+# the checker is judged by the base's rules; its change takes effect after it
+# merges. (This file itself still comes from the PR, as for any `pull_request`
+# workflow, so CODEOWNERS requires an owner's review of changes to it.) The one
+# exception is a base with no checker yet, the PR that adds it: then the head's
+# copy runs, and the job says so.
 #
 # On push to dev and main it is a backstop: it reports commits that reached the
 # branch anyway (an admin bypass, a direct push), but cannot block or undo a
@@ -31,13 +40,33 @@ jobs:
     name: Commit hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      CHECKER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.CHECKER_SHA }}
           persist-credentials: false
+
+      # The self-check: the checker is the base commit's, unmodified. Only when
+      # the base has none (the PR that adds it) is the head's copy fetched.
+      - name: Pick the checker (the base's)
+        run: |
+          [ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), not the base $CHECKER_SHA"; exit 1; }
+          if [ -f scripts/commit_hygiene.py ]; then
+            git diff --quiet HEAD -- scripts/commit_hygiene.py || { echo "::error::the checker differs from the base"; exit 1; }
+            echo "CHECKER=scripts/commit_hygiene.py" >> "$GITHUB_ENV"
+            echo "Checker: scripts/commit_hygiene.py at the base, $CHECKER_SHA"
+          else
+            git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+            git show "$HEAD_SHA:scripts/commit_hygiene.py" > "$RUNNER_TEMP/commit_hygiene.py"
+            echo "CHECKER=$RUNNER_TEMP/commit_hygiene.py" >> "$GITHUB_ENV"
+            echo "::warning::the base $CHECKER_SHA has no checker yet; running the head's copy ($HEAD_SHA) for this bootstrap PR"
+          fi
 
       # The runner's python3: the script uses the standard library and gh only.
       - name: Check commits and PR text
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/commit_hygiene.py
+        run: python3 "$CHECKER"

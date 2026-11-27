@@ -203,5 +203,18 @@ class Events(unittest.TestCase):
             self.assertEqual(ch.report([]), 0)
 
 
+class Workflow(unittest.TestCase):
+    """The job runs the base's checker, never the pull request's."""
+
+    def test_checks_out_the_base_and_asserts_it(self):
+        wf = (Path(__file__).resolve().parent.parent / ".github/workflows/commit-hygiene.yml").read_text(encoding="utf-8")
+        self.assertIn("CHECKER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}", wf)
+        self.assertIn("ref: ${{ env.CHECKER_SHA }}", wf)
+        self.assertIn('[ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ]', wf)
+        self.assertIn('python3 "$CHECKER"', wf)
+        self.assertNotIn("pull_request_target", wf.split("\non:")[1])
+        self.assertIn("edited", wf)
+
+
 if __name__ == "__main__":
     unittest.main()

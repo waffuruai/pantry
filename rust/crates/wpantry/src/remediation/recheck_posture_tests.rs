@@ -127,3 +127,24 @@ fn a_finding_without_an_unattended_fix_is_checked_too() {
     let (out, _) = ask(&file, &[f.id()], scan, "1\n");
     assert_eq!(out[0].verdict.state, State::Gone, "{:?}", out[0]);
 }
+
+/// Risk: a posture re-check runs its probe before the guards every other
+/// kind passes, so a finding the scan left out with `--no-personal-files`
+/// is probed anyway. Oracle: the scan's recorded choice makes it `excluded`
+/// and no command runs.
+#[test]
+fn the_guards_come_before_the_probe() {
+    let _home = crate::utils::files::test_home();
+    let d = TempDir::new("posture").unwrap();
+    let mut f = posture("POSTURE-ANY", "Any setting", true);
+    f.location = crate::utils::files::home().join("Documents/x").display().to_string();
+    let cache = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    cache.replace_findings(std::slice::from_ref(&f)).unwrap();
+    let opts = Options { machine: true, no_personal_files: true, ..Default::default() };
+    let scan = crate::history::record_scan(&cache, 1.0, std::slice::from_ref(&f), &[], &opts).unwrap();
+    let file = cache.file().to_path_buf();
+    cache.close().unwrap();
+    let (out, ran) = ask(&file, &[f.id()], scan, "1\n");
+    assert_eq!((out[0].verdict.state, out[0].verdict.reason), (State::Unknown, "excluded"), "{:?}", out[0]);
+    assert!(ran.is_empty(), "a probe ran: {ran:?}");
+}

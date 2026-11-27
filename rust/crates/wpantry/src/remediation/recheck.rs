@@ -411,15 +411,14 @@ fn judge(
     runner: settings::Runner,
     places: &mut project::Memo,
 ) -> Result<Verdict> {
-    // A machine setting is read by its own probe, whoever could fix it and
-    // however it is fixed: the answer is what the setting is now.
-    if row.kind == "posture" {
-        return Ok(posture::judge(&row.vuln_id, &row.component, runner));
-    }
-    // A package in a project or a virtual environment is read again at its
-    // own place, whether or not wpantry could fix it unattended.
+    // A machine setting is read by its own probe, and a package in a project
+    // or a virtual environment at its own place, whoever could fix it and
+    // however it is fixed: the answer is what is there now. Every other kind
+    // needs an automatic fix. The guards come before any probe or read.
+    let posture = row.kind == "posture";
     let in_place = project::applies(&row.kind, &row.component, &row.location);
-    if row.kind == "secret" || row.kind == "unchecked" || (!in_place && (!row.fix_auto || row.fix_cmd.is_empty())) {
+    let any_fix = posture || in_place;
+    if row.kind == "secret" || row.kind == "unchecked" || (!any_fix && (!row.fix_auto || row.fix_cmd.is_empty())) {
         return Ok(unsupported(row, "no automatic fix"));
     }
     if personal_left_out && privacy::is_left_out(&row.location) {
@@ -427,6 +426,9 @@ fn judge(
             "excluded",
             "The scan left that folder out (--no-personal-files), so the re-check does not open it.",
         ));
+    }
+    if posture {
+        return Ok(posture::judge(&row.vuln_id, &row.component, runner));
     }
     if in_place {
         return project::judge(places, &scan.cache, (&row.kind, &row.component, &row.location, &row.vuln_id));

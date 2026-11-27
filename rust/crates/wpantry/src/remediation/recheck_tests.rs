@@ -424,14 +424,16 @@ fn what_could_not_be_asked_decides_whether_a_missing_finding_means_gone() {
         "OSV lists advisories it couldn't serve here: GHSA-1",
     );
     assert_eq!(verdict_with_gaps("CVE-1", vec![absent]).reason, "unchecked");
-    // Answers older than a day are not a reason to doubt the finding's own advisory.
+    // Answers older than a day are a gap, as in a scan: the cached answer for
+    // the version installed now may predate an advisory that affects it.
     let old = gap(
         "tools, runtimes and packages against OSV",
         "UNCHECKED",
         "3 answers are more than a day out of date and couldn't be refreshed (--offline)",
     );
-    assert_eq!(verdict_with_gaps("CVE-1", vec![old.clone()]).state, State::Gone);
-    // ... but only that: another gap in the same line still counts.
+    let v = verdict_with_gaps("CVE-1", vec![old]);
+    assert_eq!((v.state, v.reason), (State::Unknown, "unchecked"));
+    // So does a line with that and another gap.
     let both = gap(
         "tools, runtimes and packages against OSV",
         "UNCHECKED",

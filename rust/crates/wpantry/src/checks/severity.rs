@@ -205,7 +205,9 @@ fn scores(cache: &Cache, id: &str, recs: &[Value]) -> Scores {
     (label, score, epss, ids)
 }
 
-/// What identifies the local record a finding is rated from.
+/// What identifies the local record a finding is rated from: its source, id
+/// and component, which `for_finding` prefers when two records share an alias.
+/// Two findings of one id and source but different packages may need two records.
 fn local_key(f: &Finding) -> (String, String, String) {
     (f.local_source.clone(), f.vuln_id.clone(), f.component.clone())
 }

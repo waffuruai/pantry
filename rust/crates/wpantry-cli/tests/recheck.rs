@@ -292,6 +292,71 @@ fn a_fixed_runtime_is_gone_and_recorded() {
     assert_eq!(lab.dump(), dump);
 }
 
+/// Risk: OSV's cached answer for the version installed now is days old, from
+/// before the advisory was published, so it lacks the advisory and the
+/// re-check says `gone` and resolves the exposure. Oracle: a scan treats an
+/// answer past a day as out of date; with the same answer fresh the re-check
+/// says gone, aged three days it says unknown and writes nothing.
+#[test]
+fn an_out_of_date_answer_for_the_new_version_is_not_gone() {
+    let lab = Lab::new();
+    let (version, shim) = (lab.t.tmp.join("go.version"), lab.t.home.join(".local/share/mise/shims/go"));
+    write(&version, "go1.26.9\n");
+    lab.go_shim(&shim, &version);
+    let (scan, findings) = lab.scan_go(&shim, false);
+    let id = Lab::id_of(go_finding(&findings));
+    // OSV's answer for 1.26.11 names nothing, as one cached before the advisory would.
+    let conn = lab.t.conn();
+    for pkg in ["stdlib", "toolchain"] {
+        conn.execute(
+            "INSERT OR REPLACE INTO queries (ecosystem, package, version, checked_at, vuln_ids) VALUES ('Go', ?1, '1.26.11', ?2, '')",
+            rusqlite::params![pkg, wpantry::utils::os::now() - 3.0 * 86400.0],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    write(&version, "go1.26.11\n");
+    let (before, dump) = (lab.snap(), lab.dump());
+    let v = lab.recheck(&id, scan);
+    assert_eq!(str_(&v["state"]), "unknown", "{v}");
+    assert!(str_(&v["detail"]).contains("out of date"), "{v}");
+    lab.invariants(&before, &id, false);
+    assert_eq!(lab.dump(), dump);
+    // The same answer, fresh: gone (the positive control).
+    lab.t
+        .conn()
+        .execute("UPDATE queries SET checked_at = ?1 WHERE version = '1.26.11'", [wpantry::utils::os::now()])
+        .unwrap();
+    assert_eq!(str_(&lab.recheck(&id, scan)["state"]), "gone");
+}
+
+/// Risk: a re-check runs beside a scan that will replace scan N's findings,
+/// and deletes, resolves and verifies against a state the scan is about to
+/// overwrite. Oracle: the running mark a scan leaves (`scan_running:<pid>`,
+/// pid alive) makes a re-check that would be gone answer unknown
+/// (`scanning`) and write nothing; once the process is gone, it is gone.
+#[test]
+fn a_recheck_refuses_while_a_scan_runs() {
+    let lab = Lab::new();
+    let (version, shim) = (lab.t.tmp.join("go.version"), lab.t.home.join(".local/share/mise/shims/go"));
+    write(&version, "go1.26.9\n");
+    lab.go_shim(&shim, &version);
+    let (scan, findings) = lab.scan_go(&shim, false);
+    let id = Lab::id_of(go_finding(&findings));
+    write(&version, "go1.26.11\n");
+    let mut scanner = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let key = format!("scan_running:{}", scanner.id());
+    lab.t.conn().execute("INSERT INTO meta (key, value) VALUES (?1, '{}')", [&key]).unwrap();
+    let (before, dump) = (lab.snap(), lab.dump());
+    let v = lab.recheck(&id, scan);
+    assert_eq!((str_(&v["state"]), str_(&v["reason"])), ("unknown", "scanning"), "{v}");
+    lab.invariants(&before, &id, false);
+    assert_eq!(lab.dump(), dump);
+    let _ = scanner.kill();
+    let _ = scanner.wait();
+    assert_eq!(str_(&lab.recheck(&id, scan)["state"]), "gone", "the scan's process is gone");
+}
+
 /// Oracle: an upgrade to another version that is still vulnerable is still
 /// present, whether OSV's answer for it is cached or only the record is.
 #[test]

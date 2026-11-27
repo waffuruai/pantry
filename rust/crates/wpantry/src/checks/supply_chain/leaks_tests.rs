@@ -580,3 +580,80 @@ fn clones_of_one_repo_share_their_findings() {
     assert!(fs[0].note.ends_with("; also in 1 other clone: ~/b/r"), "{}", fs[0].note);
     assert!(!fs[1].note.contains("also in"));
 }
+
+/// The slots of [`Shared`]: one claim per blob, a finished blob's hits to
+/// every later asker, a blob let go claimable again.
+#[test]
+fn a_shared_blob_is_claimed_once_until_it_is_let_go() {
+    let shared = Shared::default();
+    let key = [7u8; 16];
+    let soon = Instant::now() + Duration::from_secs(5);
+    assert!(matches!(shared.claim(key), Claim::Mine));
+    assert!(matches!(shared.claim(key), Claim::Theirs), "another scan is reading it");
+    shared.release(&[key]);
+    assert!(shared.wait(key, soon).is_none(), "let go: nothing to take");
+    assert!(matches!(shared.claim(key), Claim::Mine), "free to claim again");
+    // A waiter is woken by the finish, from another thread.
+    std::thread::scope(|s| {
+        let waiter = s.spawn(|| shared.wait(key, Instant::now() + Duration::from_secs(30)));
+        shared.finish(key, Some(json!([{"rule": "r"}])));
+        assert_eq!(waiter.join().unwrap(), Some(json!([{"rule": "r"}])));
+    });
+    assert!(matches!(shared.claim(key), Claim::Done(v) if v == json!([{"rule": "r"}])));
+    assert_eq!(shared.claimed(), 2, "claimed twice: once, and again after it was let go");
+    // A claim nobody finishes by the deadline isn't waited on for ever.
+    let other = [8u8; 16];
+    assert!(matches!(shared.claim(other), Claim::Mine));
+    assert!(shared.wait(other, Instant::now() + Duration::from_millis(50)).is_none());
+}
+
+/// Two clones of one repo, scanned at once the way a run scans its repos:
+/// each blob is read and scanned once, not once per clone, and both clones
+/// report the same hits. (The count is `Shared::claimed`: with every claim
+/// granted, as before sharing, it is twice the blobs.)
+#[test]
+fn clones_scanned_at_once_read_each_blob_once() {
+    let d = TempDir::new("secrets-clones").unwrap();
+    let Some((repo, home)) = leaky_repo(&d) else {
+        eprintln!("skipped: no git");
+        return;
+    };
+    let clone = d.path().join("clone");
+    if !git(&repo, &home, &["clone", "-q", ".", clone.to_str().unwrap()]) {
+        eprintln!("skipped: no git clone");
+        return;
+    }
+    let net = Fake::offline();
+    let s = testing::scan(&net, &d, Options::default());
+    let rules = Rules::new(None);
+    let scanner = rules.scanner().unwrap();
+    let repos: Vec<Repo> = vec![("repo".into(), repo.clone()), ("clone".into(), clone)];
+    let jobs = secret_jobs(&s, &repos, &rules).unwrap();
+    let jobs: Vec<&Job> = jobs.iter().map(|(j, _)| j.as_ref().unwrap()).collect();
+    assert!(Arc::ptr_eq(&jobs[0].shared, &jobs[1].shared), "one run, one set of shared results");
+    let ran: Vec<Value> = std::thread::scope(|s| {
+        let running: Vec<_> = jobs.iter().map(|j| s.spawn(|| run_job(j, &scanner).unwrap())).collect();
+        running.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    // What one repo alone reads: the blobs its rules don't skip.
+    let alone = {
+        let j = job(&s.cache, &repo, &rules, 2).unwrap();
+        run_job(&j, &scanner).unwrap()["new"].as_array().unwrap().len()
+    };
+    assert!(alone > 0);
+    assert_eq!(jobs[0].shared.claimed(), alone, "each blob read once for both clones");
+    for r in &ran {
+        assert_eq!(r["new"].as_array().unwrap().len(), alone, "each clone still has every blob's result");
+        assert_eq!(r["unchecked"], 0);
+    }
+    let hits = |r: &Value| -> Vec<(String, String, i64)> {
+        r["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| (str_at(h, "rule").to_string(), str_at(h, "file").to_string(), h["line"].as_i64().unwrap()))
+            .collect()
+    };
+    assert_eq!(hits(&ran[0]), vec![("github-pat".to_string(), "cfg.env".to_string(), 2)]);
+    assert_eq!(hits(&ran[0]), hits(&ran[1]), "the clone reports what the repo does");
+}

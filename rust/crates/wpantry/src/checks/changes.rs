@@ -80,8 +80,65 @@ pub struct Change {
     pub sha: String,
 }
 
+/// What a change records: the files with a path that is safe to name, and
+/// the paths refused ([`safe_path`]), which are never read or written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing {
+    pub files: Vec<Change>,
+    /// Shown escaped (`{:?}`): they can hold control characters.
+    pub refused: Vec<String>,
+}
+
+impl Listing {
+    fn push(&mut self, path: &[u8], sha: &str) {
+        match std::str::from_utf8(path).ok().filter(|p| safe_path(p)) {
+            Some(p) => self.files.push(Change { path: p.to_string(), sha: sha.to_string() }),
+            None => self.refused.push(format!("{:?}", String::from_utf8_lossy(path))),
+        }
+    }
+
+    /// Only what is under `prefix` (the scanned folder from the top).
+    fn under(mut self, prefix: &str) -> Listing {
+        self.files.retain(|c| c.path.starts_with(prefix));
+        self
+    }
+}
+
+/// Whether git's path `p` (from the repo's top, `/`-separated) can be
+/// joined under a folder and stay there: relative, every component a plain
+/// name (not empty, `.`, `..` or `.git` in any case), no NUL; on Windows
+/// also no `\`, `:`, trailing dot or space, or reserved device name. Git
+/// stores such names in a crafted tree or index unless fsck is on, and a
+/// pull request from a fork can carry one.
+pub fn safe_path(p: &str) -> bool {
+    if p.is_empty() || p.starts_with('/') || p.contains('\0') {
+        return false;
+    }
+    p.split('/').all(|c| {
+        !c.is_empty() && c != "." && c != ".." && !c.eq_ignore_ascii_case(".git") && (!cfg!(windows) || windows_name(c))
+    })
+}
+
+/// A path component Windows reads as itself: no separator, drive or stream
+/// (`\`, `:`), no trailing dot or space (dropped, so `..` or `.git` come
+/// back), and no device name (`CON`, `nul.txt`, `COM1`).
+pub(crate) fn windows_name(c: &str) -> bool {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let stem = c.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+    let numbered = (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.len() == 4
+        && stem[3..].chars().all(|d| d.is_ascii_digit());
+    !c.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+        && !c.ends_with(['.', ' '])
+        && !c.chars().any(|ch| (ch as u32) < 32)
+        && !DEVICES.contains(&stem.as_str())
+        && !numbered
+}
+
 /// A repo, read with git's plumbing and nothing that writes.
 pub struct Git {
+    /// The git found on PATH, spawned by its path (`utils::process::program`).
+    git: PathBuf,
     top: PathBuf,
     /// The scanned folder from the top (`web/`), "" at the top.
     prefix: String,
@@ -107,7 +164,9 @@ impl Git {
                 Some((*k, if p.is_absolute() { v } else { cwd.join(p).into_os_string() }))
             })
             .collect();
-        let mut git = Git { top: dir.to_path_buf(), prefix: String::new(), env };
+        let program = crate::utils::process::program(std::ffi::OsStr::new("git"))
+            .map_err(|e| format!("--changes reads a git repo with git, which can't run: {e}"))?;
+        let mut git = Git { git: program, top: dir.to_path_buf(), prefix: String::new(), env };
         let out = git
             .run(&["rev-parse", "--show-toplevel", "--show-prefix"])
             .map_err(|e| format!("--changes reads a git repo, and {} isn't in one ({e})", dir.display()))?;
@@ -125,7 +184,7 @@ impl Git {
     }
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(&self.git);
         cmd.arg("-C").arg(&self.top);
         // Only reads: no index refresh written behind our back, no objects
         // fetched into a partial clone, no pager, no prompt.
@@ -164,7 +223,7 @@ impl Git {
     /// The files `changes` records under the scanned folder: added, copied,
     /// modified, renamed or retyped regular files (deletions, submodules and
     /// symlinks add no content to scan).
-    pub fn changed(&self, changes: &Changes) -> std::result::Result<Vec<Change>, String> {
+    pub fn changed(&self, changes: &Changes) -> std::result::Result<Listing, String> {
         const DIFF: [&str; 6] =
             ["-z", "--raw", "--no-renames", "--diff-filter=d", "--no-abbrev", "--ignore-submodules=all"];
         // Each git run costs tens of milliseconds: the usual case takes one,
@@ -178,8 +237,7 @@ impl Git {
                     Ok(raw) => raw,
                     // No commit yet: everything staged is new.
                     Err(_) if self.commit("HEAD").is_err() => {
-                        let all = parse_ls(&self.run(&["ls-files", "-s", "-z"])?);
-                        return Ok(all.into_iter().filter(|c| self.under(&c.path)).collect());
+                        return Ok(parse_ls(&self.run(&["ls-files", "-s", "-z"])?).under(&self.prefix));
                     }
                     Err(e) => return Err(e),
                 }
@@ -201,11 +259,7 @@ impl Git {
                 self.run(&args)?
             }
         };
-        Ok(parse_raw(&raw).into_iter().filter(|c| self.under(&c.path)).collect())
-    }
-
-    fn under(&self, path: &str) -> bool {
-        path.starts_with(&self.prefix)
+        Ok(parse_raw(&raw).under(&self.prefix))
     }
 
     /// The repo's `.pantryignore` at the version `changes` records, as an
@@ -269,15 +323,15 @@ impl Git {
 
 /// `git diff-index`/`diff-tree --raw -z`: `:<old mode> <new mode> <old>
 /// <new> <status>` NUL `<path>` NUL; the regular files' new blobs.
-pub fn parse_raw(raw: &[u8]) -> Vec<Change> {
-    let mut out = Vec::new();
+pub fn parse_raw(raw: &[u8]) -> Listing {
+    let mut out = Listing::default();
     let mut parts = raw.split(|&b| b == 0);
     while let (Some(head), Some(path)) = (parts.next(), parts.next()) {
         let head = String::from_utf8_lossy(head);
         let fields: Vec<&str> = head.trim_start_matches(':').split(' ').collect();
         let [_, mode, _, sha, ..] = fields.as_slice() else { continue };
         if regular(mode) && !sha.bytes().all(|b| b == b'0') {
-            out.push(Change { path: String::from_utf8_lossy(path).into_owned(), sha: sha.to_string() });
+            out.push(path, sha);
         }
     }
     out
@@ -285,16 +339,19 @@ pub fn parse_raw(raw: &[u8]) -> Vec<Change> {
 
 /// `git ls-files -s -z` (`<mode> <sha> <stage>\t<path>`): the regular
 /// files, at stage 0.
-fn parse_ls(raw: &[u8]) -> Vec<Change> {
-    raw.split(|&b| b == 0)
-        .filter_map(|rec| {
-            let rec = String::from_utf8_lossy(rec);
-            let (meta, path) = rec.split_once('\t')?;
-            let f: Vec<&str> = meta.split(' ').collect();
-            let [mode, sha, "0"] = f.as_slice() else { return None };
-            regular(mode).then(|| Change { path: path.to_string(), sha: sha.to_string() })
-        })
-        .collect()
+fn parse_ls(raw: &[u8]) -> Listing {
+    let mut out = Listing::default();
+    for rec in raw.split(|&b| b == 0) {
+        let Some(tab) = rec.iter().position(|&b| b == b'\t') else { continue };
+        let meta = String::from_utf8_lossy(&rec[..tab]);
+        let f: Vec<&str> = meta.split(' ').collect();
+        if let [mode, sha, "0"] = f.as_slice()
+            && regular(mode)
+        {
+            out.push(&rec[tab + 1..], sha);
+        }
+    }
+    out
 }
 
 fn regular(mode: &str) -> bool {
@@ -323,10 +380,11 @@ pub fn run(
     mut scan: Scan,
     git: &Git,
     changes: &Changes,
-    files: &[Change],
+    listing: &Listing,
     rules: std::thread::JoinHandle<Result<Scanner>>,
 ) -> Result<Outcome> {
     let top = git.top().to_path_buf();
+    let files = &listing.files;
     scan.status(&format!("Reading the {}", changes.describe()));
     let ignore_sha = Some(git.ignore_file(changes));
     let mut shas: Vec<String> = Vec::new();
@@ -337,7 +395,8 @@ pub fn run(
         }
     }
     let blobs = git.blobs(&shas)?;
-    scan.count(&changes.describe(), files.len() as i64);
+    scan.count(&changes.describe(), (files.len() + listing.refused.len()) as i64);
+    refused(&mut scan, &listing.refused);
 
     // The dependency files, and the ignore file, as files for their readers.
     let tmp = TempDir::new("changes")?;
@@ -436,6 +495,33 @@ pub fn run(
     }
     Ok(outcome)
 }
+
+/// The paths refused ([`safe_path`]): none is read, written or scanned, so
+/// the change fails (a checkout would write outside the repo or into
+/// `.git`, which no honest change asks) and they are listed as not checked.
+fn refused(scan: &mut Scan, paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    for p in paths {
+        scan.add(Finding {
+            kind: "config".into(),
+            component: p.clone(),
+            vuln_id: UNSAFE_PATH.into(),
+            status: "fail".into(),
+            note: "a path no checkout should write (absolute, `..`, `.git`, or a name this system reserves): not read or scanned".into(),
+            fix_cmd: "Find out who made this tree or index entry, and take the path out of the change".into(),
+            ..Default::default()
+        });
+    }
+    scan.unchecked(
+        &format!("{} changed files with unsafe paths", paths.len()),
+        "refused: not read, written or scanned for secrets or dependencies",
+    );
+}
+
+/// The id of a finding for a path [`safe_path`] refuses.
+pub const UNSAFE_PATH: &str = "UNSAFE-PATH";
 
 /// The secret scanner, the bundled rules and the user's (`--secret-rules`),
 /// compiled on a thread of its own while git lists the change.

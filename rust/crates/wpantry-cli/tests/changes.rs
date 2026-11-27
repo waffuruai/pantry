@@ -389,6 +389,51 @@ fn the_first_commit_scans_everything_staged() {
     assert_eq!(offline(&t, &r.dir, "staged").code, 1);
 }
 
+/// `git ARGS` with `input` on stdin; its stdout, trimmed.
+fn git_in(r: &Repo, args: &[&str], input: &str) -> String {
+    use std::io::Write;
+    let mut c = r.cmd(args);
+    c.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+#[test]
+fn a_path_out_of_the_repo_or_into_git_is_refused_and_never_written() {
+    need_git!();
+    let t = Ctx::new();
+    let r = Repo::new(&t, "app");
+    // A crafted tree, as a fork's pull request can carry: `..` and `.git`
+    // entries, which git stores without fsck, each holding a lockfile.
+    let blob = git_in(&r, &["hash-object", "-w", "--stdin"], &lockfile("1.2.5"));
+    let sub = git_in(&r, &["mktree"], &format!("100644 blob {blob}\tpackage-lock.json\n"));
+    let fine = git_in(&r, &["hash-object", "-w", "--stdin"], "fine\n");
+    let top = git_in(
+        &r,
+        &["mktree"],
+        &format!("040000 tree {sub}\t..\n040000 tree {sub}\t.git\n100644 blob {fine}\tok.txt\n"),
+    );
+    let head = git_in(&r, &["commit-tree", &top, "-p", "HEAD", "-m", "crafted"], "");
+    let tmp = t.tmp.join("tmpdir");
+    mkdir(&tmp);
+    let out = changes(&t, &r.dir, &format!("HEAD...{head}"), &["--offline", "--json"], &[("TMPDIR", s(&tmp))]);
+    assert_eq!(out.code, 1, "{}{}", out.out, out.err);
+    let env = envelope(&out.out);
+    let refused: Vec<&str> =
+        arr(&env["findings"]).iter().filter(|f| f["vuln_id"] == "UNSAFE-PATH").map(|f| str_(&f["component"])).collect();
+    assert_eq!(refused, ["\"../package-lock.json\"", "\".git/package-lock.json\""], "{}", env["findings"]);
+    let gap = of_kind(&env, "unchecked");
+    assert!(gap.iter().any(|f| f["component"] == "2 changed files with unsafe paths"), "{}", env["findings"]);
+    assert!(of_kind(&env, "project").is_empty(), "nothing of the refused lockfiles was read");
+    // Nothing was written outside the scan's own folder, which is gone.
+    assert!(names(&tmp).is_empty(), "{:?}", names(&tmp));
+    assert!(!r.dir.join(".git/package-lock.json").exists());
+    assert!(!t.home.join("package-lock.json").exists());
+}
+
 #[test]
 fn what_cant_be_read_is_a_usage_error() {
     need_git!();

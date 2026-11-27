@@ -316,7 +316,7 @@ fn cmd_changes(a: &Check, spec: &str) -> Result<i32> {
         ..Default::default()
     };
     let memory = || Cache::open(Some(std::path::Path::new(":memory:")));
-    let deps = changes::touches_dependencies(&files);
+    let deps = changes::touches_dependencies(&files.files);
     let cache = if deps {
         Cache::open(None).or_else(|e| {
             note(&format!(

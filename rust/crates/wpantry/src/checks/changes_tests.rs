@@ -36,23 +36,24 @@ fn raw_diffs_keep_the_regular_files_new_blobs() {
         ":100644 100644 {a} {b} M\0src/main.rs\0:000000 100755 {z} {b} A\0run.sh\0:100644 120000 {a} {b} T\0link\0:000000 160000 {z} {b} A\0sub\0:100644 100644 {a} {z} M\0unmerged\0"
     );
     let got = parse_raw(raw.as_bytes());
+    assert!(got.refused.is_empty());
     assert_eq!(
-        got,
+        got.files,
         vec![Change { path: "src/main.rs".into(), sha: b.clone() }, Change { path: "run.sh".into(), sha: b.clone() }]
     );
-    assert!(parse_raw(b"").is_empty());
+    assert_eq!(parse_raw(b""), Listing::default());
 }
 
 #[test]
 fn index_listings_keep_stage_zero_regular_files() {
     let a = "a".repeat(40);
     let ls = format!("100644 {a} 0\tsrc/a.rs\0100644 {a} 2\tconflict\0120000 {a} 0\tlink\0");
-    assert_eq!(parse_ls(ls.as_bytes()), vec![Change { path: "src/a.rs".into(), sha: a.clone() }]);
+    assert_eq!(parse_ls(ls.as_bytes()).files, vec![Change { path: "src/a.rs".into(), sha: a.clone() }]);
 }
 
 #[test]
 fn the_ignore_file_is_read_at_the_changes_version() {
-    let git = Git { top: PathBuf::from("/r"), prefix: String::new(), env: Vec::new() };
+    let git = Git { git: PathBuf::from("git"), top: PathBuf::from("/r"), prefix: String::new(), env: Vec::new() };
     assert_eq!(git.ignore_file(&Changes::Staged), ":.pantryignore");
     assert_eq!(git.ignore_file(&Changes::parse("main...topic").unwrap()), "topic:.pantryignore");
 }
@@ -95,4 +96,59 @@ fn a_secret_says_how_to_take_it_out_of_the_change() {
     let low = secret(Path::new("/r/a.txt"), "generic", "Generic", 1, false, Some("base64".into()), &range);
     assert_eq!(low.status, "warn");
     assert!(low.note.contains("(base64-encoded), in the files changed since main"), "{}", low.note);
+}
+
+#[test]
+fn only_paths_that_stay_under_a_folder_are_safe() {
+    for p in ["a.txt", "web/package-lock.json", ".github/workflows/ci.yml", "a..b/c", ".gitignore", "x/.gitkeep"] {
+        assert!(safe_path(p), "{p}");
+    }
+    for p in [
+        "",
+        "/etc/passwd",
+        "../x",
+        "a/../../x",
+        "a/..",
+        "./a",
+        "a/./b",
+        "a//b",
+        "a/",
+        ".git/config",
+        "sub/.GIT/hooks/pre-commit",
+        ".Git",
+        "a\0b",
+    ] {
+        assert!(!safe_path(p), "{p:?}");
+    }
+}
+
+#[test]
+fn windows_names_refuse_separators_devices_and_trailing_dots() {
+    for c in ["a.txt", "console.log", "COM", "LPT10", "nul-ish"] {
+        assert!(windows_name(c), "{c}");
+    }
+    for c in [
+        "..\\x", "a\\b", "C:", "a:stream", "CON", "nul.txt", "Aux", "com1", "LPT9.log", "dot.", "space ", ".git.",
+        "a\u{1}",
+    ] {
+        assert!(!windows_name(c), "{c:?}");
+    }
+}
+
+#[test]
+fn a_refused_path_is_listed_never_kept_as_a_file() {
+    let b = "b".repeat(40);
+    let z = "0".repeat(40);
+    let raw = format!(
+        ":000000 100644 {z} {b} A\0../package-lock.json\0:000000 100644 {z} {b} A\0.git/hooks/post-checkout\0:000000 100644 {z} {b} A\0ok.txt\0"
+    );
+    let got = parse_raw(raw.as_bytes());
+    assert_eq!(got.files, vec![Change { path: "ok.txt".into(), sha: b.clone() }]);
+    assert_eq!(got.refused, ["\"../package-lock.json\"", "\".git/hooks/post-checkout\""]);
+    let mut bad = b"100644 ".to_vec();
+    bad.extend(format!("{b} 0\t").as_bytes());
+    bad.extend([0xff, b'x']);
+    let got = parse_ls(&bad);
+    assert!(got.files.is_empty());
+    assert_eq!(got.refused.len(), 1, "a name that isn't UTF-8 can't be named faithfully");
 }

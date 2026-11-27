@@ -465,3 +465,18 @@ fn the_folders_searched_before_path_win_over_path() {
         assert!(first_dirs().iter().all(|d| d.is_absolute()), "{:?}", first_dirs());
     }
 }
+
+/// Risk: a variable meant to be left out reaches the program, or it runs
+/// in the caller's folder (where a repo's config lives). Oracle: `env`
+/// prints no `HOME=` line once the prefix `HOME` is scrubbed, `PATH` stays,
+/// and `pwd` names the folder given.
+#[cfg(unix)]
+#[test]
+fn run_scrubbed_leaves_out_the_prefix_and_runs_in_the_folder() {
+    let d = crate::utils::temp::TempDir::new("scrub").unwrap();
+    let out = run_scrubbed(&["env"], Duration::from_secs(10), "HOME", d.path());
+    assert!(!out.lines().any(|l| l.starts_with("HOME=")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("PATH=")), "{out}");
+    let pwd = run_scrubbed(&["sh", "-c", "pwd -P"], Duration::from_secs(10), "UV_", d.path());
+    assert_eq!(pwd.trim(), crate::utils::files::realpath(&d.path().display().to_string()));
+}

@@ -495,3 +495,163 @@ fn the_uninstall_names_the_real_install_never_the_alias_path_reached_it_by() {
         Component::new("runtime", "python", "3.14.10", &installs.join("stable/bin/python3").display().to_string());
     assert_eq!(with_uninstall(&fixed, "mise install python@3.14.10".into(), true).0, "mise install python@3.14.10");
 }
+
+/// A folder tree with a mise shim folder, a mise install of gh and an
+/// unrelated install, as (temp dir, shim, mise binary, mise install's gh,
+/// other install's gh). The files exist, so their real paths resolve.
+#[cfg(unix)]
+fn shim_tree() -> (crate::utils::temp::TempDir, String, String, String, String) {
+    let d = crate::utils::temp::TempDir::new("shims").unwrap();
+    let mk = |rel: &str| {
+        let p = d.path().join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "").unwrap();
+        std::fs::canonicalize(&p).unwrap().display().to_string()
+    };
+    let mise = mk("share/mise/bin/mise");
+    let installed = mk("share/mise/installs/gh/2.103.2/bin/gh");
+    let other = mk("opt/other/bin/gh");
+    let shim = d.path().join("share/mise/shims/gh");
+    std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&mise, &shim).unwrap();
+    let shim = shim.display().to_string();
+    (d, shim, mise, installed, other)
+}
+
+/// `find_from` for gh, where the shim resolves to `to` (None: it can't),
+/// and the version each program says is its path's folder name. Returns
+/// the components and the programs that were asked.
+#[cfg(unix)]
+fn find_gh(found: Vec<(String, String)>, to: Option<&str>) -> (Vec<Component>, Vec<String>) {
+    let asked = std::cell::RefCell::new(Vec::new());
+    let said = |program: &str, _real: &str| {
+        asked.borrow_mut().push(program.to_string());
+        // The shim itself falls through to an old install on PATH.
+        let v = if program.contains("/shims/") { "2.88.1" } else { "2.103.2" };
+        format!("gh version {v} (2026-11-01)")
+    };
+    let got = find_from(&tool("gh"), found, false, &|_, _| to.map(str::to_string), &said);
+    (got, asked.into_inner())
+}
+
+/// Risk: a version manager's shim read as a tool install owned by the
+/// manager, so the scan reports the version the shim happens to fall through
+/// to and offers `mise install` for an install that is not the one started.
+/// Oracle: the shim's own path only decides which install to ask about; the
+/// answer (version, path, fix, auto) is the resolved install's, and the
+/// version comes from running that install, not the shim.
+#[cfg(unix)]
+#[test]
+fn a_shim_to_a_manager_owned_install_is_that_install() {
+    let (_d, shim, mise, installed, _) = shim_tree();
+    let (got, asked) = find_gh(vec![(shim, mise)], Some(&installed));
+    assert_eq!(asked, std::slice::from_ref(&installed));
+    let got: Vec<_> = got.iter().map(|c| (c.version.as_str(), c.path.as_str(), c.fix.as_str(), c.auto)).collect();
+    assert_eq!(got, [("2.103.2", installed.as_str(), "mise install gh@{safe}", true)]);
+}
+
+/// Risk: an install the OS or Homebrew updates, reached through a shim,
+/// is checked and fixed by the scan as well. Oracle: found directly it is
+/// left out, so through a shim it is too.
+#[cfg(unix)]
+#[test]
+fn a_shim_to_a_vouched_for_install_is_left_out() {
+    let (_d, shim, mise, _, _) = shim_tree();
+    let (got, _) = find_gh(vec![(shim, mise)], Some("/opt/homebrew/Cellar/gh/2.103.2/bin/gh"));
+    assert!(got.is_empty(), "{got:?}");
+}
+
+/// Risk: a shim to another manager's or an unmanaged install gets mise's
+/// unattended command. Oracle: that install's own updater, whatever it is
+/// (here none: a sentence for a person).
+#[cfg(unix)]
+#[test]
+fn a_shim_to_an_unmanaged_install_gets_that_installs_rule() {
+    let (_d, shim, mise, _, other) = shim_tree();
+    let (got, _) = find_gh(vec![(shim, mise)], Some(&other));
+    let got: Vec<_> = got.iter().map(|c| (c.path.as_str(), c.fix.as_str(), c.auto)).collect();
+    assert_eq!(got, [(other.as_str(), format!("Upgrade gh at {other} to {{safe}}").as_str(), false)]);
+}
+
+/// Risk: a shim whose target is unknown still gets `mise install` run
+/// unattended, for a version that may not be the one it starts. Oracle:
+/// the finding stays (the shim answered), shown as found, and is not
+/// unattended; the fix says why. Another manager's shim, and one in a
+/// folder named only `shims`, are unresolved the same way.
+#[cfg(unix)]
+#[test]
+fn an_unresolvable_shim_is_kept_but_never_unattended() {
+    let (_d, shim, mise, _, _) = shim_tree();
+    let (got, _) = find_gh(vec![(shim.clone(), mise.clone())], None);
+    let got: Vec<_> =
+        got.iter().map(|c| (c.path.as_str(), c.auto, c.fix.contains("could not be determined"))).collect();
+    assert_eq!(got, [(shim.as_str(), false, true)]);
+    let (got, _) = find_gh(vec![("/x/.asdf/shims/gh".into(), "/x/.asdf/bin/asdf".into())], None);
+    assert!(
+        got.len() == 1 && !got[0].auto && got[0].fix.starts_with("gh at /x/.asdf/shims/gh is a asdf shim"),
+        "{got:?}"
+    );
+    let (got, _) = find_gh(vec![("/x/shims/gh".into(), "/x/shims/gh".into())], None);
+    assert!(got.len() == 1 && !got[0].auto && got[0].fix.contains("a version manager shim"), "{got:?}");
+    // Only mise's output shape is known; nothing else is asked.
+    assert_eq!(resolve_shim("asdf", "gh"), None);
+    // A resolution that is itself a shim is no resolution.
+    let (got, _) = find_gh(vec![(shim, mise)], Some("/x/.asdf/shims/gh"));
+    assert!(got.len() == 1 && !got[0].auto, "{got:?}");
+}
+
+/// Risk: one install counted twice, once as the shim's target and once
+/// found in the manager's folder (two findings, two fixes for one thing).
+/// Oracle: one component, in either order, and also through `dedupe`.
+#[cfg(unix)]
+#[test]
+fn an_install_found_directly_and_through_a_shim_is_one() {
+    let (_d, shim, mise, installed, _) = shim_tree();
+    let direct = (installed.clone(), installed.clone());
+    for found in [vec![(shim.clone(), mise.clone()), direct.clone()], vec![direct, (shim, mise)]] {
+        let (got, asked) = find_gh(found, Some(&installed));
+        assert_eq!((got.len(), asked.len()), (1, 1), "{got:?}");
+        assert_eq!(dedupe(got).len(), 1);
+    }
+}
+
+/// The shim folders the list knows, and a path that is not in one.
+#[test]
+fn shim_folders_are_told_from_installs() {
+    assert_eq!(shim_of("/h/.local/share/mise/shims/node"), Some("mise"));
+    assert_eq!(shim_of("/h/.asdf/shims/node"), Some("asdf"));
+    assert_eq!(shim_of("/h/.pyenv/shims/python"), Some("pyenv"));
+    assert_eq!(shim_of("/x/shims/node"), Some(""));
+    assert_eq!(shim_of("/h/.local/share/mise/installs/node/26.12.1/bin/node"), None);
+    assert_eq!(shim_of("/opt/homebrew/bin/node"), None);
+}
+
+/// Risk: `mise install gh@2.88.3` offered when 2.88.5 is already installed:
+/// it changes nothing (a real scan offered versions older than the manager's
+/// own). Oracle: a fix version not newer than an installed one of its
+/// release line (major.minor) leaves only the removal of the vulnerable
+/// install, for a person; a newer one, or another line's (a newer line is
+/// another branch, not a replacement), still installs. Aliases (`latest`,
+/// `9`) are links, not installs.
+#[cfg(unix)]
+#[test]
+fn a_fix_older_than_an_installed_version_is_only_the_removal() {
+    let d = crate::utils::temp::TempDir::new("miseheld").unwrap();
+    let installs = d.path().join("share/mise/installs/gh");
+    std::fs::create_dir_all(installs.join("2.88.1/bin")).unwrap();
+    let c = Component::new("tool", "gh", "2.88.1", &installs.join("2.88.1/bin/gh").display().to_string());
+    let cmd = || "mise install gh@2.88.3".to_string();
+    let both = ("mise install gh@2.88.3\nmise uninstall gh@2.88.1".to_string(), true);
+    // Links named like newer versions are not installs.
+    std::os::unix::fs::symlink(installs.join("2.88.1"), installs.join("latest")).unwrap();
+    std::os::unix::fs::symlink(installs.join("2.88.1"), installs.join("2.88")).unwrap();
+    assert_eq!(with_uninstall(&c, cmd(), true), both);
+    // Another line's newer install is not this fix's replacement.
+    std::fs::create_dir_all(installs.join("2.103.2")).unwrap();
+    assert_eq!(with_uninstall(&c, cmd(), true), both);
+    // A newer install in the fix's own line is.
+    std::fs::create_dir_all(installs.join("2.88.5")).unwrap();
+    assert_eq!(with_uninstall(&c, cmd(), true), ("mise uninstall gh@2.88.1".to_string(), false));
+    // Older than the fix in its line: still installed.
+    assert!(with_uninstall(&c, "mise install gh@2.88.9".into(), true).0.starts_with("mise install gh@2.88.9"));
+}

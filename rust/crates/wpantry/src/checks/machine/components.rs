@@ -6,6 +6,7 @@ use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, MISE_REPO};
 use crate::checks::machine::erlang;
 use crate::checks::machine::exploited::Gap;
+use crate::checks::machine::packages;
 use crate::checks::{Scan, fill, fix_with};
 use crate::component::Component;
 use crate::error::Result;
@@ -75,6 +76,8 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
     scan.status("Fetching end-of-life dates");
     endoflife::eol_prefetch(&scan.cache, scan.net, &products, scan.opts.offline)?;
     for c in found {
+        let past = past_eol_pip(scan, c)?;
+        let c = past.as_ref().unwrap_or(c);
         let recs = osv::records_for(&answers, c.osv.iter().chain(&c.osv_also));
         let mut failing = scan.advisories(c, &recs, c.osv.as_ref().and_then(|o| newer.get(o)), "fail", None);
         if c.name == "postgres" {
@@ -96,6 +99,40 @@ pub fn components(scan: &mut Scan, found: &[Component]) -> Result<HashMap<Item, 
         }
     }
     Ok(answers)
+}
+
+/// A pip package of a Python whose release line is past end of life, with
+/// its fix turned into a suggestion, or None when it is not one, the line
+/// still has support, or endoflife.date's answer for Python is not on hand.
+///
+/// The answer is read from the copy the scan already keeps for the Python
+/// runtimes ([`endoflife::support_end`]); nothing is asked here. Releases
+/// that fix a package often drop the interpreters that are past end of
+/// life, so pip answers "No matching distribution found" for the fix
+/// the scan would otherwise offer to run unattended.
+///
+/// Example: `requests` in a Python 3.9, 3.9 ended on 2025-10-31: not
+/// unattended, "Python 3.9 is past end of life ... try it anyway: ...".
+fn past_eol_pip(scan: &Scan, c: &Component) -> Result<Option<Component>> {
+    let Some(line) = c.extra.get(packages::PY_LINE) else { return Ok(None) };
+    if !c.auto || !c.fix.contains(" -m pip install") {
+        return Ok(None);
+    }
+    let ended = match endoflife::support_end(&scan.cache, "python", line)? {
+        Some(day) if !day.is_empty() => endoflife::past(&Value::String(day)),
+        _ => false,
+    };
+    if !ended {
+        return Ok(None);
+    }
+    let name = c.osv.as_ref().map_or(c.name.as_str(), |o| o.1.as_str());
+    let mut adjusted = c.clone();
+    adjusted.auto = false;
+    adjusted.fix = format!(
+        "Python {line} is past end of life, so releases that fix {name} may no longer support it: move the project to a supported Python. You may still try: {}",
+        c.fix
+    );
+    Ok(Some(adjusted))
 }
 
 /// A newer mise release only warns (OSV decides failures): a human bumps it

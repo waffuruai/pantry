@@ -31,6 +31,20 @@ pub fn covering<'a>(fs: &[&'a Finding]) -> &'a Finding {
     best.unwrap_or(fs[0])
 }
 
+/// The unattended fixes one `fix <ID>` for `one` runs: `one` and every other
+/// finding of the same component (kind, name, version, location) in `all`
+/// that has one. [`steps`] picks among them the fix that covers them all,
+/// as the list and the plan do, so fixing a component for one advisory does
+/// not leave its other advisories open.
+pub fn component_fixes(all: &[Finding], one: &Finding) -> Vec<Finding> {
+    let same = |f: &Finding| {
+        (&f.kind, &f.component, &f.version, &f.location) == (&one.kind, &one.component, &one.version, &one.location)
+    };
+    let mut out = vec![one.clone()];
+    out.extend(all.iter().filter(|f| same(f) && f.fix_auto && !f.fix_cmd.is_empty() && f.key() != one.key()).cloned());
+    out
+}
+
 /// One step of the update plan: a command (or an instruction), whether
 /// `wpantry fix` runs it unattended, whether it clears a failing finding, and
 /// the findings (indices into the slice `steps` was given) it covers.

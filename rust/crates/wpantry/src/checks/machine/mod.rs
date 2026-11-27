@@ -47,12 +47,14 @@ pub mod os_packages;
 pub mod os_updates;
 pub mod packages;
 pub mod programs;
+pub mod python_layout;
 pub mod servers;
 pub mod settings;
 pub mod software_cves;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod tools;
+pub mod uv_pythons;
 
 /// A browser release younger than this only warns.
 pub const GRACE: f64 = 3.0 * 86400.0;

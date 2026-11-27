@@ -74,8 +74,9 @@ pub fn updater(path: &str, name: &str) -> (String, bool) {
 /// A mise runtime's fix, leaving no vulnerable install behind: install the
 /// fixed version, then `mise uninstall` the old one (a second line, which
 /// the plan never runs unattended: a mise.toml or .tool-versions may still
-/// pin it). When the fixed version is already installed beside it, the fix
-/// is the uninstall alone, also for a person to run. Any other command is
+/// pin it). When the fixed version, or a newer one of its release line, is
+/// already installed beside it, the fix is the uninstall alone, also for a
+/// person to run. Any other command is
 /// returned as it was.
 ///
 /// Example: python 3.14.9 under `~/.local/share/mise/installs/python/3.14.9`
@@ -102,7 +103,24 @@ pub fn with_uninstall(c: &Component, cmd: String, auto: bool) -> (String, bool) 
         return (cmd, auto);
     }
     let uninstall = format!("mise uninstall {name}@{old}");
-    if Path::new(&format!("{dir}{fixed}")).is_dir() {
+    // Installing a version that is not newer than one already installed in
+    // the same release line (major.minor: a newer line is another branch,
+    // not a replacement) changes nothing; only the vulnerable one is left
+    // to remove. An alias (`2.103`, `latest`) is a link, not an install.
+    let line = |v: &str| v.split('.').take(2).map(str::to_string).collect::<Vec<_>>();
+    let held = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .any(|v| {
+            v != old
+                && v.starts_with(|c: char| c.is_ascii_digit())
+                && line(&v) == line(fixed)
+                && !versions::lt(&v, fixed)
+        });
+    if held || Path::new(&format!("{dir}{fixed}")).is_dir() {
         (uninstall, false)
     } else {
         (format!("{cmd}\n{uninstall}"), auto)
@@ -140,6 +158,56 @@ pub fn embedded(path: &str, prefix: &str) -> String {
     out.join("\n")
 }
 
+/// Version managers' shim folders: (path marker, manager). A shim is not an
+/// install: it starts whichever version the folder, environment and PATH
+/// select, or another install on PATH when the manager has none configured.
+const SHIMS: &[(&str, &str)] = &[
+    ("/mise/shims/", "mise"),
+    ("/.asdf/shims/", "asdf"),
+    ("/.pyenv/shims/", "pyenv"),
+    ("/.rbenv/shims/", "rbenv"),
+    ("/.nodenv/shims/", "nodenv"),
+    ("/.goenv/shims/", "goenv"),
+    ("/.jenv/shims/", "jenv"),
+];
+
+/// The manager whose shim folder `path` is in ("" for a shim folder this
+/// list doesn't know), or None for any other path.
+pub fn shim_of(path: &str) -> Option<&'static str> {
+    let p = path.replace('\\', "/");
+    SHIMS.iter().find(|(m, _)| p.contains(m)).map(|(_, n)| *n).or_else(|| p.contains("/shims/").then_some(""))
+}
+
+/// The real path `manager`'s shim for `bin` starts, from `mise which`, run
+/// where the scan runs: the same folder and environment as the fix that
+/// follows. Read-only (auto-install is switched off). None when it names no
+/// file, for mise (an inactive tool is an error text, not a path) and for
+/// every manager whose output shape isn't known here.
+fn resolve_shim(manager: &str, bin: &str) -> Option<String> {
+    if manager != "mise" {
+        return None;
+    }
+    let mise = crate::utils::process::find_tool("mise")?;
+    let argv = [mise.as_os_str(), OsStr::new("which"), OsStr::new(bin)];
+    let env = [("MISE_AUTO_INSTALL", "0"), ("MISE_NOT_FOUND_AUTO_INSTALL", "0")];
+    let out = crate::utils::process::exec(&argv, &env, Duration::from_secs(15)).ok()?.stdout;
+    let p = out.trim();
+    (!p.contains('\n') && Path::new(p).is_absolute() && Path::new(p).is_file()).then(|| p.to_string())
+}
+
+/// What `program` says when asked for its version (or its bytes, for a tool
+/// that is never run).
+fn said_by(t: &Tool, program: &str, real: &str) -> String {
+    match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
+        Some((_, prefix)) => embedded(real, prefix),
+        None => {
+            let mut argv: Vec<&OsStr> = vec![OsStr::new(program)];
+            argv.extend(t.args.iter().map(OsStr::new));
+            run(&argv, Duration::from_secs(15))
+        }
+    }
+}
+
 /// Components for one catalog tool.
 pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
     find_owned(t, extra_dirs, false)
@@ -156,11 +224,53 @@ pub fn find_any(t: &Tool) -> Vec<Component> {
 fn find_owned(t: &Tool, extra_dirs: &[String], any: bool) -> Vec<Component> {
     let mut dirs: Vec<String> = t.paths.iter().map(|p| p.to_string()).collect();
     dirs.extend(extra_dirs.iter().cloned());
+    let found: Vec<(String, String)> = t.bins.iter().flat_map(|b| on_path(b, &dirs)).collect();
+    find_from(t, found, any, &|m, b| resolve_shim(m, b), &|p, r| said_by(t, p, r))
+}
+
+/// [`find_owned`] for the (shown, real) paths `found`. `resolve` is
+/// [`resolve_shim`] (manager, binary); `said` asks a program (path, real
+/// path) for its version.
+///
+/// A path in a shim folder is the install it starts, not the manager's own
+/// binary: owner, version, fix and `auto` come from the resolved real path,
+/// and an install already found is not a second component. A shim that
+/// can't be resolved stays, shown as found, with no unattended fix: what it
+/// starts is unknown, so is who updates it.
+fn find_from(
+    t: &Tool,
+    found: Vec<(String, String)>,
+    any: bool,
+    resolve: &dyn Fn(&str, &str) -> Option<String>,
+    said: &dyn Fn(&str, &str) -> String,
+) -> Vec<Component> {
     let mut out = Vec::new();
-    for b in t.bins {
-        for (shown, real) in on_path(b, &dirs) {
-            out.extend(component_at(t, &shown, &real, any));
+    let mut seen = Vec::new();
+    for (shown, real) in found {
+        let bin = Path::new(&shown).file_name().and_then(OsStr::to_str).unwrap_or(t.name).to_string();
+        let (mut shown, mut real, mut unresolved) = (shown, real, None);
+        if let Some(manager) = shim_of(&shown).or_else(|| shim_of(&real)) {
+            match resolve(manager, &bin).map(|r| (files::realpath(&r), r)) {
+                Some((r, shown_r)) if shim_of(&r).is_none() => (shown, real) = (shown_r, r),
+                _ => unresolved = Some(manager),
+            }
         }
+        if unresolved.is_none() {
+            if seen.contains(&real) {
+                continue;
+            }
+            seen.push(real.clone());
+        }
+        let Some(mut c) = component_with(t, &shown, &real, any, said) else { continue };
+        if let Some(manager) = unresolved.filter(|_| t.fix.is_empty()) {
+            let by = if manager.is_empty() { "a version manager".to_string() } else { manager.to_string() };
+            c.fix = format!(
+                "{} at {shown} is a {by} shim and what it starts could not be determined: find the install it reaches and update that one to {{safe}}",
+                t.name
+            );
+            c.auto = false;
+        }
+        out.push(c);
     }
     out
 }
@@ -173,19 +283,23 @@ fn find_owned(t: &Tool, extra_dirs: &[String], any: bool) -> Vec<Component> {
 /// place a copy's version is read: a scan reads every copy through it, and
 /// `wpantry recheck` reads one.
 pub fn component_at(t: &Tool, shown: &str, real: &str, any: bool) -> Option<Component> {
+    component_with(t, shown, real, any, &|p, r| said_by(t, p, r))
+}
+
+/// [`component_at`] with the version asked through `said` (path, real path).
+fn component_with(
+    t: &Tool,
+    shown: &str,
+    real: &str,
+    any: bool,
+    said: &dyn Fn(&str, &str) -> String,
+) -> Option<Component> {
     let re = Regex::with_flags(t.pattern, "m");
     let who = owner(real);
     if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
         return None;
     }
-    let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
-        Some((_, prefix)) => embedded(real, prefix),
-        None => {
-            let mut argv: Vec<&OsStr> = vec![OsStr::new(shown)];
-            argv.extend(t.args.iter().map(OsStr::new));
-            run(&argv, Duration::from_secs(15))
-        }
-    };
+    let said = said(shown, real);
     let m = re.search(&said)?;
     let v = m.get(1).to_string();
     let (mut fix, mut auto) = updater(real, t.name);

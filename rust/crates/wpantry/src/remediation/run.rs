@@ -54,7 +54,45 @@ impl Failure {
             out.push(format!("    stderr (last {} lines):", self.stderr.lines().count()));
             out.extend(self.stderr.lines().map(|l| format!("      {l}")));
         }
+        if let Some(why) = self.why() {
+            out.push(format!("    Why: {why}"));
+        }
         out
+    }
+
+    /// One plain sentence saying why the fix failed, when the cause is
+    /// recognised, else None. Only characters a package name or version may
+    /// hold are ever copied from stderr into it.
+    pub fn why(&self) -> Option<String> {
+        const NO_MATCH: &str = "No matching distribution found for";
+        if self.stderr.contains("externally-managed-environment") {
+            return Some(
+                "This Python is managed by a package manager, so pip will not change it. \
+                 Upgrade the package through that package manager instead."
+                    .to_string(),
+            );
+        }
+        if let Some(at) = self.stderr.find(NO_MATCH) {
+            let wanted = match self.stderr[at + NO_MATCH.len()..].split_whitespace().next().and_then(parse_requirement)
+            {
+                Some((name, version)) => format!("No release of {name} at or above {version}"),
+                None => "No release that fixes this".to_string(),
+            };
+            return Some(format!("{wanted} supports this Python. Upgrade Python itself, or remove the package."));
+        }
+        // The failure type has no spawn variant; `not_found` words the
+        // reason for a program that is not there, so that is what is read.
+        if self.exit_code.is_none() && self.reason.contains("was not found") {
+            let program = self.cmd.split_whitespace().next().unwrap_or("");
+            let plain = |c: char| c.is_ascii_alphanumeric() || "._/+@-".contains(c);
+            if !program.is_empty() && program.len() <= 200 && program.chars().all(plain) {
+                return Some(format!(
+                    "The program this fix runs is no longer at {program}. \
+                     Scan again so the fix names what is installed now."
+                ));
+            }
+        }
+        None
     }
 
     /// One string for the log: the exit code or reason, then the stderr tail.
@@ -65,6 +103,17 @@ impl Failure {
         };
         if self.stderr.is_empty() { head } else { format!("{head}\n{}", self.stderr) }
     }
+}
+
+/// `name>=version` from pip's message, as (name, version); None unless the
+/// whole word is a plain name, `>=` and a plain version (a trailing `,<N`
+/// bound is allowed), so nothing odd from stderr is ever repeated.
+fn parse_requirement(word: &str) -> Option<(&str, &str)> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._-".contains(c);
+    let ok = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s.chars().all(plain);
+    let (name, rest) = word.split_once(">=")?;
+    let version = rest.split(',').next()?;
+    (ok(name, 100) && ok(version, 40)).then_some((name, version))
 }
 
 /// Why `program` can't be found: where wpantry looked (PATH, then the

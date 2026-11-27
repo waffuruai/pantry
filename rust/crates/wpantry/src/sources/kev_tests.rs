@@ -120,3 +120,61 @@ fn an_old_cache_loads_and_its_next_fetch_downloads_the_whole_list() {
     // Migrated: the next run is the usual fresh no-request one.
     assert!(kev(&c, &Fake::new(|_| panic!("fresh")), false).is_ok());
 }
+
+/// Risk: a scan's cache is in autocommit, so a KEV load that fails part-way
+/// (an error, a killed scan) has already committed the delete and leaves a
+/// partial list for every later command. Oracle: an insert that fails
+/// part-way (a trigger stands in for the error) leaves the old list whole.
+/// Known bad: the delete and the inserts committed one by one.
+#[test]
+fn a_kev_load_that_fails_part_way_leaves_the_old_list() {
+    let d = crate::utils::temp::TempDir::new("kev-load").unwrap();
+    let c = Cache::open_for_scan(Some(&d.path().join("w.db")), &|_| {}).unwrap();
+    let list = |ids: &[&str]| {
+        let v: Vec<_> = ids.iter().map(|i| json!({"cveID": i, "dateAdded": "2026-01-01"})).collect();
+        json!({ "vulnerabilities": v }).to_string()
+    };
+    let old = list(&["CVE-2026-1", "CVE-2026-2"]);
+    kev(&c, &Fake::new(move |_| Ok(Response::ok(old.clone()))), false).unwrap();
+    c.conn
+        .execute_batch(
+            "CREATE TRIGGER fail_part_way BEFORE INSERT ON kev WHEN NEW.cve = 'CVE-2026-12'
+             BEGIN SELECT RAISE(ABORT, 'interrupted'); END;",
+        )
+        .unwrap();
+    c.unset("kev_at").unwrap();
+    let new = list(&["CVE-2026-10", "CVE-2026-11", "CVE-2026-12"]);
+    assert!(kev(&c, &Fake::new(move |_| Ok(Response::ok(new.clone()))), false).is_err());
+    assert_eq!(c.kev_ids().unwrap(), HashSet::from(["CVE-2026-1".to_string(), "CVE-2026-2".to_string()]));
+}
+
+/// Risk: the same for one product's end-of-life page: a store that fails
+/// part-way leaves the product with some cycles or none. Oracle: the old
+/// cycles stay whole.
+#[test]
+fn an_eol_store_that_fails_part_way_leaves_the_old_cycles() {
+    let d = crate::utils::temp::TempDir::new("eol-load").unwrap();
+    let c = Cache::open_for_scan(Some(&d.path().join("w.db")), &|_| {}).unwrap();
+    crate::sources::endoflife::store_for_tests(&c, "php", &json!([{"cycle": "8.3"}, {"cycle": "8.2"}]));
+    c.conn
+        .execute_batch(
+            "CREATE TRIGGER fail_part_way BEFORE INSERT ON eol WHEN NEW.cycle = '8.5'
+             BEGIN SELECT RAISE(ABORT, 'interrupted'); END;",
+        )
+        .unwrap();
+    let new = json!([{"cycle": "8.4"}, {"cycle": "8.5"}]);
+    let stored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::sources::endoflife::store_for_tests(&c, "php", &new)
+    }));
+    assert!(stored.is_err(), "the trigger did not fire");
+    let mut cycles: Vec<String> = c
+        .conn
+        .prepare("SELECT cycle FROM eol WHERE product = 'php'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    cycles.sort();
+    assert_eq!(cycles, ["8.2", "8.3"]);
+}

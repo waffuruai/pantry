@@ -745,7 +745,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wpantry"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "rusqlite",
  "rustls",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "wpantry-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "wpantry-yara"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "zeroize"

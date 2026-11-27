@@ -3,8 +3,10 @@
 //! every Node, `cargo install`s, pipx-installed tools and global Ruby gems.
 
 use crate::checks::machine::catalog::{Cycle, PYTHON_DIRS};
+use crate::checks::machine::python_layout::{self, Layout};
 use crate::checks::machine::tools::updater;
 use crate::checks::machine::uv_pythons;
+use crate::checks::supply_chain::quote;
 use crate::component::Component;
 use crate::utils::files::expand;
 use crate::utils::files::owner;
@@ -71,13 +73,20 @@ fn str_of(v: &Value, k: &str) -> String {
 /// couldn't be read, for the scan to report unchecked (incomplete metadata
 /// must never read as fewer packages).
 pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    pythons_with_uv(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15), &owner, &uv_pythons::ask)
+    let env = python_layout::Env::here();
+    pythons_with_uv(
+        find_pythons(),
+        &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15),
+        &owner,
+        &|shown, real| python_layout::read(shown, real, &env),
+        &uv_pythons::ask,
+    )
 }
 
 /// Every Python on PATH or installed by a version manager, as (shown path,
 /// real path). The ones the OS or a package manager vouches for are kept:
-/// `pythons_from` leaves out their runtime and system packages but reports
-/// what a person installed into their user site.
+/// `pythons_from` leaves out their runtime and system packages, never runs
+/// them, and reports what a person installed into their user site.
 fn find_pythons() -> Vec<(String, String)> {
     let names = python_names(&python_dirs(std::env::var_os("PATH").as_deref()));
     names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).collect()
@@ -108,16 +117,20 @@ fn python_names(dirs: &[String]) -> Vec<String> {
     names
 }
 
-/// `pythons` for the interpreters `found`, each asked `PY_INFO` by `probe`.
-/// `vouched` is `owner`: who vouches for a real path, "" for nobody.
+/// `pythons` for the interpreters `found`, each nobody vouches for asked
+/// `PY_INFO` by `probe`. `vouched` is `owner`: who vouches for a real path,
+/// "" for nobody.
 ///
 /// An interpreter somebody vouches for (the OS's, a package manager's) is
 /// not reported as a runtime, and neither are the packages in its system
 /// site directories: its owner updates those. What a person installed with
 /// `pip install --user` lives in its user site, which nobody else updates,
-/// so those packages are reported. Whether an interpreter is vouched for is
-/// judged by the one that answered the probe (a version-manager shim starts
-/// whichever Python the folder picks), by `real` when it gave no usable path.
+/// so those packages are reported. One found at a vouched-for real path is
+/// never run: `layout` reads its release line and user site from where it
+/// is installed ([`python_layout::read`]), and when it cannot, its user
+/// site is reported unchecked. A version-manager shim is probed (nobody
+/// vouches for it), and when the interpreter that answered is vouched for,
+/// it is treated as one, by `real` when it gave no usable path.
 /// The `extra` key on a pip package that names its interpreter's release
 /// line (`3.9`). The scan reads it once it has the end-of-life answer
 /// ([`crate::checks::machine::components::components`]), which is not
@@ -133,7 +146,14 @@ fn pythons_from(
     probe: &(dyn Fn(&str) -> String + Sync),
     vouched: &dyn Fn(&str) -> &'static str,
 ) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    pythons_with_uv(found, probe, vouched, &|| None)
+    let env = python_layout::Env {
+        home: files::home(),
+        os: std::env::consts::OS,
+        user_base: None,
+        appdata: None,
+        developer_dir: None,
+    };
+    pythons_with_uv(found, probe, vouched, &|shown, real| python_layout::read(shown, real, &env), &|| None)
 }
 
 /// [`pythons_from`] with what uv can install asked through `ask_uv`, at most
@@ -143,6 +163,7 @@ pub(crate) fn pythons_with_uv(
     found: Vec<(String, String)>,
     probe: &(dyn Fn(&str) -> String + Sync),
     vouched: &dyn Fn(&str) -> &'static str,
+    layout: &dyn Fn(&str, &str) -> Layout,
     ask_uv: &dyn Fn() -> Option<uv_pythons::UvPythons>,
 ) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
     let uv_answer = std::cell::OnceCell::new();
@@ -155,10 +176,37 @@ pub(crate) fn pythons_with_uv(
         user: Option<String>,
         owned: bool,
     }
-    let probed = parallel::par_map(&found, parallel::PROBES, |(shown, _)| probe(shown));
+    let asked: Vec<&(String, String)> = found.iter().filter(|(_, real)| vouched(real).is_empty()).collect();
+    let mut probed = parallel::par_map(&asked, parallel::PROBES, |(shown, _)| probe(shown)).into_iter();
     let mut answers = Vec::new();
+    let mut unread = Vec::new();
     let mut seen = Vec::new();
-    for ((shown, real), raw) in found.into_iter().zip(probed) {
+    for (shown, real) in found {
+        if !vouched(&real).is_empty() {
+            match layout(&shown, &real) {
+                Layout::Read { runs, line, user, managed } => {
+                    if seen.contains(&runs) {
+                        continue;
+                    }
+                    seen.push(runs.clone());
+                    let info = serde_json::json!({ "v": line, "managed": managed });
+                    let user = user.map(|u| files::realpath(&u));
+                    answers.push(Answer {
+                        shown,
+                        real: runs.clone(),
+                        runs,
+                        info,
+                        sites: Vec::new(),
+                        user,
+                        owned: true,
+                    });
+                }
+                Layout::Absent => {}
+                Layout::Unknown(why) => unread.push((shown, vec![format!("user site not read: {why}")])),
+            }
+            continue;
+        }
+        let raw = probed.next().unwrap_or_default();
         let last = raw.trim().lines().last().unwrap_or("");
         let Some(info) = json_in(last, '{', '}') else { continue };
         let reported = str_of(&info, "exe");
@@ -182,7 +230,6 @@ pub(crate) fn pythons_with_uv(
     let mut claimed: std::collections::HashSet<String> =
         answers.iter().filter(|a| !a.owned).filter_map(|a| a.user.clone()).collect();
     let mut out = Vec::new();
-    let mut unread = Vec::new();
     for a in answers {
         let managed = a.info.get("managed") == Some(&Value::Bool(true));
         let line = Cycle::Minor.of(&str_of(&a.info, "v"));
@@ -312,7 +359,7 @@ fn pip(
         } else if managed {
             (format!("Upgrade {name} through the package manager that owns {runs}"), false)
         } else {
-            (format!("{runs} -m pip install --upgrade '{name}>={{safe}}'"), true)
+            (format!("{} -m pip install --upgrade '{name}>={{safe}}'", quote(runs)), true)
         };
         out.push(pip_component(py, name, ver, fix, auto));
     }
@@ -326,7 +373,7 @@ fn pip(
 /// override this tool never adds, so that fix is text, not a command.
 fn pip_user(py: &str, runs: &str, user: &str, managed: bool) -> (Vec<Component>, Vec<String>) {
     let (found, gaps) = installed(&[user.to_string()]);
-    let command = |name: &str| format!("{runs} -m pip install --user --upgrade '{name}>={{safe}}'");
+    let command = |name: &str| format!("{} -m pip install --user --upgrade '{name}>={{safe}}'", quote(runs));
     let out = found
         .into_iter()
         .map(|(name, ver)| {

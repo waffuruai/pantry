@@ -47,6 +47,7 @@ pub mod os_packages;
 pub mod os_updates;
 pub mod packages;
 pub mod programs;
+pub mod python_layout;
 pub mod servers;
 pub mod settings;
 pub mod software_cves;

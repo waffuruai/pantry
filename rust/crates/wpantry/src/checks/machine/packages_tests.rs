@@ -479,7 +479,16 @@ fn fake_python(d: &std::path::Path, name: &str, user: &std::path::Path, managed:
         std::fs::write(system.join(format!("{dist}-1.0.dist-info/METADATA")), format!("Name: {dist}\nVersion: 1.0\n"))
             .unwrap();
     }
-    let exe = d.join(name);
+    // Installed as a real one is, `<prefix>/bin/python3.N`, so the layout
+    // gives its release line; a managed one carries the PEP 668 marker.
+    let line = crate::utils::re::Regex::new(r"3\.\d+").search(name).unwrap().get(0).to_string();
+    let prefix = d.join(name);
+    std::fs::create_dir_all(prefix.join("bin")).unwrap();
+    if managed {
+        std::fs::create_dir_all(prefix.join(format!("lib/python{line}"))).unwrap();
+        std::fs::write(prefix.join(format!("lib/python{line}/EXTERNALLY-MANAGED")), "").unwrap();
+    }
+    let exe = prefix.join(format!("bin/python{line}"));
     std::fs::write(&exe, "").unwrap();
     let json = format!(
         "{{\"v\": \"3.9.6\", \"exe\": \"{}\", \"user\": \"{}\", \"sites\": [\"{}\", \"{}\"], \"managed\": {managed}}}",
@@ -489,6 +498,13 @@ fn fake_python(d: &std::path::Path, name: &str, user: &std::path::Path, managed:
         system.display()
     );
     FakePython { exe, json }
+}
+
+/// Where `pip install --user` puts packages for a non-framework Python of
+/// `line` under the test's home.
+#[cfg(unix)]
+fn standard_user_site(line: &str) -> std::path::PathBuf {
+    files::home().join(format!(".local/lib/python{line}/site-packages"))
 }
 
 /// One distribution in a user site folder, created on demand.
@@ -530,7 +546,7 @@ fn found_of(pys: &[&FakePython]) -> Vec<(String, String)> {
 fn vouched_unmanaged_python_reports_only_its_user_site() {
     let _home = files::test_home();
     let d = temp::TempDir::new("pyuser").unwrap();
-    let user = d.path().join("user-site");
+    let user = standard_user_site("3.9");
     put_dist(&user, "requests");
     let py = fake_python(d.path(), "python3.9", &user, false, &["setuptools"]);
     let (got, unread) = pythons_from(found_of(&[&py]), &fake_probe(&[&py]), &vouching(&[&py]));
@@ -538,7 +554,8 @@ fn vouched_unmanaged_python_reports_only_its_user_site() {
     assert_eq!(names, ["pip:requests"], "no runtime, no system site package");
     let c = &got[0];
     assert_eq!(c.path, py.exe.display().to_string());
-    assert!(c.fix.starts_with(&format!("{} -m pip install --user --upgrade ", py.exe.display())), "{}", c.fix);
+    let runs = files::realpath(&py.exe.display().to_string());
+    assert!(c.fix.starts_with(&format!("{runs} -m pip install --user --upgrade ")), "{}", c.fix);
     assert!(c.fix.contains(" -m pip install --user --upgrade "), "{}", c.fix);
     assert!(c.auto);
     assert!(unread.is_empty());
@@ -553,7 +570,7 @@ fn vouched_unmanaged_python_reports_only_its_user_site() {
 fn vouched_managed_python_reports_user_site_without_a_command_or_override() {
     let _home = files::test_home();
     let d = temp::TempDir::new("pymanaged").unwrap();
-    let user = d.path().join("user-site");
+    let user = standard_user_site("3.12");
     put_dist(&user, "requests");
     put_dist(&user, "pip");
     let py = fake_python(d.path(), "python3.12", &user, true, &["setuptools"]);
@@ -591,7 +608,7 @@ fn vouched_python_without_a_user_site_reports_nothing() {
 fn a_shared_user_site_is_reported_once() {
     let _home = files::test_home();
     let d = temp::TempDir::new("pyshared").unwrap();
-    let user = d.path().join("user-site");
+    let user = standard_user_site("3.14");
     put_dist(&user, "requests");
     let a = fake_python(d.path(), "python3.14-a", &user, false, &[]);
     let b = fake_python(d.path(), "python3.14-b", &user, false, &[]);
@@ -703,4 +720,73 @@ fn pip_packages_carry_their_interpreters_release_line() {
     let lines: Vec<(&str, Option<&String>)> =
         got.iter().filter(|c| c.kind != "runtime").map(|c| (c.name.as_str(), c.extra.get(PY_LINE))).collect();
     assert_eq!(lines, [("pip:requests", Some(&"3.9".to_string()))]);
+}
+
+/// Risk: a scan runs an interpreter the OS or a package manager vouches for
+/// (on a Mac without the Command Line Tools `/usr/bin/python3` opens the
+/// install dialog, scheduled scans included). Oracle: a probe that panics
+/// when asked about it; the user-site package is still reported, read from
+/// the install layout and the standard user site.
+#[cfg(unix)]
+#[test]
+fn a_vouched_python_is_never_run() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pynorun").unwrap();
+    let user = standard_user_site("3.9");
+    put_dist(&user, "requests");
+    let py = fake_python(d.path(), "python3.9", &user, false, &[]);
+    let exe = py.exe.display().to_string();
+    let probe = move |shown: &str| -> String { panic!("ran the vouched-for {shown} ({exe})") };
+    let (got, unread) = pythons_from(found_of(&[&py]), &probe, &vouching(&[&py]));
+    let names: Vec<(&str, Option<&String>)> = got.iter().map(|c| (c.name.as_str(), c.extra.get(PY_LINE))).collect();
+    assert_eq!(names, [("pip:requests", Some(&"3.9".to_string()))]);
+    assert!(unread.is_empty());
+}
+
+/// Risk: a vouched-for interpreter whose version its layout does not show
+/// is run after all, or its user site silently reads as empty. Oracle: no
+/// probe, and one unchecked entry naming it.
+#[cfg(unix)]
+#[test]
+fn a_vouched_python_of_unknown_version_is_unchecked_not_run() {
+    let _home = files::test_home();
+    let d = temp::TempDir::new("pyunknown").unwrap();
+    let exe = d.path().join("odd/python");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "").unwrap();
+    let exe = exe.display().to_string();
+    let found = vec![(exe.clone(), files::realpath(&exe))];
+    let probe = |shown: &str| -> String { panic!("ran {shown}") };
+    let (got, unread) = pythons_from(found, &probe, &|_| "os");
+    assert!(got.is_empty());
+    assert_eq!(unread.len(), 1, "{unread:?}");
+    assert_eq!(unread[0].0, exe);
+    assert!(unread[0].1[0].contains("does not run"), "{unread:?}");
+}
+
+/// Risk: an interpreter path with a space or a `'` makes the stored pip
+/// fix split into other words when it runs (another program, or no command
+/// at all). Oracle: the fix splits back into the interpreter path as the
+/// first word, then `-m pip`, for a probed and a vouched-for one.
+#[cfg(unix)]
+#[test]
+fn pip_fixes_quote_the_interpreter_path() {
+    use crate::remediation::shlex_split;
+    for odd in ["with space", "it's"] {
+        let _home = files::test_home();
+        let d = temp::TempDir::new("pyquote").unwrap();
+        let root = d.path().join(odd);
+        let user = standard_user_site("3.9");
+        put_dist(&user, "requests");
+        let py = fake_python(&root, "python3.9", &user, false, &["setuptools"]);
+        for vouched in [false, true] {
+            let owned: &[&FakePython] = if vouched { &[&py] } else { &[] };
+            let (got, _) = pythons_from(found_of(&[&py]), &fake_probe(&[&py]), &vouching(owned));
+            let pkg = got.iter().find(|c| c.name == "pip:requests").expect("requests listed");
+            let words = shlex_split(&pkg.fix).unwrap_or_else(|| panic!("{odd}: does not split: {}", pkg.fix));
+            let exe = py.exe.display().to_string();
+            assert!(words[0] == exe || words[0] == files::realpath(&exe), "{odd}/{vouched}: {words:?}");
+            assert_eq!(&words[1..3], ["-m", "pip"], "{odd}/{vouched}: {words:?}");
+        }
+    }
 }

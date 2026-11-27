@@ -89,11 +89,11 @@ fn findings_name_the_repo_not_the_temporary_copy() {
 
 #[test]
 fn a_secret_says_how_to_take_it_out_of_the_change() {
-    let staged = secret(Path::new("/r/.env"), "aws-key", "AWS key", 3, true, None, &Changes::Staged);
+    let staged = secret("/r/.env", "aws-key", "AWS key", 3, true, None, &Changes::Staged);
     assert_eq!((staged.kind.as_str(), staged.status.as_str(), staged.location.as_str()), ("secret", "fail", "line 3"));
     assert!(staged.fix_cmd.contains("before committing"), "{}", staged.fix_cmd);
     let range = Changes::parse("main").unwrap();
-    let low = secret(Path::new("/r/a.txt"), "generic", "Generic", 1, false, Some("base64".into()), &range);
+    let low = secret("/r/a.txt", "generic", "Generic", 1, false, Some("base64".into()), &range);
     assert_eq!(low.status, "warn");
     assert!(low.note.contains("(base64-encoded), in the files changed since main"), "{}", low.note);
 }
@@ -151,4 +151,27 @@ fn a_refused_path_is_listed_never_kept_as_a_file() {
     let got = parse_ls(&bad);
     assert!(got.files.is_empty());
     assert_eq!(got.refused.len(), 1, "a name that isn't UTF-8 can't be named faithfully");
+}
+
+#[test]
+fn a_label_is_the_repo_path_with_slashes_on_every_system() {
+    assert_eq!(label(Path::new("/code/app"), "web/a.txt"), "/code/app/web/a.txt");
+    assert_eq!(label(Path::new("/"), "a.txt"), "/a.txt");
+    // A canonical Windows top: the verbatim prefix gone, `/` throughout,
+    // as `relocate` names the dependency findings.
+    assert_eq!(label(Path::new(r"\\?\C:\Users\r\app"), "web/a.txt"), "C:/Users/r/app/web/a.txt");
+    assert_eq!(label(Path::new(r"C:\Users\r\app\"), "key.ini"), "C:/Users/r/app/key.ini");
+    // A canonical Windows temp folder, in each spelling a finding carries.
+    let mut f = Finding {
+        location: "C:/T/w/web/package-lock.json".into(),
+        note: r"read C:\T\w\web\package-lock.json".into(),
+        fix_cmd: "cd C:/T/w/web && npm install minimist@1.2.6".into(),
+        component: r"\\?\C:\T\w\web\package-lock.json".into(),
+        ..Default::default()
+    };
+    relocate_from(&mut f, r"\\?\C:\T\w", r"\\?\C:\Users\r\app");
+    assert_eq!(f.location, "C:/Users/r/app/web/package-lock.json");
+    assert_eq!(f.note, r"read C:\Users\r\app\web\package-lock.json");
+    assert_eq!(f.fix_cmd, "cd C:/Users/r/app/web && npm install minimist@1.2.6");
+    assert_eq!(f.component, r"C:\Users\r\app\web\package-lock.json");
 }

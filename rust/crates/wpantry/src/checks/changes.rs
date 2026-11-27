@@ -429,19 +429,18 @@ pub fn run(
     let scanner = rules.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
     let mut too_big = 0;
     let mut missing = 0;
-    let mut todo: Vec<(PathBuf, &[u8])> = Vec::new();
+    let mut todo: Vec<(String, &[u8])> = Vec::new();
     for c in files {
-        let path = top.join(&c.path);
+        let path = label(&top, &c.path);
         match blobs.get(&c.sha) {
             None => missing += 1,
             Some(None) => too_big += 1,
-            Some(Some(data)) if !scanner.skips_path(&path.to_string_lossy()) => todo.push((path, data)),
+            Some(Some(data)) if !scanner.skips_path(&path) => todo.push((path, data)),
             Some(Some(_)) => {}
         }
     }
     let width = scan.opts.jobs.unwrap_or_else(crate::utils::parallel::cores);
-    let found =
-        crate::utils::parallel::par_map(&todo, width, |(path, data)| scanner.scan(data, &path.to_string_lossy(), None));
+    let found = crate::utils::parallel::par_map(&todo, width, |(path, data)| scanner.scan(data, path, None));
     scan.count("files scanned for secrets", todo.len() as i64);
     for ((path, _), hits) in todo.iter().zip(found) {
         let mut lines = HashSet::new();
@@ -467,11 +466,9 @@ pub fn run(
     }
 
     // The findings name the repo's files, not the temporary copies.
-    let at = command_path(&staged);
-    let raw = staged.to_string_lossy().into_owned();
-    let shown = command_path(&top);
+    let (staged_s, top_s) = (staged.to_string_lossy().into_owned(), top.to_string_lossy().into_owned());
     for f in &mut scan.findings {
-        relocate(f, &[at.as_str(), raw.as_str()], &shown);
+        relocate_from(f, &staged_s, &top_s);
     }
     // The ignore files: the repo's at the change's version.
     scan.repos = vec![(name, top.clone())];
@@ -530,9 +527,18 @@ pub fn rules(policy: &crate::checks::Policy) -> std::thread::JoinHandle<Result<S
     std::thread::spawn(move || leaks::Rules::new(extra?).scanner())
 }
 
+/// How a finding names git's path `path` (`/`-separated, from the repo's
+/// top): under the top as the dependency findings name it
+/// ([`command_path`]: no `\\?\` prefix, `/` on every system), never a
+/// `Path::join` that would mix in `\` on Windows. It is a label only:
+/// nothing opens it.
+pub(crate) fn label(top: &Path, path: &str) -> String {
+    format!("{}/{path}", command_path(top).trim_end_matches('/'))
+}
+
 /// A secret in a file the change records.
 fn secret(
-    path: &Path,
+    path: &str,
     rule: &str,
     description: &str,
     line: usize,
@@ -540,7 +546,7 @@ fn secret(
     decoded: Option<String>,
     changes: &Changes,
 ) -> Finding {
-    let file = short(&path.to_string_lossy());
+    let file = short(path);
     let decoded = decoded.map(|k| format!(" ({k}-encoded)")).unwrap_or_default();
     let undo = match changes {
         Changes::Staged => "unstage it and take it out before committing",
@@ -563,6 +569,20 @@ fn secret(
         ),
         ..Default::default()
     }
+}
+
+/// `f`'s paths under the temporary folder `staged` as under the repo's
+/// `top`, in each spelling a finding can carry: `/`-separated
+/// ([`command_path`], as a lockfile's location and fix are), and the
+/// system's own with or without Windows' `\\?\` prefix (as a note made with
+/// [`short`] is), each to the top in the same spelling, so no path comes
+/// out with its separators mixed.
+pub fn relocate_from(f: &mut Finding, staged: &str, top: &str) {
+    use crate::utils::files::strip_verbatim;
+    let slash = |p: &str| command_path(Path::new(p));
+    relocate(f, &[&slash(staged)], &slash(top));
+    let native = strip_verbatim(top);
+    relocate(f, &[staged, &strip_verbatim(staged)], &native);
 }
 
 /// `f`'s paths under one of `from` (the temporary copies) as under `to`

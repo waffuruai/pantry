@@ -290,7 +290,11 @@ def report(findings: list[Finding], summary_path: str | None = None, annotate: b
 
 
 def _run(cmd: list[str]) -> str:
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode:
+        sys.stderr.write(p.stderr)
+        raise subprocess.CalledProcessError(p.returncode, cmd, p.stdout, p.stderr)
+    return p.stdout
 
 
 def _api_commit(c: dict) -> Commit:
@@ -318,9 +322,17 @@ def already_released(repo: str, sha: str) -> bool:
 
 
 def _paged(path: str) -> list[dict]:
-    out = _run(["gh", "api", "--paginate", "--slurp", path])
-    pages = json.loads(out)
-    return [item for page in pages for item in (page if isinstance(page, list) else page.get("commits", []))]
+    """Every page of a list (or compare) endpoint. `gh api --paginate` writes the
+    pages back to back; --slurp would join them, but older gh lacks it."""
+    out, items, i = _run(["gh", "api", "--paginate", path]), [], 0
+    decoder = json.JSONDecoder()
+    while i < len(out):
+        if out[i].isspace():
+            i += 1
+            continue
+        page, i = decoder.raw_decode(out, i)
+        items += page if isinstance(page, list) else page.get("commits", [])
+    return items
 
 
 def from_event(event: dict, event_name: str, repo: str) -> list[Finding]:

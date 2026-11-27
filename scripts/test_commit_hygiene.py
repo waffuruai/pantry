@@ -180,13 +180,16 @@ class Events(unittest.TestCase):
             path = next(a for a in cmd if a.startswith("repos/"))
             for prefix, value in responses.items():
                 if path.startswith(prefix):
-                    return value if isinstance(value, str) else json.dumps(value)
+                    if isinstance(value, str):
+                        return value
+                    # `gh api --paginate` writes each page back to back.
+                    return "\n".join(json.dumps(page) for page in value) if "--paginate" in cmd else json.dumps(value)
             raise AssertionError(path)
         return mock.patch.object(ch, "_run", side_effect=run)
 
     def test_pull_request_checks_commits_identity_and_body(self):
         event = {"pull_request": {"number": 387, "title": "fix: pass over a logged-out gh", "body": f"ok\n\n{ROBOT} x\n"}}
-        pages = [[api_commit("fix: clean\n"), api_commit("fix: two\n", author=(AI_NAME, VENDOR), sha="b" * 40, login="")]]
+        pages = [[api_commit("fix: clean\n")], [api_commit("fix: two\n", author=(AI_NAME, VENDOR), sha="b" * 40, login="")]]
         with self.fake({"repos/o/r/pulls/387/commits": pages, "repos/o/r/compare/main...": "ahead\n"}):
             got = ch.from_event(event, "pull_request", "o/r")
         self.assertEqual([f.where.split(" (")[0] for f in got], ["commit bbbbbbb", "PR body"])

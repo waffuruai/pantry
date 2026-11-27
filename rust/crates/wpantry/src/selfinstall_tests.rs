@@ -143,6 +143,23 @@ fn only(name: &'static str, path: PathBuf) -> impl Fn(&str) -> Option<PathBuf> {
     move |n: &str| (n == name).then(|| path.clone())
 }
 
+/// `which` that finds gh and cosign, nothing else.
+#[cfg(unix)]
+fn gh_and_cosign(gh: PathBuf, cosign: PathBuf) -> impl Fn(&str) -> Option<PathBuf> {
+    move |n: &str| match n {
+        "gh" => Some(gh.clone()),
+        "cosign" => Some(cosign.clone()),
+        _ => None,
+    }
+}
+
+/// What gh 2.105 writes when a command needs a login it doesn't have, with
+/// exit code 4.
+#[cfg(unix)]
+const GH_LOGGED_OUT: &str = "To get started with GitHub CLI, please run:  gh auth login
+Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.
+";
+
 #[cfg(unix)]
 #[test]
 fn fetch_verified_checks_the_sum_then_a_signature() {
@@ -184,8 +201,19 @@ fn fetch_verified_checks_the_sum_then_a_signature() {
     let (_, v) = fetch_verified_with(&only("gh", gh), &net, "0.3.0", d.path()).unwrap();
     assert_eq!(v.by, "GitHub attestation (waffuruai/pantry, release.yml@v0.3.0)");
     let gh = tool(bin.path(), "gh", "", "Error: no attestations\n", 1);
-    let e = err(fetch_verified_with(&only("gh", gh), &net, "0.3.0", d.path()));
+    let e = err(fetch_verified_with(&only("gh", gh.clone()), &net, "0.3.0", d.path()));
     assert!(e.contains("gh attestation verify failed") && e.ends_with("no attestations"), "{e}");
+    // A gh that ran and failed is never passed over for cosign.
+    let cosign = tool(bin.path(), "cosign", "Verified OK\n", "", 0);
+    let e = err(fetch_verified_with(&gh_and_cosign(gh, cosign.clone()), &net, "0.3.0", d.path()));
+    assert!(e.contains("gh attestation verify failed"), "{e}");
+    // A gh that isn't logged in exits 4 having checked nothing: passed over
+    // for cosign, as install.sh does, and named when no verifier is left.
+    let gh = tool(bin.path(), "gh", "", GH_LOGGED_OUT, 4);
+    let (_, v) = fetch_verified_with(&gh_and_cosign(gh.clone(), cosign), &net, "0.3.0", d.path()).unwrap();
+    assert_eq!(v.by, "cosign (release.yml@v0.3.0)");
+    let e = err(fetch_verified_with(&only("gh", gh), &net, "0.3.0", d.path()));
+    assert!(e.contains("gh is installed but not logged in (gh auth login)") && e.contains("checksum alone"), "{e}");
     // cosign, with the keyless bundle.
     let cosign = tool(bin.path(), "cosign", "Verified OK\n", "", 0);
     let (_, v) = fetch_verified_with(&only("cosign", cosign), &net, "0.3.0", d.path()).unwrap();

@@ -2,8 +2,9 @@
 //! newer release without trusting the download: the release's `SHA256SUMS`
 //! must name the binary, and a verifier that is installed (packslip, with
 //! the release signer pinned; `gh attestation verify` against the release
-//! workflow at the tag; cosign against the same identity) must pass. With
-//! no verifier the update is refused, never installed on a checksum alone.
+//! workflow at the tag, when gh is logged in; cosign against the same
+//! identity) must pass. With no verifier the update is refused, never
+//! installed on a checksum alone.
 //!
 //! An install mise, cargo or Homebrew made is updated through that tool,
 //! which keeps its own record and verification; a source build is left to
@@ -29,6 +30,9 @@ pub const SIGNER_PIN: &str = "ps1_nhdt6s6bechkheqxxkkcy3womq";
 pub const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 /// A release binary is a few MB; anything bigger is not one.
 const MAX_ASSET: usize = 64 << 20;
+/// gh's exit code for a command that needs a login it doesn't have
+/// (`gh help exit-codes`): it checked nothing.
+const GH_NEEDS_LOGIN: i32 = 4;
 
 /// Where this binary came from.
 #[derive(Clone, Debug, PartialEq)]
@@ -158,7 +162,9 @@ fn fetch_verified_with(which: Which, net: &dyn Net, version: &str, dir: &Path) -
 
 /// The first verifier that is installed must pass: packslip (signer pinned),
 /// gh (the attestation from release.yml at the tag), cosign (the keyless
-/// bundle from the same identity). None installed: an error, never a pass.
+/// bundle from the same identity). A gh that isn't logged in checks nothing,
+/// so it is passed over like a missing one, as install.sh does; a gh that
+/// ran and failed never is. None installed: an error, never a pass.
 fn verify(which: Which, net: &dyn Net, version: &str, file: &Path, dir: &Path, asset: &str) -> Result<String> {
     let tag = format!("v{version}");
     if let Some(packslip) = which("packslip") {
@@ -187,6 +193,7 @@ fn verify(which: Which, net: &dyn Net, version: &str, file: &Path, dir: &Path, a
         }
         return Ok(format!("packslip (github.com/{REPO} {version}, signer {SIGNER_PIN})"));
     }
+    let mut gh_logged_out = false;
     if let Some(gh) = which("gh") {
         let out = exec(
             &[
@@ -204,13 +211,16 @@ fn verify(which: Which, net: &dyn Net, version: &str, file: &Path, dir: &Path, a
             &[],
             Duration::from_secs(120),
         )?;
-        if out.code != Some(0) {
-            return Err(Error::Invalid(format!(
-                "gh attestation verify failed for {asset} ({RELEASE_WORKFLOW} at {tag}): {}",
-                out.stderr.trim().lines().last().unwrap_or("")
-            )));
+        match out.code {
+            Some(0) => return Ok(format!("GitHub attestation ({REPO}, release.yml@{tag})")),
+            Some(GH_NEEDS_LOGIN) => gh_logged_out = true,
+            _ => {
+                return Err(Error::Invalid(format!(
+                    "gh attestation verify failed for {asset} ({RELEASE_WORKFLOW} at {tag}): {}",
+                    out.stderr.trim().lines().last().unwrap_or("")
+                )));
+            }
         }
-        return Ok(format!("GitHub attestation ({REPO}, release.yml@{tag})"));
     }
     if let Some(cosign) = which("cosign") {
         let bundle = dir.join(format!("{asset}.sigstore.json"));
@@ -239,11 +249,15 @@ fn verify(which: Which, net: &dyn Net, version: &str, file: &Path, dir: &Path, a
         }
         return Ok(format!("cosign (release.yml@{tag})"));
     }
-    Err(Error::Invalid(
-        "no signature verifier is installed (packslip, gh or cosign): the download is not installed on its checksum alone. \
+    let none = if gh_logged_out {
+        "gh is installed but not logged in (gh auth login), and neither packslip nor cosign is installed"
+    } else {
+        "no signature verifier is installed (packslip, gh or cosign)"
+    };
+    Err(Error::Invalid(format!(
+        "{none}: the download is not installed on its checksum alone. \
          See https://github.com/waffuruai/pantry/blob/main/docs/public/install.md#verify"
-            .into(),
-    ))
+    )))
 }
 
 /// Put `verified` where `dest` is, atomically: written beside it, made

@@ -180,11 +180,47 @@ fn the_flag_changes_nothing_on_stdout_and_nothing_without_it() {
         let without = fresh(&t).run(&argv);
         let with = fresh(&t).run(&[argv.as_slice(), &["--events"]].concat());
         assert_eq!(with.code, without.code, "{argv:?}");
-        assert_eq!(with.out, without.out, "stdout is byte for byte the same: {argv:?}");
+        // Two scans: the report's heading names the minute each finished in.
+        assert_eq!(no_clock(&with.out), no_clock(&without.out), "stdout is byte for byte the same: {argv:?}");
         assert!(!without.err.contains("\"event\""), "no event without --events: {}", without.err);
         assert_eq!(without.err, "", "without --events and without a terminal, stderr says nothing: {argv:?}");
         order(&events(&with.err));
     }
+}
+
+/// `text` with every `YYYY-MM-DD HH:MM UTC` written as `<when>`: two runs
+/// a moment apart can fall in different minutes.
+fn no_clock(text: &str) -> String {
+    let stamp = |s: &[u8]| {
+        s.len() >= 20
+            && s[16..20] == *b" UTC"
+            && s[..16]
+                .iter()
+                .zip(b"dddd-dd-dd dd:dd")
+                .all(|(c, p)| if *p == b'd' { c.is_ascii_digit() } else { c == p })
+    };
+    let bytes = text.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if stamp(&bytes[i..]) {
+            out.push_str("<when>");
+            i += 20;
+        } else {
+            // A stamp is ASCII, so `i` only ever stops on a character's first byte.
+            let ch = text[i..].chars().next().expect("a character at a boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+#[test]
+fn a_stamp_is_the_only_thing_no_clock_changes() {
+    let report = "==> Security scan #1  2026-11-26 01:51 UTC · /c/w.db\n  ✓ é 2026-11-26 01:5\n";
+    assert_eq!(no_clock(report), "==> Security scan #1  <when> · /c/w.db\n  ✓ é 2026-11-26 01:5\n");
+    assert_eq!(no_clock(""), "");
 }
 
 /// `t` with its cache removed, so the next run starts as the first did.

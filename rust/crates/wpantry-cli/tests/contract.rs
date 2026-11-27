@@ -143,6 +143,29 @@ fn tools() {
     assert_eq!(t.run(&["tools"]).code, r.code);
 }
 
+/// Risk: `tools` says Homebrew is missing on a machine whose PATH is short
+/// (a launchd job, an app) while the scan finds brew at its prefix and runs
+/// it, so the one place that lists what wpantry runs contradicts what it
+/// does. Oracle: a brew that sits in `$HOMEBREW_PREFIX/bin` (a standard
+/// prefix is looked in the same way) and is not on PATH is listed as found,
+/// with that path and the version it prints.
+#[cfg(unix)]
+#[test]
+fn tools_lists_the_brew_a_scan_would_find_beside_a_short_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Ctx::new();
+    let prefix = t.tmp.join("prefix");
+    mkdir(&prefix.join("bin"));
+    let brew = prefix.join("bin/brew");
+    write(&brew, "#!/bin/sh\necho 'Homebrew 9.9.9'\n");
+    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = t.run_env(&["tools", "--json"], &[("PATH", "/usr/bin:/bin"), ("HOMEBREW_PREFIX", s(&prefix))]);
+    let got = r.json();
+    let entry = arr(&got["tools"]).iter().find(|t| t["name"] == "brew").expect("brew is listed");
+    assert_eq!((entry["found"].as_bool(), str_(&entry["path"])), (Some(true), s(&brew)), "{entry}");
+    assert_eq!(str_(&entry["version"]), "9.9.9", "{entry}");
+}
+
 #[test]
 fn sources() {
     let t = Ctx::new();
@@ -1780,6 +1803,121 @@ fn path_scopes_and_skips_missing_dirs() {
     assert!(r.err.contains("missing"));
 }
 
+/// `scan project DIR`: that directory's repos and the runtimes it pins, as
+/// its own scope; nothing of the machine.
+#[test]
+fn scan_project_covers_one_directory_and_its_runtimes() {
+    let t = Ctx::new();
+    let app = git_repo(&t.home.join("app"), false);
+    write(&app.join(".ruby-version"), "3.1.4\n");
+    git_repo(&t.home.join("elsewhere"), false);
+    let r = t.run(&["scan", "project", s(&app), "--offline", "--json", "--no-input"]);
+    let env = envelope(&r.out);
+    assert_eq!(env["checked"]["git repos"], 1, "{}", r.err);
+    assert_eq!(env["checked"]["project runtimes"], 1);
+    assert!(env["checked"].get("tools, runtimes and packages").is_none(), "no machine inventory");
+    // Offline with an empty cache, the pinned Ruby can't be asked about: not checked, never clean.
+    assert!(arr(&env["findings"]).iter().any(|f| f["kind"] == "unchecked"), "{}", r.out);
+    let scope: String =
+        t.conn().query_row("SELECT scope FROM scans ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(scope, format!("project:{}", s(&std::fs::canonicalize(&app).unwrap())));
+    // A directory after `scan` alone says how one is scanned.
+    let bare = t.run(&["scan", s(&app)]);
+    assert_eq!(bare.code, 2);
+    assert!(bare.err.contains("wpantry scan project DIR"), "{}", bare.err);
+    assert_eq!(t.run(&["scan", "project", s(&t.home.join("missing"))]).code, 2);
+}
+
+/// `runs`, `report --run ID` and `prune ID`: each scan keeps its findings,
+/// an earlier one can be shown, and pruning the latest shows the one before.
+#[test]
+fn runs_are_listed_reported_and_pruned() {
+    let t = Ctx::new();
+    assert_eq!(t.run(&["runs"]).out, "no scan yet: run wpantry scan\n");
+    let a = git_repo(&t.home.join("a"), false);
+    let b = git_repo(&t.home.join("b"), false);
+    let scan = |dir: &Path| t.run(&["scan", "project", s(dir), "--offline", "--json", "--no-input"]);
+    let first = envelope(&scan(&a).out);
+    write(&b.join(".ruby-version"), "3.1.4\n");
+    let second = envelope(&scan(&b).out);
+    assert!(
+        arr(&second["findings"]).len() > arr(&first["findings"]).len(),
+        "b has a runtime that can't be checked offline"
+    );
+    let listed = t.run(&["runs", "--json"]).json();
+    assert_eq!(listed["keeps"], 30);
+    let runs = arr(&listed["runs"]);
+    assert_eq!(
+        (runs.len(), &runs[0]["scan"], &runs[0]["latest"], &runs[1]["scan"], &runs[1]["latest"]),
+        (2, &json!(2), &json!(true), &json!(1), &json!(false))
+    );
+    assert_eq!(runs[0]["findings"], arr(&second["findings"]).len());
+    assert!(str_(&runs[1]["scope"]).starts_with("project:") && Path::new(str_(&runs[1]["scope"])).ends_with("a"));
+    let table = t.run(&["runs"]).out;
+    assert!(table.starts_with("scan  finished") && table.contains("\n2 *  ") && table.contains("\n1    "), "{table}");
+    // The latest by default; an earlier one by its number, byte for byte what its scan printed.
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), second);
+    assert_eq!(envelope(&t.run(&["report", "--run", "1", "--json"]).out), first);
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), second, "showing one changes nothing");
+    let none = t.run(&["report", "--run", "9"]);
+    assert_eq!(none.code, 1);
+    assert!(none.err.contains("no scan 9 with its findings kept: wpantry runs lists them"), "{}", none.err);
+    // Pruning the latest: report is the scan before it again.
+    let pruned = t.run(&["prune", "2"]);
+    assert_eq!(pruned.code, 0, "{}", pruned.err);
+    assert!(
+        pruned.out.starts_with("pruned scan 2 (project:") && pruned.out.ends_with("wpantry report now shows scan 1\n"),
+        "{}",
+        pruned.out
+    );
+    assert_eq!(envelope(&t.run(&["report", "--json"]).out), first);
+    assert_eq!(arr(&t.run(&["runs", "--json"]).json()["runs"]).len(), 1);
+    let again = t.run(&["prune", "2"]);
+    assert_eq!(again.code, 1);
+    assert!(again.err.contains("no scan 2 with its findings kept"), "{}", again.err);
+    assert_eq!(t.run(&["prune", "two"]).code, 2);
+    // The scan log keeps both.
+    let audit = t.run(&["report", "audit", "--json"]).json();
+    assert_eq!(arr(&audit["scans"]).len(), 2);
+    assert!(arr(&audit["events"]).iter().any(|e| e["kind"] == "prune" && e["detail"]["scan"] == 2), "{audit}");
+    t.run(&["prune", "1"]);
+    assert_eq!(t.run(&["report"]).code, 1, "no scan left to report");
+}
+
+/// A scan that was interrupted saved nothing, and the next command says so, once.
+#[test]
+fn an_interrupted_scan_is_told_by_the_next_command() {
+    let t = Ctx::new();
+    t.project_run("scan", &["--json"]);
+    assert!(!t.run(&["runs"]).err.contains("didn't finish"), "a scan that ended leaves no note");
+    // What a scan killed mid-way leaves: its start, under a process id that is gone.
+    t.conn()
+        .execute(
+            "INSERT INTO meta VALUES ('scan_running:2147483646', '{\"started_at\": 86400.0, \"scope\": \"machine:~\"}')",
+            [],
+        )
+        .unwrap();
+    let r = t.run(&["report", "--json"]);
+    assert!(
+        r.err.contains("the scan of machine:~ started 1970-01-02 00:00 UTC didn't finish: nothing of it was saved, and wpantry report shows scan 1"),
+        "{}",
+        r.err
+    );
+    assert_eq!(envelope(&r.out)["schema"], 1, "stdout is still the report alone");
+    assert!(!t.run(&["report", "--json"]).err.contains("didn't finish"), "told once");
+    // The fix commands that read the latest scan say so too.
+    for argv in [&["fix", "list"][..], &["fix", "next", "--json"][..]] {
+        t.conn()
+            .execute(
+                "INSERT INTO meta VALUES ('scan_running:2147483646', '{\"started_at\": 86400.0, \"scope\": \"machine:~\"}')",
+                [],
+            )
+            .unwrap();
+        let r = t.run(argv);
+        assert!(r.err.contains("didn't finish: nothing of it was saved"), "{argv:?}: {}", r.err);
+    }
+}
+
 #[test]
 fn explicit_worktree_counts() {
     let t = Ctx::new();
@@ -2870,4 +3008,54 @@ fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files(
         "the home folder's scan read a personal folder: {}",
         env["checked"]
     );
+}
+
+/// Risk: `fix --json` (a machine format on stdout, no `-o FILE`) prints the
+/// scan and quietly runs no fix and no stopgap, so a caller that asked for
+/// the fixes reads the exit code of the scan as the exit code of a fix that
+/// never ran. Oracle: the contract's `fix` is "scan, then the unattended
+/// fixes"; when it cannot print their lines without breaking the machine
+/// output on stdout, it says on stderr that nothing was run, and stdout
+/// stays valid JSON. With `-o FILE` the fixes have a stdout to print on, so
+/// the run reaches the update plan ("Nothing to update." on an empty scan).
+///
+/// Neither run passes `--yes`: with a file for the report a `--yes` run goes
+/// on to the stopgaps, which on Linux write real files and load a real
+/// firewall rule through sudo. The second run is a dry run, which reaches
+/// the same code and changes nothing. Known bad: a build that prints the
+/// note whenever a fix or dry run is asked for fails the second half; one
+/// that returns before the update plan with `-o` fails the plan assertion.
+#[test]
+fn fix_with_a_machine_format_on_stdout_says_it_ran_nothing() {
+    let t = Ctx::new();
+    let r = t.project_run("fix", &["--json"]);
+    assert!(r.json().is_object(), "stdout stays the envelope: {:?}", r.out);
+    assert!(r.err.contains("nothing was fixed") && r.err.contains("-o FILE"), "{:?}", r.err);
+    assert!(
+        !r.out.contains("Update plan") && !r.out.contains("Nothing to update"),
+        "no fix output on stdout: {:?}",
+        r.out
+    );
+    // With a file for the report the fixes have a stdout to print on: no such note.
+    let out = t.tmp.join("report.json");
+    let r = t.project_run("fix", &["--json", "--dry-run", "-o", s(&out)]);
+    assert!(!r.err.contains("nothing was fixed"), "{:?}", r.err);
+    assert!(r.out.contains("Nothing to update"), "the fixes were reached: {:?}", r.out);
+    assert!(out.is_file(), "the report went to the file");
+}
+
+/// Risk: a test passes `--yes` to a bare `fix` (or to the one stopgap that
+/// needs no finding) and changes the machine it runs on. Oracle: the
+/// harness refuses before it spawns anything.
+#[test]
+#[should_panic(expected = "refusing to run")]
+fn the_harness_refuses_a_bare_fix_with_yes() {
+    let t = Ctx::new();
+    t.project_run("fix", &["--json", "--yes"]);
+}
+
+#[test]
+#[should_panic(expected = "refusing to run")]
+fn the_harness_refuses_the_kernel_stopgap_with_yes() {
+    Ctx::new().run(&["fix", "cve-2026-98432", "--yes"]);
 }

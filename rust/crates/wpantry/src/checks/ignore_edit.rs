@@ -110,12 +110,26 @@ fn refuse<T>(code: &'static str, message: impl Into<String>) -> Result<T, Stop> 
 pub struct Env {
     pub home: PathBuf,
     pub user_file: PathBuf,
+    /// The folders the latest scan looked down from: each `--path` it was
+    /// given, else home. A repo's file is the one that scan read, which
+    /// depends on where it started ([`repo_of`]). Empty when no scan says.
+    pub roots: Vec<PathBuf>,
 }
 
 impl Env {
-    /// This machine's.
+    /// This machine's, before any scan is known.
     pub fn real() -> Env {
-        Env { home: crate::utils::files::home(), user_file: ignore::user_file() }
+        Env { home: crate::utils::files::home(), user_file: ignore::user_file(), roots: Vec::new() }
+    }
+
+    /// With the roots of the scan whose findings are being acted on:
+    /// `paths` as that scan recorded them (none: it scanned home).
+    pub fn scanned(mut self, paths: &[PathBuf]) -> Env {
+        let roots: Vec<PathBuf> = if paths.is_empty() { vec![self.home.clone()] } else { paths.to_vec() };
+        // As the scan resolved them, and as given: a finding's path is under one spelling or the other.
+        self.roots = roots.iter().flat_map(|r| [std::fs::canonicalize(r).ok(), Some(r.clone())]).flatten().collect();
+        self.roots.dedup();
+        self
     }
 }
 
@@ -430,9 +444,43 @@ pub fn clean_reason(reason: &str) -> Result<String, Refused> {
     Ok(r.to_string())
 }
 
-/// The repo a path is in: the nearest folder at or above it with a `.git`.
-fn repo_of(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find(|a| std::fs::symlink_metadata(a.join(".git")).is_ok()).map(Path::to_path_buf)
+/// The repo a path is in, as the scan that found it sees it: the first
+/// folder with a `.git` on the way down from that scan's root to the path.
+/// A scan looks only below where it starts, stops at the first `.git` it
+/// meets and reads that folder's `.pantryignore` alone, so:
+///
+/// - a submodule or a checkout nested in a repo is part of the repo around
+///   it, when the scan started at or above that repo;
+/// - a repo above the folder the scan was pointed at (`--path dev/app`
+///   under `dev/.git`) is not the scan's: `dev/app` is.
+///
+/// What counts as a repo is the scan's rule ([`repos::discover`]): a `.git`
+/// folder with a `HEAD`, or a `.git` file at the scan's root. With no repo
+/// on the way (a folder scanned as one project), none: a repo's file is a
+/// repo's. With no scan to ask (`roots` empty, or the path under none of them), the
+/// nearest folder at or above the path with a `.git`.
+fn repo_of(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    let nearest =
+        || path.ancestors().find(|a| std::fs::symlink_metadata(a.join(".git")).is_ok()).map(Path::to_path_buf);
+    // The innermost root holding the path: the scan that walked it.
+    let Some(root) = roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count()) else {
+        return nearest();
+    };
+    let below = path.strip_prefix(root).unwrap_or(Path::new(""));
+    let mut dir = root.clone();
+    let mut steps = below.components();
+    for level in 0.. {
+        if let Ok(git) = std::fs::symlink_metadata(dir.join(".git")) {
+            let repo = (git.is_dir() && dir.join(".git/HEAD").is_file()) || (level == 0 && !git.is_dir());
+            // Any `.git` ends the scan's descent, a repo or not.
+            return repo.then_some(dir);
+        }
+        match steps.next() {
+            Some(step) => dir.push(step),
+            None => break,
+        }
+    }
+    None
 }
 
 /// A path as a pattern: glob characters and a trailing space escaped.
@@ -490,7 +538,7 @@ fn place(f: &Finding, scope: Scope, env: &Env) -> Result<Placed, Refused> {
     };
     match scope {
         Scope::Repo => {
-            let Some(root) = repo_of(&abs) else {
+            let Some(root) = repo_of(&abs, &env.roots) else {
                 return no(
                     "not-in-repo",
                     format!(
@@ -828,12 +876,34 @@ pub fn remove(targets: &[Target], want: Want) -> Result<Vec<Removed>, Stop> {
 }
 
 /// The repo whose file `--path DIR` means: DIR when it holds a
-/// `.pantryignore`, else the nearest repo at or above it, else DIR.
-pub fn repo_for(dir: &Path) -> PathBuf {
+/// `.pantryignore`, else the repo the latest scan read DIR under
+/// ([`repo_of`]), else DIR.
+pub fn repo_for(dir: &Path, env: &Env) -> PathBuf {
+    let dir = whole(dir);
     if std::fs::symlink_metadata(dir.join(FILE)).is_ok() {
-        return dir.to_path_buf();
+        return dir;
     }
-    repo_of(dir).unwrap_or_else(|| dir.to_path_buf())
+    repo_of(&dir, &env.roots).unwrap_or(dir)
+}
+
+/// A directory by its whole path: made absolute (`.` and `src` have no
+/// folder above them to look in), with `.` and `..` folded by name so the
+/// folders looked in are the ones the path means (`app/src/../../other` is
+/// `other`, not something under `app`). Nothing is opened or resolved.
+fn whole(dir: &Path) -> PathBuf {
+    use std::path::Component;
+    let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut out = PathBuf::new();
+    for c in absolute.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

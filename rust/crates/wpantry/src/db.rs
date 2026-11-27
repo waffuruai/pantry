@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS findings (
   kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
   status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
   fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT);
+CREATE TABLE IF NOT EXISTS run_findings (
+  scan_id INTEGER, kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT,
+  status TEXT, fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT,
+  fix_auto INTEGER, dep_scope TEXT, dep_direct INTEGER, affected_range TEXT, cvss REAL,
+  cvss_version TEXT, epss REAL, epss_percentile REAL, epss_date TEXT, epss_model TEXT,
+  excluded INTEGER, summary TEXT, aliases TEXT, cwe TEXT, local_source TEXT, local_link TEXT);
+CREATE INDEX IF NOT EXISTS run_findings_scan ON run_findings (scan_id);
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, added TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS eol (
   product TEXT, cycle TEXT, eol TEXT, latest TEXT, PRIMARY KEY (product, cycle));
@@ -77,16 +84,21 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("fixes", "host", "TEXT"),
     ("fixes", "exit_code", "INTEGER"),
     ("fixes", "error", "TEXT"),
+    ("fixes", "verified_by", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),
     ("eol", "released", "TEXT"),
+    ("scans", "kept", "INTEGER"),
     ("findings", "summary", "TEXT"),
     ("findings", "aliases", "TEXT"),
     ("findings", "cwe", "TEXT"),
     ("findings", "local_source", "TEXT"),
     ("findings", "local_link", "TEXT"),
 ];
+
+/// A finding's columns, in `findings` and in `run_findings`.
+pub const FINDING_COLUMNS: &str = "kind, component, version, location, vuln_id, status, fixed, kev, severity, note,      fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile,      epss_date, epss_model, excluded, summary, aliases, cwe, local_source, local_link";
 
 fn migrate(conn: &Connection) -> Result<()> {
     for (table, column, kind) in ADDED {
@@ -96,6 +108,36 @@ fn migrate(conn: &Connection) -> Result<()> {
         if !have.iter().any(|c| c == column) {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
         }
+    }
+    // The newest scan with no word on whether its findings are kept was
+    // recorded by a wpantry from before scans kept them (this cache's last
+    // scan before the upgrade, or an older wpantry run since): `findings`
+    // is that scan's, and it becomes a kept scan. A scan whose findings
+    // were pruned or trimmed says so (0) and is left alone.
+    //
+    // One write transaction, taken before the scan is read again: a
+    // process that stops midway leaves nothing behind, and of two that open
+    // together the second waits and finds the scan already kept. Rows left
+    // under that scan by anything else are replaced, never added to.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let adopted = adopt_newest(conn);
+    conn.execute_batch(if adopted.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
+    adopted
+}
+
+/// Inside the caller's write transaction: make the newest scan a kept one
+/// when it doesn't say whether it is.
+fn adopt_newest(conn: &Connection) -> Result<()> {
+    let newest: Option<(i64, Option<i64>)> = conn
+        .query_row("SELECT id, kept FROM scans ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    if let Some((id, None)) = newest {
+        conn.execute("DELETE FROM run_findings WHERE scan_id = ?", [id])?;
+        conn.execute(
+            &format!("INSERT INTO run_findings (scan_id, {FINDING_COLUMNS}) SELECT ?, {FINDING_COLUMNS} FROM findings"),
+            [id],
+        )?;
+        conn.execute("UPDATE scans SET kept = 1 WHERE id = ?", [id])?;
     }
     Ok(())
 }
@@ -333,7 +375,9 @@ impl Cache {
             for ids in stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten() {
                 keep.extend(ids.split_whitespace().map(str::to_string));
             }
-            let mut stmt = self.conn.prepare("SELECT vuln_id FROM findings")?;
+            // The latest scan's, and every kept scan's: `report --run ID`
+            // exports an advisory's record as the latest report does.
+            let mut stmt = self.conn.prepare("SELECT vuln_id FROM findings UNION SELECT vuln_id FROM run_findings")?;
             keep.extend(stmt.query_map([], |r| r.get::<_, Option<String>>(0))?.flatten().flatten());
         }
         let mut gone: Vec<String> = Vec::new();
@@ -472,44 +516,95 @@ impl Cache {
 
     // findings --------------------------------------------------------------
 
+    /// The latest scan's findings: what every report reads.
     pub fn replace_findings(&self, findings: &[Finding]) -> Result<()> {
         self.conn.execute("DELETE FROM findings", [])?;
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO findings (kind, component, version, location, vuln_id, status, fixed, kev, severity, note, \
-             fix_cmd, fix_auto, dep_scope, dep_direct, affected_range, cvss, cvss_version, epss, epss_percentile, \
-             epss_date, epss_model, excluded, summary, aliases, cwe, local_source, local_link) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        self.insert_findings("findings", None, findings)
+    }
+
+    /// Scan `scan_id`'s findings, kept beside the latest for `report --run`.
+    pub fn keep_findings(&self, scan_id: i64, findings: &[Finding]) -> Result<()> {
+        self.insert_findings("run_findings", Some(scan_id), findings)
+    }
+
+    /// Forget scan `scan_id`'s kept findings; returns how many there were.
+    pub fn drop_findings(&self, scan_id: i64) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM run_findings WHERE scan_id = ?", [scan_id])?)
+    }
+
+    /// Make scan `scan_id`'s kept findings the latest again (none: no findings).
+    pub fn restore_findings(&self, scan_id: Option<i64>) -> Result<()> {
+        self.conn.execute("DELETE FROM findings", [])?;
+        if let Some(id) = scan_id {
+            self.conn.execute(
+                &format!("INSERT INTO findings ({FINDING_COLUMNS}) SELECT {FINDING_COLUMNS} FROM run_findings WHERE scan_id = ?"),
+                [id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Read scan `scan_id`'s kept findings wherever this connection reads
+    /// `findings`, until it closes: a temporary view of that name stands
+    /// before the table. Nothing in the cache changes.
+    pub fn show_findings_of(&self, scan_id: i64) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "DROP VIEW IF EXISTS temp.findings; \
+             CREATE TEMP VIEW findings AS SELECT {FINDING_COLUMNS} FROM main.run_findings WHERE scan_id = {scan_id}"
+        ))?;
+        Ok(())
+    }
+
+    /// `findings` as the findings this connection reads, in a temporary
+    /// table that shadows the kept ones and goes with the connection: a
+    /// scan that keeps nothing (`--changes`) renders through it.
+    pub fn shadow_findings(&self, findings: &[Finding]) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP VIEW IF EXISTS temp.findings; DROP TABLE IF EXISTS temp.findings; \
+             CREATE TEMP TABLE findings AS SELECT * FROM main.findings WHERE 0",
         )?;
+        self.insert_findings("temp.findings", None, findings)
+    }
+
+    fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {
+        let mut stmt = self.conn.prepare(&format!(
+            "INSERT INTO {table} ({FINDING_COLUMNS}{}) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{})",
+            if scan_id.is_some() { ", scan_id" } else { "" },
+            if scan_id.is_some() { ", ?" } else { "" },
+        ))?;
         for f in findings {
-            stmt.execute(params![
-                f.kind,
-                f.component,
-                f.version,
-                f.location,
-                f.vuln_id,
-                f.status,
-                f.fixed,
-                f.kev as i64,
-                f.severity,
-                f.note,
-                f.fix_cmd,
-                f.fix_auto as i64,
-                f.dep_scope,
-                f.dep_direct.map(i64::from),
-                f.affected_range,
-                f.cvss,
-                f.cvss_version,
-                f.epss,
-                f.epss_percentile,
-                f.epss_date,
-                f.epss_model,
-                f.excluded as i64,
-                f.summary,
-                f.aliases.join(" "),
-                f.cwe.join(" "),
-                f.local_source,
-                f.local_link
-            ])?;
+            let mut row: Vec<rusqlite::types::Value> = vec![
+                f.kind.clone().into(),
+                f.component.clone().into(),
+                f.version.clone().into(),
+                f.location.clone().into(),
+                f.vuln_id.clone().into(),
+                f.status.clone().into(),
+                f.fixed.clone().into(),
+                (f.kev as i64).into(),
+                f.severity.clone().into(),
+                f.note.clone().into(),
+                f.fix_cmd.clone().into(),
+                (f.fix_auto as i64).into(),
+                f.dep_scope.clone().into(),
+                f.dep_direct.map(i64::from).into(),
+                f.affected_range.clone().into(),
+                f.cvss.into(),
+                f.cvss_version.clone().into(),
+                f.epss.into(),
+                f.epss_percentile.into(),
+                f.epss_date.clone().into(),
+                f.epss_model.clone().into(),
+                (f.excluded as i64).into(),
+                f.summary.clone().into(),
+                f.aliases.join(" ").into(),
+                f.cwe.join(" ").into(),
+                f.local_source.clone().into(),
+                f.local_link.clone().into(),
+            ];
+            row.extend(scan_id.map(rusqlite::types::Value::from));
+            stmt.execute(rusqlite::params_from_iter(row))?;
         }
         Ok(())
     }

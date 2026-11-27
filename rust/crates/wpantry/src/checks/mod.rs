@@ -9,6 +9,7 @@
 //! can't be reached is reported "not checked", never clean. Nothing that
 //! isn't installed is reported.
 
+pub mod changes;
 pub mod documents;
 pub mod ecosystems;
 pub mod email;
@@ -19,6 +20,7 @@ pub mod ignore_edit;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
+pub mod project;
 pub mod secrets;
 pub mod severity;
 pub mod supply_chain;
@@ -246,6 +248,9 @@ pub struct Options {
     pub paths: Option<Vec<PathBuf>>,
     /// Run the machine inventory, not only the repo checks.
     pub machine: bool,
+    /// `scan project`: the repo checks over `paths`, and of the machine
+    /// only the runtimes the project uses ([`project`]). Never with `machine`.
+    pub project: bool,
     /// Skip the machine's security settings (`--no-posture`); they run
     /// with the machine inventory otherwise.
     pub no_posture: bool,
@@ -804,6 +809,7 @@ impl<'a> Scan<'a> {
 
     pub fn run(mut self) -> Result<Outcome> {
         let started_at = crate::utils::os::now();
+        crate::history::scan_started(&self.cache, &self.opts, started_at)?;
         crate::utils::walk::forget_walks();
         self.step(watch::SOURCES);
         self.use_sources();
@@ -830,6 +836,8 @@ impl<'a> Scan<'a> {
         let found: Vec<Component> = if self.opts.machine {
             self.step(watch::MACHINE);
             machine::run(&mut self)?
+        } else if self.opts.project {
+            project::run(&mut self)?
         } else {
             Vec::new()
         };
@@ -859,6 +867,7 @@ impl<'a> Scan<'a> {
             totals,
             &self.opts,
         )?;
+        crate::history::scan_finished(&self.cache)?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,

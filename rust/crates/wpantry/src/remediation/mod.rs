@@ -10,6 +10,7 @@ pub mod dismiss;
 pub mod editors;
 pub mod mitigate;
 pub mod queue;
+pub mod recheck;
 pub mod run;
 pub mod secret;
 
@@ -112,6 +113,29 @@ fn split_steps(cmd: String) -> Vec<String> {
     }
 }
 
+/// The first step of a fix: the whole of it, unless it is several
+/// ([`split_steps`]).
+pub fn first_step(fix_cmd: &str) -> String {
+    split_steps(fix_cmd.to_string()).into_iter().next().unwrap_or_default()
+}
+
+/// For each later step of a fix of several, the step before it that must
+/// have worked first: `mise uninstall python@3.14.9` waits on `mise install
+/// python@3.14.10`.
+fn waits_on(findings: &[Finding]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for f in findings {
+        let steps = split_steps(f.fix_cmd.clone());
+        for pair in steps.windows(2) {
+            let pair = (pair[1].clone(), pair[0].clone());
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
+    }
+    out
+}
+
 /// Whether `step` (one command of the plan) is, or is one line of, the fix
 /// `fix_cmd` a finding carries.
 pub fn is_step_of(fix_cmd: &str, step: &str) -> bool {
@@ -178,6 +202,7 @@ pub fn apply(
     out: &mut dyn FnMut(&str),
 ) -> Applied {
     let (auto, manual, optional) = plan(findings);
+    let waiting = waits_on(findings);
     let mut ran = Vec::new();
     let mut failures = Vec::new();
     if auto.is_empty() && manual.is_empty() && optional.is_empty() {
@@ -221,7 +246,14 @@ pub fn apply(
         if !cmds.is_empty() {
             out(&format!("  {title}"));
             for cmd in cmds {
-                out(&format!("    • {cmd}"));
+                // A step that removes the old version is only safe once the
+                // step that installs the new one has worked: say so when it
+                // hasn't (it failed, was declined, or this is a dry run).
+                let first = waiting.iter().find(|(later, _)| later == cmd).map(|(_, first)| first);
+                match first.filter(|f| auto.contains(f) && !ran.contains(&((*f).clone(), true))) {
+                    Some(first) => out(&format!("    • {cmd}  (only after `{first}` has succeeded)")),
+                    None => out(&format!("    • {cmd}")),
+                }
             }
         }
     }

@@ -159,6 +159,12 @@ fn find_checks_brew_and_app_copies_when_nobody_else_does() {
     let manual = Tool { always: true, fix: "Update it by hand", ..FAKE };
     let found = find(&manual, &dirs);
     assert!(found.iter().all(|c| c.fix == "Update it by hand" && !c.auto), "{found:?}");
+    // Left to brew vulns and the app check on a machine scan; a project
+    // scan runs neither, and takes every copy.
+    assert_eq!(find(&FAKE, &dirs), []);
+    let any: Vec<String> = find_owned(&FAKE, &dirs, true).into_iter().map(|c| c.version).collect();
+    assert_eq!(any, ["1.2.4", "1.2.5"]);
+    assert_eq!(find_any(&Tool { bins: &["wpantry-no-such-tool"], ..FAKE }), []);
 }
 
 #[cfg(unix)]
@@ -308,7 +314,9 @@ fn catalog_tool(name: &str) -> Tool {
 #[test]
 fn every_version_manager_command_names_the_fixed_version() {
     use crate::checks::fix_with;
-    let home = crate::utils::files::home().display().to_string();
+    // A folder of the test's own: this machine's mise installs say nothing here.
+    let d = crate::utils::temp::TempDir::new("managers").unwrap();
+    let home = d.path().display().to_string();
     // (a path the manager installed to, the tool, the command for 3.14.10)
     let cases: Vec<(String, &str, &str)> = vec![
         ("/x/.nvm/versions/node/v22/bin/node".into(), "node", "nvm install 3.14.10"),
@@ -448,4 +456,42 @@ fn a_mise_fix_removes_the_vulnerable_install_and_only_offers_it() {
     assert_eq!(with_uninstall(&other, "mise install python@3.14.10".into(), true).0, "mise install python@3.14.10");
     assert_eq!(with_uninstall(&c, "brew upgrade python".into(), true).0, "brew upgrade python");
     assert_eq!(with_uninstall(&c, "mise install python@latest".into(), true).0, "mise install python@latest");
+}
+
+/// Risk: PATH reaches a mise runtime through one of mise's own links
+/// (`installs/python/3.14`, `installs/node/lts`, `latest`), the step says
+/// `mise uninstall python@3.14`, and once 3.14.10 is installed that names
+/// the fixed version: the person following it removes the fix and keeps the
+/// vulnerable install. Oracle: the uninstall always names the directory the
+/// install is really in.
+#[cfg(unix)]
+#[test]
+fn the_uninstall_names_the_real_install_never_the_alias_path_reached_it_by() {
+    let d = crate::utils::temp::TempDir::new("mise-alias").unwrap();
+    let installs = d.path().join("mise/installs/python");
+    std::fs::create_dir_all(installs.join("3.14.9/bin")).unwrap();
+    std::fs::write(installs.join("3.14.9/bin/python3"), "").unwrap();
+    for alias in ["3.14", "3", "latest"] {
+        std::os::unix::fs::symlink("./3.14.9", installs.join(alias)).unwrap();
+        let path = installs.join(alias).join("bin/python3").display().to_string();
+        let c = Component::new("runtime", "python", "3.14.9", &path);
+        let (fix, auto) = with_uninstall(&c, "mise install python@3.14.10".into(), true);
+        assert_eq!(
+            (fix.as_str(), auto),
+            ("mise install python@3.14.10\nmise uninstall python@3.14.9", true),
+            "{alias}"
+        );
+    }
+    // A link that goes nowhere names no version: the install alone.
+    std::os::unix::fs::symlink("./9.9.9", installs.join("lts")).unwrap();
+    let dangling =
+        Component::new("runtime", "python", "3.14.9", &installs.join("lts/bin/python3").display().to_string());
+    assert_eq!(with_uninstall(&dangling, "mise install python@3.14.10".into(), true).0, "mise install python@3.14.10");
+    // The alias already means the fixed version: nothing of it is removed.
+    std::fs::create_dir_all(installs.join("3.14.10/bin")).unwrap();
+    std::fs::write(installs.join("3.14.10/bin/python3"), "").unwrap();
+    std::os::unix::fs::symlink("./3.14.10", installs.join("stable")).unwrap();
+    let fixed =
+        Component::new("runtime", "python", "3.14.10", &installs.join("stable/bin/python3").display().to_string());
+    assert_eq!(with_uninstall(&fixed, "mise install python@3.14.10".into(), true).0, "mise install python@3.14.10");
 }

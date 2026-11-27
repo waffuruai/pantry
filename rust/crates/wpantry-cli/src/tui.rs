@@ -275,10 +275,12 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::new();
     let finished = wpantry::history::stamp(report.scan.row.finished_at);
     out.push(Vec::new());
-    out.push(vec![
-        (Role::Heading, format!("==> Security scan #{}", r.scan_id)),
-        (Role::Dim, format!("  {finished} · {}", short(db))),
-    ]);
+    // A scan with no run kept (`--changes`) has no number; `db` says what it read.
+    let (title, place) = match r.scan_id {
+        0 => ("==> Changes scan".to_string(), db.to_string()),
+        id => (format!("==> Security scan #{id}"), short(db)),
+    };
+    out.push(vec![(Role::Heading, title), (Role::Dim, format!("  {finished} · {place}"))]);
     let covered: Vec<String> = r.counts.iter().map(|(what, n)| format!("{n} {what}")).collect();
     let checked =
         if covered.is_empty() { "nothing to check".to_string() } else { format!("checked {}", covered.join(", ")) };
@@ -366,7 +368,12 @@ pub fn lines(report: &Report, db: &str, width: usize) -> Vec<Line> {
         vec![(
             Role::Fail,
             format!(
-                "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). See the plan: wpantry fix --dry-run{incomplete}"
+                "✗ {fails} thing(s) to update ({advisories} advisories), {warns} warning(s). {}{incomplete}",
+                if r.scan_id == 0 {
+                    "Fix them before this change goes in; a false positive goes in .pantryignore"
+                } else {
+                    "See the plan: wpantry fix --dry-run"
+                }
             ),
         )]
     } else if !v.gaps.is_empty() {

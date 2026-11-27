@@ -6,7 +6,8 @@ Pantry finds the vulnerabilities that apply to your computer and your git repos.
 
 ```bash
 wpantry scan                                       # this computer: the machine and every git repo under ~
-wpantry scan --path ~/code/myproject --no-machine  # one project, no machine inventory
+wpantry scan project ~/code/myproject              # one project and the runtimes it uses, nothing else
+wpantry scan project --changes staged              # only what the next commit adds (pre-commit); keeps nothing
 wpantry report                                     # the latest scan again, without scanning
 wpantry report --html                              # one offline page: pantry_report_<when>.html here
 wpantry fix --dry-run                              # what it would fix; changes nothing
@@ -25,6 +26,11 @@ wpantry help                                       # every command (wpantry help
 
 By default Pantry checks the machine and every git repo under your home directory. The walk goes 6 levels deep, doesn't follow symlinks, and skips `Library`, caches, toolchains, `node_modules`, build output and app bundles.
 
+- `wpantry scan project [DIR]` (DIR defaults to the current directory) scans one project and nothing else of this computer: its dependencies, secrets, hooks, suspect code and malware, and the runtimes it uses.
+  - **Which runtime:** the version the project pins, read from `mise.toml`, `.tool-versions`, the runtime's own file (`.ruby-version`, `.nvmrc`, `.node-version`, `.python-version`, `.go-version`, `.java-version`, `rust-toolchain.toml`), `go.mod`, `Gemfile.lock` or `package.json`'s Volta pin, at the project's root and in its packages four levels down. A package with no pin takes the pin of the nearest folder above it.
+  - **Pinned and installed:** the newest install the pin matches is checked (`3.3` matches 3.3.5), whoever installed it. The other versions on this computer aren't reported: that is `wpantry scan`.
+  - **Pinned, not installed:** a full version (`3.1.4`) is checked as pinned, located at the pin file. Part of a version (`18`) is checked for end of life only and reported "not checked" for CVEs.
+  - **Not pinned:** a project with a `Gemfile`, `package.json`, `pyproject.toml`, `Cargo.toml` or `go.mod` and no pin is checked against the first copy of that runtime on PATH.
 - `--path DIR` checks only the repos and files at or under DIR (repeat it for more). A DIR with no git repo is scanned as one project, without the git-history checks. Nothing else of yours is read: not Downloads, Desktop, Documents or the temp directories. The machine inventory still runs, unless `--no-machine`.
 - `--deep` reads everything in scope, and is slower: every file of the computer this user can read, `~` first (or each `--path`), for malware with every system's rules and for secrets, plus history files up to 256 MB with no time limit. Hours on a first run; after that only what changed is read.
   - **What it reads:** on macOS the data volume's folders and each local volume under `/Volumes`, never the read-only system volume; on Linux `/`, less `/proc`, `/sys`, `/dev`, `/run` and network or pseudo mounts. Network shares are never read.
@@ -39,7 +45,7 @@ What a run couldn't check is reported "not checked", never clean.
 A repo can run code the moment an agent or editor opens it: a Claude Code hook, an MCP server, a VS Code folder-open task, a devcontainer command, an npm `postinstall`. Before opening a clone you didn't write:
 
 ```bash
-wpantry scan --path ~/Downloads/some-repo --no-machine
+wpantry scan project ~/Downloads/some-repo
 ```
 
 | Finding | Fails | Warns |
@@ -60,6 +66,38 @@ repos = ["~/Development/mine"]   # every hook that warns under this path
 ```
 
 Accepted hooks are counted, not listed. A hook whose command changes is listed again. A hook that fails can't be accepted.
+
+## Scan a change: pre-commit hooks and CI
+
+`wpantry scan project --changes SPEC [DIR]` scans only what a change adds, and keeps nothing:
+
+- `--changes staged`: the files in the index `git commit` is about to record, at their staged content, not the working tree's. `GIT_INDEX_FILE` is honoured, so `git commit <paths>` and `git commit -a` scan the index they commit.
+- `--changes BASE` or `--changes BASE...HEAD`: the files changed from the merge base of BASE and HEAD (default `HEAD`) to HEAD, at HEAD: what a pull request adds. Two dots (`BASE..HEAD`) are refused.
+- **What is read:** added, copied, modified, renamed and retyped files; a deletion adds nothing. Their contents come from git's objects, and nothing in the repo is written: not the index, not the working tree. With DIR inside a repo, only the changes under DIR.
+- **What is checked:** secrets in every changed file and, for the dependency files among them (lockfiles, `requirements*.txt`, Gradle build files), their advisories, known-malicious packages and install scripts. No machine inventory, runtime, posture, hook or malware check. The repo's `.pantryignore` applies, at the change's version.
+- **Nothing kept:** no run is recorded (`wpantry runs` and `wpantry report` never see it) and no report file is written: the report goes to stdout, in any report format, and `-o FILE` is refused. The advisory cache is still read and filled; when it can't be opened, the scan says so and goes on without it.
+- **Network:** a change with no dependency file needs none. Otherwise online, as a scan is: a source that can't be reached, with nothing cached, is "not checked", a warning. `--offline` uses the cache alone.
+- **Exit codes:** 1 for a secret, a vulnerability with a released fix or a known-malicious package; 0 with warnings and "not checked" rows printed; 2 for a usage error (not a git repo, a revision that isn't there); 3 for an internal error.
+
+A pre-commit hook, `.git/hooks/pre-commit` (or the one your hook manager runs):
+
+```bash
+#!/bin/sh
+# Block a commit that adds a secret or a dependency with a fixable advisory.
+exec wpantry scan project --changes staged --txt --no-input
+```
+
+A pull request in GitHub Actions, with the history the merge base needs:
+
+```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0
+- name: Scan what the pull request adds
+  run: wpantry scan project --changes "origin/${{ github.base_ref }}" --txt --no-input
+```
+
+A false positive goes in the repo's `.pantryignore` ([ignore](ignore.md)): `[secret]` for a secret, `[project ID]` for an advisory.
 
 ## Policy files
 
@@ -144,6 +182,9 @@ wpantry report history --md                 # exposure, remediation and audit lo
 wpantry report exposure --csv --since 365   # what was exposed, and for how long, over a year
 wpantry report remediation --csv            # each fix: when, who, the result, the scan that verified it
 wpantry report audit --json                 # every scan and event
+wpantry runs                                # the scans whose findings are kept, the latest first
+wpantry report --run 41 --html              # an earlier scan instead of the latest
+wpantry prune 42                            # forget a scan's findings: report shows the one before it
 wpantry report all --md                     # the findings, then every log
 ```
 
@@ -178,6 +219,9 @@ wpantry cache prune                                # drop what no scan used in 9
 - There is one scheduled scan per account. Every copy of wpantry, and any program that drives it, sees and changes that one job.
 - `schedule status --json` prints one object: `schema`, `backend` (`launchd`, `systemd`, `cron` or `windows`), `installed`, `enabled` (null when nothing is installed or the scheduler could not be asked), `interval` (in words), `every`, `at`, `last_run` (UTC, null before the first readable run) and `program` (the path of the program the scheduled job runs, read from the job itself, so it can be another copy of wpantry or the launcher; null when nothing is scheduled or it cannot be read).
 - A scheduled run never changes anything. Run `wpantry fix` yourself.
+- Each scan keeps its findings, the latest 30 of them: `wpantry runs` lists them with what each covered and found, `wpantry report --run N` shows one, and `wpantry prune N` forgets one (a run of the wrong directory, say). `report` shows the latest kept scan, whatever it covered: a project scan after a machine scan is the project's report, and `--run` brings the machine's back.
+- A scan saves its findings and its row together, at the end. One you interrupt (Ctrl-C, a closed terminal) saves nothing, and the next `scan`, `report` or `runs` says so once on stderr: `the scan of machine:~ started … didn't finish: nothing of it was saved, and wpantry report shows scan 41`. While another scan is still running, they say that instead.
+- Pruning a scan leaves its row in the scan log (`report audit`) and what it saw in the exposure log.
 - The cache is one SQLite file: `~/.cache/wpantry/wpantry.db` (or `$XDG_CACHE_HOME/wpantry/`, or `WPANTRY_DB`). It holds advisories for what's here, which versions were checked, every scan's findings, and the feeds; never a mirror of OSV.
 
 ```bash
@@ -320,6 +364,9 @@ Every event, field and step: [`scan --events` in the CLI contract](../../specs/c
 - Feeds are downloaded whole.
 - With `WORDFENCE_API_KEY` set, the key goes to Wordfence to download its whole WordPress feed; nothing about your sites is sent.
 - The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
+- A file the malware scan flags has its SHA-256, never the file, looked up at YARAify, CIRCL hashlookup and, with `ABUSECH_AUTH_KEY`, MalwareBazaar, after you say yes once. `--no-online-hash` never sends it.
+- With `--licenses`, your dependencies' names and versions go to deps.dev.
+- A source of your own with a `url` (in your sources file or `--add-sources`) gets what its kind needs: package names and versions for an OSV-compatible API, a flagged file's SHA-256 for a hash lookup. You're asked once first when it's a hash lookup or its host isn't one Pantry already asks.
 
 Source by source: [what is sent](checks-and-sources.md#sources). Every request names `wpantry` in its User-Agent and times out after 30 seconds.
 
@@ -350,15 +397,30 @@ Usage: wpantry [options] [command]
 The vulnerabilities, malware and risky settings that apply to this computer and its repos. See
 README.md.
 
+Examples:
+  wpantry scan                this computer and every git repo under ~
+  wpantry scan project        the project in this directory and the runtimes it uses
+  wpantry scan project ~/app  the same, for another directory
+  wpantry scan project --changes staged
+                              only what the next commit adds (a pre-commit hook); keeps nothing
+  wpantry scan --path ~/code  only the repos under a directory, with the machine inventory
+  wpantry report --html       the latest scan as one offline page
+  wpantry runs                the scans kept; report --run N shows one, prune N forgets one
+  wpantry fix --dry-run       what would be fixed; changes nothing
+  wpantry help scan           a command's options
+
 Options:
   -V, --version  print the version
   -h, --help     print this help
 
 Commands:
-  scan [options]               Scan this computer and its repos, then show the report
+  scan [options] [command]     Scan this computer and its repos, or one project (scan project DIR),
+                               then show the report
   fix [options] [target] [id]  Scan, run the unattended fixes and stopgaps, then re-check (list, or
                                one id)
   report [options] [part]      The latest scan's report, a log, or the summary, in any format
+  runs [options]               List the scans whose findings are kept (report --run ID shows one)
+  prune <id...>                Forget one scan's findings (wpantry runs lists them)
   search [options] <query>     Search the cached advisories (for agents)
   watch [options]              Re-check the advisories with no fix yet; exit 10 when one lands
   sync [options]               Refresh the cache for offline scans
@@ -381,34 +443,50 @@ Exit codes: 0 clean, 1 something fails, 2 usage error, 3 internal error.
 ### scan
 
 ```
-Usage: wpantry scan [options]
+Usage: wpantry scan [options] [command]
 
 Scan this computer and its repos, then show the report. Changes nothing.
+For one project and nothing else, wpantry scan project DIR. --path DIR narrows the repo checks to a
+directory and keeps the machine inventory; --no-machine leaves that out.
 
-Options:
-  --path <dir>              check only the repos and files at or under this directory, not
-                            Downloads, Desktop, Documents or temp; repeat it for more (default:
-                            every git repo under ~)
-  --no-machine              skip the machine inventory: repo checks only
-  --refresh                 ignore cached answers and ask every source again
-  --offline                 use only the local cache
-  --txt                     the report as plain text, without colour
-  --json                    the findings as JSON (schema 1)
-  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
-                            fix
-  --csv                     one table: the findings, or the log asked for
-  --md                      Markdown
-  --html                    one offline HTML page
-  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
-                            when it is a pipe or a file
-  --since <days>            how far back the logs go (default: 14)
-  --no-input                never prompt
-  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+Examples:
+  wpantry scan                    this computer and every git repo under ~
+  wpantry scan project ~/app      one project and the runtimes it uses, nothing else
+  wpantry scan --path ~/code      only the repos under a directory, with the machine inventory
+  wpantry scan --json --no-input  the findings as JSON, for tools and agents
+
+Scope options:
+  --path <dir>         check only the repos and files at or under this directory, not Downloads,
+                       Desktop, Documents or temp; repeat it for more (default: every git repo under
+                       ~). The machine inventory still runs: for one project alone, scan project DIR
+  --no-machine         skip the machine inventory: repo checks only
+  --licenses [file]    also check dependency licenses, against the file (default: licenses.toml in
+                       ~/.config/wpantry, else the bundled one)
+  --no-posture         skip the machine's security settings (FileVault, firewall, sharing, …)
+  --no-malware         skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                       and repo programs)
+  --deep               read everything in scope (slower): every file of the computer this user can
+                       read, ~ first (or each --path), for malware with every system's rules and for
+                       secrets; git history's files up to 256 MB with no time limit
+  --no-personal-files  never open Downloads, Desktop or Documents in any pass, finding repos
+                       included (on macOS also the other folders it asks permission for), reported
+                       as not checked (for unattended runs)
+
+Report options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+
+Policy options:
   --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
                             secrets.yar in ~/.config/wpantry)
-  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
-                            in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
                             ~/.config/wpantry, else the bundled one)
   --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
@@ -417,29 +495,108 @@ Options:
                             ~/.config/wpantry)
   --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
                             suspect.toml in ~/.config/wpantry)
-  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
   --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
                             ~/.config/wpantry)
-  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
-                            items and repo programs)
-  --deep                    read everything in scope (slower): every file of the computer this user
-                            can read, ~ first (or each --path), for malware with every system's
-                            rules and for secrets; git history's files up to 256 MB with no time
-                            limit
-  --no-personal-files       never open Downloads, Desktop or Documents in any pass, finding repos
-                            included (on macOS also the other folders it asks permission for),
-                            reported as not checked (for unattended runs)
-  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
-                            MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
   --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
                             more (an id may be defined once)
-  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
-                            WPANTRY_ALLOW_SLEEP=1)
-  --events                  write the scan's progress to stderr as JSON Lines (steps, the path being
-                            read, findings), for programs that run wpantry; implies --no-input
-  -h, --help                print this help
+
+Options:
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  --events          write the scan's progress to stderr as JSON Lines (steps, the path being read,
+                    findings), for programs that run wpantry; implies --no-input
+  -h, --help        print this help
+
+Commands:
+  project [options] [dir]  Scan one project and the runtimes it uses, nothing else of this computer
+  help [command]           Print a command's help
+
+Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
+```
+
+### scan project
+
+```
+Usage: wpantry scan project [options] [dir]
+
+Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware,
+and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc,
+rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer
+is read: no other runtime, app, setting or folder. Changes nothing.
+With --changes, only what a commit or pull request adds: secrets in the files it changes, and the
+dependency files among them against the advisories, read from git, never the working tree. No run is
+kept: the report goes to stdout, and wpantry runs and report never see it.
+
+Examples:
+  wpantry scan project  the project in this directory and the runtimes it uses
+  wpantry scan project --changes staged
+                        only what the next commit adds, for a pre-commit hook
+  wpantry scan project --changes origin/dev --txt
+                        only what a pull request adds, in CI
+
+Arguments:
+  dir  the project's directory (default: .)
+
+Scope options:
+  --changes <spec>   scan only what a change adds, and keep nothing (the report goes to stdout):
+                     staged for the index git commit is about to record (a pre-commit hook), BASE or
+                     BASE...HEAD for the files changed from their merge base to HEAD (a pull
+                     request). Secrets in those files, and the dependency files among them against
+                     the advisories
+  --licenses [file]  also check dependency licenses, against the file (default: licenses.toml in
+                     ~/.config/wpantry, else the bundled one)
+  --no-malware       skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                     and repo programs)
+  --deep             read everything in scope (slower): every file of the computer this user can
+                     read, ~ first (or each --path), for malware with every system's rules and for
+                     secrets; git history's files up to 256 MB with no time limit
+
+Report options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+
+Policy options:
+  --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
+                            secrets.yar in ~/.config/wpantry)
+  --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
+                            ~/.config/wpantry, else the bundled one)
+  --hooks-policy <file>     repo hooks you've read and accept, TOML (default: hooks.toml in
+                            ~/.config/wpantry)
+  --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
+                            suspect.toml in ~/.config/wpantry)
+  --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
+                            when it exists)
+  --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
+                            more (an id may be defined once)
+
+Options:
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Exit codes: 0 nothing fails, 1 something fails, 2 usage error, 3 internal error.
 ```
@@ -464,36 +621,38 @@ Arguments:
           cve-2026-98432 (default: all)
   id      with secret: the finding id (F-…) of a committed secret
 
-Options:
-  --dry-run                 print what would run or be written; change nothing
-  --yes                     run the fixes and write the stopgaps without asking
-  --from-scan <id>          with a finding id: require this latest scan and an automatic fix
-  --undo                    with an id: take wpantry's stopgap away once the real fix is installed
-  --bundle <file>           ca-trust: rewrite this PEM bundle instead of the system trust store
-  --hours <n>               extension-cooldown: the cooldown (default: 72)
-  --path <dir>              check only the repos and files at or under this directory, not
-                            Downloads, Desktop, Documents or temp; repeat it for more (default:
-                            every git repo under ~)
-  --no-machine              skip the machine inventory: repo checks only
-  --refresh                 ignore cached answers and ask every source again
-  --offline                 use only the local cache
-  --txt                     the report as plain text, without colour
-  --json                    the findings as JSON (schema 1)
-  --jsonl                   one JSON object per finding, joined with its OSV record, lifecycle and
-                            fix
-  --csv                     one table: the findings, or the log asked for
-  --md                      Markdown
-  --html                    one offline HTML page
-  -o, --out <file>          write the report there; - for stdout. Without it, a format goes to
-                            pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout
-                            when it is a pipe or a file
-  --since <days>            how far back the logs go (default: 14)
-  --no-input                never prompt
-  --jobs <n>                repos scanned for secrets at once (default: half the cores, at most 4)
+Scope options:
+  --path <dir>         check only the repos and files at or under this directory, not Downloads,
+                       Desktop, Documents or temp; repeat it for more (default: every git repo under
+                       ~). The machine inventory still runs: for one project alone, scan project DIR
+  --no-machine         skip the machine inventory: repo checks only
+  --licenses [file]    also check dependency licenses, against the file (default: licenses.toml in
+                       ~/.config/wpantry, else the bundled one)
+  --no-posture         skip the machine's security settings (FileVault, firewall, sharing, …)
+  --no-malware         skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                       and repo programs)
+  --deep               read everything in scope (slower): every file of the computer this user can
+                       read, ~ first (or each --path), for malware with every system's rules and for
+                       secrets; git history's files up to 256 MB with no time limit
+  --no-personal-files  never open Downloads, Desktop or Documents in any pass, finding repos
+                       included (on macOS also the other folders it asks permission for), reported
+                       as not checked (for unattended runs)
+
+Report options:
+  --txt             the report as plain text, without colour
+  --json            the findings as JSON (schema 1)
+  --jsonl           one JSON object per finding, joined with its OSV record, lifecycle and fix
+  --csv             one table: the findings, or the log asked for
+  --md              Markdown
+  --html            one offline HTML page
+  -o, --out <file>  write the report there; - for stdout. Without it, a format goes to
+                    pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
+                    is a pipe or a file
+  --since <days>    how far back the logs go (default: 14)
+
+Policy options:
   --secret-rules <file>     secret rules of your own, YARA, added to the bundled ones (default:
                             secrets.yar in ~/.config/wpantry)
-  --licenses [file]         also check dependency licenses, against the file (default: licenses.toml
-                            in ~/.config/wpantry, else the bundled one)
   --install-scripts <file>  install-script policy, TOML (default: install-scripts.toml in
                             ~/.config/wpantry, else the bundled one)
   --repo-hooks <file>       indicators of hijacked repos, TOML (default: repo-hooks.toml in
@@ -502,27 +661,29 @@ Options:
                             ~/.config/wpantry)
   --suspect-policy <file>   suspicious-code ids and paths that warn instead of fail, TOML (default:
                             suspect.toml in ~/.config/wpantry)
-  --no-posture              skip the machine's security settings (FileVault, firewall, sharing, …)
   --posture-policy <file>   posture checks to skip, TOML (default: posture.toml in
                             ~/.config/wpantry)
-  --no-malware              skip the malware scan (YARA rules over Downloads, Desktop, temp, login
-                            items and repo programs)
-  --deep                    read everything in scope (slower): every file of the computer this user
-                            can read, ~ first (or each --path), for malware with every system's
-                            rules and for secrets; git history's files up to 256 MB with no time
-                            limit
-  --no-personal-files       never open Downloads, Desktop or Documents in any pass, finding repos
-                            included (on macOS also the other folders it asks permission for),
-                            reported as not checked (for unattended runs)
-  --no-online-hash          never look up a flagged file's SHA-256 at YARAify, CIRCL or
-                            MalwareBazaar (asked once otherwise)
   --sources <file>          your sources file for this run (default: ~/.config/wpantry/sources.toml
                             when it exists)
   --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
                             more (an id may be defined once)
-  --allow-sleep             let the Mac idle-sleep during the scan (kept awake otherwise; or
-                            WPANTRY_ALLOW_SLEEP=1)
-  -h, --help                print this help
+
+Options:
+  --dry-run         print what would run or be written; change nothing
+  --yes             run the fixes and write the stopgaps without asking
+  --from-scan <id>  with a finding id: require this latest scan and an automatic fix
+  --undo            with an id: take wpantry's stopgap away once the real fix is installed
+  --bundle <file>   ca-trust: rewrite this PEM bundle instead of the system trust store
+  --hours <n>       extension-cooldown: the cooldown (default: 72)
+  --refresh         ignore cached answers and ask every source again
+  --offline         use only the local cache
+  --no-input        never prompt
+  --jobs <n>        repos scanned for secrets at once (default: half the cores, at most 4)
+  --no-online-hash  never look up a flagged file's SHA-256 at YARAify, CIRCL or MalwareBazaar (asked
+                    once otherwise)
+  --allow-sleep     let the Mac idle-sleep during the scan (kept awake otherwise; or
+                    WPANTRY_ALLOW_SLEEP=1)
+  -h, --help        print this help
 
 Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage
 error, 3 internal error.
@@ -550,19 +711,51 @@ Options:
                     pantry_report_<when>.<ext> here when stdout is a terminal, and to stdout when it
                     is a pipe or a file
   --since <days>    how far back the logs go (default: 14)
+  --run <id>        that scan instead of the latest: one wpantry runs lists
   -h, --help        print this help
 
 Parts:
-findings     the latest scan's findings
-history      the exposure, remediation and audit logs
-exposure     what applied, from first seen to resolved
-remediation  the fixes run: when, who, the result, the scan that verified them
-audit        every scan and event
-summary      one page for a CSO, an auditor or an insurer
-all          the findings, then every log
+  findings     the latest scan's findings
+  history      the exposure, remediation and audit logs
+  exposure     what applied, from first seen to resolved
+  remediation  the fixes run: when, who, the result, the scan that verified them
+  audit        every scan and event
+  summary      one page for a CSO, an auditor or an insurer
+  all          the findings, then every log
 
 Exit codes: 0 nothing fails, 1 something fails in the latest scan or there is none, 2 usage error, 3
 internal error.
+```
+
+### runs
+
+```
+Usage: wpantry runs [options]
+
+The scans whose findings are kept, the latest first: each one's number, when it finished, how long
+it took, what it covered and what it found. report shows the latest; report --run ID shows another,
+and prune ID forgets one. The latest 30 are kept.
+
+Options:
+  --json      the scans as JSON
+  -h, --help  print this help
+```
+
+### prune
+
+```
+Usage: wpantry prune [options] <id...>
+
+Forget a scan's findings: one of the wrong directory, or one you didn't mean to keep. It leaves
+wpantry runs, and when it was the latest, report shows the scan before it again. The scan log
+(report audit) keeps its row, and the exposure log keeps what it saw. For the advisory cache, see
+cache prune.
+
+Arguments:
+  id  the scan's number, from wpantry runs
+
+Options:
+  -h, --help  print this help
 ```
 
 ### search

@@ -236,6 +236,21 @@ struct Hit<'a> {
 
 /// The check over `formulae`; `fix` names each one's upgrade.
 pub fn check(scan: &mut Scan, formulae: &[Installed], fix: &dyn Fn(&str) -> (String, bool)) -> Result<()> {
+    check_with(scan, formulae, fix, true)
+}
+
+/// [`check`]. With `osv_first` off, a formula whose installed version OSV
+/// already answers with a CVE is judged by the CVE records all the same,
+/// not left to OSV and `brew vulns`, and OSV is not asked about the
+/// installed version at all: `wpantry recheck` asks whether this advisory
+/// still applies, whoever reports it, and its cache holds no answer for a
+/// version nobody scanned.
+pub fn check_with(
+    scan: &mut Scan,
+    formulae: &[Installed],
+    fix: &dyn Fn(&str) -> (String, bool),
+    osv_first: bool,
+) -> Result<()> {
     if formulae.is_empty() {
         return Ok(());
     }
@@ -264,11 +279,13 @@ pub fn check(scan: &mut Scan, formulae: &[Installed], fix: &dyn Fn(&str) -> (Str
         .iter()
         .flat_map(|(f, x)| spellings(&x.repo).into_iter().map(|r| git(&r, version_of(&f.version))))
         .collect();
-    let answered = scan.lookup(&items, WHAT)?;
-    subjects.retain(|(f, x)| {
-        let items: Vec<Item> = spellings(&x.repo).iter().map(|r| git(r, version_of(&f.version))).collect();
-        !names_cve(&osv::records_for(&answered, &items))
-    });
+    if osv_first {
+        let answered = scan.lookup(&items, WHAT)?;
+        subjects.retain(|(f, x)| {
+            let items: Vec<Item> = spellings(&x.repo).iter().map(|r| git(r, version_of(&f.version))).collect();
+            !names_cve(&osv::records_for(&answered, &items))
+        });
+    }
     // Every record OSV has for each remaining repo.
     let mut all: Vec<Item> = subjects.iter().flat_map(|(_, x)| spellings(&x.repo)).map(|r| git(&r, "")).collect();
     all.sort();

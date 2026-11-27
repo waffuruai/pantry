@@ -80,18 +80,25 @@ pub fn updater(path: &str, name: &str) -> (String, bool) {
 ///
 /// Example: python 3.14.9 under `~/.local/share/mise/installs/python/3.14.9`
 /// fixed by 3.14.10 gives `mise install python@3.14.10` then
-/// `mise uninstall python@3.14.9`.
+/// `mise uninstall python@3.14.9`. The same Python reached through
+/// `installs/python/3.14` (a link to it) gives the same two lines.
 pub fn with_uninstall(c: &Component, cmd: String, auto: bool) -> (String, bool) {
     let Some((name, fixed)) = cmd.strip_prefix("mise install ").and_then(|r| r.split_once('@')) else {
         return (cmd, auto);
     };
     let marker = format!("/installs/{name}/");
-    // Forward slashes whatever the platform wrote the path with.
-    let path = c.path.replace('\\', "/");
+    // Where the install really is, not how PATH spells it: mise also keeps
+    // `installs/node/lts`, `installs/ruby/3.4` and `installs/python/latest`
+    // as links to an install, and `mise uninstall node@lts` removes whatever
+    // the alias means when it runs, which after the install is the fixed
+    // version. Forward slashes whatever the platform wrote the path with.
+    let path = files::strip_verbatim(&files::realpath(&c.path)).replace('\\', "/");
     let Some(at) = path.find(&marker).filter(|_| path.contains("/mise/")) else { return (cmd, auto) };
     let dir = &path[..at + marker.len()];
     let old = path[at + marker.len()..].split('/').next().unwrap_or("");
-    if old.is_empty() || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
+    // Still a link after resolving (one that goes nowhere): no version to name.
+    let alias = std::fs::symlink_metadata(format!("{dir}{old}")).is_ok_and(|m| m.file_type().is_symlink());
+    if old.is_empty() || alias || old == fixed || fixed == "latest" || !versions::is_safe_token(old) {
         return (cmd, auto);
     }
     let uninstall = format!("mise uninstall {name}@{old}");
@@ -135,51 +142,74 @@ pub fn embedded(path: &str, prefix: &str) -> String {
 
 /// Components for one catalog tool.
 pub fn find(t: &Tool, extra_dirs: &[String]) -> Vec<Component> {
-    let re = Regex::with_flags(t.pattern, "m");
+    find_owned(t, extra_dirs, false)
+}
+
+/// Every copy of one catalog tool, whoever installed it: PATH first, then
+/// the version managers' folders. A project scan asks this: it runs no
+/// `brew vulns` or OS update check to leave the vouched-for copies to.
+pub fn find_any(t: &Tool) -> Vec<Component> {
+    find_owned(t, &[], true)
+}
+
+/// [`find`]; with `any`, the copies something else vouches for as well.
+fn find_owned(t: &Tool, extra_dirs: &[String], any: bool) -> Vec<Component> {
     let mut dirs: Vec<String> = t.paths.iter().map(|p| p.to_string()).collect();
     dirs.extend(extra_dirs.iter().cloned());
     let mut out = Vec::new();
     for b in t.bins {
         for (shown, real) in on_path(b, &dirs) {
-            let who = owner(&real);
-            if !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
-                continue;
-            }
-            let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
-                Some((_, prefix)) => embedded(&real, prefix),
-                None => {
-                    let mut argv: Vec<&OsStr> = vec![OsStr::new(&shown)];
-                    argv.extend(t.args.iter().map(OsStr::new));
-                    run(&argv, Duration::from_secs(15))
-                }
-            };
-            let Some(m) = re.search(&said) else { continue };
-            let v = m.get(1).to_string();
-            let (mut fix, mut auto) = updater(&real, t.name);
-            if who == "brew" {
-                let formula = real.split("/Cellar/").nth(1).and_then(|r| r.split('/').next()).unwrap_or(t.name);
-                (fix, auto) = (format!("brew upgrade {formula}"), true);
-            } else if who == "app" {
-                let app = Regex::new(r"([^/]+)[.]app/").search(&real).map(|c| c.get(1).to_string()).unwrap_or_default();
-                (fix, auto) = (format!("Update {app}"), false);
-            }
-            if !t.fix.is_empty() {
-                (fix, auto) = (t.fix.to_string(), false);
-            }
-            let mut c = Component::new(t.kind, t.name, &v, &shown);
-            c.fix = fix;
-            c.auto = auto;
-            if let Some((eco, pkg, fmt)) = t.osv {
-                c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
-                c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
-            }
-            if let Some((product, cycle)) = t.eol {
-                c.eol = Some((product.to_string(), cycle.of(&v)));
-            }
-            out.push(c);
+            out.extend(component_at(t, &shown, &real, any));
         }
     }
     out
+}
+
+/// The component for the copy of catalog tool `t` that PATH or a version
+/// manager's folder shows as `shown` and that resolves to `real`: who owns
+/// it, how its version is read, how it is updated, how OSV and endoflife.date
+/// know it. None when something else vouches for the copy (unless `any`, or
+/// the tool is `always` checked), or when its version can't be read. The one
+/// place a copy's version is read: a scan reads every copy through it, and
+/// `wpantry recheck` reads one.
+pub fn component_at(t: &Tool, shown: &str, real: &str, any: bool) -> Option<Component> {
+    let re = Regex::with_flags(t.pattern, "m");
+    let who = owner(real);
+    if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
+        return None;
+    }
+    let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
+        Some((_, prefix)) => embedded(real, prefix),
+        None => {
+            let mut argv: Vec<&OsStr> = vec![OsStr::new(shown)];
+            argv.extend(t.args.iter().map(OsStr::new));
+            run(&argv, Duration::from_secs(15))
+        }
+    };
+    let m = re.search(&said)?;
+    let v = m.get(1).to_string();
+    let (mut fix, mut auto) = updater(real, t.name);
+    if who == "brew" {
+        let formula = real.split("/Cellar/").nth(1).and_then(|r| r.split('/').next()).unwrap_or(t.name);
+        (fix, auto) = (format!("brew upgrade {formula}"), true);
+    } else if who == "app" {
+        let app = Regex::new(r"([^/]+)[.]app/").search(real).map(|c| c.get(1).to_string()).unwrap_or_default();
+        (fix, auto) = (format!("Update {app}"), false);
+    }
+    if !t.fix.is_empty() {
+        (fix, auto) = (t.fix.to_string(), false);
+    }
+    let mut c = Component::new(t.kind, t.name, &v, shown);
+    c.fix = fix;
+    c.auto = auto;
+    if let Some((eco, pkg, fmt)) = t.osv {
+        c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
+        c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
+    }
+    if let Some((product, cycle)) = t.eol {
+        c.eol = Some((product.to_string(), cycle.of(&v)));
+    }
+    Some(c)
 }
 
 /// Every catalog tool found, plus nvm, one entry per install.

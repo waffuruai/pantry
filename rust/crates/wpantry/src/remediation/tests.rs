@@ -370,3 +370,33 @@ fn a_two_line_mise_fix_is_two_steps_and_only_the_first_may_run() {
     let script = "# 3 hits\ngit -C x show y";
     assert_eq!(steps(&[f(script, false, "warn")]).len(), 1);
 }
+
+/// Risk: `mise install` fails (or is declined, or this is a dry run) and the
+/// plan still lists `mise uninstall` of the old version as a step to take:
+/// followed, it removes the only working runtime. Oracle: the removal says
+/// it waits on the install unless the install ran and worked.
+#[test]
+fn a_removal_waits_on_the_install_that_replaces_it() {
+    let two = |install: &str| Finding {
+        component: "python".into(),
+        ..f(&format!("{install}\nmise uninstall python@3.14.9"), true, "fail")
+    };
+    let run = |finding: Finding, dry: bool, yes: bool| {
+        let mut lines = Vec::new();
+        let applied = apply(&[finding], dry, &|_| yes, &mut |l| lines.push(l.to_string()));
+        (applied.status, lines.into_iter().find(|l| l.contains("mise uninstall")).expect("the removal is listed"))
+    };
+    // `mise` commands the test can run without mise: the plan splits on the word alone.
+    let waits = |install: &str| format!("    • mise uninstall python@3.14.9  (only after `{install}` has succeeded)");
+    let failing = "mise --wpantry-no-such-flag-or-tool";
+    let (status, line) = run(two(failing), false, true);
+    assert_eq!((status, line), (1, waits(failing)), "the install failed");
+    assert_eq!(run(two(failing), true, true).1, waits(failing), "a dry run installs nothing");
+    assert_eq!(run(two(failing), false, false).1, waits(failing), "declined");
+    // The removal alone (the fixed version is already there) waits on nothing.
+    let alone = Finding { component: "python".into(), ..f("mise uninstall python@3.14.9", false, "fail") };
+    assert_eq!(run(alone, false, true).1, "    • mise uninstall python@3.14.9");
+    assert_eq!(first_step("mise install python@3.14.10\nmise uninstall python@3.14.9"), "mise install python@3.14.10");
+    assert_eq!(first_step("brew upgrade a"), "brew upgrade a");
+    assert_eq!(first_step(""), "");
+}

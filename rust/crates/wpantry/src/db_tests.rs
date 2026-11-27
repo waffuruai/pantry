@@ -55,6 +55,9 @@ fn older_caches_gain_the_added_columns() {
     assert!(scan_cols.iter().any(|c| c == "unchecked"), "{scan_cols:?}");
     crate::history::record_scan(&c, 1.0, &[], &[], &crate::checks::Options::default())
         .expect("a scan records on the migrated table");
+    // No scan had run on that cache: its findings belong to none, and are kept by none.
+    let kept: i64 = c.conn.query_row("SELECT COUNT(*) FROM run_findings WHERE scan_id != 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, 0);
     let cols: Vec<String> = c
         .conn
         .prepare("PRAGMA table_info(findings)")
@@ -225,4 +228,122 @@ fn cache_location() {
         path_from(&env(&[("XDG_CACHE_HOME", ""), ("HOME", "/h")])),
         PathBuf::from("/h/.cache/wpantry/wpantry.db")
     );
+}
+
+/// A cache from before each scan kept its findings (0.8.0): the latest
+/// scan's are in `findings`, and become the one kept scan's.
+#[test]
+fn an_older_caches_latest_scan_becomes_the_one_kept() {
+    let d = crate::utils::temp::TempDir::new("migrate").unwrap();
+    let file = d.path().join("old.db");
+    let conn = Connection::open(&file).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE findings (kind TEXT, component TEXT, version TEXT, location TEXT, vuln_id TEXT, status TEXT, \
+             fixed TEXT, kev INTEGER, severity TEXT, note TEXT, fix_cmd TEXT, fix_auto INTEGER); \
+             INSERT INTO findings VALUES ('project', 'x', '1', '/l', 'CVE-1', 'fail', '2', 0, 'HIGH', '', 'cmd', 1); \
+             CREATE TABLE scans (id INTEGER PRIMARY KEY, started_at REAL, finished_at REAL, host TEXT, user TEXT, \
+             version TEXT, scope TEXT, counts TEXT, fails INTEGER, warns INTEGER); \
+             INSERT INTO scans VALUES (6, 1.0, 2.0, 'h', 'u', '0.8.0', 'machine:~', '{}', 0, 0); \
+             INSERT INTO scans VALUES (7, 3.0, 4.0, 'h', 'u', '0.8.0', 'repos:/r', '{}', 1, 0);",
+    )
+    .unwrap();
+    conn.close().unwrap();
+    let c = Cache::open(Some(&file)).unwrap();
+    let runs = crate::history::runs(&c).unwrap();
+    assert_eq!(runs.iter().map(|r| (r.row.id, r.findings, r.latest)).collect::<Vec<_>>(), [(7, 1, true)]);
+    assert_eq!(crate::history::latest_scan(&c).unwrap(), Some(7));
+    c.close().unwrap();
+    // A scan an older wpantry records afterwards is adopted the same way, with what it left in `findings`.
+    let c = Cache::open(Some(&file)).unwrap();
+    c.conn.execute("DELETE FROM findings", []).unwrap();
+    c.conn.execute("INSERT INTO scans (started_at, finished_at, scope) VALUES (5.0, 6.0, 'machine:~')", []).unwrap();
+    c.close().unwrap();
+    let c = Cache::open(Some(&file)).unwrap();
+    let runs = crate::history::runs(&c).unwrap();
+    assert_eq!(
+        runs.iter().map(|r| (r.row.id, r.findings, r.latest)).collect::<Vec<_>>(),
+        [(8, 0, true), (7, 1, false)]
+    );
+    // One that was pruned stays pruned.
+    crate::history::prune_run(&c, 8).unwrap().unwrap();
+    c.close().unwrap();
+    // Opened again, nothing is kept twice.
+    let c = Cache::open(Some(&file)).unwrap();
+    assert_eq!(crate::history::runs(&c).unwrap()[0].findings, 1);
+    // That scan reads back through the view as it does from the table.
+    c.show_findings_of(7).unwrap();
+    assert_eq!(crate::reporters::jsonl::findings(&c).unwrap()[0].vuln_id, "CVE-1");
+    c.show_findings_of(6).unwrap();
+    assert!(crate::reporters::jsonl::findings(&c).unwrap().is_empty());
+}
+
+/// A kept scan's findings are the findings, whole: a column added to
+/// `findings` and not to `run_findings` would drop it from `report --run`.
+#[test]
+fn a_kept_scans_findings_have_every_findings_column() {
+    let d = crate::utils::temp::TempDir::new("columns").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    let columns = |table: &str| -> Vec<String> {
+        c.conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let mut findings = columns("findings");
+    let mut kept: Vec<String> = columns("run_findings").into_iter().filter(|c| c != "scan_id").collect();
+    let mut listed: Vec<String> = FINDING_COLUMNS.split(',').map(|c| c.trim().to_string()).collect();
+    findings.sort();
+    kept.sort();
+    listed.sort();
+    assert_eq!(kept, findings);
+    assert_eq!(listed, findings);
+}
+
+/// A wpantry that stopped between copying an older cache's findings and
+/// marking the scan kept left rows under a scan that still says nothing:
+/// the next open replaces them, so nothing is kept twice.
+#[test]
+fn an_adoption_cut_short_is_done_again_whole() {
+    let d = crate::utils::temp::TempDir::new("migrate").unwrap();
+    let file = d.path().join("w.db");
+    let c = Cache::open(Some(&file)).unwrap();
+    let f = crate::finding::Finding { kind: "project".into(), vuln_id: "CVE-1".into(), ..Default::default() };
+    c.replace_findings(std::slice::from_ref(&f)).unwrap();
+    let id = crate::history::record_scan(&c, 1.0, std::slice::from_ref(&f), &[], &Default::default()).unwrap();
+    // As the interrupted process left it: the copy made, the mark not.
+    c.conn.execute("UPDATE scans SET kept = NULL WHERE id = ?", [id]).unwrap();
+    c.close().unwrap();
+    for _ in 0..2 {
+        let c = Cache::open(Some(&file)).unwrap();
+        let rows: i64 =
+            c.conn.query_row("SELECT COUNT(*) FROM run_findings WHERE scan_id = ?", [id], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1, "one copy, however many times it is opened");
+        assert!(crate::history::is_kept(&c, id).unwrap());
+        c.close().unwrap();
+    }
+}
+
+/// `cache prune` keeps the advisory a kept scan's finding names, even when
+/// the latest scan and every cached answer have moved on: `report --run`
+/// exports its record.
+#[test]
+fn prune_keeps_an_advisory_only_an_older_kept_scan_refers_to() {
+    let d = crate::utils::temp::TempDir::new("prune-runs").unwrap();
+    let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
+    for id in ["CVE-2026-0001", "CVE-2026-0002"] {
+        c.put_vuln(&serde_json::json!({"id": id, "summary": "s"})).unwrap();
+    }
+    let f = crate::finding::Finding { kind: "project".into(), vuln_id: "CVE-2026-0001".into(), ..Default::default() };
+    c.replace_findings(std::slice::from_ref(&f)).unwrap();
+    crate::history::record_scan(&c, 1.0, std::slice::from_ref(&f), &[], &Default::default()).unwrap();
+    // A later scan finds nothing: the latest findings no longer name it.
+    c.replace_findings(&[]).unwrap();
+    crate::history::record_scan(&c, 2.0, &[], &[], &Default::default()).unwrap();
+    let (_, gone, _) = c.prune(0.0).unwrap();
+    assert_eq!(gone, 1, "the advisory nothing refers to");
+    assert!(c.vuln("CVE-2026-0001").unwrap().is_some(), "the older kept scan's");
+    assert!(c.vuln("CVE-2026-0002").unwrap().is_none());
 }

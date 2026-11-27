@@ -289,7 +289,7 @@ fn already(id: &str, target: &Target) -> Reply {
 fn files(env: &Env, path: Option<&Path>) -> Vec<Target> {
     let mut v = vec![Target::user(env)];
     if let Some(dir) = path {
-        v.push(Target::repo(&edit::repo_for(dir)));
+        v.push(Target::repo(&edit::repo_for(dir, env)));
     }
     v
 }
@@ -392,7 +392,7 @@ pub fn list(cache: &Cache, env: &Env, path: Option<&Path>) -> Result<Reply> {
 
 /// `ignore remove RULE_ID|FINDING_ID [--path DIR]`.
 pub fn remove(cache: &Cache, env: &Env, id: &str, path: Option<&Path>) -> Result<Reply> {
-    let by_rule = id.len() >= 2 && id[..2].eq_ignore_ascii_case("R-");
+    let by_rule = id.as_bytes().get(..2).is_some_and(|b| b.eq_ignore_ascii_case(b"R-"));
     let want = if by_rule { Want::Rule(id) } else { Want::Finding(id) };
     let events = history::events_of(cache, EVENT)?;
     let logged = ledger(&events);
@@ -524,7 +524,9 @@ fn distinct_rules(v: &[edit::Removed]) -> Vec<(Scope, String)> {
 
 /// Whether a word is a rule id: `R-` and ten hex digits.
 pub fn is_rule_id(word: &str) -> bool {
-    word.len() == 12 && word[..2].eq_ignore_ascii_case("R-") && word[2..].chars().all(|c| c.is_ascii_hexdigit())
+    // By byte: a word of other characters has no boundary at 2 to slice at.
+    let b = word.as_bytes();
+    b.len() == 12 && b[..2].eq_ignore_ascii_case(b"R-") && b[2..].iter().all(u8::is_ascii_hexdigit)
 }
 
 #[cfg(test)]

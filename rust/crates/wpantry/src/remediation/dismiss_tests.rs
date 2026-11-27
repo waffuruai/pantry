@@ -36,7 +36,7 @@ impl Rig {
         testing::write(&root, "sub/package-lock.json", LOCK_SUB);
         let name = root.to_string_lossy().into_owned();
         let h = crate::utils::files::home();
-        let env = Env { user_file: h.join(".config/wpantry/ignore"), home: h };
+        let env = Env { user_file: h.join(".config/wpantry/ignore"), home: h, roots: Vec::new() };
         Rig { d, _home: home, env, root, name, net: testing::osv_net(&[("npm", "lodash"), ("npm", "left-pad")]) }
     }
 
@@ -421,4 +421,6 @@ fn all_places_covers_every_lockfile_of_the_package_and_the_log_names_each_rule()
 fn rule_ids_are_told_from_finding_ids() {
     assert!(is_rule_id("R-3fa9c01b2e") && is_rule_id("r-3FA9C01B2E"));
     assert!(!is_rule_id("F-3fa9c01b2e") && !is_rule_id("R-3fa9c01b2") && !is_rule_id("R-zzzzzzzzzz"));
+    // Twelve bytes of wider characters: not an id, and not a panic.
+    assert!(!is_rule_id("€€€€") && !is_rule_id("Ré3fa9c01b2") && !is_rule_id(""));
 }

@@ -45,3 +45,37 @@ fn offline_without_an_index_is_unchecked() {
     let c = Cache::open(Some(&d.path().join("w.db"))).unwrap();
     assert!(matches!(sync(&c, true), Err(Error::Offline(_))));
 }
+
+/// Risk: a scan's cache is in autocommit, so an index load that fails
+/// part-way has committed the delete and leaves the malicious-package check
+/// with part of the index for every later scan. Oracle: an insert that fails
+/// part-way (a trigger stands in for the error) leaves the old index whole.
+/// Known bad: the delete and the inserts committed one by one.
+#[test]
+fn an_index_load_that_fails_part_way_leaves_the_old_index() {
+    let d = crate::utils::temp::TempDir::new("mal-load").unwrap();
+    let db = d.path().join("w.db");
+    let c = Cache::open_for_scan(Some(&db), &|_| {}).unwrap();
+    seed_clone(&db, &["osv/malicious/npm/evil/MAL-2026-1.json"]);
+    assert_eq!(sync(&c, false).unwrap(), 1);
+    std::fs::remove_dir_all(d.path().join("origin")).unwrap();
+    let _ = std::fs::remove_dir_all(d.path().join("malicious-packages"));
+    seed_clone(&db, &["osv/malicious/npm/a/MAL-2026-2.json", "osv/malicious/npm/b/MAL-2026-3.json"]);
+    c.conn
+        .execute_batch(
+            "CREATE TRIGGER fail_part_way BEFORE INSERT ON malicious WHEN NEW.id = 'MAL-2026-3'
+             BEGIN SELECT RAISE(ABORT, 'interrupted'); END;",
+        )
+        .unwrap();
+    c.set("malicious_at", "0").unwrap();
+    let _ = sync(&c, false);
+    let ids: Vec<String> = c
+        .conn
+        .prepare("SELECT id FROM malicious")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, ["MAL-2026-1"]);
+}

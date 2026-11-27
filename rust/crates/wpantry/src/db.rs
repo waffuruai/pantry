@@ -186,29 +186,34 @@ impl Default for Limits {
 }
 
 /// Take the lock file of the scan that has the cache at `db`, waiting for it
-/// to end. The lock is the operating system's (`flock`, `LockFileEx`): a scan
-/// that is killed lets it go.
-fn lock_scans(db: &Path, queue: std::time::Duration) -> Result<std::fs::File> {
+/// to end, and saying so through `note` once when it has to wait (a wait can
+/// last [`SCAN_QUEUE`], and a scan that says nothing looks hung). The lock is
+/// the operating system's (`flock`, `LockFileEx`): a scan that is killed lets
+/// it go.
+fn lock_scans(db: &Path, queue: std::time::Duration, note: &dyn Fn(&str)) -> Result<std::fs::File> {
     let mut name = db.as_os_str().to_os_string();
     name.push(".scan-lock");
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(PathBuf::from(name))?;
     let start = std::time::Instant::now();
+    let shown = crate::utils::files::short(&db.to_string_lossy());
+    let wait = if queue.as_secs() >= 120 {
+        format!("{} minutes", queue.as_secs() / 60)
+    } else {
+        format!("{} s", queue.as_secs())
+    };
+    let mut said = false;
     loop {
         match lock.try_lock() {
             Ok(()) => return Ok(lock),
             Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < queue => {
+                if !said {
+                    note(&format!("Waiting for another scan to finish with the cache ({shown}), up to {wait}"));
+                    said = true;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(Error::Failed(format!(
-                    "another scan has had the cache for {} ({})",
-                    if queue.as_secs() >= 120 {
-                        format!("{} minutes", queue.as_secs() / 60)
-                    } else {
-                        format!("{} s", queue.as_secs())
-                    },
-                    db.display()
-                )));
+                return Err(Error::Failed(format!("another scan has had the cache for {wait} ({shown})")));
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
@@ -232,7 +237,7 @@ impl Cache {
     /// [`Cache::close`], as Python's sqlite3 does; dropping a cache without
     /// closing it discards what wasn't committed.
     pub fn open(file: Option<&Path>) -> Result<Cache> {
-        Cache::open_as(file, false, Limits::default())
+        Cache::open_as(file, None, Limits::default())
     }
 
     /// [`Cache::open`] for a scan. Scans on one cache run one after the
@@ -243,19 +248,22 @@ impl Cache {
     /// it go, so `report`, `ignore`, `cache prune` and the rest are not held
     /// up for the length of a scan, as they were not before. Scans are
     /// serialised because they replace each other's data (a scan with other
-    /// sources removes what the first one loaded).
-    pub fn open_for_scan(file: Option<&Path>) -> Result<Cache> {
-        Cache::open_for_scan_within(file, Limits::default())
+    /// sources removes what the first one loaded). A wait is said through
+    /// `note` once, when it begins.
+    pub fn open_for_scan(file: Option<&Path>, note: &dyn Fn(&str)) -> Result<Cache> {
+        Cache::open_for_scan_within(file, Limits::default(), note)
     }
 
     /// [`Cache::open_for_scan`] with its two waits set: how long to queue for
     /// another scan, and how long one write waits for the database lock.
     /// Tests shorten them to see what a wait longer than either does.
-    pub(crate) fn open_for_scan_within(file: Option<&Path>, limits: Limits) -> Result<Cache> {
-        Cache::open_as(file, true, limits)
+    pub(crate) fn open_for_scan_within(file: Option<&Path>, limits: Limits, note: &dyn Fn(&str)) -> Result<Cache> {
+        Cache::open_as(file, Some(note), limits)
     }
 
-    fn open_as(file: Option<&Path>, writer: bool, limits: Limits) -> Result<Cache> {
+    /// A scan's cache (`note` given: the scan lock, autocommit) or another command's.
+    fn open_as(file: Option<&Path>, note: Option<&dyn Fn(&str)>, limits: Limits) -> Result<Cache> {
+        let writer = note.is_some();
         let file = file.map(Path::to_path_buf).unwrap_or_else(path);
         if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
             let mut builder = std::fs::DirBuilder::new();
@@ -267,7 +275,10 @@ impl Cache {
             }
             builder.create(dir)?;
         }
-        let scan_lock = if writer { Some(lock_scans(&file, limits.queue)?) } else { None };
+        let scan_lock = match note {
+            Some(note) => Some(lock_scans(&file, limits.queue, note)?),
+            None => None,
+        };
         let conn = Connection::open(&file)?;
         // The cache names what is installed and where secrets sit: ours only.
         #[cfg(unix)]
@@ -317,8 +328,10 @@ impl Cache {
     /// runs. A scan's cache is in autocommit (each write waits for the lock
     /// it needs and lets go, so another command can write between them); the
     /// scan's result goes in together.
+    /// Inside a transaction already (or on a cache that is not a scan's,
+    /// which is always in one), `f` runs in that one.
     pub fn atomically<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        if !self.writer {
+        if !self.writer || !self.conn.is_autocommit() {
             return f();
         }
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -547,6 +560,11 @@ impl Cache {
     /// Record what a source holds now, as (key, location, program): items
     /// seen again keep when they were first seen, items gone are dropped.
     pub fn persistence_record(&self, source: &str, items: &[(String, String, String)], at: f64) -> Result<()> {
+        // One transaction: the source's old baseline or its new one.
+        self.atomically(|| self.persistence_record_now(source, items, at))
+    }
+
+    fn persistence_record_now(&self, source: &str, items: &[(String, String, String)], at: f64) -> Result<()> {
         for (key, location, program) in items {
             self.conn.execute(
                 "INSERT INTO persistence VALUES (?, ?, ?, ?, ?, ?) \

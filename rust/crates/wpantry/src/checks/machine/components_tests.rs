@@ -408,3 +408,96 @@ fn exploited_cves_outside_the_release_dates_are_not_named() {
     assert!(s2.findings[0].note.contains(": CVE-2026-72898. "), "{}", s2.findings[0].note);
     assert!(s2.findings[1].note.contains(": CVE-2026-116779. "), "{}", s2.findings[1].note);
 }
+
+/// OSV for one pip package, `requests` 2.32.0, fixed in 2.33.0. Any other
+/// request, endoflife.date's included, fails the test: the package check
+/// asks nothing about Python.
+fn pip_osv() -> Fake {
+    Fake::new(|r| {
+        use crate::utils::net::Response;
+        let url = r.url.as_str();
+        if url.ends_with("/querybatch") {
+            let body = r.body.clone().unwrap_or_default();
+            return Ok(testing::querybatch(&body, &|pkg, _| if pkg == "requests" { vec!["PYSEC-1"] } else { vec![] }));
+        }
+        if url == "https://api.osv.dev/v1/vulns/PYSEC-1" {
+            let rec = serde_json::json!({"id": "PYSEC-1", "aliases": ["CVE-2026-9999"], "modified": "m",
+                "summary": "s", "affected": [{"package": {"ecosystem": "PyPI", "name": "requests"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.33.0"}]}]}]});
+            return Ok(Response::ok(rec.to_string()));
+        }
+        if url.starts_with("https://osv-vulnerabilities.storage.googleapis.com/") {
+            return Ok(Response::not_found());
+        }
+        panic!("unexpected request {url}")
+    })
+}
+
+/// `requests` 2.32.0 in a Python of release line `line`, as the scan
+/// builds it ([`packages::PY_LINE`]), with the plain unattended fix.
+fn pip_requests(line: &str) -> Component {
+    let mut c = Component::new("package", "pip:requests", "2.32.0", "/x/bin/python3");
+    c.osv = Some(("PyPI".into(), "requests".into(), "2.32.0".into()));
+    c.fix = "/x/bin/python3 -m pip install --user --upgrade 'requests>={safe}'".into();
+    c.auto = true;
+    c.extra.insert(packages::PY_LINE.into(), line.into());
+    c
+}
+
+/// The fix of the one finding `requests` gets in a scan whose cache holds
+/// `pages` as endoflife.date's Python page (None: never fetched).
+fn pip_fix(line: &str, page: Option<serde_json::Value>) -> (String, bool, String) {
+    let d = crate::utils::temp::TempDir::new("pipeol").unwrap();
+    let net = pip_osv();
+    let mut s = testing::scan(&net, &d);
+    if let Some(p) = page {
+        crate::sources::endoflife::store_for_tests(&s.cache, "python", &p);
+    }
+    components(&mut s, &[pip_requests(line)]).unwrap();
+    assert_eq!(s.findings.len(), 1, "{:?}", testing::kinds(&s));
+    let f = &s.findings[0];
+    (f.fix_cmd.clone(), f.fix_auto, f.fixed.clone())
+}
+
+fn python_page() -> serde_json::Value {
+    serde_json::json!([
+        {"cycle": "3.13", "eol": "2099-10-31", "latest": "3.13.9"},
+        {"cycle": "3.9", "eol": "2025-10-31", "latest": "3.9.25"}])
+}
+
+/// Risk: a fix that cannot work is offered unattended, because releases
+/// that fix a package no longer support a Python past end of life. Oracle:
+/// pip's own answer on a real 3.9 ("No matching distribution found"), which
+/// the endoflife.date cycle for 3.9 predicts.
+#[test]
+fn pip_fix_for_a_python_past_end_of_life_is_a_suggestion() {
+    let (cmd, auto, fixed) = pip_fix("3.9", Some(python_page()));
+    assert!(!auto, "{cmd}");
+    assert_eq!(fixed, "2.33.0");
+    assert!(cmd.starts_with("Python 3.9 is past end of life"), "{cmd}");
+    assert!(
+        cmd.contains("may no longer support it") && cmd.contains("move the project to a supported Python"),
+        "{cmd}"
+    );
+    assert!(cmd.ends_with("/x/bin/python3 -m pip install --user --upgrade 'requests>=2.33.0'"), "{cmd}");
+}
+
+/// Oracle: the supported line's finding keeps the plain command, unattended.
+#[test]
+fn pip_fix_for_a_supported_python_is_unchanged() {
+    let (cmd, auto, _) = pip_fix("3.13", Some(python_page()));
+    assert!(auto);
+    assert_eq!(cmd, "/x/bin/python3 -m pip install --user --upgrade 'requests>=2.33.0'");
+}
+
+/// Oracle: with no end-of-life answer on hand (never fetched; the fake
+/// network fails on any request) the fix stays as it was.
+#[test]
+fn pip_fix_without_an_end_of_life_answer_is_unchanged() {
+    let (cmd, auto, _) = pip_fix("3.9", None);
+    assert!(auto);
+    assert_eq!(cmd, "/x/bin/python3 -m pip install --user --upgrade 'requests>=2.33.0'");
+    // A line the page does not list is as unknown.
+    let (_, auto, _) = pip_fix("3.8", Some(python_page()));
+    assert!(auto);
+}

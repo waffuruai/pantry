@@ -3010,6 +3010,59 @@ fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files(
     );
 }
 
+/// Risk: `fix F-… --from-scan N` for one of a component's findings plans
+/// that advisory's own lowest fix, so the component's other findings stay
+/// open and a caller re-checking the whole row reads "still there".
+/// Oracle: `fix list`, which plans one step per component at the highest
+/// fixed version. Known bad: before the change the dry run named
+/// `>=2.8.4` for every one of the five ids (nothing runs in a dry run).
+#[test]
+fn fix_one_finding_plans_the_components_covering_fix() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let conn = t.conn();
+    conn.execute("DELETE FROM findings", []).unwrap();
+    let fixed = ["2.8.4", "2.9.0", "2.10.0", "3.0.2", "4.0.0"];
+    let cmds: Vec<String> = fixed.iter().map(|v| format!("py -m pip install 'soupsieve>={v}'")).collect();
+    let ids: Vec<String> = (0..5).map(|i| format!("GHSA-soup-{i}")).collect();
+    for i in 0..5 {
+        insert_finding(
+            &conn,
+            (
+                "package",
+                "pip:soupsieve",
+                "2.8.3",
+                "/x/bin/python3",
+                &ids[i],
+                "fail",
+                fixed[i],
+                0,
+                "HIGH",
+                "soup bug",
+                &cmds[i],
+                1,
+                "",
+                None,
+                "",
+            ),
+        );
+    }
+    let scan: i64 = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0)).unwrap();
+    drop(conn);
+    let n = scan.to_string();
+    let want = "py -m pip install 'soupsieve>=4.0.0'";
+    let list = t.run(&["fix", "list", "--json"]).json();
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 5, "{list}");
+    assert!(items.iter().all(|i| i["fix_cmd"] == want), "{list}");
+    for item in items {
+        let id = item["id"].as_str().unwrap();
+        let r = t.run(&["fix", id, "--from-scan", &n, "--dry-run", "--json"]);
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        assert_eq!(r.json()["command"], want, "{id}: {}", r.out);
+    }
+}
+
 /// Risk: `fix --json` (a machine format on stdout, no `-o FILE`) prints the
 /// scan and quietly runs no fix and no stopgap, so a caller that asked for
 /// the fixes reads the exit code of the scan as the exit code of a fix that

@@ -304,33 +304,64 @@ fn the_default_limits_are_the_documented_ones() {
     assert_eq!((t.probe, t.inspect), (Duration::from_secs(5), Duration::from_secs(20)));
 }
 
-/// Risk: a machine scan with no repo that names an image probes the engine,
-/// and when Docker Desktop is closed records a gap that "0 image refs were
-/// not checked" on every scan of the laptop: noise about nothing. Oracle:
-/// with no repo refs the engine is asked only for its running containers
-/// (no `version` probe), and a daemon that is down (so nothing runs) leaves
-/// no gap. A running container is still read.
-/// Known bad: the probe and its gap ahead of the listing.
+/// A stand-in engine whose `ps` runs `ps` and whose `version` runs the same,
+/// recording its calls beside it.
 #[cfg(unix)]
-#[test]
-fn a_machine_scan_with_no_refs_does_not_probe_or_record_a_gap() {
+fn ps_engine(dir: &Path, ps: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let d = TempDir::new("images-norefs").unwrap();
-    let down = "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.' >&2; exit 1";
-    let engine = d.path().join("docker");
+    let engine = dir.join("docker");
     std::fs::write(
         &engine,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\ncase \"$1\" in version|ps) {down} ;; esac\n"
-        ),
+        format!("#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\ncase \"$1\" in version|ps) {ps} ;; esac\n"),
     )
     .unwrap();
     std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    engine
+}
+
+/// Risk: a machine scan with no repo that names an image probes the engine
+/// and records a gap that "0 image refs were not checked"; or, the other
+/// way, an engine that does not answer leaves the running containers
+/// unchecked with no word. Oracle: with no repo refs the engine is asked only
+/// for its running containers (no `version` probe); nothing running records
+/// nothing; a down or hung engine records one gap that says the running
+/// containers were not listed; no engine at all asks and records nothing.
+/// Known bad: the probe and its zero-ref gap ahead of the listing, or a
+/// failed listing taken for "nothing running".
+#[cfg(unix)]
+#[test]
+fn a_machine_scan_with_no_refs_lists_the_running_containers_only() {
     let net = testing::osv_net(&[]);
-    let mut s = testing::scan(&net, &d, Options { machine: true, ..Default::default() });
+    let machine = || Options { machine: true, ..Default::default() };
+    // Nothing running: no gap, one call.
+    let d = TempDir::new("images-norefs").unwrap();
+    let engine = ps_engine(d.path(), "exit 0");
+    let mut s = testing::scan(&net, &d, machine());
     images_with_limits(&mut s, &[], Some(engine), FAST).unwrap();
     assert!(s.findings.is_empty(), "{:?}", s.findings);
     assert_eq!(calls(d.path()), ["ps --format {{.Image}}"]);
+    // No engine: nothing.
+    let mut s = testing::scan(&net, &d, machine());
+    images_with_limits(&mut s, &[], None, FAST).unwrap();
+    assert!(s.findings.is_empty(), "{:?}", s.findings);
+    // Down, then hung: one gap each, and still no probe.
+    for (name, ps, why) in [
+        (
+            "down",
+            "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.' >&2; exit 1",
+            "Cannot connect",
+        ),
+        ("hung", HANG, "no answer within"),
+    ] {
+        let d = TempDir::new(&format!("images-norefs-{name}")).unwrap();
+        let engine = ps_engine(d.path(), ps);
+        let mut s = testing::scan(&net, &d, machine());
+        images_with_limits(&mut s, &[], Some(engine), FAST).unwrap();
+        let (component, note) = only_gap(&s);
+        assert_eq!(component, GAP);
+        assert!(note.contains(why) && note.contains("running containers' images were not listed"), "{name}: {note}");
+        assert_eq!(calls(d.path()), ["ps --format {{.Image}}"], "{name}");
+    }
 }
 
 /// Risk: the engine's stderr goes into the gap note as it is, and docker and

@@ -62,10 +62,19 @@ pub fn images_with_limits(scan: &mut Scan, repos: &[Repo], engine: Option<PathBu
     let mut running: Vec<String> = Vec::new();
     if repo_refs.is_empty() {
         // Only the running containers to check: the listing is the question, with the probe's
-        // time. Nothing listed (no daemon, so nothing running; nothing running; no answer) is
-        // nothing to check: no probe, and no gap about zero refs.
+        // time, so there is no separate probe. Nothing running is nothing to check; an engine
+        // that does not answer leaves whatever runs unchecked, which is one gap.
         scan.status(&format!("Asking {name} for its running containers"));
-        running = engine_images::running(&engine, limits.probe).unwrap_or_default();
+        running = match engine_images::running(&engine, limits.probe) {
+            Ok(running) => running,
+            Err(why) => {
+                scan.unchecked(
+                    GAP,
+                    &format!("{name} is installed but is not answering ({why}), so the running containers' images were not listed"),
+                );
+                return Ok(());
+            }
+        };
         if running.is_empty() {
             return Ok(());
         }

@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# packaging/homebrew/bump.sh against a copy of the formula and a fake
+# rust/release/homebrew-bump.sh against a copy of the formula and a fake
 # SHA256SUMS: it rewrites the tag and every digest, is idempotent, --check
 # tells a matching formula from a stale one, and a SHA256SUMS missing an
 # asset, with a malformed record or listing an asset twice is an error. Run
@@ -8,9 +8,9 @@
 
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BUMP="$ROOT/packaging/homebrew/bump.sh"
-FORMULA="$ROOT/packaging/homebrew/wpantry.rb"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BUMP="$HERE/homebrew-bump.sh"
+FORMULA="$HERE/wpantry.rb"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -90,4 +90,4 @@ if "$BUMP" "$tmp/f.rb" 9.9.9 "$tmp/SHA256SUMS" >/dev/null 2>&1; then fail "a tag
 if "$BUMP" "$tmp/f.rb" v9.9.9 >/dev/null 2>&1; then fail "missing arguments should be a usage error"; fi
 cmp -s "$tmp/f.rb" "$tmp/out.rb" || fail "an error must not write"
 
-echo "✓ bump.sh: rewrites, idempotent, --check, errors, duplicate and malformed records"
+echo "✓ homebrew-bump.sh: rewrites, idempotent, --check, errors, duplicate and malformed records"

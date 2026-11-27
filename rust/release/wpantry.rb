@@ -1,7 +1,7 @@
 # The formula waffuruai/homebrew-tap carries (`brew install waffuruai/tap/wpantry`).
 # It installs the release binaries this repository's release workflow built and
 # attested; nothing is compiled. The version is the tag in each `url` (Homebrew
-# reads it from there). `packaging/homebrew/bump.sh` rewrites the tag and the
+# reads it from there). `rust/release/homebrew-bump.sh` rewrites the tag and the
 # digests from a release's SHA256SUMS, and the release
 # workflow's `tap` job opens the bump PR on the tap (docs/internal/release.md).
 class Wpantry < Formula

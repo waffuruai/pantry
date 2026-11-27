@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# packaging/homebrew/tap-pr.sh against a local bare "tap" and a stub gh:
+# rust/release/homebrew-tap-pr.sh against a local bare "tap" and a stub gh:
 # without a token it warns and touches nothing; with one it pushes the bump
 # branch and opens the PR; rerun, it reuses the branch, commits nothing and
 # finds the open PR instead of creating another; after a failed `gh pr
@@ -12,9 +12,9 @@
 
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TAP_PR="$ROOT/packaging/homebrew/tap-pr.sh"
-FORMULA="$ROOT/packaging/homebrew/wpantry.rb"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+TAP_PR="$HERE/homebrew-tap-pr.sh"
+FORMULA="$HERE/wpantry.rb"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -136,4 +136,4 @@ if "$TAP_PR" "$tmp/v9.9.9.rb" >/dev/null 2>&1; then fail "missing arguments shou
 if TAP_TOKEN=secret "$TAP_PR" "$tmp/v9.9.9.rb" 9.9.9 >/dev/null 2>&1; then fail "a tag without v should be an error"; fi
 if TAP_TOKEN=secret "$TAP_PR" "$tmp/missing.rb" v9.9.9 >/dev/null 2>&1; then fail "a missing formula should be an error"; fi
 
-echo "✓ tap-pr.sh: warns without a token, pushes and opens the PR, reruns reuse the branch and the PR, never force-pushes"
+echo "✓ homebrew-tap-pr.sh: warns without a token, pushes and opens the PR, reruns reuse the branch and the PR, never force-pushes"

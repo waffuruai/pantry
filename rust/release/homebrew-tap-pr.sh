@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
 # Open the tap's bump PR for a rendered formula, or find the one already open.
-# The release workflow's tap job runs this after bump.sh; it is safe to rerun
+# The release workflow's tap job runs this after homebrew-bump.sh; it is safe to rerun
 # at any point: an existing remote bump branch is reused rather than
 # recreated, a commit is made only when the rendered formula differs from
 # the branch's, an open PR for the branch is found before one is created, and
 # nothing is ever force-pushed (a reviewer's commits on the branch stay).
 #
-#   tap-pr.sh FORMULA TAG
+#   homebrew-tap-pr.sh FORMULA TAG
 #
-# FORMULA is the rendered formula (bump.sh -o), TAG its release (vX.Y.Z).
+# FORMULA is the rendered formula (homebrew-bump.sh -o), TAG its release (vX.Y.Z).
 # Environment:
 #   TAP          the tap repository, owner/name (default waffuruai/homebrew-tap)
 #   TAP_TOKEN    a token with Contents and Pull requests write on TAP; unset
@@ -90,4 +90,4 @@ if [ -n "$url" ]; then
 fi
 gh pr create --repo "$TAP" --base main --head "$branch" \
   --title "wpantry $tag" \
-  --body "Formula for https://github.com/$SOURCE_REPO/releases/tag/$tag, rendered from its SHA256SUMS by the release workflow (packaging/homebrew/bump.sh)."
+  --body "Formula for https://github.com/$SOURCE_REPO/releases/tag/$tag, rendered from its SHA256SUMS by the release workflow (rust/release/homebrew-bump.sh)."

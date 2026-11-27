@@ -7,11 +7,11 @@
 # record, or an asset listed twice, is rejected whole before anything is
 # written.
 #
-#   bump.sh [--check] [-o OUT] FORMULA TAG SHA256SUMS
+#   homebrew-bump.sh [--check] [-o OUT] FORMULA TAG SHA256SUMS
 #
 # TAG is vX.Y.Z. OUT (default: FORMULA in place) receives the result, so the
 # release workflow can render Formula/wpantry.rb for the tap from
-# packaging/homebrew/wpantry.rb.
+# rust/release/wpantry.rb.
 
 set -euo pipefail
 

@@ -349,12 +349,12 @@ jobs:
 
   # The Homebrew tap (waffuruai/homebrew-tap, docs/internal/release.md): its
   # formula installs the published binaries, so it is rendered from the
-  # release's SHA256SUMS by packaging/homebrew/bump.sh. With HOMEBREW_TAP_TOKEN
+  # release's SHA256SUMS by rust/release/homebrew-bump.sh. With HOMEBREW_TAP_TOKEN
   # (a fine-grained token on the tap alone: Contents and Pull requests, write)
-  # packaging/homebrew/tap-pr.sh pushes a branch and opens the bump PR there;
+  # rust/release/homebrew-tap-pr.sh pushes a branch and opens the bump PR there;
   # without it, the job warns and keeps the rendered formula as an artifact to
   # copy by hand. The release is out either way, so this job never fails the
-  # workflow, and tap-pr.sh is safe to rerun (tests/packaging/test-tap-pr.sh).
+  # workflow, and homebrew-tap-pr.sh is safe to rerun (rust/release/test-homebrew-tap-pr.sh).
   tap:
     name: Homebrew tap
     needs: release
@@ -380,8 +380,8 @@ jobs:
         run: |
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir release
           mkdir -p Formula
-          packaging/homebrew/bump.sh -o Formula/wpantry.rb packaging/homebrew/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
-          packaging/homebrew/bump.sh --check Formula/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
+          rust/release/homebrew-bump.sh -o Formula/wpantry.rb rust/release/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
+          rust/release/homebrew-bump.sh --check Formula/wpantry.rb "$GITHUB_REF_NAME" release/SHA256SUMS
           cat Formula/wpantry.rb
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -393,4 +393,4 @@ jobs:
       - name: Open the bump PR on the tap
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: packaging/homebrew/tap-pr.sh Formula/wpantry.rb "$GITHUB_REF_NAME"
+        run: rust/release/homebrew-tap-pr.sh Formula/wpantry.rb "$GITHUB_REF_NAME"

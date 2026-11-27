@@ -244,7 +244,7 @@ pub fn is_git(path: &Path) -> bool {
     git.is_file() || git.join("HEAD").is_file()
 }
 
-fn is_lockfile(name: &str) -> bool {
+pub(crate) fn is_lockfile(name: &str) -> bool {
     LOCKFILES.contains(&name)
         || crate::checks::lockfiles::csproj::is_project_file(name)
         || (name.starts_with("requirements") && name.ends_with(".txt") && name.len() >= "requirements.txt".len())

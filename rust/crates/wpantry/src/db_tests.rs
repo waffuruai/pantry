@@ -362,7 +362,7 @@ fn a_scan_does_not_hold_the_database_lock_and_scans_take_turns() {
     use std::sync::mpsc;
     let dir = crate::utils::temp::TempDir::new("db").unwrap();
     let file = dir.path().join("w.db");
-    let scan = Cache::open_for_scan(Some(&file)).unwrap();
+    let scan = Cache::open_for_scan(Some(&file), &|_| {}).unwrap();
     scan.set("a", "1").unwrap();
     // Another command's write is not held up by the scan, and sees its write.
     let other = Cache::open(Some(&file)).unwrap();
@@ -376,7 +376,7 @@ fn a_scan_does_not_hold_the_database_lock_and_scans_take_turns() {
     let (tx, rx) = mpsc::channel();
     let f2 = file.clone();
     let second = std::thread::spawn(move || {
-        let c = Cache::open_for_scan(Some(&f2)).unwrap();
+        let c = Cache::open_for_scan(Some(&f2), &|_| {}).unwrap();
         tx.send(()).unwrap();
         c
     });
@@ -400,12 +400,12 @@ fn a_scan_that_waits_longer_than_the_busy_timeout_still_runs() {
     let dir = crate::utils::temp::TempDir::new("db").unwrap();
     let file = dir.path().join("w.db");
     let limits = Limits { queue: Duration::from_secs(60), busy: Duration::from_secs(1) };
-    let first = Cache::open_for_scan_within(Some(&file), limits).unwrap();
+    let first = Cache::open_for_scan_within(Some(&file), limits, &|_| {}).unwrap();
     first.set("first", "1").unwrap();
     let f2 = file.clone();
     let waited = std::thread::spawn(move || {
         let t = Instant::now();
-        let c = Cache::open_for_scan_within(Some(&f2), limits).unwrap();
+        let c = Cache::open_for_scan_within(Some(&f2), limits, &|_| {}).unwrap();
         let took = t.elapsed();
         c.set("second", "2").unwrap();
         c.close().unwrap();
@@ -434,11 +434,11 @@ fn a_scan_that_waits_out_the_queue_fails_and_says_why() {
     use std::time::{Duration, Instant};
     let dir = crate::utils::temp::TempDir::new("db").unwrap();
     let file = dir.path().join("w.db");
-    let first = Cache::open_for_scan(Some(&file)).unwrap();
+    let first = Cache::open_for_scan(Some(&file), &|_| {}).unwrap();
     first.set("first", "1").unwrap();
     let limits = Limits { queue: Duration::from_secs(1), busy: Duration::from_secs(1) };
     let t = Instant::now();
-    let err = match Cache::open_for_scan_within(Some(&file), limits) {
+    let err = match Cache::open_for_scan_within(Some(&file), limits, &|_| {}) {
         Ok(_) => panic!("the second scan got the cache while the first had it"),
         Err(e) => e,
     };
@@ -451,4 +451,27 @@ fn a_scan_that_waits_out_the_queue_fails_and_says_why() {
     first.close().unwrap();
     let c = Cache::open(Some(&file)).unwrap();
     assert_eq!(c.get("first").unwrap().as_deref(), Some("1"));
+}
+
+/// Risk: a scan queued behind another can wait up to 30 minutes and says
+/// nothing, so it looks hung and gets killed. Oracle: it says once, when the
+/// wait begins, that it is waiting for another scan and how long it may; a
+/// scan that does not wait says nothing.
+/// Known bad: the queue without the note.
+#[test]
+fn a_scan_that_has_to_wait_says_what_it_is_waiting_for_once() {
+    use std::time::Duration;
+    let dir = crate::utils::temp::TempDir::new("db").unwrap();
+    let file = dir.path().join("w.db");
+    let said = std::sync::Mutex::new(Vec::<String>::new());
+    let note = |m: &str| said.lock().unwrap().push(m.to_string());
+    let first = Cache::open_for_scan(Some(&file), &note).unwrap();
+    assert!(said.lock().unwrap().is_empty(), "the first scan did not wait");
+    let limits = Limits { queue: Duration::from_millis(600), busy: Duration::from_secs(1) };
+    assert!(Cache::open_for_scan_within(Some(&file), limits, &note).is_err());
+    let said = said.lock().unwrap().clone();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("Waiting for another scan to finish with the cache ("), "{}", said[0]);
+    assert!(said[0].ends_with("), up to 0 s"), "{}", said[0]);
+    drop(first);
 }

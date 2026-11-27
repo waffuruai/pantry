@@ -121,7 +121,8 @@ fn scan(
     };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
-    let mut s = Scan::new(opts, Cache::open_for_scan(None)?, net, &log, &note).with_status(&status).with_ask(&ask);
+    let mut s =
+        Scan::new(opts, Cache::open_for_scan(None, &note)?, net, &log, &note).with_status(&status).with_ask(&ask);
     if let Some(w) = watch {
         s = s.with_watch(w);
     }

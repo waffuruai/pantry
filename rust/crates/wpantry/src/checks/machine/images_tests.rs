@@ -222,23 +222,29 @@ fn what_cannot_be_read_is_a_named_gap() {
     assert!(gaps[1].starts_with("/app/Cargo.lock: "), "{gaps:?}");
 }
 
-/// The engine's answers: an id (with or without its `sha256:` prefix),
-/// nothing that isn't hex, nothing when inspect fails, nothing when the
-/// engine can't run.
+/// The engine's answers: an id (with or without its `sha256:` prefix); "not
+/// here" only when the engine says there is no such image; any other failure
+/// (a bare non-zero exit, text that isn't an id, a program that can't run)
+/// is a failure, not an absence.
 #[cfg(unix)]
 #[test]
-fn the_image_id_is_the_engines_hex_answer() {
+fn the_local_image_is_the_engines_answer() {
+    let t = Duration::from_secs(5);
     let d = TempDir::new("image-id").unwrap();
     let engine = testing::engine(d.path());
-    assert_eq!(image_id(&engine, "debian:12"), "sha256:0123456789abcdef0123456789abcdef");
+    let ask = |engine: &Path| local_image(engine, "debian:12", t);
+    assert_eq!(ask(&engine), Local::Pulled("sha256:0123456789abcdef0123456789abcdef".into()));
     std::fs::write(d.path().join("inspect.txt"), "WARNING: x\n0123456789abcdef\n").unwrap();
-    assert_eq!(image_id(&engine, "debian:12"), "0123456789abcdef", "the last line");
+    assert_eq!(ask(&engine), Local::Pulled("0123456789abcdef".into()), "the last line");
     std::fs::write(d.path().join("inspect.txt"), "Error: no such image\n").unwrap();
-    assert_eq!(image_id(&engine, "debian:12"), "");
+    assert!(matches!(ask(&engine), Local::Failed(_)), "text that is not an id, from a successful inspect");
     std::fs::write(d.path().join("inspect.txt"), "sha256:0123456789abcdef0123456789abcdef\n").unwrap();
     std::fs::write(d.path().join("inspect.code"), "1").unwrap();
-    assert_eq!(image_id(&engine, "debian:12"), "", "an id printed by a failing inspect doesn't count");
-    assert_eq!(image_id(Path::new("/nonexistent/docker"), "debian:12"), "");
+    assert_eq!(ask(&engine), Local::NotHere, "a failing inspect that says no such image; its stdout doesn't count");
+    assert!(matches!(local_image(Path::new("/nonexistent/docker"), "debian:12", t), Local::Failed(_)));
+    assert!(says_absent("Error response from daemon: No such image: x"));
+    assert!(says_absent("Error: x: image not known"));
+    assert!(!says_absent("Cannot connect to the Docker daemon") && !says_absent(""));
 }
 
 /// create, export, read, cache: the packages come from the export, the
@@ -343,4 +349,34 @@ fn dotnet_projects_in_an_image() {
     );
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(gaps[0].starts_with("/src/app/App.csproj: not exact or not resolved: Foo $(Undefined)"), "{gaps:?}");
+}
+
+/// Risk: a Mac with Docker Desktop quit gets an incomplete report on every
+/// scan (a daemon that is down read as a failure), or a socket this user may
+/// not open is read as "nothing runs" and the running containers go
+/// unchecked with no word. Oracle: the engines' own stderr, as docker and
+/// podman print it: daemon-down messages are down, permission denied and
+/// anything else are not.
+#[test]
+fn daemon_down_is_read_from_the_engines_own_words() {
+    for down in [
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        "Cannot connect to the Docker daemon at unix:///Users/sam/.docker/run/docker.sock. Is the docker daemon running?",
+        "failed to connect to the docker API at unix:///Users/sam/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/sam/.docker/run/docker.sock: connect: no such file or directory",
+        "error during connect: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.47/containers/json\": open //./pipe/docker_engine: The system cannot find the file specified.",
+        "Cannot connect to Podman. Please verify your connection to the Linux system using `podman system connection list`, or try `podman machine init` and `podman machine start` to manage a new Linux VM\nError: unable to connect to Podman socket: failed to connect: dial tcp 127.0.0.1:50110: connect: connection refused",
+        "Error: unable to connect to Podman socket: Get \"http://d/v5.2.0/libpod/_ping\": dial unix /run/user/1000/podman/podman.sock: connect: connection refused",
+    ] {
+        assert!(daemon_down(down), "{down}");
+    }
+    for other in [
+        "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json\": dial unix /var/run/docker.sock: connect: permission denied",
+        "error during connect: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.47/containers/json\": open //./pipe/docker_engine: Access is denied.",
+        "Error: unable to connect to Podman socket: dial unix /run/user/1000/podman/podman.sock: connect: permission denied",
+        "Error response from daemon: client version 1.52 is too new. Maximum supported API version is 1.47",
+        "Error: database is locked",
+        "",
+    ] {
+        assert!(!daemon_down(other), "{other}");
+    }
 }

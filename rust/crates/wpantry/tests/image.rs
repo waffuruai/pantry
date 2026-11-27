@@ -11,7 +11,9 @@ fn check(image: &str, eco: &str, package: &str, source: &str) {
     let engine = images::engine().expect("docker or podman");
     let pulled = Command::new(&engine).args(["pull", "-q", image]).status().expect("pull");
     assert!(pulled.success(), "pull {image}");
-    let id = images::image_id(&engine, image);
+    let images::Local::Pulled(id) = images::local_image(&engine, image, images::INSPECT_TIMEOUT) else {
+        panic!("{image} was just pulled")
+    };
     assert!(!id.is_empty(), "{image} has an id");
     let d = wpantry::utils::temp::TempDir::new("image-it").unwrap();
     let cache = Cache::open(Some(&d.path().join("w.db"))).unwrap();

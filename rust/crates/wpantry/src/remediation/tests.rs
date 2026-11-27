@@ -228,22 +228,50 @@ fn clean_tail_drops_environment_lines_escapes_and_redraws() {
     assert_eq!(run::clean_tail(b"bad \xff byte\n", false), "bad \u{fffd} byte");
 }
 
-/// Risk: the failure text rewrites a path that only starts like the home
-/// directory (`/Users/sam` inside `/Users/samantha/x` became `~antha/x`), or
-/// one that merely contains it further along, and so says something false
-/// about where the program wrote. Oracle: `~` stands for the home directory
-/// as a whole path name: it ends at a `/`, a `\`, a space, a quote or the end
-/// of the line, and does not begin inside a longer name.
+/// Risk: the failure text rewrites a folder whose name only starts like the
+/// home directory's (`/Users/sam` inside `/Users/samantha/x` became
+/// `~antha/x`), and so says something false about where the program wrote.
+/// Oracle: the home directory followed by a name character stays as it is;
+/// followed by anything else, or after anything, it is `~`, as before.
 #[test]
 fn clean_tail_shortens_the_home_directory_only_where_it_is_one() {
     let home = crate::utils::files::test_home();
     let h = crate::utils::files::home().display().to_string();
     let text = format!("{h}/x and {h} and '{h}'\n{h}work/y {h}-old {h}.bak /mnt{h}/z\n");
-    assert_eq!(
-        run::clean_tail(text.as_bytes(), false),
-        format!("~/x and ~ and '~'\n{h}work/y {h}-old {h}.bak /mnt{h}/z")
-    );
+    assert_eq!(run::clean_tail(text.as_bytes(), false), format!("~/x and ~ and '~'\n{h}work/y ~-old ~.bak /mnt~/z"));
     drop(home);
+}
+
+/// Risk: shortening only a "whole" home path keeps the full home path (and
+/// the user name in it) in a report wherever it sits next to punctuation the
+/// rule did not expect: a `file://` URL, the end of a sentence, a `key=` or
+/// `--flag:` prefix, a Windows path. Oracle: every spelling the plain replace
+/// shortened is still shortened, and only a longer folder name
+/// (`/Users/samantha`) is left; Windows homes too. The home is given, so the
+/// table runs the same on every platform.
+#[test]
+fn shorten_home_keeps_no_home_path_but_leaves_a_longer_folder_name() {
+    for (home, line, want) in [
+        ("/Users/sam", "cannot write /Users/sam/x", "cannot write ~/x"),
+        ("/Users/sam", "/Users/sam", "~"),
+        ("/Users/sam", "see file:///Users/sam/x.log", "see file://~/x.log"),
+        ("/Users/sam", "it is in /Users/sam.", "it is in ~."),
+        ("/Users/sam", "in /Users/sam, /Users/sam; or /Users/sam!", "in ~, ~; or ~!"),
+        ("/Users/sam", "\"/Users/sam\" '/Users/sam/a' `/Users/sam`", "\"~\" '~/a' `~`"),
+        ("/Users/sam", "HOME=/Users/sam --dir:/Users/sam/b", "HOME=~ --dir:~/b"),
+        ("/Users/sam", "(/Users/sam) [/Users/sam] </Users/sam>", "(~) [~] <~>"),
+        ("/Users/sam", "/mnt/Users/sam/z /Users/sam-old /Users/sam.bak", "/mnt~/z ~-old ~.bak"),
+        ("/Users/sam", "/Users/samantha/x /Users/sam2 /Users/sam_x", "/Users/samantha/x /Users/sam2 /Users/sam_x"),
+        ("/Users/sam", "/Users/samantha and /Users/sam/x", "/Users/samantha and ~/x"),
+        ("/Users/sam", "/Users/sam/Users/sam", "~~"),
+        ("/Users/sam", "/Users/sam\u{e9}", "/Users/sam\u{e9}"),
+        (r"C:\Users\sam", r"error: C:\Users\sam\AppData\x.dll", r"error: ~\AppData\x.dll"),
+        (r"C:\Users\sam", r"file:///C:\Users\sam\a.txt.", r"file:///~\a.txt."),
+        (r"C:\Users\sam", r"C:\Users\samantha\x C:\Users\sam", r"C:\Users\samantha\x ~"),
+        ("/Users/sam", "nothing here", "nothing here"),
+    ] {
+        assert_eq!(run::shorten_home(line, home), want, "{home} in {line}");
+    }
 }
 
 /// Risk: a failed command's stderr reaches the report and the remediation

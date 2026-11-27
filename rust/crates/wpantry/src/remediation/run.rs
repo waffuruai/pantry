@@ -219,25 +219,23 @@ pub fn clean_tail(bytes: &[u8], cut: bool) -> String {
     lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
 }
 
-/// `line` with the home directory `home` written `~`, wherever it is a whole
-/// path name: it does not begin inside a longer name and ends at a `/`, a
-/// `\`, a space, a quote or other punctuation, or the end of the line. A
-/// folder that only starts like it (`/Users/samantha` for `/Users/sam`) is
-/// left as it is.
+/// `line` with the home directory `home` written `~` wherever it appears,
+/// as the plain replace before this did, except where the name goes on
+/// (`/Users/samantha` for `/Users/sam`: a letter, digit or `_` follows), which
+/// is another folder. Whatever comes before it (`file://`, a quote, `=`, `:`,
+/// another folder) and any punctuation after it (`/`, `\`, `.`, `-`, a quote)
+/// still shortens it: a full home path is never left in the text.
 ///
-/// Example: with home `/Users/sam`, `cannot write /Users/sam/x` is
-/// `cannot write ~/x` and `/Users/samantha/x` stays.
-fn shorten_home(line: &str, home: &str) -> String {
-    let before_ok = |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || "\"'`=:([{<,;".contains(c));
-    let after_ok = |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || "/\\\"'`:)]}>,;".contains(c));
+/// Example: with home `/Users/sam`, `see file:///Users/sam/x.` is
+/// `see file://~/x.` and `/Users/samantha/x` stays.
+pub(crate) fn shorten_home(line: &str, home: &str) -> String {
+    let goes_on = |c: char| c.is_alphanumeric() || c == '_';
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(at) = rest.find(home) {
-        let (head, tail) = rest.split_at(at);
-        let after = &tail[home.len()..];
-        let whole = before_ok(format!("{out}{head}").chars().next_back()) && after_ok(after.chars().next());
-        out.push_str(head);
-        out.push_str(if whole { "~" } else { home });
+        let after = &rest[at + home.len()..];
+        out.push_str(&rest[..at]);
+        out.push_str(if after.chars().next().is_some_and(goes_on) { home } else { "~" });
         rest = after;
     }
     out.push_str(rest);

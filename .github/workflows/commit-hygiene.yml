@@ -52,6 +52,8 @@ jobs:
       # The self-check: the checker is the base commit's, unmodified. Only when
       # the base has no canonical copy (the PR that adds it) is the head's fetched.
       - name: Pick the checker (the base's)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           [ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), not the base $CHECKER_SHA"; exit 1; }
           if grep -q "Canonical copy: waffuruai/pantry" scripts/commit_hygiene.py 2>/dev/null; then
@@ -59,8 +61,8 @@ jobs:
             echo "CHECKER=scripts/commit_hygiene.py" >> "$GITHUB_ENV"
             echo "Checker: scripts/commit_hygiene.py at the base, $CHECKER_SHA"
           else
-            git fetch --no-tags --depth=1 origin "$HEAD_SHA"
-            git show "$HEAD_SHA:scripts/commit_hygiene.py" > "$RUNNER_TEMP/commit_hygiene.py"
+            gh api "repos/$GITHUB_REPOSITORY/contents/scripts/commit_hygiene.py?ref=$HEAD_SHA" \
+              -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/commit_hygiene.py"
             echo "CHECKER=$RUNNER_TEMP/commit_hygiene.py" >> "$GITHUB_ENV"
             echo "::warning::the base $CHECKER_SHA has no canonical checker yet; running the head's copy ($HEAD_SHA) for this bootstrap PR"
           fi

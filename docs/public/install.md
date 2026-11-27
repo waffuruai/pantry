@@ -192,7 +192,7 @@ wpantry update --check    # is there a newer release? (exit 10 when there is)
 wpantry update            # asks, then installs it (--yes to skip the question)
 ```
 
-- The download is checked against the release's `SHA256SUMS`, then verified by packslip (signer pinned), `gh attestation verify` or cosign, whichever you have. With none, it refuses rather than trust a checksum alone.
+- The download is checked against the release's `SHA256SUMS`, then verified by packslip (signer pinned), `gh attestation verify` (gh logged in) or cosign, the first of them you have. With none, it refuses rather than trust a checksum alone.
 - A mise, cargo or Homebrew install is updated through that tool: `mise use -g packslip:github.com/waffuruai/pantry@<version>`, `cargo install --locked wpantry-cli`, `brew upgrade`.
 - The old binary stays beside the new one as `wpantry.old` until the next update.
 - `wpantry update` asks GitHub every time; `--offline` uses the last answer.

@@ -84,6 +84,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("fixes", "host", "TEXT"),
     ("fixes", "exit_code", "INTEGER"),
     ("fixes", "error", "TEXT"),
+    ("fixes", "verified_by", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),
@@ -661,6 +662,17 @@ impl Cache {
              CREATE TEMP VIEW findings AS SELECT {FINDING_COLUMNS} FROM main.run_findings WHERE scan_id = {scan_id}"
         ))?;
         Ok(())
+    }
+
+    /// `findings` as the findings this connection reads, in a temporary
+    /// table that shadows the kept ones and goes with the connection: a
+    /// scan that keeps nothing (`--changes`) renders through it.
+    pub fn shadow_findings(&self, findings: &[Finding]) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP VIEW IF EXISTS temp.findings; DROP TABLE IF EXISTS temp.findings; \
+             CREATE TEMP TABLE findings AS SELECT * FROM main.findings WHERE 0",
+        )?;
+        self.insert_findings("temp.findings", None, findings)
     }
 
     fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {

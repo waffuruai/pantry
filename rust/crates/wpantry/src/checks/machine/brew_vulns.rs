@@ -119,6 +119,35 @@ pub fn brew_vulns(
     cache.memo("brew-vulns", scan, DAY, &job.fingerprint, refresh, offline).map(Some)
 }
 
+/// One of `brew vulns`' vulnerabilities as the id-and-aliases record the
+/// findings are named from ([`display_id`]).
+fn vuln_record(v: &Value) -> Value {
+    json!({"id": str_at(v, "id"), "aliases": v.get("aliases").cloned().unwrap_or(json!([]))})
+}
+
+/// The fixed versions `brew vulns` names for one vulnerability that have
+/// been released.
+fn released_fixes(v: &Value) -> Vec<String> {
+    json::strs_at(v, "fixed_versions").into_iter().filter(|x| osv::released(x)).collect()
+}
+
+/// The released fixes `brew vulns`' last answer (the cache's, whatever
+/// Cellar it was made for) names for the finding `vuln_id` of `formula`
+/// (the id [`brew`] reports it under). None when that answer does not list
+/// the formula with that vulnerability, or there is none: nothing here can
+/// say what applies then. Nothing runs and nothing is asked.
+pub fn cached_fixes(cache: &Cache, formula: &str, vuln_id: &str) -> Result<Option<Vec<String>>> {
+    let Some((_, _, answer)) = cache.run("brew-vulns")? else { return Ok(None) };
+    for f in arr_at(&answer, "findings").iter().filter(|f| str_at(f, "formula") == formula) {
+        for v in arr_at(f, "vulnerabilities") {
+            if display_id(&vuln_record(v)) == vuln_id {
+                return Ok(Some(released_fixes(v)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 // Homebrew ----------------------------------------------------------------------
 
 pub fn brew(scan: &mut Scan, job: Option<&BrewJob>, ran: Option<Result<Value>>) -> Result<()> {
@@ -157,9 +186,8 @@ pub fn brew(scan: &mut Scan, job: Option<&BrewJob>, ran: Option<Result<Value>>) 
         c.fix = fix;
         c.auto = auto;
         for v in crate::utils::json::arr_at(f, "vulnerabilities") {
-            let rec = serde_json::json!({"id": crate::utils::json::str_at(v, "id"), "aliases": v.get("aliases").cloned().unwrap_or(serde_json::json!([]))});
-            let fixes: Vec<String> =
-                crate::utils::json::strs_at(v, "fixed_versions").into_iter().filter(|x| osv::released(x)).collect();
+            let rec = vuln_record(v);
+            let fixes = released_fixes(v);
             if is_malicious(&rec) {
                 scan.add(Finding {
                     vuln_id: crate::utils::json::str_at(v, "id").into(),

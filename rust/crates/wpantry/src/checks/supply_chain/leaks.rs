@@ -34,7 +34,8 @@ use std::ffi::OsStr;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS secret_blobs (
@@ -115,6 +116,114 @@ impl Unread {
     }
 }
 
+/// What one scan's history scans have found in blobs, so a blob that
+/// several repos hold (clones, forks, a repo and its worktrees' history) is
+/// read and scanned once, by the first scan to reach it, and the others
+/// take its result. A result depends only on the rules, the blob's bytes
+/// and the path it is scanned at, which is what a slot is kept under.
+#[derive(Default)]
+pub struct Shared {
+    slots: Mutex<HashMap<[u8; 16], Slot>>,
+    changed: Condvar,
+    /// How many blobs a scan took to read and scan (the rest were another
+    /// scan's, or cached).
+    claimed: AtomicUsize,
+}
+
+enum Slot {
+    /// A scan is reading it.
+    Claimed,
+    /// The scan that claimed it ran out of time or failed: free to claim.
+    Dropped,
+    /// Its hits (an empty array for none).
+    Hits(Value),
+}
+
+enum Claim {
+    Mine,
+    Done(Value),
+    Theirs,
+}
+
+impl Shared {
+    /// How many blobs scans of this run took to read and scan.
+    pub fn claimed(&self) -> usize {
+        self.claimed.load(Ordering::Relaxed)
+    }
+
+    /// The slot of `blob` under `rules` (the rules' fingerprint): a hash,
+    /// so a scan of a million blobs holds sixteen bytes of each.
+    fn key(rules: &str, blob: &Blob) -> [u8; 16] {
+        let mut h = crate::utils::sha256::Sha256::new();
+        for part in [rules, &blob.sha, &blob.path] {
+            h.update(part.as_bytes());
+            h.update(&[0]);
+        }
+        let mut key = [0; 16];
+        key.copy_from_slice(&h.finish()[..16]);
+        key
+    }
+
+    fn claim(&self, key: [u8; 16]) -> Claim {
+        let mut slots = self.slots.lock().expect("lock");
+        match slots.get(&key) {
+            Some(Slot::Hits(v)) => Claim::Done(v.clone()),
+            Some(Slot::Claimed) => Claim::Theirs,
+            Some(Slot::Dropped) | None => {
+                slots.insert(key, Slot::Claimed);
+                self.claimed.fetch_add(1, Ordering::Relaxed);
+                Claim::Mine
+            }
+        }
+    }
+
+    /// `key`'s hits, or None when its scan didn't get to them.
+    fn finish(&self, key: [u8; 16], hits: Option<Value>) {
+        let slot = hits.map_or(Slot::Dropped, Slot::Hits);
+        self.slots.lock().expect("lock").insert(key, slot);
+        self.changed.notify_all();
+    }
+
+    /// Frees what this scan claimed and never finished.
+    fn release(&self, keys: &[[u8; 16]]) {
+        let mut slots = self.slots.lock().expect("lock");
+        for key in keys {
+            if let Some(slot @ Slot::Claimed) = slots.get_mut(key) {
+                *slot = Slot::Dropped;
+            }
+        }
+        self.changed.notify_all();
+    }
+
+    /// The hits of a blob another scan claimed, once it has them; None when
+    /// that scan let it go, or `deadline` passed.
+    fn wait(&self, key: [u8; 16], deadline: Instant) -> Option<Value> {
+        let mut slots = self.slots.lock().expect("lock");
+        loop {
+            match slots.get(&key) {
+                Some(Slot::Hits(v)) => return Some(v.clone()),
+                Some(Slot::Claimed) => {
+                    let left = deadline.checked_duration_since(Instant::now())?;
+                    slots = self.changed.wait_timeout(slots, left).expect("lock").0;
+                }
+                Some(Slot::Dropped) | None => return None,
+            }
+        }
+    }
+}
+
+/// Lets go of a scan's unfinished claims when it ends, however it ends.
+struct Release<'a> {
+    shared: &'a Shared,
+    keys: Vec<[u8; 16]>,
+}
+
+impl Drop for Release<'_> {
+    fn drop(&mut self) {
+        self.shared.release(&self.keys);
+    }
+}
+
 /// One repo's scan: what its cached result is kept under, the tips of its
 /// refs now, and what the cache remembers.
 pub struct Job {
@@ -135,6 +244,8 @@ pub struct Job {
     threads: usize,
     /// `--deep`: blobs up to [`DEEP_MAX_BLOB`], for up to [`DEEP_BUDGET`].
     pub deep: bool,
+    /// What the other repos' scans of this run have found in blobs.
+    pub shared: Arc<Shared>,
 }
 
 pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<Job> {
@@ -159,6 +270,7 @@ pub fn job(cache: &Cache, repo: &Path, rules: &Rules, threads: usize) -> Result<
         own_policy,
         threads,
         deep: false,
+        shared: Arc::default(),
     })
 }
 
@@ -518,37 +630,74 @@ pub fn run_job_at(job: &Job, scanner: &Scanner, at: &(dyn Fn(&std::path::Path) +
     todo.sort_by_key(|b| b.size);
     let deadline = Instant::now() + if job.deep { DEEP_BUDGET } else { BUDGET };
     let results: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
-    // The blobs over MAX_BLOB a deep scan reads come last, one at a time.
-    let split = todo.partition_point(|b| b.size <= MAX_BLOB);
-    for (part, threads) in [(&todo[..split], job.threads.max(1)), (&todo[split..], 1)] {
-        if part.is_empty() {
-            continue;
-        }
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(threads * 2);
-        let rx = Mutex::new(rx);
-        std::thread::scope(|s| -> Result<usize> {
-            for _ in 0..threads {
-                s.spawn(|| {
-                    loop {
-                        let next = rx.lock().expect("lock").recv();
-                        let Ok((blob, data)) = next else { break };
-                        // Out of time: the blob is left for the next scan.
-                        let Some(found) = scanner.scan_until(&data, &blob.path, None, Some(deadline)) else { continue };
-                        let hits: Vec<Value> = found
-                            .into_iter()
-                            .map(|f| {
-                                json!({"rule": f.rule, "line": f.start_line, "description": f.description,
-                                       "confidence": confidence(f.confidence), "tags": f.tags})
-                            })
-                            .collect();
-                        results.lock().expect("lock").push((blob_key(blob), Value::Array(hits)));
-                    }
-                });
+    // Rounds: the blobs no other scan of this run has, read here; then the
+    // ones another scan was reading, taken from it, and read here too if it
+    // let them go. A blob is read once by the run, not once by each repo
+    // that holds it.
+    let mut queue: Vec<&Blob> = todo.clone();
+    while !queue.is_empty() {
+        let mut mine: Vec<&Blob> = Vec::new();
+        let mut theirs: Vec<(&Blob, [u8; 16])> = Vec::new();
+        for b in queue.drain(..) {
+            let key = Shared::key(&job.rules, b);
+            match job.shared.claim(key) {
+                Claim::Mine => mine.push(b),
+                Claim::Done(hits) => results.lock().expect("lock").push((blob_key(b), hits)),
+                Claim::Theirs => theirs.push((b, key)),
             }
-            let read = read_blobs(&job.repo, part, deadline, |blob, data| tx.send((blob, data)).is_ok());
-            drop(tx);
-            read
-        })?;
+        }
+        {
+            // Whatever of mine isn't finished (out of time, or an error) is
+            // let go for another scan to take.
+            let _release =
+                Release { shared: &job.shared, keys: mine.iter().map(|b| Shared::key(&job.rules, b)).collect() };
+            // The blobs over MAX_BLOB a deep scan reads come last, one at a time.
+            let split = mine.partition_point(|b| b.size <= MAX_BLOB);
+            for (part, threads) in [(&mine[..split], job.threads.max(1)), (&mine[split..], 1)] {
+                if part.is_empty() {
+                    continue;
+                }
+                let (tx, rx) = std::sync::mpsc::sync_channel::<(&Blob, Vec<u8>)>(threads * 2);
+                let rx = Mutex::new(rx);
+                std::thread::scope(|s| -> Result<usize> {
+                    for _ in 0..threads {
+                        s.spawn(|| {
+                            loop {
+                                let next = rx.lock().expect("lock").recv();
+                                let Ok((blob, data)) = next else { break };
+                                let key = Shared::key(&job.rules, blob);
+                                // Out of time: the blob is left for the next scan.
+                                let Some(found) = scanner.scan_until(&data, &blob.path, None, Some(deadline)) else {
+                                    job.shared.finish(key, None);
+                                    continue;
+                                };
+                                let hits: Vec<Value> = found
+                                    .into_iter()
+                                    .map(|f| {
+                                        json!({"rule": f.rule, "line": f.start_line, "description": f.description,
+                                       "confidence": confidence(f.confidence), "tags": f.tags})
+                                    })
+                                    .collect();
+                                let hits = Value::Array(hits);
+                                job.shared.finish(key, Some(hits.clone()));
+                                results.lock().expect("lock").push((blob_key(blob), hits));
+                            }
+                        });
+                    }
+                    let read = read_blobs(&job.repo, part, deadline, |blob, data| tx.send((blob, data)).is_ok());
+                    drop(tx);
+                    read
+                })?;
+            }
+        }
+        // Mine are all finished or let go: waiting on theirs can't cycle.
+        for (b, key) in theirs {
+            match job.shared.wait(key, deadline) {
+                Some(hits) => results.lock().expect("lock").push((blob_key(b), hits)),
+                None if Instant::now() < deadline => queue.push(b),
+                None => {}
+            }
+        }
     }
     let new = results.into_inner().expect("lock");
     let unread = Unread { late: (todo.len() - new.len()) as u64, too_big, missing };
@@ -649,11 +798,14 @@ pub(crate) fn scans_at_once(scan: &Scan) -> usize {
 
 /// Each repo's secret job, and whether its cached result is stale.
 pub(crate) fn secret_jobs(scan: &Scan, repos: &[Repo], rules: &Rules) -> Result<Vec<(Result<Job>, bool)>> {
+    // The repos of one run share what their scans find in blobs.
+    let shared = Arc::new(Shared::default());
     let mut jobs: Vec<(Result<Job>, bool)> = repos
         .iter()
         .map(|(_, root)| {
             let job = job(&scan.cache, root, rules, 1).map(|mut j| {
                 j.deep = scan.opts.deep;
+                j.shared = shared.clone();
                 j
             });
             let stale = job.as_ref().is_ok_and(|j| stale(j, scan.opts.refresh, scan.opts.offline));

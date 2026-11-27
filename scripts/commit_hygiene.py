@@ -1,7 +1,8 @@
 """Commit hygiene: no AI or bot attribution in what a pull request would merge.
 
-A commit here is authored by the person accountable for it (CONTRIBUTING.md,
-"Commit authorship"). This fails when a pull request, or a push to dev or main,
+A commit is authored by the person accountable for it (each repository's
+CONTRIBUTING.md, "Commit authorship"). This fails when a pull request, a push
+to dev or main, or a local commit (--message-file, the commit-msg hook)
 brings in any of:
 
   (I) a commit whose author or committer is an AI tool or a bot rather than a
@@ -24,18 +25,18 @@ What passes: trailers naming people (two people co-authoring), bare mentions
 AI-assistance disclosure boxes. GitHub's web-flow committer and Dependabot are
 allowed by name (ALLOWED_IDENTITIES).
 
-Source: waffuruai/butter scripts/commit_hygiene.py (the newer of the org's two
-copies; ops' scripts/commit_hygiene.py and scripts/hooks/commit-msg are the
-older one) supplies AI_TERMS, ATTRIB_PHRASE_RE, the trailer-block walk and
-already_released(). Pantry's differs where that copy cannot do what this repo
-needs, and should become the copy the others take: it qualifies trailers by
-who they name, so human co-authors pass (butter rejects every trailer); it
-checks author and committer identities; and it only reads (no PR edit, no
-comment), so it runs on fork PRs with a read-only token. Keep AI_TERMS a
-superset of butter's and ops' AI_NAMES when either changes.
+Canonical copy: waffuruai/pantry scripts/commit_hygiene.py. butter, ops and
+iron carry this file byte-identical (ops' commit-msg hook runs it too); change
+it in pantry first, then copy it to the others unchanged. It grew from butter's
+and ops' earlier copies (AI_TERMS, ATTRIB_PHRASE_RE, the trailer-block walk,
+already_released()) and differs from them on purpose: it qualifies trailers by
+who they name, so human co-authors pass; it checks author and committer
+identities; and it only reads (no PR edit, no comment), so it runs on fork PRs
+with a read-only token.
 
     python3 scripts/commit_hygiene.py                    # in CI: PR or push, from the event
     python3 scripts/commit_hygiene.py --range origin/dev..HEAD   # locally, before pushing
+    python3 scripts/commit_hygiene.py --message-file .git/COMMIT_EDITMSG  # a commit-msg hook
 """
 
 from __future__ import annotations
@@ -113,6 +114,8 @@ FIX_COMMITS = (
     "  git push --force-with-lease\n"
     "  Then turn off the tool's attribution so it does not come back (CONTRIBUTING.md, Commit authorship)."
 )
+FIX_NEW = ("This commit: delete the line from the message and commit again, as your own git identity\n"
+           "  (not the tool's); turn off the tool's attribution so it does not come back.")
 FIX_PR = "PR title or body: edit the pull request and delete the line; this check re-runs on the edit."
 
 
@@ -255,9 +258,11 @@ def report(findings: list[Finding], summary_path: str | None = None, annotate: b
     lines.append("")
     if any(f.where.startswith("commit") for f in findings):
         lines.append(FIX_COMMITS)
+    if any(f.where == "this commit" for f in findings):
+        lines.append(FIX_NEW)
     if any(f.where.startswith("PR") for f in findings):
         lines.append(FIX_PR)
-    lines.append("Disclose AI use in the PR template's AI assistance section instead; see CONTRIBUTING.md.")
+    lines.append("Disclose AI use where the PR template asks for it instead; see CONTRIBUTING.md, Commit authorship.")
     text = "\n".join(lines)
     print(text)
     if annotate:
@@ -344,10 +349,36 @@ def from_range(rev_range: str) -> list[Finding]:
     return findings
 
 
+def _ident(var: str) -> tuple[str, str]:
+    """(name, email) git will record for GIT_AUTHOR_IDENT or GIT_COMMITTER_IDENT."""
+    try:
+        m = IDENTITY_RE.match(_run(["git", "var", var]).rsplit(">", 1)[0] + ">")
+    except (subprocess.CalledProcessError, OSError):
+        return "", ""
+    return (m.group("name"), m.group("email")) if m else ("", "")
+
+
+def from_message_file(path: str) -> list[Finding]:
+    """A commit about to be made: its message (git's `#` comment lines dropped)
+    and the author and committer identities git will record."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = "".join(ln for ln in fh if not ln.startswith("#"))
+    an, ae = _ident("GIT_AUTHOR_IDENT")
+    cn, ce = _ident("GIT_COMMITTER_IDENT")
+    c = Commit("(new commit)", text, an, ae, "", cn, ce)
+    findings = commit_findings(c)
+    for f in findings:
+        f.where = "this commit"
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--range", help="check local commits, e.g. origin/dev..HEAD, instead of the CI event")
+    ap.add_argument("--message-file", help="check a commit message file and git's author and committer (a commit-msg hook)")
     args = ap.parse_args(argv)
+    if args.message_file:
+        return report(from_message_file(args.message_file))
     if args.range:
         return report(from_range(args.range))
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:

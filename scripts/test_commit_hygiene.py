@@ -11,11 +11,18 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import commit_hygiene as ch
+ROOT = next(p for p in Path(__file__).resolve().parents if (p / ".github").is_dir())
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import commit_hygiene as ch  # noqa: E402
 
 CO = "Co-" + "Authored-By"
 CO_GH = "Co-" + "authored-by"
@@ -150,8 +157,10 @@ class PullRequestText(unittest.TestCase):
         self.assertEqual([f.where for f in ch.pr_findings(f"feat: x, generated with {TOOL}", "")], ["PR title"])
 
     def test_template_disclosure_passes(self):
-        with open(Path(__file__).resolve().parent.parent / ".github/PULL_REQUEST_TEMPLATE.md", encoding="utf-8") as fh:
-            template = fh.read().replace("- [ ]", "- [x]")
+        path = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
+        if not path.exists():
+            self.skipTest("no PR template")
+        template = path.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
         self.assertEqual(ch.pr_findings("feat: x", template), [])
 
 
@@ -203,11 +212,41 @@ class Events(unittest.TestCase):
             self.assertEqual(ch.report([]), 0)
 
 
+class MessageFile(unittest.TestCase):
+    """--message-file, as a commit-msg hook runs it, in a scratch repository."""
+
+    def run_hook(self, message: str, author=HUMAN) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            msg = Path(d) / "COMMIT_EDITMSG"
+            msg.write_text(message, encoding="utf-8")
+            env = dict(os.environ, GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1],
+                       GIT_COMMITTER_NAME=HUMAN[0], GIT_COMMITTER_EMAIL=HUMAN[1])
+            p = subprocess.run([sys.executable, str(ROOT / "scripts/commit_hygiene.py"), "--message-file", str(msg)],
+                               cwd=d, env=env, capture_output=True, text=True)
+            return p.returncode, p.stdout
+
+    def test_rejects_a_trailer_and_names_the_fix(self):
+        rc, out = self.run_hook(PR_387)
+        self.assertEqual(rc, 1)
+        self.assertIn("this commit line 11", out)
+        self.assertIn("commit again, as your own git identity", out)
+
+    def test_rejects_an_ai_author_identity(self):
+        rc, out = self.run_hook("fix: clean\n", author=(AI_NAME, VENDOR))
+        self.assertEqual(rc, 1)
+        self.assertIn("author is not a person", out)
+
+    def test_passes_a_human_commit_and_ignores_comment_lines(self):
+        rc, _ = self.run_hook(f"feat: y\n\nbody\n\n{CO_GH}: Tom Turney <tturney1@gmail.com>\n# {ROBOT} a git comment\n")
+        self.assertEqual(rc, 0)
+
+
 class Workflow(unittest.TestCase):
     """The job runs the base's checker, never the pull request's."""
 
     def test_checks_out_the_base_and_asserts_it(self):
-        wf = (Path(__file__).resolve().parent.parent / ".github/workflows/commit-hygiene.yml").read_text(encoding="utf-8")
+        wf = (ROOT / ".github/workflows/commit-hygiene.yml").read_text(encoding="utf-8")
         self.assertIn("CHECKER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}", wf)
         self.assertIn("ref: ${{ env.CHECKER_SHA }}", wf)
         self.assertIn('[ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ]', wf)

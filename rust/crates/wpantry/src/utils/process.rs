@@ -208,8 +208,9 @@ fn not_found(prog: &str, path: Option<&OsStr>) -> String {
     let short = |p: &String| crate::utils::files::short(p);
     let shown: Vec<String> = dirs.iter().take(8).map(short).collect();
     let more = if dirs.len() > 8 { format!(" and {} more", dirs.len() - 8) } else { String::new() };
+    // The same test the lookup skips a folder by, so the count is the folders it skipped.
     let skipped =
-        path.map_or(0, |p| std::env::split_paths(p).filter(|d| crate::utils::privacy::is_left_out(d)).count());
+        path.map_or(0, |p| std::env::split_paths(p).filter(|d| crate::utils::privacy::reaches_left_out(d)).count());
     let left = match skipped {
         0 => String::new(),
         1 => ", and one PATH folder it leaves out (--no-personal-files)".to_string(),

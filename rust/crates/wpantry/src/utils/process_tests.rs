@@ -332,6 +332,28 @@ fn a_path_folder_that_is_a_link_into_a_left_out_folder_is_not_looked_in() {
     drop(guard);
 }
 
+/// Risk: the not-found text counts the PATH folders it left out by spelling
+/// while the lookup skips by link, so a folder linked into a left-out one is
+/// skipped yet not counted: the text says nothing was left out and the user
+/// cannot tell why a tool they have is not found. Oracle: the text names the
+/// one folder it searched and says one was left out.
+/// Known bad: `not_found` counting with `is_left_out`.
+#[cfg(unix)]
+#[test]
+fn the_not_found_text_counts_a_path_folder_linked_into_a_left_out_folder() {
+    let d = TempDir::new("leftout-link-count").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap();
+    let (docs, ok) = (root.join("Documents"), root.join("ok"));
+    executable(&docs.join("bin/tool"), "#!/bin/sh\n");
+    std::fs::create_dir_all(&ok).unwrap();
+    std::os::unix::fs::symlink("Documents/bin", root.join("bin")).unwrap();
+    let path = std::env::join_paths([root.join("bin"), ok.clone()]).unwrap();
+    let _guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    let text = try_resolve_with(OsStr::new("tool"), Some(&path), &[]).unwrap_err().to_string();
+    assert!(text.contains(&ok.display().to_string()), "{text}");
+    assert!(text.contains("one PATH folder it leaves out"), "{text}");
+}
+
 /// Risk: the lookup judged the PATH folder, then `is_executable` stat'ed
 /// `folder/tool` through the link that file is (`~/.local/bin/tool ->
 /// ~/Documents/tools/tool`): a stat inside the folder the scan leaves out.

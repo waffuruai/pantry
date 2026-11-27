@@ -859,3 +859,39 @@ fn many_ids_on_thirty_thousand_findings_cost_one_cache_open() {
         eprintln!("{n} ids on {} findings: one process per id {apart:?}, one call {together:?}", findings.len());
     }
 }
+
+/// Oracle: the setting itself. A stand-in `defaults` on PATH answers what
+/// the real one would; the re-check follows it from still off to on, and
+/// leaves the real machine alone.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_machine_setting_is_rechecked_by_its_own_probe() {
+    let lab = Lab::new();
+    let state = lab.t.tmp.join("secure-keyboard");
+    std::fs::write(&state, "0\n").unwrap();
+    script(&lab.bin.join("defaults"), &format!("echo \"$@\" >> {}\ncat {}", s(&lab.calls), s(&state)));
+    let f = Finding {
+        kind: "posture".into(),
+        component: "Terminal Secure Keyboard Entry".into(),
+        location: "CIS 6.4.1".into(),
+        vuln_id: "POSTURE-TERMINAL-SECURE-INPUT".into(),
+        status: "warn".into(),
+        severity: "MEDIUM".into(),
+        fix_cmd: "defaults write com.apple.Terminal SecureKeyboardEntry -bool true".into(),
+        fix_auto: true,
+        ..Default::default()
+    };
+    let scan = lab.scan_of(&[f.clone(), bystander()], false);
+    let before = lab.snap();
+    let v = lab.recheck(&f.id(), scan);
+    assert_eq!((str_(&v["state"]), str_(&v["reason"])), ("still_present", "setting"), "{v}");
+    lab.invariants(&before, &f.id(), false);
+    // The person ran the fix: the setting reads on.
+    std::fs::write(&state, "1\n").unwrap();
+    let v = lab.recheck(&f.id(), scan);
+    assert_eq!((str_(&v["state"]), str_(&v["reason"])), ("gone", "fixed"), "{v}");
+    lab.invariants(&before, &f.id(), true);
+    // Only reads reached the stand-in.
+    let calls = read(&lab.calls);
+    assert!(calls.lines().all(|l| l.starts_with("read ")), "{calls}");
+}

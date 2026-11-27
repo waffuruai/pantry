@@ -75,8 +75,8 @@ fn ask_uses_json_then_plain_and_no_answer_is_unknown() {
     let old_uv = |args: &[&str]| {
         calls.borrow_mut().push(args.join(" "));
         match args {
-            ["python", "list", "--all-versions"] => PLAIN.to_string(),
-            ["--version"] => "uv 0.4.0 (abc 2024-01-01 aarch64-apple-darwin)\n".to_string(),
+            a if a == LIST => PLAIN.to_string(),
+            ["--no-config", "--version"] => "uv 0.4.0 (abc 2024-01-01 aarch64-apple-darwin)\n".to_string(),
             _ => "error: unexpected argument '--output-format'\n".to_string(),
         }
     };
@@ -160,7 +160,13 @@ fn pythons_ask_uv_once_and_stamp_only_uv_managed_ones() {
     let paths =
         ["/x/uv/python/cpython-3.12-a/bin/python3", "/x/uv/python/cpython-3.13-a/bin/python3", "/x/bin/python3"];
     let found: Vec<(String, String)> = paths.iter().map(|p| (p.to_string(), p.to_string())).collect();
-    let (got, _) = crate::checks::machine::packages::pythons_with_uv(found, &probe, &|_| "", &ask);
+    let (got, _) = crate::checks::machine::packages::pythons_with_uv(
+        found,
+        &probe,
+        &|_| "",
+        &|_, _| unreachable!("nothing is vouched for"),
+        &ask,
+    );
     assert_eq!(asked.get(), 1);
     let stamp_of = |path: &str, kind: &str| {
         got.iter()
@@ -175,6 +181,35 @@ fn pythons_ask_uv_once_and_stamp_only_uv_managed_ones() {
     assert!(pip.extra.contains_key(BUNDLED));
     // No answer from uv: nothing is stamped.
     let found: Vec<(String, String)> = paths[..1].iter().map(|p| (p.to_string(), p.to_string())).collect();
-    let (got, _) = crate::checks::machine::packages::pythons_with_uv(found, &probe, &|_| "", &|| None);
+    let (got, _) = crate::checks::machine::packages::pythons_with_uv(
+        found,
+        &probe,
+        &|_| "",
+        &|_, _| unreachable!("nothing is vouched for"),
+        &|| None,
+    );
     assert!(got.iter().all(|c| !c.extra.contains_key(NEWEST)));
+}
+
+/// Risk: the scan's uv call reaches the network under `--offline`, runs the
+/// Pythons on PATH (uv discovers interpreters by running them, Apple's stub
+/// among them), or follows a repo's `uv.toml` to another download list.
+/// Oracle: every `python list` call carries `--offline`, `--no-config` and
+/// `--only-downloads`, and so does the fallback.
+#[test]
+fn every_uv_list_call_is_offline_without_config_or_discovery() {
+    let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+    let uv = |args: &[&str]| {
+        calls.borrow_mut().push(args.iter().map(|a| a.to_string()).collect());
+        String::new()
+    };
+    assert!(ask_with(&uv).is_none());
+    let calls = calls.borrow();
+    let lists: Vec<&Vec<String>> = calls.iter().filter(|c| c.iter().any(|a| a == "list")).collect();
+    assert_eq!(lists.len(), 2, "JSON, then the plain fallback: {calls:?}");
+    for c in lists {
+        for flag in ["--offline", "--no-config", "--only-downloads"] {
+            assert!(c.iter().any(|a| a == flag), "{flag} missing from {c:?}");
+        }
+    }
 }

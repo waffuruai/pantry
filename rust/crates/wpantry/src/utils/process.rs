@@ -379,12 +379,40 @@ pub(crate) fn exec_in(
     timeout: Duration,
     path: Option<&OsStr>,
 ) -> Result<Output> {
+    exec_with(argv, timeout, path, &|cmd| {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    })
+}
+
+/// [`run`] in the folder `cwd` with every environment variable whose name
+/// starts with `prefix` left out (`UV_`: none of them can point the program
+/// at another configuration, index or download list).
+pub(crate) fn run_scrubbed<S: AsRef<OsStr>>(argv: &[S], timeout: Duration, prefix: &str, cwd: &Path) -> String {
+    let argv: Vec<&OsStr> = argv.iter().map(AsRef::as_ref).collect();
+    let dropped: Vec<std::ffi::OsString> =
+        std::env::vars_os().map(|(k, _)| k).filter(|k| k.to_string_lossy().starts_with(prefix)).collect();
+    let out = exec_with(&argv, timeout, std::env::var_os("PATH").as_deref(), &|cmd| {
+        cmd.current_dir(cwd);
+        for k in &dropped {
+            cmd.env_remove(k);
+        }
+    });
+    out.map(|o| o.stdout + &o.stderr).unwrap_or_default()
+}
+
+/// [`exec_in`] with the command adjusted by `configure` before it starts.
+fn exec_with(
+    argv: &[&OsStr],
+    timeout: Duration,
+    path: Option<&OsStr>,
+    configure: &dyn Fn(&mut Command),
+) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
     let mut cmd = Command::new(program_in(prog, path)?);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("NO_COLOR", "1");
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+    configure(&mut cmd);
     let mut child = spawn(&mut cmd).map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))?;
     let drain = |pipe: Box<dyn Read + Send>| {
         let (tx, rx) = std::sync::mpsc::channel();

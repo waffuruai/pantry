@@ -37,28 +37,39 @@ pub struct UvPythons {
 
 /// Ask the uv on PATH what it can install: None when there is none, or it
 /// didn't answer (two read-only calls, each bounded to 15 seconds).
+///
+/// What uv can download is the list compiled into it, so the call needs no
+/// network, and it is told so (`--offline`). `--only-downloads` keeps uv
+/// from looking for interpreters, which it does by running every Python on
+/// PATH (Apple's `/usr/bin/python3` stub among them). `--no-config`, no
+/// `UV_*` variable and a neutral folder keep a repo's `uv.toml` or
+/// `pyproject.toml` and the environment from pointing it at another
+/// download list (`python-downloads-json-url`), mirror or project.
 pub fn ask() -> Option<UvPythons> {
     let uv = crate::utils::process::which("uv")?.display().to_string();
+    let cwd = std::env::temp_dir();
     ask_with(&|args| {
         let mut argv: Vec<&str> = vec![&uv];
         argv.extend_from_slice(args);
-        let argv: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsStr::new).collect();
-        crate::utils::process::run(&argv, Duration::from_secs(15))
+        crate::utils::process::run_scrubbed(&argv, Duration::from_secs(15), "UV_", &cwd)
     })
 }
+
+/// The flags every `uv python list` here carries (see [`ask`]).
+pub const LIST: &[&str] = &["--offline", "--no-config", "python", "list", "--all-versions", "--only-downloads"];
 
 /// [`ask`] with the way to run uv given: JSON first (`--output-format json`,
 /// uv 0.5 and later), the plain list when that is not understood.
 pub fn ask_with(uv: &dyn Fn(&[&str]) -> String) -> Option<UvPythons> {
-    let json = uv(&["python", "list", "--all-versions", "--output-format", "json"]);
+    let json = uv(&[LIST, &["--output-format", "json"]].concat());
     let newest = match parse_json(&json) {
         Some(n) => n,
-        None => parse_plain(&uv(&["python", "list", "--all-versions"])),
+        None => parse_plain(&uv(LIST)),
     };
     if newest.is_empty() {
         return None;
     }
-    let said = uv(&["--version"]);
+    let said = uv(&["--no-config", "--version"]);
     let version = said.lines().find_map(|l| l.trim().strip_prefix("uv ")).and_then(|r| r.split_whitespace().next());
     Some(UvPythons { uv: version.unwrap_or("").to_string(), newest })
 }

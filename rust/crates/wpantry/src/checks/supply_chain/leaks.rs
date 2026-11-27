@@ -266,10 +266,13 @@ fn git_argv<'a>(repo: &'a Path, args: &'a [&'a str]) -> Vec<&'a OsStr> {
 /// error when git can't read the repo (the listing alone would read as a
 /// repo with nothing in it).
 fn blobs(repo: &Path) -> Result<(Vec<Blob>, u64)> {
-    let ok = crate::utils::process::exec(&git_argv(repo, &["rev-parse", "--git-dir"]), &[], Duration::from_secs(30))
-        .is_ok_and(|o| o.code == Some(0));
-    if !ok {
-        return Err(Error::Failed(format!("git can't read {}", repo.display())));
+    // Why git can't be run (not found, and where wpantry looked) is part of the error: a scan
+    // that left a PATH folder out may have lost the only git it had.
+    let probe = crate::utils::process::exec(&git_argv(repo, &["rev-parse", "--git-dir"]), &[], Duration::from_secs(30));
+    match probe {
+        Ok(o) if o.code == Some(0) => {}
+        Ok(_) => return Err(Error::Failed(format!("git can't read {}", repo.display()))),
+        Err(e) => return Err(Error::Failed(format!("git can't read {}: {e}", repo.display()))),
     }
     // A partial clone's missing blobs come through as `?<sha>`, and
     // cat-file reports them `missing`, instead of git fetching them.
@@ -306,7 +309,7 @@ fn read_blobs<'b>(
     deadline: Instant,
     mut each: impl FnMut(&'b Blob, Vec<u8>) -> bool,
 ) -> Result<usize> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(crate::utils::process::program(std::ffi::OsStr::new("git"))?);
     cmd.arg("-C").arg(repo).args(["cat-file", "--batch"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1");
     cmd.env("GIT_NO_LAZY_FETCH", "1");

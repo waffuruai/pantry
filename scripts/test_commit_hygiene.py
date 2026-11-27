@@ -117,6 +117,7 @@ class MessageRules(unittest.TestCase):
                      "feat: one line conventional subject\n",
                      "Merge pull request #991 from o/x\n\nfeat: add experimental DeepSeek V4.1 Flash TP2 V1\n",
                      "Merge pull request #1179 from o/y\n\nfix: keep Qwen GGUF chat tokens whole\n",
+                     "perf: x\n\nBoth binaries were built with the command above, against llama.cpp b4000.\n",
                      "fix: y\n\nbody\n\nReviewed-by: a long note about the Claude Code settings file\n"):
             with self.subTest(text=text):
                 self.assertEqual(ch.message_findings(text, "c"), [])

@@ -64,6 +64,10 @@ AI_TERMS = [
     r"lovable", r"\bbolt\.new\b",
 ]
 AI_RE = re.compile("|".join(AI_TERMS), re.IGNORECASE)
+# Open model families: names of software people build with ("built with
+# llama.cpp"), so they qualify an identity or a trailer but not a prose phrase.
+MODEL_TERMS = {r"\bllama\b", r"\bmistral\b", r"\bqwen\b", r"deepseek"}
+TOOL_RE = re.compile("|".join(t for t in AI_TERMS if t not in MODEL_TERMS), re.IGNORECASE)
 
 # Names that are also people's names. On their own they make an identity AI
 # only with a noreply, vendor or empty email; with a tool word after them they
@@ -215,7 +219,7 @@ def message_findings(text: str, where: str) -> list[Finding]:
         if ROBOT in ln:
             out.append(Finding(where, "AI footer (robot emoji)", s, i + 1))
             flagged.add(i)
-        elif ATTRIB_PHRASE_RE.search(ln) and AI_RE.search(ln):
+        elif ATTRIB_PHRASE_RE.search(ln) and TOOL_RE.search(ln):
             out.append(Finding(where, "AI attribution phrase", s, i + 1))
             flagged.add(i)
 

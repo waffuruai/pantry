@@ -78,14 +78,18 @@ pub fn refresh(cache: &Cache, net: &dyn Net, offline: bool) -> Result<usize> {
         };
         match text.as_deref().and_then(parse) {
             Some(copy) if copy.rows.len() >= MIN_ROWS => {
-                cache.conn.execute("DELETE FROM epss", [])?;
-                let mut stmt = cache.conn.prepare("INSERT OR REPLACE INTO epss VALUES (?, ?, ?)")?;
-                for (cve, score, pct) in &copy.rows {
-                    stmt.execute(params![cve, score, pct])?;
-                }
-                drop(stmt);
-                cache.set("epss_date", &copy.date)?;
-                cache.set("epss_model", &copy.model)?;
+                // One transaction: another command sees the old scores or the new, and a
+                // load that fails part-way leaves the old ones.
+                cache.atomically(|| {
+                    cache.conn.execute("DELETE FROM epss", [])?;
+                    let mut stmt = cache.conn.prepare("INSERT OR REPLACE INTO epss VALUES (?, ?, ?)")?;
+                    for (cve, score, pct) in &copy.rows {
+                        stmt.execute(params![cve, score, pct])?;
+                    }
+                    drop(stmt);
+                    cache.set("epss_date", &copy.date)?;
+                    cache.set("epss_model", &copy.model)
+                })?;
                 cache.commit()?;
             }
             Some(copy) => fetch::rejected("epss", &format!("only {} scores: not the whole set", copy.rows.len())),

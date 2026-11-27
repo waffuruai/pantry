@@ -3,7 +3,10 @@
 //! every Node, `cargo install`s, pipx-installed tools and global Ruby gems.
 
 use crate::checks::machine::catalog::{Cycle, PYTHON_DIRS};
+use crate::checks::machine::python_layout::{self, Layout};
 use crate::checks::machine::tools::updater;
+use crate::checks::machine::uv_pythons;
+use crate::checks::supply_chain::quote;
 use crate::component::Component;
 use crate::utils::files::expand;
 use crate::utils::files::owner;
@@ -23,7 +26,9 @@ use std::time::Duration;
 /// processing, so no `.pth` startup hook in its site-packages runs (and no
 /// pip). With `-S` Python doesn't apply a venv itself, so its
 /// `pyvenv.cfg` is read here, as `site.venv` would. `sites` are the
-/// directories `pip list` reads, in sys.path order. The base interpreter's
+/// directories `pip list` reads, in sys.path order; `user` is the user site
+/// (`pip install --user`), named on its own so nothing depends on its place
+/// in `sites`. The base interpreter's
 /// site-packages are asked for by its base prefixes: from 3.14 a venv is
 /// `sys.prefix` even under `-S`, so the plain call would give the venv's
 /// own directories and leave out the system ones it inherits.
@@ -42,7 +47,7 @@ if cfg:
     venv = os.path.dirname(cfg)
     own = [os.path.join(venv, lib, ver + t, "site-packages") for lib in ("lib", "lib64") for t in ("", "t")]
     sites = own + [os.path.join(venv, "Lib", "site-packages")] + (base if system else [])
-print(json.dumps({"v": platform.python_version(), "exe": sys.executable, "sites": sites,
+print(json.dumps({"v": platform.python_version(), "exe": sys.executable, "sites": sites, "user": site.getusersitepackages(),
     "managed": os.path.exists(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED"))}))"#;
 
 fn sh(argv: &[&str], timeout: u64) -> String {
@@ -68,14 +73,23 @@ fn str_of(v: &Value, k: &str) -> String {
 /// couldn't be read, for the scan to report unchecked (incomplete metadata
 /// must never read as fewer packages).
 pub fn pythons() -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    pythons_from(find_pythons(), &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15))
+    let env = python_layout::Env::here();
+    pythons_with_uv(
+        find_pythons(),
+        &|shown| sh(&[shown, "-I", "-S", "-c", PY_INFO], 15),
+        &owner,
+        &|shown, real| python_layout::read(shown, real, &env),
+        &uv_pythons::ask,
+    )
 }
 
 /// Every Python on PATH or installed by a version manager, as (shown path,
-/// real path), without the ones the OS or a package manager vouches for.
+/// real path). The ones the OS or a package manager vouches for are kept:
+/// `pythons_from` leaves out their runtime and system packages, never runs
+/// them, and reports what a person installed into their user site.
 fn find_pythons() -> Vec<(String, String)> {
     let names = python_names(&python_dirs(std::env::var_os("PATH").as_deref()));
-    names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).filter(|(_, real)| owner(real).is_empty()).collect()
+    names.iter().flat_map(|n| on_path(n, PYTHON_DIRS)).collect()
 }
 
 /// Where to look for Pythons: PATH's folders (`path_dirs_of` leaves out the
@@ -103,39 +117,167 @@ fn python_names(dirs: &[String]) -> Vec<String> {
     names
 }
 
-/// `pythons` for the interpreters `found`, each asked `PY_INFO` by `probe`.
+/// `pythons` for the interpreters `found`, each nobody vouches for asked
+/// `PY_INFO` by `probe`. `vouched` is `owner`: who vouches for a real path,
+/// "" for nobody.
+///
+/// An interpreter somebody vouches for (the OS's, a package manager's) is
+/// not reported as a runtime, and neither are the packages in its system
+/// site directories: its owner updates those. What a person installed with
+/// `pip install --user` lives in its user site, which nobody else updates,
+/// so those packages are reported. One found at a vouched-for real path is
+/// never run: `layout` reads its release line and user site from where it
+/// is installed ([`python_layout::read`]), and when it cannot, its user
+/// site is reported unchecked. A version-manager shim is probed (nobody
+/// vouches for it), and when the interpreter that answered is vouched for,
+/// it is treated as one, by `real` when it gave no usable path.
+/// The `extra` key on a pip package that names its interpreter's release
+/// line (`3.9`). The scan reads it once it has the end-of-life answer
+/// ([`crate::checks::machine::components::components`]), which is not
+/// known where the packages are built.
+pub const PY_LINE: &str = "python_line";
+
+/// One user site is read by every interpreter of that minor version, so each
+/// is reported once: by an interpreter nobody vouches for when one reads it
+/// (it reports every site anyway), else by the first vouched-for one.
+#[cfg(test)]
 fn pythons_from(
     found: Vec<(String, String)>,
     probe: &(dyn Fn(&str) -> String + Sync),
+    vouched: &dyn Fn(&str) -> &'static str,
 ) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
-    let probed = parallel::par_map(&found, parallel::PROBES, |(shown, _)| probe(shown));
-    let mut out = Vec::new();
+    let env = python_layout::Env {
+        home: files::home(),
+        os: std::env::consts::OS,
+        user_base: None,
+        appdata: None,
+        developer_dir: None,
+    };
+    pythons_with_uv(found, probe, vouched, &|shown, real| python_layout::read(shown, real, &env), &|| None)
+}
+
+/// [`pythons_from`] with what uv can install asked through `ask_uv`, at most
+/// once and only when a uv-managed Python is found (None: unknown, and the
+/// fix stays as it is). See [`uv_pythons`].
+pub(crate) fn pythons_with_uv(
+    found: Vec<(String, String)>,
+    probe: &(dyn Fn(&str) -> String + Sync),
+    vouched: &dyn Fn(&str) -> &'static str,
+    layout: &dyn Fn(&str, &str) -> Layout,
+    ask_uv: &dyn Fn() -> Option<uv_pythons::UvPythons>,
+) -> (Vec<Component>, Vec<(String, Vec<String>)>) {
+    let uv_answer = std::cell::OnceCell::new();
+    struct Answer {
+        shown: String,
+        real: String,
+        runs: String,
+        info: Value,
+        sites: Vec<String>,
+        user: Option<String>,
+        owned: bool,
+    }
+    let asked: Vec<&(String, String)> = found.iter().filter(|(_, real)| vouched(real).is_empty()).collect();
+    let mut probed = parallel::par_map(&asked, parallel::PROBES, |(shown, _)| probe(shown)).into_iter();
+    let mut answers = Vec::new();
     let mut unread = Vec::new();
     let mut seen = Vec::new();
-    for ((shown, real), raw) in found.into_iter().zip(probed) {
+    for (shown, real) in found {
+        if !vouched(&real).is_empty() {
+            match layout(&shown, &real) {
+                Layout::Read { runs, line, user, managed } => {
+                    if seen.contains(&runs) {
+                        continue;
+                    }
+                    seen.push(runs.clone());
+                    let info = serde_json::json!({ "v": line, "managed": managed });
+                    let user = user.map(|u| files::realpath(&u));
+                    answers.push(Answer {
+                        shown,
+                        real: runs.clone(),
+                        runs,
+                        info,
+                        sites: Vec::new(),
+                        user,
+                        owned: true,
+                    });
+                }
+                Layout::Absent => {}
+                Layout::Unknown(why) => unread.push((shown, vec![format!("user site not read: {why}")])),
+            }
+            continue;
+        }
+        let raw = probed.next().unwrap_or_default();
         let last = raw.trim().lines().last().unwrap_or("");
         let Some(info) = json_in(last, '{', '}') else { continue };
-        let exe = files::realpath(&str_of(&info, "exe"));
+        let reported = str_of(&info, "exe");
+        let exe = files::realpath(&reported);
         if seen.contains(&exe) {
             continue;
         }
-        seen.push(exe);
-        let v = str_of(&info, "v");
-        let (fix, auto) = updater(&real, "python");
-        let mut c = Component::new("runtime", "python", &v, &shown);
-        c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
-        c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
-        c.fix = fix.clone();
-        c.auto = auto;
-        out.push(c);
+        let usable = Path::new(&reported).is_absolute() && Path::new(&reported).is_file();
+        let owned = !vouched(if usable { &exe } else { &real }).is_empty();
+        seen.push(exe.clone());
+        // `shown` may be a version-manager shim, which starts whichever
+        // Python the folder and environment pick. The probe's own
+        // `sys.executable` is the interpreter that answered `managed` and
+        // `sites`, so the commands name it; `shown` stays the identity.
+        let (runs, real) = if usable { (reported, exe) } else { (shown.clone(), real) };
         let sites: Vec<String> = crate::utils::json::strs_at(&info, "sites");
-        let (pkgs, gaps) = pip(&shown, &sites, info.get("managed") == Some(&Value::Bool(true)), (fix, auto));
+        let user = user_site(&info, &sites);
+        answers.push(Answer { shown, real, runs, info, sites, user, owned });
+    }
+    // The user sites an interpreter nobody vouches for reports.
+    let mut claimed: std::collections::HashSet<String> =
+        answers.iter().filter(|a| !a.owned).filter_map(|a| a.user.clone()).collect();
+    let mut out = Vec::new();
+    for a in answers {
+        let managed = a.info.get("managed") == Some(&Value::Bool(true));
+        let line = Cycle::Minor.of(&str_of(&a.info, "v"));
+        let (mut pkgs, gaps) = if a.owned {
+            match a.user.filter(|u| Path::new(u).is_dir() && claimed.insert(u.clone())) {
+                Some(user) => pip_user(&a.shown, &a.runs, &user, managed),
+                None => continue,
+            }
+        } else {
+            let v = str_of(&a.info, "v");
+            let (fix, auto) = updater(&a.real, "python");
+            let mut c = Component::new("runtime", "python", &v, &a.shown);
+            c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
+            c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
+            c.fix = fix.clone();
+            c.auto = auto;
+            let (mut pkgs, gaps) = pip(&a.shown, &a.runs, &a.sites, managed, (fix.clone(), auto));
+            if auto && fix == uv_pythons::UPGRADE {
+                // uv-managed: what uv can install decides the fix, where the
+                // fixed version is known ([`uv_pythons::adjust`]).
+                if let Some(known) = uv_answer.get_or_init(ask_uv) {
+                    uv_pythons::stamp(&mut c, known, &line, &v, false);
+                    for p in pkgs.iter_mut().filter(|p| p.fix == uv_pythons::UPGRADE) {
+                        uv_pythons::stamp(p, known, &line, &v, true);
+                    }
+                }
+            }
+            out.push(c);
+            (pkgs, gaps)
+        };
+        if !line.is_empty() {
+            for p in &mut pkgs {
+                p.extra.insert(PY_LINE.into(), line.clone());
+            }
+        }
         out.extend(pkgs);
         if !gaps.is_empty() {
-            unread.push((shown, gaps));
+            unread.push((a.shown, gaps));
         }
     }
     (out, unread)
+}
+
+/// The user site directory the probe named, as a real path, when the
+/// interpreter reads it (a venv without system site-packages does not).
+fn user_site(info: &Value, sites: &[String]) -> Option<String> {
+    let user = files::realpath(&str_of(info, "user"));
+    (!user.is_empty() && sites.iter().any(|s| files::realpath(s) == user)).then_some(user)
 }
 
 /// The distributions installed in `sites` (what `pip list` shows), read
@@ -199,27 +341,66 @@ pub fn installed(sites: &[String]) -> (Vec<(String, String)>, Vec<String>) {
 }
 
 /// pip and the packages installed for one Python, and what couldn't be read.
-fn pip(py: &str, sites: &[String], managed: bool, runtime_fix: (String, bool)) -> (Vec<Component>, Vec<String>) {
-    let real = files::realpath(py);
+/// `py` is where the Python is shown; `runs` is the interpreter that was
+/// probed, which the fix commands name.
+fn pip(
+    py: &str,
+    runs: &str,
+    sites: &[String],
+    managed: bool,
+    runtime_fix: (String, bool),
+) -> (Vec<Component>, Vec<String>) {
+    let real = files::realpath(runs);
     let mut out = Vec::new();
     let (found, gaps) = installed(sites);
     for (name, ver) in found {
         let (fix, auto) = if managed && real.contains("/uv/") {
             runtime_fix.clone() // uv's Python builds bundle pip; a newer build brings a newer one
         } else if managed {
-            (format!("Upgrade {name} through the package manager that owns {py}"), false)
+            (format!("Upgrade {name} through the package manager that owns {runs}"), false)
         } else {
-            (format!("{py} -m pip install --upgrade '{name}>={{safe}}'"), true)
+            (format!("{} -m pip install --upgrade '{name}>={{safe}}'", quote(runs)), true)
         };
-        let is_pip = name.eq_ignore_ascii_case("pip");
-        let shown = if is_pip { name.clone() } else { format!("pip:{name}") };
-        let mut c = Component::new(if is_pip { "pkgmgr" } else { "package" }, &shown, &ver, py);
-        c.osv = Some(("PyPI".into(), name, ver));
-        c.fix = fix;
-        c.auto = auto;
-        out.push(c);
+        out.push(pip_component(py, name, ver, fix, auto));
     }
     (out, gaps)
+}
+
+/// The packages in one vouched-for Python's user site `user` (what
+/// `pip install --user` put there), and what couldn't be read. `--user` is
+/// explicit so pip never touches the system site the interpreter's owner
+/// looks after. A PEP 668 managed Python makes pip refuse without an
+/// override this tool never adds, so that fix is text, not a command.
+fn pip_user(py: &str, runs: &str, user: &str, managed: bool) -> (Vec<Component>, Vec<String>) {
+    let (found, gaps) = installed(&[user.to_string()]);
+    let command = |name: &str| format!("{} -m pip install --user --upgrade '{name}>={{safe}}'", quote(runs));
+    let out = found
+        .into_iter()
+        .map(|(name, ver)| {
+            let (fix, auto) = if managed {
+                let text = format!(
+                    "Upgrade {name} with that Python's pip, using --user: {}. This Python is externally managed, so pip refuses without an explicit override, which wpantry will not add",
+                    command(&name)
+                );
+                (text, false)
+            } else {
+                (command(&name), true)
+            };
+            pip_component(py, name, ver, fix, auto)
+        })
+        .collect();
+    (out, gaps)
+}
+
+/// A pip package (or pip itself) found in the Python shown as `py`.
+fn pip_component(py: &str, name: String, ver: String, fix: String, auto: bool) -> Component {
+    let is_pip = name.eq_ignore_ascii_case("pip");
+    let shown = if is_pip { name.clone() } else { format!("pip:{name}") };
+    let mut c = Component::new(if is_pip { "pkgmgr" } else { "package" }, &shown, &ver, py);
+    c.osv = Some(("PyPI".into(), name, ver));
+    c.fix = fix;
+    c.auto = auto;
+    c
 }
 
 /// npm itself and the global npm packages of each Node in `found`.

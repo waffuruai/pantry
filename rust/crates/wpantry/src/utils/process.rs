@@ -24,7 +24,7 @@ pub fn path_dirs() -> Vec<String> {
 pub(crate) fn path_dirs_of(path: Option<&OsStr>) -> Vec<String> {
     match path {
         Some(p) => std::env::split_paths(p)
-            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .filter(|d| !crate::utils::privacy::reaches_left_out(d))
             .map(|d| d.to_string_lossy().into_owned())
             .collect(),
         None => Vec::new(),
@@ -34,7 +34,7 @@ pub(crate) fn path_dirs_of(path: Option<&OsStr>) -> Vec<String> {
 /// `dirs` without the ones inside a folder the scan leaves out: for the
 /// extra directories a caller searches beside PATH.
 pub fn reachable(dirs: Vec<String>) -> Vec<String> {
-    dirs.into_iter().filter(|d| !crate::utils::privacy::is_left_out(d)).collect()
+    dirs.into_iter().filter(|d| !crate::utils::privacy::reaches_left_out(d)).collect()
 }
 
 /// The first executable called `name` on PATH (Python: `shutil.which`), else
@@ -134,7 +134,7 @@ pub(crate) fn lookup_with(name: &OsStr, path: Option<&OsStr>, first: &[PathBuf],
         // looked in: even a stat there raises a privacy prompt. The system folders are not
         // filtered: they are fixed, root-owned places.
         std::env::split_paths(path)
-            .filter(|d| !crate::utils::privacy::is_left_out(d))
+            .filter(|d| !crate::utils::privacy::reaches_left_out(d))
             .flat_map(|d| suffixes.iter().map(move |s| named(&d, s)))
             .find(|p| is_executable(p))
     });
@@ -208,8 +208,9 @@ fn not_found(prog: &str, path: Option<&OsStr>) -> String {
     let short = |p: &String| crate::utils::files::short(p);
     let shown: Vec<String> = dirs.iter().take(8).map(short).collect();
     let more = if dirs.len() > 8 { format!(" and {} more", dirs.len() - 8) } else { String::new() };
+    // The same test the lookup skips a folder by, so the count is the folders it skipped.
     let skipped =
-        path.map_or(0, |p| std::env::split_paths(p).filter(|d| crate::utils::privacy::is_left_out(d)).count());
+        path.map_or(0, |p| std::env::split_paths(p).filter(|d| crate::utils::privacy::reaches_left_out(d)).count());
     let left = match skipped {
         0 => String::new(),
         1 => ", and one PATH folder it leaves out (--no-personal-files)".to_string(),
@@ -246,6 +247,11 @@ pub(crate) fn root_command(argv: &[&OsStr], root: bool, path: Option<&OsStr>) ->
 }
 
 pub(crate) fn is_executable(p: &Path) -> bool {
+    // Not a file inside a folder a scan leaves out, nor a link that leads into one
+    // (`~/.local/bin/tool -> ~/Documents/tool`): the stat below would open it.
+    if crate::utils::privacy::reaches_left_out(p) {
+        return false;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -379,12 +385,40 @@ pub(crate) fn exec_in(
     timeout: Duration,
     path: Option<&OsStr>,
 ) -> Result<Output> {
+    exec_with(argv, timeout, path, &|cmd| {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    })
+}
+
+/// [`run`] in the folder `cwd` with every environment variable whose name
+/// starts with `prefix` left out (`UV_`: none of them can point the program
+/// at another configuration, index or download list).
+pub(crate) fn run_scrubbed<S: AsRef<OsStr>>(argv: &[S], timeout: Duration, prefix: &str, cwd: &Path) -> String {
+    let argv: Vec<&OsStr> = argv.iter().map(AsRef::as_ref).collect();
+    let dropped: Vec<std::ffi::OsString> =
+        std::env::vars_os().map(|(k, _)| k).filter(|k| k.to_string_lossy().starts_with(prefix)).collect();
+    let out = exec_with(&argv, timeout, std::env::var_os("PATH").as_deref(), &|cmd| {
+        cmd.current_dir(cwd);
+        for k in &dropped {
+            cmd.env_remove(k);
+        }
+    });
+    out.map(|o| o.stdout + &o.stderr).unwrap_or_default()
+}
+
+/// [`exec_in`] with the command adjusted by `configure` before it starts.
+fn exec_with(
+    argv: &[&OsStr],
+    timeout: Duration,
+    path: Option<&OsStr>,
+    configure: &dyn Fn(&mut Command),
+) -> Result<Output> {
     let (prog, args) = argv.split_first().ok_or_else(|| Error::Failed("empty command".into()))?;
     let mut cmd = Command::new(program_in(prog, path)?);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("NO_COLOR", "1");
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+    configure(&mut cmd);
     let mut child = spawn(&mut cmd).map_err(|e| Error::Failed(format!("{}: {e}", prog.to_string_lossy())))?;
     let drain = |pipe: Box<dyn Read + Send>| {
         let (tx, rx) = std::sync::mpsc::channel();

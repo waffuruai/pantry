@@ -272,6 +272,11 @@ const REMEMBERED: i64 = 1000;
 
 /// Remember `text` as a report Pantry wrote.
 pub fn remember(cache: &Cache, text: &str) -> Result<()> {
+    // The report was rendered inside this transaction's first read. A write
+    // after that read fails at once with "database is locked" if another
+    // process committed since (a scan beside this one), without waiting; a
+    // transaction that starts with the write waits for the lock instead.
+    cache.commit()?;
     let sha = crate::utils::sha256::hex(text.as_bytes());
     cache.conn.execute(
         "INSERT OR REPLACE INTO reports_written (sha256, at) VALUES (?, ?)",

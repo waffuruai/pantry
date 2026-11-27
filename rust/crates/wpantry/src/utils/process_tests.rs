@@ -308,6 +308,75 @@ fn root_finds_a_tool_on_path_alone() {
     assert_eq!(is_root(), cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0");
 }
 
+/// Risk: a PATH folder that is a link into a left-out folder (`~/bin` linked
+/// to `~/Documents/bin`) passes the spelling check, so the lookup stats a
+/// file inside the folder the scan promised not to open. Oracle: the tool is
+/// found in the other PATH folder, and every consumer of the PATH list
+/// (`path_dirs_of`, `reachable`, `which`) drops the linked one.
+#[cfg(unix)]
+#[test]
+fn a_path_folder_that_is_a_link_into_a_left_out_folder_is_not_looked_in() {
+    let d = TempDir::new("leftout-link").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap(); // macOS keeps its temp folder behind a link
+    let (docs, ok) = (root.join("Documents"), root.join("ok"));
+    executable(&docs.join("bin/tool"), "#!/bin/sh\n");
+    executable(&ok.join("tool"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink("Documents/bin", root.join("bin")).unwrap();
+    let linked = root.join("bin");
+    let path = std::env::join_paths([&linked, &ok]).unwrap();
+    assert_eq!(which_in("tool", Some(&path)), Some(linked.join("tool")));
+    let guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    assert_eq!(which_in("tool", Some(&path)), Some(ok.join("tool")));
+    assert_eq!(path_dirs_of(Some(&path)), [ok.to_string_lossy().into_owned()]);
+    assert_eq!(reachable(vec![linked.display().to_string(), ok.display().to_string()]), [ok.display().to_string()]);
+    drop(guard);
+}
+
+/// Risk: the not-found text counts the PATH folders it left out by spelling
+/// while the lookup skips by link, so a folder linked into a left-out one is
+/// skipped yet not counted: the text says nothing was left out and the user
+/// cannot tell why a tool they have is not found. Oracle: the text names the
+/// one folder it searched and says one was left out.
+/// Known bad: `not_found` counting with `is_left_out`.
+#[cfg(unix)]
+#[test]
+fn the_not_found_text_counts_a_path_folder_linked_into_a_left_out_folder() {
+    let d = TempDir::new("leftout-link-count").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap();
+    let (docs, ok) = (root.join("Documents"), root.join("ok"));
+    executable(&docs.join("bin/tool"), "#!/bin/sh\n");
+    std::fs::create_dir_all(&ok).unwrap();
+    std::os::unix::fs::symlink("Documents/bin", root.join("bin")).unwrap();
+    let path = std::env::join_paths([root.join("bin"), ok.clone()]).unwrap();
+    let _guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    let text = try_resolve_with(OsStr::new("tool"), Some(&path), &[]).unwrap_err().to_string();
+    assert!(text.contains(&ok.display().to_string()), "{text}");
+    assert!(text.contains("one PATH folder it leaves out"), "{text}");
+}
+
+/// Risk: the lookup judged the PATH folder, then `is_executable` stat'ed
+/// `folder/tool` through the link that file is (`~/.local/bin/tool ->
+/// ~/Documents/tools/tool`): a stat inside the folder the scan leaves out.
+/// Oracle: the tool is found through the link without a guard and not with
+/// one, by `which` and by the tool inventory's `on_path`; a real copy in the
+/// same folder is still found. Cannot notice a stat: it sees what was found.
+/// Known bad: `is_executable` without the left-out check.
+#[cfg(unix)]
+#[test]
+fn a_tool_that_is_a_link_into_a_left_out_folder_is_not_found() {
+    let d = TempDir::new("leftout-tool-link").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap();
+    executable(&root.join("Documents/tools/tool"), "#!/bin/sh\n");
+    executable(&root.join("bin/real"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink(root.join("Documents/tools/tool"), root.join("bin/tool")).unwrap();
+    let path = std::env::join_paths([root.join("bin")]).unwrap();
+    assert_eq!(which_in("tool", Some(&path)), Some(root.join("bin/tool")));
+    let _guard = crate::utils::privacy::leave_out(vec![root.join("Documents")], Vec::new());
+    assert_eq!(which_in("tool", Some(&path)), None);
+    assert!(on_path_in("tool", vec![root.join("bin").display().to_string()], &[] as &[&str]).is_empty());
+    assert_eq!(which_in("real", Some(&path)), Some(root.join("bin/real")));
+}
+
 /// Risk: under `--no-personal-files` the lookup skips a PATH folder that is
 /// left out and finds `tool` in a later one, but hands the spawn the bare name
 /// `tool`, and the operating system then searches the whole PATH again, the
@@ -464,4 +533,19 @@ fn the_folders_searched_before_path_win_over_path() {
     if cfg!(windows) {
         assert!(first_dirs().iter().all(|d| d.is_absolute()), "{:?}", first_dirs());
     }
+}
+
+/// Risk: a variable meant to be left out reaches the program, or it runs
+/// in the caller's folder (where a repo's config lives). Oracle: `env`
+/// prints no `HOME=` line once the prefix `HOME` is scrubbed, `PATH` stays,
+/// and `pwd` names the folder given.
+#[cfg(unix)]
+#[test]
+fn run_scrubbed_leaves_out_the_prefix_and_runs_in_the_folder() {
+    let d = crate::utils::temp::TempDir::new("scrub").unwrap();
+    let out = run_scrubbed(&["env"], Duration::from_secs(10), "HOME", d.path());
+    assert!(!out.lines().any(|l| l.starts_with("HOME=")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("PATH=")), "{out}");
+    let pwd = run_scrubbed(&["sh", "-c", "pwd -P"], Duration::from_secs(10), "UV_", d.path());
+    assert_eq!(pwd.trim(), crate::utils::files::realpath(&d.path().display().to_string()));
 }

@@ -121,7 +121,8 @@ fn scan(
     };
     // The library's questions default to no (the breach check's consent).
     let ask = |q: &str| progress.ask(q, false);
-    let mut s = Scan::new(opts, Cache::open(None)?, net, &log, &note).with_status(&status).with_ask(&ask);
+    let mut s =
+        Scan::new(opts, Cache::open_for_scan(None, &note)?, net, &log, &note).with_status(&status).with_ask(&ask);
     if let Some(w) = watch {
         s = s.with_watch(w);
     }
@@ -983,11 +984,20 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
     {
         return Err(wpantry::Error::Failed("This finding has no automatic fix in the selected scan.".into()));
     }
+    // One finding's fix is the fix of its component: the step covering every
+    // open advisory of it in this scan (the highest fixed version), the one
+    // the list and a plain `fix` run, so the component's others don't stay open.
+    let fixes: Vec<wpantry::finding::Finding> = match findings.as_slice() {
+        [one] if one.fix_auto && !one.fix_cmd.is_empty() && one.kind != "secret" => {
+            remediation::component_fixes(&wpantry::reporters::jsonl::findings(&cache)?, one)
+        }
+        _ => findings.clone(),
+    };
     if let Some(scan) = from_scan
         && dry_run
         && json
     {
-        let (commands, _, _) = remediation::plan(&findings);
+        let (commands, _, _) = remediation::plan(&fixes);
         let [command] = commands.as_slice() else {
             return Err(wpantry::Error::Failed("This finding has no automatic fix in the selected scan.".into()));
         };
@@ -1038,12 +1048,15 @@ fn cmd_mitigate(id: &str, o: FixOne) -> Result<i32> {
             }
             progress::Progress::new(false).ask("Run these now?", true).unwrap_or(false)
         };
-        let auto: Vec<wpantry::finding::Finding> = findings.iter().filter(|f| f.fix_auto).cloned().collect();
+        let auto: Vec<wpantry::finding::Finding> = fixes.iter().filter(|f| f.fix_auto).cloned().collect();
         let applied = remediation::apply(&auto, dry_run, &confirm, &mut |l| show(l));
         for (cmd, ok) in &applied.ran {
+            // The covering fix clears every finding it was chosen among,
+            // whichever version each one's own fix names.
+            let covers = fixes.len() > findings.len();
             let targets: Vec<String> = auto
                 .iter()
-                .filter(|f| remediation::is_step_of(&f.fix_cmd, cmd))
+                .filter(|f| covers || remediation::is_step_of(&f.fix_cmd, cmd))
                 .map(wpantry::history::key_of)
                 .collect();
             let failure = applied.failures.iter().find(|x| x.cmd == *cmd);

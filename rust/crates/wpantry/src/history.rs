@@ -732,8 +732,13 @@ pub fn prune_run(cache: &Cache, id: i64) -> Result<Option<(ScanRow, usize)>> {
     Ok(Some((row, gone)))
 }
 
+/// This machine's name, asked once per process: a run that records many
+/// events (a re-check of a thousand ids) would otherwise start `hostname`
+/// for each.
 pub(crate) fn host() -> String {
-    crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string()
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string())
+        .clone()
 }
 
 pub(crate) fn user() -> String {

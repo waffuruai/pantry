@@ -24,7 +24,8 @@ fn preload(r: &Roots, inv: &mut Inventory) {
                 source: Source::Preload,
                 location: r.show(&path),
                 ident: lib.to_string(),
-                program: Some(r.rebase(Path::new(lib))).filter(|p| crate::utils::privacy::is_left_out(p) || p.exists()),
+                program: Some(r.rebase(Path::new(lib)))
+                    .filter(|p| crate::utils::privacy::reaches_left_out(p) || p.exists()),
                 injects: vec!["ld.so.preload".into()],
                 line: i + 1,
             });

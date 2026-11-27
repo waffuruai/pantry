@@ -235,7 +235,9 @@ pub fn fill(cmd: &str, safe: &str) -> String {
 /// named: a version that isn't one plain token never reaches a command.
 pub fn fix_with(c: &Component, safe: &str) -> (String, bool) {
     if safe.is_empty() || versions::is_safe_token(safe) {
-        machine::tools::with_uninstall(c, fill(&c.fix, safe), c.auto)
+        let (cmd, auto) = machine::tools::with_uninstall(c, fill(&c.fix, safe), c.auto);
+        // `uv python upgrade` only when this uv can install a fixing release.
+        machine::uv_pythons::adjust(c, safe, cmd, auto)
     } else {
         ("Review the advisory: the fix version it names isn't a version, so no command is offered".to_string(), false)
     }
@@ -765,6 +767,7 @@ impl<'a> Scan<'a> {
         self.repos =
             repos::scan_scope(self.opts.paths.as_deref(), &self.home, self.opts.no_personal_files, log, note, status);
         self.flag_named_roots_left_out();
+        self.flag_path_folders_left_out();
         // --no-personal-files keeps Downloads, Desktop and Documents out of
         // every walk, on any scan: a repo or --path root that holds them (a
         // home that is a git checkout, `--path ~` with no repo) is walked
@@ -796,6 +799,30 @@ impl<'a> Scan<'a> {
                 "it lies in a folder this scan leaves out (--no-personal-files), so nothing in it was read",
                 &format!("wpantry scan --path {name}"),
             );
+        }
+    }
+
+    /// A PATH folder this scan leaves out, or that is a link into one, is not
+    /// searched for programs (`utils::process`): name each as not checked, so a
+    /// tool that lives there never reads as missing or clean. Only the PATH
+    /// entry's own spelling is shown; nothing in the folder is opened.
+    pub(crate) fn flag_path_folders_left_out(&mut self) {
+        self.flag_path_folders_left_out_in(std::env::var_os("PATH").as_deref());
+    }
+
+    /// [`Self::flag_path_folders_left_out`] for the PATH value `path`.
+    pub(crate) fn flag_path_folders_left_out_in(&mut self, path: Option<&std::ffi::OsStr>) {
+        if !self.opts.no_personal_files || !self.opts.machine {
+            return;
+        }
+        for dir in std::env::split_paths(path.unwrap_or_default()) {
+            if !dir.as_os_str().is_empty() && crate::utils::privacy::reaches_left_out(&dir) {
+                self.unchecked_until(
+                    &format!("PATH folder {}", crate::utils::files::short(&dir.to_string_lossy())),
+                    "it lies in, or is a link into, a folder this scan leaves out (--no-personal-files), so the programs in it were not looked for",
+                    "wpantry scan",
+                );
+            }
         }
     }
 
@@ -857,17 +884,22 @@ impl<'a> Scan<'a> {
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);
         self.status("Saving the findings");
-        self.cache.replace_findings(&self.findings)?;
         let totals = (self.unfixed, self.unknown_licenses);
-        let scan_id = crate::history::record_scan_totals(
-            &self.cache,
-            started_at,
-            &self.findings,
-            &self.counts,
-            totals,
-            &self.opts,
-        )?;
-        crate::history::scan_finished(&self.cache)?;
+        // One transaction for the scan's result (the findings, its row and the
+        // end of its running mark), and the only long hold of the write lock.
+        let scan_id = self.cache.atomically(|| {
+            self.cache.replace_findings(&self.findings)?;
+            let id = crate::history::record_scan_totals(
+                &self.cache,
+                started_at,
+                &self.findings,
+                &self.counts,
+                totals,
+                &self.opts,
+            )?;
+            crate::history::scan_finished(&self.cache)?;
+            Ok(id)
+        })?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,
@@ -1005,13 +1037,17 @@ impl<'a> Scan<'a> {
             // wants a `v` (`go get mod@v1.2.3`) spells it itself.
             let safe = versions::bare(&safe).to_string();
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
+            let mut note = local_note(str_at(main, "summary"), main, group);
+            if let Some(why) = machine::uv_pythons::bundled_note(c, &fix_cmd, fix_auto) {
+                note = format!("{note} ({why})");
+            }
             self.add(Finding {
                 vuln_id: display_id(main),
                 status: status.into(),
                 fixed: safe.clone(),
                 kev,
                 severity: severity_of(main),
-                note: local_note(str_at(main, "summary"), main, group),
+                note,
                 fix_cmd,
                 fix_auto,
                 affected_range,

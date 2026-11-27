@@ -240,12 +240,8 @@ pub(crate) fn pythons_with_uv(
             }
         } else {
             let v = str_of(&a.info, "v");
-            let (fix, auto) = updater(&a.real, "python");
-            let mut c = Component::new("runtime", "python", &v, &a.shown);
-            c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
-            c.eol = Some(("python".into(), Cycle::Minor.of(&v)));
-            c.fix = fix.clone();
-            c.auto = auto;
+            let mut c = runtime_component(&a.shown, &a.real, &v);
+            let (fix, auto) = (c.fix.clone(), c.auto);
             let (mut pkgs, gaps) = pip(&a.shown, &a.runs, &a.sites, managed, (fix.clone(), auto));
             if auto && fix == uv_pythons::UPGRADE {
                 // uv-managed: what uv can install decides the fix, where the
@@ -271,6 +267,20 @@ pub(crate) fn pythons_with_uv(
         }
     }
     (out, unread)
+}
+
+/// The runtime component for a Python shown as `shown`, whose interpreter
+/// is at `real` and reports version `v`: how OSV and endoflife.date know it,
+/// and how it is updated. The one place it is built: a scan builds every
+/// Python through it, and `wpantry recheck` builds the one it asks about.
+pub(crate) fn runtime_component(shown: &str, real: &str, v: &str) -> Component {
+    let (fix, auto) = updater(real, "python");
+    let mut c = Component::new("runtime", "python", v, shown);
+    c.osv = Some(("GIT".into(), github("python/cpython"), format!("v{v}")));
+    c.eol = Some(("python".into(), Cycle::Minor.of(v)));
+    c.fix = fix;
+    c.auto = auto;
+    c
 }
 
 /// The user site directory the probe named, as a real path, when the

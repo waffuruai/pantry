@@ -21,6 +21,11 @@
 //!
 //! * posture findings (machine settings): the rule's own probe, run again
 //!   alone over the same command runner ([`settings::probe_one`]);
+//! * Python runtimes (kind `runtime`, found by the package inventory), with or
+//!   without an unattended fix: the install the finding's location belongs to
+//!   (a shim's pick, a link's target, a virtual environment's base) read again from
+//!   files alone, never run ([`super::recheck_python`]), then judged
+//!   as a catalog tool is;
 //! * catalog tools and runtimes ([`TOOLS`]: node, go, ruby, mise-installed
 //!   or on PATH), read by [`tools::component_at`], the function a scan reads
 //!   every copy with, and judged by the inventory's own OSV, end-of-life and
@@ -40,6 +45,7 @@
 
 use super::recheck_posture as posture;
 use super::recheck_project as project;
+use super::recheck_python as python;
 use crate::checks::ecosystems;
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, TOOLS};
@@ -417,7 +423,11 @@ fn judge(
     // needs an automatic fix. The guards come before any probe or read.
     let posture = row.kind == "posture";
     let in_place = project::applies(&row.kind, &row.component, &row.location);
-    let any_fix = posture || in_place;
+    // A Python runtime is read again from its install's files (nothing is run)
+    // whether or not wpantry could fix it unattended (a person may
+    // have updated it by hand).
+    let python = python::applies(&row.kind, &row.component);
+    let any_fix = posture || in_place || python;
     if row.kind == "secret" || row.kind == "unchecked" || (!any_fix && (!row.fix_auto || row.fix_cmd.is_empty())) {
         return Ok(unsupported(row, "no automatic fix"));
     }
@@ -433,6 +443,9 @@ fn judge(
     if in_place {
         return project::judge(places, &scan.cache, (&row.kind, &row.component, &row.location, &row.vuln_id));
     }
+    if python {
+        return judge_python(scan, row);
+    }
     if row.kind == "brew" {
         return judge_brew(scan, row);
     }
@@ -445,7 +458,7 @@ fn judge(
 /// Where the thing a finding names went: gone when the place it lived in
 /// is still there and it is not, unknown when the place itself can't be
 /// reached (an unmounted volume says nothing about what was on it).
-fn vanished(location: &Path, anchor: &Path) -> Verdict {
+pub(super) fn vanished(location: &Path, anchor: &Path) -> Verdict {
     if anchor.is_dir() {
         Verdict::gone("removed", format!("{} is no longer there.", location.display()))
     } else {
@@ -458,11 +471,20 @@ fn vanished(location: &Path, anchor: &Path) -> Verdict {
 
 /// The place a catalog tool's copy lives in: the version manager's
 /// `installs` folder for a mise runtime, else the folder holding the file.
-fn anchor_of(location: &Path) -> PathBuf {
+pub(super) fn anchor_of(location: &Path) -> PathBuf {
     let text = location.to_string_lossy();
     match text.find("/installs/") {
         Some(at) if text.contains("/mise/") => PathBuf::from(&text[..at + "/installs".len()]),
         _ => location.parent().map(Path::to_path_buf).unwrap_or_default(),
+    }
+}
+
+/// A Python runtime at `row.location`: its install read again from files
+/// alone ([`python::read`]; nothing is run), then judged as a catalog tool is.
+fn judge_python(scan: &mut Scan, row: &Row) -> Result<Verdict> {
+    match python::read(&row.location, &files::owner, &python::Here::now()) {
+        Ok(c) => judge_component(scan, &c, row, true),
+        Err(verdict) => Ok(verdict),
     }
 }
 

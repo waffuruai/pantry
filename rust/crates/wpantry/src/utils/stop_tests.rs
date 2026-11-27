@@ -290,6 +290,28 @@ fn a_failed_listing_is_in_the_answer_not_a_silent_fallback() {
     assert!(!left.is_empty(), "what it started was out of reach, and the answer said so");
 }
 
+/// Risk: the stop is the timeout path, and a `ps` that never answers (a
+/// machine short of memory, a listing stuck on a stale mount) holds it, and
+/// so the fix and the scan, for as long as `ps` hangs. Oracle: with a `ps`
+/// that sleeps far past [`HELPER_WAIT`], the stop returns within a few of
+/// them, says the listing got no answer, still kills the program, and leaves
+/// no stand-in `ps` running. Known bad: `wait_with_output` with no deadline.
+#[test]
+fn a_listing_that_never_answers_does_not_hold_the_stop() {
+    let mut t = Tree::new("hungps", "31.4010");
+    let root = forking_tree(&mut t, "31.4010");
+    std::thread::sleep(Duration::from_millis(100));
+    let hung = script(t.path(), "hung-ps", "exec sleep 31.4010");
+    let tools = Tools { ps: hung, kill: "kill".into() };
+    let started = std::time::Instant::now();
+    let why = kill_tree_with(t.root(), &tools, Duration::from_millis(500)).expect_err("a hung listing was hidden");
+    assert!(started.elapsed() < HELPER_WAIT * 3, "the stop waited {:?}", started.elapsed());
+    assert!(why.contains("could not run ps") && why.contains("no answer within"), "{why}");
+    assert!(!alive(root), "the program itself is still killed");
+    // The tree's own `sleep`s are out of reach (the listing failed); `clean` ends them.
+    let _ = t.clean();
+}
+
 // ---- what is signalled, and how many times ----------------------------------
 
 /// Risk: the scanner's own pid, the pid of the program that started it, or

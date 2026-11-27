@@ -42,6 +42,11 @@ pub(crate) const FREEZE_ROUNDS: usize = 8;
 /// The longest the end waits for the stopped processes to be gone.
 pub(crate) const SETTLE: Duration = Duration::from_secs(2);
 
+/// The longest one `ps`, `kill` or `taskkill` the stop runs gets: the stop is
+/// the timeout path, so it must end even when one of them hangs (a `ps` on a
+/// machine short of memory, a stale NFS mount in a listing).
+pub(crate) const HELPER_WAIT: Duration = Duration::from_secs(5);
+
 /// The programs the stop runs, as paths (the tests give stand-ins).
 #[cfg(unix)]
 pub(crate) struct Tools {
@@ -110,7 +115,7 @@ fn taskkill(child: &mut Child, wait: Duration) -> Result<(), String> {
     let out = super::process::program(std::ffi::OsStr::new("taskkill"))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
         .and_then(|taskkill| {
-            Command::new(taskkill).args(["/T", "/F", "/PID", &child.id().to_string()]).stdin(Stdio::null()).output()
+            output_of(Command::new(taskkill).args(["/T", "/F", "/PID", &child.id().to_string()]), HELPER_WAIT)
         });
     let mut problem = match out {
         Ok(o) if o.status.success() => None,
@@ -131,13 +136,48 @@ fn taskkill(child: &mut Child, wait: Duration) -> Result<(), String> {
     problem.map_or(Ok(()), Err)
 }
 
-/// What `cmd` prints, with stdin closed. Started as [`super::process::spawn`]
-/// starts programs, which tries again when the kernel says the program is
-/// still open for writing (a script written a moment ago).
-#[cfg(unix)]
-fn output_of(cmd: &mut Command) -> std::io::Result<std::process::Output> {
+/// What `cmd` prints, with stdin closed, or a `TimedOut` error when it has
+/// not ended within `wait` (it is killed; these helpers start nothing of their
+/// own). Started as [`super::process::spawn`] starts programs, which tries
+/// again when the kernel says the program is still open for writing (a script
+/// written a moment ago). Not [`super::process::exec`]: its timeout path is
+/// this module.
+fn output_of(cmd: &mut Command, wait: Duration) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    super::process::spawn(cmd)?.wait_with_output()
+    let mut child = super::process::spawn(cmd)?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let until = std::time::Instant::now() + wait;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer within {} s", wait.as_secs().max(1)),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let grace = Duration::from_secs(1);
+    let stdout = out.recv_timeout(grace).unwrap_or_default();
+    let stderr = err.recv_timeout(grace).unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
 }
 
 /// The first non-empty line of what a program wrote, for a message.
@@ -180,7 +220,7 @@ pub(crate) fn list_processes(ps: &std::path::Path, root: Option<u32>) -> Result<
     let mut why = Vec::new();
     for args in SPELLINGS {
         let shown = format!("ps {}", args.join(" "));
-        let out = output_of(Command::new(ps).args(args));
+        let out = output_of(Command::new(ps).args(args), HELPER_WAIT);
         let out = match out {
             Ok(o) => o,
             Err(e) => return Err(format!("could not run ps: {e}")),
@@ -226,7 +266,7 @@ fn signal(tools: &Tools, sig: &str, pid: u32) -> Result<(), String> {
     if never(pid) {
         return Err(format!("refused to signal pid {pid}"));
     }
-    match output_of(Command::new(&tools.kill).arg(format!("-{sig}")).arg(pid.to_string())) {
+    match output_of(Command::new(&tools.kill).arg(format!("-{sig}")).arg(pid.to_string()), HELPER_WAIT) {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
             let said = first_line(&o.stderr);

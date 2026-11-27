@@ -36,7 +36,7 @@ mise bootstrap
 mise run test
 ```
 
-- `mise bootstrap` installs the pinned tools from [`mise.toml`](mise.toml) (Python for `scripts/`, gitleaks, shellcheck, actionlint, cargo-llvm-cov, cargo-about), builds `wpantry` on the toolchain `rust/rust-toolchain.toml` pins, and runs `wpantry tools` to confirm them.
+- `mise bootstrap` installs the pinned tools from [`mise.toml`](mise.toml) (Python for `scripts/`, shellcheck, actionlint, cargo-llvm-cov, cargo-about), builds `wpantry` on the toolchain `rust/rust-toolchain.toml` pins, and runs `wpantry tools` to confirm them.
 - `mise run test` runs every test offline; `mise tasks ls` lists the rest (`build`, `contract`, `coverage`, `lint`, `notices`, `vet`).
 - CI runs the same tasks from the same file, so a pin bumped there is bumped everywhere.
 - Before a pull request: `mise run test` and `mise run lint`; `mise run contract` when the change touches the CLI; `mise run vet` and `mise run notices` when it bumps a dependency, `mise run vet` when it bumps an action ([dependencies](docs/internal/dependencies.md)). In `rust/`: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.

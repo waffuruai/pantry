@@ -51,10 +51,12 @@ pub(crate) struct Tools {
 
 #[cfg(unix)]
 impl Tools {
-    pub(crate) fn system() -> Tools {
+    /// `ps` and `kill` as the spawns find them, or why one is not found.
+    pub(crate) fn system() -> Result<Tools, String> {
         use super::process::program;
         use std::ffi::OsStr;
-        Tools { ps: program(OsStr::new("ps")), kill: program(OsStr::new("kill")) }
+        let find = |name: &str| program(OsStr::new(name)).map_err(|e| e.to_string());
+        Ok(Tools { ps: find("ps")?, kill: find("kill")? })
     }
 }
 
@@ -64,7 +66,18 @@ impl Tools {
 pub(crate) fn kill_tree(child: &mut Child) -> Result<(), String> {
     #[cfg(unix)]
     {
-        kill_tree_with(child, &Tools::system(), SETTLE)
+        match Tools::system() {
+            Ok(tools) => kill_tree_with(child, &tools, SETTLE),
+            // No `ps` or `kill` to reach the rest with: at least the program itself.
+            Err(why) => {
+                let _ = child.kill();
+                let ended = reaped(child, SETTLE);
+                Err(format!(
+                    "what it started could not be looked for ({why}); the program itself {}",
+                    if ended { "was killed" } else { "did not end after the kill" }
+                ))
+            }
+        }
     }
     #[cfg(windows)]
     {
@@ -78,7 +91,6 @@ pub(crate) fn kill_tree(child: &mut Child) -> Result<(), String> {
 }
 
 /// Whether `child` has ended (and is reaped) within `wait`.
-#[cfg(not(unix))]
 fn reaped(child: &mut Child, wait: Duration) -> bool {
     let until = std::time::Instant::now() + wait;
     loop {
@@ -95,10 +107,11 @@ fn reaped(child: &mut Child, wait: Duration) -> bool {
 /// `taskkill /T /F /PID`: the program and what it started.
 #[cfg(windows)]
 fn taskkill(child: &mut Child, wait: Duration) -> Result<(), String> {
-    let out = Command::new(super::process::program(std::ffi::OsStr::new("taskkill")))
-        .args(["/T", "/F", "/PID", &child.id().to_string()])
-        .stdin(Stdio::null())
-        .output();
+    let out = super::process::program(std::ffi::OsStr::new("taskkill"))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
+        .and_then(|taskkill| {
+            Command::new(taskkill).args(["/T", "/F", "/PID", &child.id().to_string()]).stdin(Stdio::null()).output()
+        });
     let mut problem = match out {
         Ok(o) if o.status.success() => None,
         Ok(o) => Some(format!(

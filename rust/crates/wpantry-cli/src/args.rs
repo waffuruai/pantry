@@ -88,6 +88,9 @@ pub struct Check {
     /// `scan project`: one project (`path`) and the runtimes it uses,
     /// nothing else of the machine.
     pub project: bool,
+    /// `scan project --changes SPEC`: only what a commit (`staged`) or a
+    /// pull request (`BASE[...HEAD]`) adds, and nothing kept.
+    pub changes: Option<String>,
     /// `fix`: the unattended fixes and the stopgaps, then a re-check.
     pub fix: bool,
     /// `fix --yes`: run and write without asking.
@@ -289,10 +292,11 @@ pub enum Parsed {
 
 /// The commands most people came for, first in the top-level help: what
 /// scans what, as lines to copy.
-const EXAMPLES: [(&str, &str); 8] = [
+const EXAMPLES: [(&str, &str); 9] = [
     ("wpantry scan", "this computer and every git repo under ~"),
     ("wpantry scan project", "the project in this directory and the runtimes it uses"),
     ("wpantry scan project ~/app", "the same, for another directory"),
+    ("wpantry scan project --changes staged", "only what the next commit adds (a pre-commit hook); keeps nothing"),
     ("wpantry scan --path ~/code", "only the repos under a directory, with the machine inventory"),
     ("wpantry report --html", "the latest scan as one offline page"),
     ("wpantry runs", "the scans kept; report --run N shows one, prune N forgets one"),
@@ -401,9 +405,24 @@ fn scan_opts() -> Vec<Opt> {
 const NOT_FOR_PROJECT: [&str; 6] =
     ["path", "no-machine", "no-posture", "posture-policy", "no-personal-files", "gitleaks-config"];
 
-/// `scan project`'s options: the scan's, without the machine's.
+/// What `--changes` has no use for: it reads no file but the changed ones,
+/// runs no malware or code check, and keeps no report.
+const NOT_FOR_CHANGES: [&str; 7] =
+    ["deep", "no-malware", "no-online-hash", "events", "repo-hooks", "hooks-policy", "suspect-policy"];
+
+/// `scan project`'s options: the scan's, without the machine's, and `--changes`.
 fn project_opts() -> Vec<Opt> {
-    scan_opts().into_iter().filter(|o| !NOT_FOR_PROJECT.contains(&o.name().as_str())).collect()
+    let mut opts: Vec<Opt> =
+        scan_opts().into_iter().filter(|o| !NOT_FOR_PROJECT.contains(&o.name().as_str())).collect();
+    opts.insert(
+        0,
+        Opt::new(
+            "--changes <spec>",
+            "scan only what a change adds, and keep nothing (the report goes to stdout): staged for the index git commit is about to record (a pre-commit hook), BASE or BASE...HEAD for the files changed from their merge base to HEAD (a pull request). Secrets in those files, and the dependency files among them against the advisories",
+        )
+        .group("Scope"),
+    );
+    opts
 }
 
 /// The whole command line.
@@ -427,7 +446,10 @@ fn commands() -> Cli {
                 .opts(scan_opts())
                 .command(
                     Cli::new("project")
-                        .description("Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware, and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc, rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer is read: no other runtime, app, setting or folder. Changes nothing.")
+                        .example("wpantry scan project", "the project in this directory and the runtimes it uses")
+                        .example("wpantry scan project --changes staged", "only what the next commit adds, for a pre-commit hook")
+                        .example("wpantry scan project --changes origin/dev --txt", "only what a pull request adds, in CI")
+                        .description("Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware, and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc, rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer is read: no other runtime, app, setting or folder. Changes nothing.\nWith --changes, only what a commit or pull request adds: secrets in the files it changes, and the dependency files among them against the advisories, read from git, never the working tree. No run is kept: the report goes to stdout, and wpantry runs and report never see it.")
                         .summary("Scan one project and the runtimes it uses, nothing else of this computer")
                         .arg(Arg::new("[dir]", "the project's directory").default("."))
                         .opts(project_opts())
@@ -831,6 +853,19 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             c.path = Some(vec![dir]);
             c.no_machine = true;
             c.project = true;
+            if let Some(spec) = m.value("changes") {
+                wpantry::checks::changes::Changes::parse(spec)
+                    .map_err(|e| m.error(&format!("option '--changes <spec>': {e}")))?;
+                if let Some(name) = NOT_FOR_CHANGES.iter().find(|n| flag(n)) {
+                    return Err(m.error(&format!(
+                        "option '--{name}' doesn't apply to --changes, which reads only the changed files, for secrets and dependencies"
+                    )));
+                }
+                if c.show.out.is_some() {
+                    return Err(m.error("--changes keeps nothing: its report goes to stdout, so drop -o FILE"));
+                }
+                c.changes = Some(spec.to_string());
+            }
             Command::Scan(c)
         }
         ["fix"] => match m.arg("target").unwrap_or("all") {

@@ -1,0 +1,43 @@
+name: Commit hygiene
+
+# No AI or bot attribution in what a merge would write (CONTRIBUTING.md, Commit
+# authorship): scripts/commit_hygiene.py checks every commit's author, committer
+# and message, and the PR title and body, which GitHub writes into the squash
+# commit. It re-runs on `edited`, so fixing the PR text clears it.
+#
+# Fork-safe: `pull_request` (never `pull_request_target`), a read-only token, no
+# secrets. It reads the PR through the API and only prints and annotates; it
+# never edits the PR or comments.
+#
+# On push to dev and main it is a backstop: it reports commits that reached the
+# branch anyway (an admin bypass, a direct push), but cannot block or undo a
+# push that already happened. The pull request run is the gate.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: commit-hygiene-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-hygiene:
+    name: Commit hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner's python3: the script uses the standard library and gh only.
+      - name: Check commits and PR text
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/commit_hygiene.py

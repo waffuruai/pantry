@@ -3,3 +3,6 @@
 /mise*.toml @waffuruai/owners
 /mise.lock @waffuruai/owners
 /mise-tasks/ @waffuruai/owners
+# The commit hygiene gate: a PR that edits it could pass itself.
+/scripts/commit_hygiene.py @waffuruai/owners
+/.github/workflows/commit-hygiene.yml @waffuruai/owners

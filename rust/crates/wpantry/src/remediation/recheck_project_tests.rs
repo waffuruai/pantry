@@ -430,3 +430,36 @@ fn other_lockfile_kinds_are_read_again_the_same_way() {
         assert_eq!(state(&one(&file, found[0], scan)), (State::Gone, "fixed"), "{name}");
     }
 }
+
+/// Risk: a record whose only usable data is a list of affected versions
+/// (a PYSEC record with GIT ranges only) reads a listed, affected version
+/// as outside every range, so the re-check says `gone fixed`. Oracle: OSV
+/// reads the list as exact, as the scan's answer does: a listed version is
+/// still present; one not listed can't be told (a tag list leaves versions
+/// out), so it is unknown, never gone.
+#[test]
+fn a_record_with_git_ranges_and_a_version_list_is_judged_by_the_list() {
+    let d = TempDir::new("project").unwrap();
+    let (file, scan, root, found) = scan_of(&d, REQUESTS, &[("requirements.txt", "requests==2.0.0\n".to_string())]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let rec = json!({"id": found[0].vuln_id, "modified": "2026-01-01T00:00:00Z",
+        "affected": [{"package": {"ecosystem": "PyPI", "name": "requests"},
+            "ranges": [{"type": "GIT", "repo": "https://github.com/psf/requests",
+                        "events": [{"introduced": "0"}, {"fixed": "0123456789abcdef0123456789abcdef01234567"}]}],
+            "versions": ["2.0.0", "2.1.0"]}]});
+    {
+        let c = Cache::open(Some(&file)).unwrap();
+        c.conn.execute("DELETE FROM vulns", []).unwrap();
+        c.put_vuln(&rec).unwrap();
+        c.close().unwrap();
+    }
+    for (version, want) in [
+        ("2.0.0", (State::StillPresent, "affected")),
+        ("2.1.0", (State::StillPresent, "affected")),
+        ("9.9.9", (State::Unknown, "uncomparable")),
+    ] {
+        testing::write(&root, "requirements.txt", &format!("requests=={version}\n"));
+        assert_eq!(state(&one(&file, &found[0], scan)), want, "{version}");
+    }
+    assert_eq!(findings_left(&file), 1, "nothing was recorded gone");
+}

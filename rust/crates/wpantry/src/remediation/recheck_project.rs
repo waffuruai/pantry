@@ -181,6 +181,8 @@ fn judge_item(recs: &[Value], item: &Item, id: &str) -> Judged {
     }
     let mut asked = vec![item.clone()];
     asked.extend(osv::also(item));
+    // In a SEMVER or ECOSYSTEM range, or named in the record's list of
+    // affected versions (`affected_range` reads that list as exact): affected.
     let hit = recs.iter().any(|rec| {
         asked
             .iter()
@@ -208,14 +210,15 @@ fn judge_item(recs: &[Value], item: &Item, id: &str) -> Judged {
     }
 }
 
-/// Whether the record gives this package SEMVER or ECOSYSTEM ranges, or
-/// lists its affected versions one by one (OSV reads that list as exact).
-/// Ranges of commits or a list of tags never say a version is not affected.
+/// Whether the record gives this package SEMVER or ECOSYSTEM ranges. A
+/// list of versions says which are affected, never which are not (a record
+/// with GIT ranges lists the tags it could resolve), and ranges of commits
+/// can't be compared with a version: neither makes a version outside.
 fn comparable(rec: &Value, asked: &[Item]) -> bool {
-    arr_at(rec, "affected").iter().filter(|a| asked.iter().any(|(e, p, _)| osv::matches(a, e, p))).any(|a| {
-        arr_at(a, "ranges").iter().any(|r| matches!(str_at(r, "type"), "SEMVER" | "ECOSYSTEM"))
-            || !arr_at(a, "versions").is_empty()
-    })
+    arr_at(rec, "affected")
+        .iter()
+        .filter(|a| asked.iter().any(|(e, p, _)| osv::matches(a, e, p)))
+        .any(|a| arr_at(a, "ranges").iter().any(|r| matches!(str_at(r, "type"), "SEMVER" | "ECOSYSTEM")))
 }
 
 fn not_there(location: &str) -> Verdict {

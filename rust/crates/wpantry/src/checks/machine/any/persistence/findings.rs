@@ -129,7 +129,7 @@ pub fn findings(
             // `vet_all` leaves a program inside a left-out folder unread (no
             // signature, quarantine or malware check, and not even a stat).
             // Say so, naming the item: nothing here speaks for that program.
-            if crate::utils::privacy::is_left_out(p) {
+            if crate::utils::privacy::reaches_left_out(p) {
                 let component = format!("persistence: {} runs {}", i.location, show(p));
                 if said.insert(component.clone()) {
                     out.push(left_out(component, &show(p)));

@@ -282,3 +282,26 @@ fn no_personal_files_keeps_documents_out_of_a_path_that_holds_it() {
     assert_eq!(roots(scan_scope(Some(&inside), &h, true, &quiet, &quiet, &quiet)), [canon(&docs)]);
     assert_eq!(personal_under(&h, &h.join("Documents")), Vec::<PathBuf>::new(), "a named folder is scanned");
 }
+
+/// Risk: the repo search lists a search root before it asks whether it is left
+/// out, so a root that is a link into a left-out folder (`~/code ->
+/// ~/Documents/code`) was listed and its repos found. Oracle: a repo planted
+/// in the folder is found through the link without a guard, and not with one.
+/// Cannot notice a stat: it sees what was found. Known bad: no check on the
+/// root before `read_dir`.
+#[cfg(unix)]
+#[test]
+fn a_search_root_that_is_a_link_into_a_left_out_folder_finds_nothing() {
+    let tmp = TempDir::new("root-link").unwrap();
+    let h = std::fs::canonicalize(tmp.path()).unwrap().join("home");
+    git_repo(&h.join("Documents/code/app"), false);
+    std::os::unix::fs::symlink("Documents/code", h.join("code")).unwrap();
+    let quiet = |_: &str| {};
+    assert_eq!(
+        discover_excluding(&h.join("code"), &Excluded::default(), &quiet).len(),
+        1,
+        "findable without the guard"
+    );
+    let _guard = crate::utils::privacy::leave_out(vec![h.join("Documents")], Vec::new());
+    assert!(discover_excluding(&h.join("code"), &Excluded::default(), &quiet).is_empty());
+}

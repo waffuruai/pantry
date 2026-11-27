@@ -370,3 +370,134 @@ fn a_removal_waits_on_the_install_that_replaces_it() {
     assert_eq!(first_step("brew upgrade a"), "brew upgrade a");
     assert_eq!(first_step(""), "");
 }
+
+fn whys(lines: &[String]) -> Vec<&str> {
+    lines.iter().map(|l| l.trim()).filter(|l| l.starts_with("Why: ")).collect()
+}
+
+fn failure_with(stderr: &str) -> run::Failure {
+    run::Failure { cmd: "py -m pip install x".into(), exit_code: Some(1), reason: String::new(), stderr: stderr.into() }
+}
+
+/// Risk: a pip refusal under PEP 668 reads as a bare exit code. Oracle: the
+/// printed lines hold exactly one `Why: ` line, one sentence, indented four
+/// spaces, when stderr holds the marker, and none when it does not.
+#[cfg(unix)]
+#[test]
+fn externally_managed_failure_says_why() {
+    let (a, lines) = failing("echo error: externally-managed-environment >&2; exit 1");
+    assert_eq!(a.failures.len(), 1);
+    assert_eq!(
+        whys(&lines),
+        ["Why: This Python is managed by a package manager, so pip will not change it. \
+          Upgrade the package through that package manager instead."]
+    );
+    assert!(lines.iter().any(|l| l.starts_with("    Why: ")), "{lines:?}");
+    let (_, lines) = failing("echo boom >&2; exit 1");
+    assert!(whys(&lines).is_empty(), "{lines:?}");
+}
+
+/// Risk: on a Python no safe release supports, pip's "No matching
+/// distribution" reads as a transient error. Oracle: pip's exact text gives
+/// one `Why: ` line naming the package and the safe version.
+#[test]
+fn no_matching_distribution_says_why_with_name_and_version() {
+    let f = failure_with(
+        "ERROR: Could not find a version that satisfies the requirement anyio>=4.14.2 (from versions: 1.0, 4.5)\n\
+         ERROR: No matching distribution found for anyio>=4.14.2",
+    );
+    assert_eq!(
+        whys(&f.lines()),
+        [
+            "Why: No release of anyio at or above 4.14.2 supports this Python. Upgrade Python itself, or remove the package."
+        ]
+    );
+    assert!(!f.why().unwrap().contains('\n'));
+}
+
+/// Risk: a spawn failure reads as an exit-code-less line with no next step.
+/// Oracle: a not-found reason (as `run_bounded` words it) gives the program
+/// as the fix names it; a timeout gives no `Why: `.
+#[test]
+fn a_program_that_is_gone_says_why() {
+    let gone = run::Failure {
+        cmd: "/opt/gone/bin/python3 -m pip install x".into(),
+        exit_code: None,
+        reason: "`/opt/gone/bin/python3` was not found, or is not executable".into(),
+        stderr: String::new(),
+    };
+    assert_eq!(
+        whys(&gone.lines()),
+        [
+            "Why: The program this fix runs is no longer at /opt/gone/bin/python3. Scan again so the fix names what is installed now."
+        ]
+    );
+    let timed_out = run::Failure { reason: "timed out after 30 minutes and was stopped".into(), ..gone };
+    assert!(whys(&timed_out.lines()).is_empty());
+}
+
+/// Risk: an unknown failure gets an invented cause. Oracle: no `Why: ` line,
+/// and the stderr tail is still printed.
+#[test]
+fn an_unrecognised_failure_has_no_why_line() {
+    let lines = failure_with("ERROR: something else broke").lines();
+    assert!(whys(&lines).is_empty(), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("something else broke")), "{lines:?}");
+}
+
+/// Risk: the requirement in stderr is attacker-shaped and gets pasted into a
+/// sentence a person reads. Oracle: control characters, shell syntax, a path
+/// or a very long name never reach the `Why: ` line, which falls back to the
+/// generic wording.
+#[test]
+fn a_hostile_requirement_is_not_pasted_into_the_why_line() {
+    let long = "a".repeat(5000);
+    for bad in [
+        "evil\u{1b}[31m>=1.0".to_string(),
+        "x;rm>=1".to_string(),
+        "/Users/someone/secret>=1".to_string(),
+        format!("{long}>=1.0"),
+        format!("anyio>={long}"),
+        "anyio>=1.0\u{7}".to_string(),
+    ] {
+        let f = failure_with(&format!("ERROR: No matching distribution found for {bad}"));
+        let why = f.why().unwrap();
+        assert_eq!(
+            why, "No release that fixes this supports this Python. Upgrade Python itself, or remove the package.",
+            "{bad:?}"
+        );
+        assert!(whys(&f.lines()).len() == 1);
+    }
+}
+
+/// Risk: `fix <ID>` for one finding runs only that advisory's own (lowest)
+/// fix, so the component's other advisories stay open. Oracle: the plan the
+/// list shows for the same five findings, one step at the highest version.
+#[test]
+fn one_finding_fix_is_the_components_covering_fix() {
+    let five: Vec<Finding> = ["2.8.4", "2.9.0", "2.10.0", "3.0.2", "4.0.0"]
+        .iter()
+        .enumerate()
+        .map(|(i, safe)| Finding {
+            kind: "package".into(),
+            component: "pip:soupsieve".into(),
+            version: "2.8.3".into(),
+            location: "/x/bin/python3".into(),
+            vuln_id: format!("CVE-{i}"),
+            fixed: safe.to_string(),
+            ..f(&format!("/x/bin/python3 -m pip install --user --upgrade 'soupsieve>={safe}'"), true, "fail")
+        })
+        .collect();
+    let other = Finding { component: "pip:other".into(), ..f("/x/bin/python3 -m pip install other", true, "fail") };
+    let manual = Finding { fix_auto: false, ..five[0].clone() };
+    let all: Vec<Finding> = five.iter().cloned().chain([other, manual]).collect();
+    let want = "/x/bin/python3 -m pip install --user --upgrade 'soupsieve>=4.0.0'";
+    for one in &five {
+        let fixes = component_fixes(&all, one);
+        assert_eq!(fixes.len(), 5, "only this component's unattended fixes: {fixes:?}");
+        assert_eq!(plan(&fixes).0, [want], "{}", one.vuln_id);
+    }
+    assert_eq!(plan(&[five[0].clone()]).0, ["/x/bin/python3 -m pip install --user --upgrade 'soupsieve>=2.8.4'"]);
+    // A finding with no unattended fix of its own gets no company.
+    assert_eq!(component_fixes(&all, &five[0]).iter().filter(|f| !f.fix_auto).count(), 0);
+}

@@ -235,7 +235,9 @@ pub fn fill(cmd: &str, safe: &str) -> String {
 /// named: a version that isn't one plain token never reaches a command.
 pub fn fix_with(c: &Component, safe: &str) -> (String, bool) {
     if safe.is_empty() || versions::is_safe_token(safe) {
-        machine::tools::with_uninstall(c, fill(&c.fix, safe), c.auto)
+        let (cmd, auto) = machine::tools::with_uninstall(c, fill(&c.fix, safe), c.auto);
+        // `uv python upgrade` only when this uv can install a fixing release.
+        machine::uv_pythons::adjust(c, safe, cmd, auto)
     } else {
         ("Review the advisory: the fix version it names isn't a version, so no command is offered".to_string(), false)
     }
@@ -1005,13 +1007,17 @@ impl<'a> Scan<'a> {
             // wants a `v` (`go get mod@v1.2.3`) spells it itself.
             let safe = versions::bare(&safe).to_string();
             let (fix_cmd, fix_auto) = fix_with(c, &safe);
+            let mut note = local_note(str_at(main, "summary"), main, group);
+            if let Some(why) = machine::uv_pythons::bundled_note(c, &fix_cmd, fix_auto) {
+                note = format!("{note} ({why})");
+            }
             self.add(Finding {
                 vuln_id: display_id(main),
                 status: status.into(),
                 fixed: safe.clone(),
                 kev,
                 severity: severity_of(main),
-                note: local_note(str_at(main, "summary"), main, group),
+                note,
                 fix_cmd,
                 fix_auto,
                 affected_range,

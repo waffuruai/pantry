@@ -688,12 +688,16 @@ fn pip_packages_carry_their_interpreters_release_line() {
     let site = home.path().join("site-packages");
     std::fs::create_dir_all(site.join("requests-2.32.0.dist-info")).unwrap();
     std::fs::write(site.join("requests-2.32.0.dist-info/METADATA"), "Name: requests\nVersion: 2.32.0\n").unwrap();
-    let probe = |_: &str| {
-        format!(
-            "{{\"v\": \"3.9.6\", \"exe\": \"/x/bin/python3.9\", \"sites\": [\"{}\"], \"managed\": false}}",
-            site.display()
-        )
-    };
+    // Built with a JSON encoder: a Windows site path carries backslashes,
+    // which hand-written JSON would leave as invalid escapes.
+    let reply = serde_json::json!({
+        "v": "3.9.6",
+        "exe": "/x/bin/python3.9",
+        "sites": [site.display().to_string()],
+        "managed": false
+    })
+    .to_string();
+    let probe = |_: &str| reply.clone();
     let found = vec![("/x/bin/python3".to_string(), "/x/bin/python3".to_string())];
     let (got, _) = pythons_from(found, &probe, &|_| "");
     let lines: Vec<(&str, Option<&String>)> =

@@ -8,6 +8,7 @@ use crate::utils::temp::TempDir;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
 const TERMINAL: &str = "POSTURE-TERMINAL-SECURE-INPUT";
 
 fn posture(vuln: &str, title: &str, fix_auto: bool) -> Finding {
@@ -24,6 +25,7 @@ fn posture(vuln: &str, title: &str, fix_auto: bool) -> Finding {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn terminal(fix_auto: bool) -> Finding {
     posture(TERMINAL, "Terminal Secure Keyboard Entry", fix_auto)
 }
@@ -52,6 +54,7 @@ fn ask(file: &Path, ids: &[String], scan: i64, answer: &str) -> (Vec<Outcome>, V
     (out, ran.into_inner().unwrap())
 }
 
+#[cfg(target_os = "macos")]
 fn findings_left(file: &Path) -> i64 {
     let c = Cache::open(Some(file)).unwrap();
     c.conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0)).unwrap()

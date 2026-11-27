@@ -320,7 +320,9 @@ fn a_machine_scan_with_no_refs_does_not_probe_or_record_a_gap() {
     let engine = d.path().join("docker");
     std::fs::write(
         &engine,
-        format!("#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\ncase \"$1\" in version|ps) {down} ;; esac\n"),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\ncase \"$1\" in version|ps) {down} ;; esac\n"
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();

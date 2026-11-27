@@ -158,10 +158,11 @@ The `os-release` `ID` (never a derivative's `VERSION_ID`, which would name the w
 
 Container images:
 
-1. `docker|podman create`, then `export` into a temp directory.
-2. A tar reader written here keeps only the files the readers want, caps each at 64 MiB and ignores entries escaping the root.
-3. The same lockfile and OS-database readers run on the result, without layer attribution. The kernel's source package (only headers in a container) is left out.
-4. The container and directory are removed, even on error. Answers are memoized per image id for 30 days.
+1. With image refs to check, the engine is asked once first (`version --format {{.Server.Version}}`, 5 s; local podman, which has no daemon, answers with its client version). If it does not answer, the step records one "container images" gap, with the engine's last line of stderr (home as `~`), and stops. A machine scan whose repos name no image asks only for the running containers (`ps --format {{.Image}}`, 5 s): none running, or a daemon that is not running (docker's "Cannot connect to the Docker daemon", podman's "Cannot connect to Podman"), is nothing to check and no gap; a hang or any other error (permission denied on the socket) is one gap that says the running containers were not listed; if it stops answering part way (20 s on one image), the step stops there with a gap that counts the images left. A timeout or any other error is never read as "not pulled here": only the engine's own "no such image" (docker) or "image not known" (podman) is.
+2. `docker|podman create`, then `export` into a temp directory.
+3. A tar reader written here keeps only the files the readers want, caps each at 64 MiB and ignores entries escaping the root.
+4. The same lockfile and OS-database readers run on the result, without layer attribution. The kernel's source package (only headers in a container) is left out.
+5. The container and directory are removed, even on error. Answers are memoized per image id for 30 days.
 
 The machine inventory finds runtimes and tools on PATH and in every version manager (mise, asdf, pyenv, nvm, volta, uv, rustup, …), Erlang/OTP from its `releases/<major>/OTP_VERSION` file (`erl` is never run: it boots a VM; a release OSV's lists for the OTP repo leave out, such as a side-branch patch like OTP 27.2.4, is reported not checked), global packages (each Python's `site-packages` metadata read under `-I -S`, npm, cargo, pipx, gem), apps and browsers (plists, the Homebrew cask catalog), Electron bundles, pending OS updates, Docker, editor extensions, and the MCP servers, plugins and skills of the coding agents. The trust-store check reads the system, OpenSSL, Homebrew, certifi, pip and Node stores through `openssl`. The posture checks are read-only probes of the settings the CIS benchmarks name ([public/posture.md](posture.md)).
 

@@ -162,7 +162,7 @@ pub static CHECKS: &[Check] = &[
         severity: Severity::Low,
         probe: git_hooks,
         fix: None,
-        explain: "A global core.hooksPath with a pre-commit hook (gitleaks on the staged changes) stops a secret at the commit, not after the push",
+        explain: "A global core.hooksPath with a pre-commit hook (a secret scan of the staged changes) stops a secret at the commit, not after the push",
     },
 ];
 

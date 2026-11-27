@@ -162,6 +162,30 @@ fn raw(t: &Table, key: &str) -> Option<String> {
     }
 }
 
+/// Every key a source may set.
+const KEYS: [&str; 15] = [
+    "id",
+    "kind",
+    "format",
+    "url",
+    "path",
+    "transport",
+    "tier",
+    "refresh",
+    "license",
+    "redistribute",
+    "max_bytes",
+    "sends",
+    "consent",
+    "redirects",
+    "sha256",
+];
+
+/// The keys whose value is a quoted string (the others are a number, true or
+/// false, or a list).
+const STRING_KEYS: [&str; 12] =
+    ["id", "kind", "format", "url", "path", "transport", "tier", "refresh", "license", "sends", "consent", "sha256"];
+
 /// The sources in a file's text: every `[[source]]` table, checked.
 pub fn parse(text: &str) -> Result<Vec<Source>> {
     Ok(entries(text)?.into_iter().map(|(s, _)| s).collect())
@@ -178,6 +202,25 @@ fn entries(text: &str) -> Result<Vec<(Source, Vec<String>)>> {
         }
         if out.iter().any(|(s, _)| s.id == id) {
             return Err(bad("listed twice"));
+        }
+        // A key that reads as nothing would be dropped without a word, and a
+        // pin the user wrote would leave the source unpinned: refuse it.
+        for (key, val) in &t.entries {
+            if !KEYS.contains(&key.as_str()) {
+                return Err(bad(&format!("unknown key {key:?} (the keys are {})", KEYS.join(", "))));
+            }
+            let quoted = matches!(val, Val::Str(_));
+            if STRING_KEYS.contains(&key.as_str()) && !quoted {
+                return Err(bad(&format!("{key:?} is a quoted string")));
+            }
+            if key == "redirects" {
+                // only a list is read: a quoted host or a number would load as no hosts
+                if !matches!(val, Val::Raw(r) if r.trim_start().starts_with('[')) {
+                    return Err(bad("\"redirects\" is a list of quoted strings"));
+                }
+            } else if !STRING_KEYS.contains(&key.as_str()) && quoted {
+                return Err(bad(&format!("{key:?} is not a quoted string")));
+            }
         }
         let has = |k: &str| t.entries.iter().any(|(n, _)| n == k);
         let transport = match (t.str("transport"), has("path")) {

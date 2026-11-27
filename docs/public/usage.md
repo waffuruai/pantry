@@ -364,6 +364,9 @@ Every event, field and step: [`scan --events` in the CLI contract](../../specs/c
 - Feeds are downloaded whole.
 - With `WORDFENCE_API_KEY` set, the key goes to Wordfence to download its whole WordPress feed; nothing about your sites is sent.
 - The `breach` command sends your git and GitHub email addresses to see if they've been exposed in a hack. It only does this with your explicit approval.
+- A file the malware scan flags has its SHA-256, never the file, looked up at YARAify, CIRCL hashlookup and, with `ABUSECH_AUTH_KEY`, MalwareBazaar, after you say yes once. `--no-online-hash` never sends it.
+- With `--licenses`, your dependencies' names and versions go to deps.dev.
+- A source of your own with a `url` (in your sources file or `--add-sources`) gets what its kind needs: package names and versions for an OSV-compatible API, a flagged file's SHA-256 for a hash lookup. You're asked once first when it's a hash lookup or its host isn't one Pantry already asks.
 
 Source by source: [what is sent](checks-and-sources.md#sources). Every request names `wpantry` in its User-Agent and times out after 30 seconds.
 

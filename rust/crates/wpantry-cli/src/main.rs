@@ -214,6 +214,14 @@ fn cmd_scan(a: Check) -> Result<i32> {
             None => eprintln!("{}", Style::stderr().line(&format!("  ℹ {n}"))),
         }
     }
+    if quiet && (a.fix || a.dry_run) {
+        // The plan and the fixes' lines would go to stdout, which a machine
+        // format owns: say that none ran, so a caller does not take the
+        // scan's exit code for a fix's.
+        tell(
+            "· nothing was fixed: a report in a machine format on stdout leaves no room for the fixes' lines. Add -o FILE to the format, or run `wpantry fix` without it.",
+        );
+    }
     if quiet || !(a.fix || a.dry_run) {
         return Ok(status);
     }

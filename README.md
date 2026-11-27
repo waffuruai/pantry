@@ -28,9 +28,10 @@ Every check, every source and exactly what is sent to each: [checks and sources]
 ```bash
 curl -fsSL https://github.com/waffuruai/pantry/releases/latest/download/install.sh | sh  # recommended
 mise use -g packslip:github.com/waffuruai/pantry                                        # with mise, once it is installed and activated
+brew install waffuruai/tap/wpantry                                                      # with Homebrew
 ```
 
-Both verify the release before installing anything. New to mise? [Install](docs/public/install.md#install) shows how to set it up first. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks, and the installed programs Pantry's program table names against CVE records; the rest of the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
+All three verify the release before installing anything; Homebrew checks the digest its formula carries from the release's `SHA256SUMS`. New to mise? [Install](docs/public/install.md#install) shows how to set it up first. To verify a release by hand, upgrade, uninstall, or install from crates.io or source, see [install](docs/public/install.md). Releases cover macOS (Apple silicon and Intel), Linux (x86-64 and arm64) and Windows x86-64 (repo checks, and the installed programs Pantry's program table names against CVE records; the rest of the machine inventory is [#11](https://github.com/waffuruai/pantry/issues/11)).
 
 ## Use
 

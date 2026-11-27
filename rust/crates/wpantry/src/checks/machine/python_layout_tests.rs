@@ -18,6 +18,7 @@ fn s(p: &Path) -> String {
 /// `~/Library/Python/X.Y/lib/python/site-packages`, other POSIX builds
 /// `~/.local/lib/pythonX.Y[t]/site-packages`; the marker in the stdlib
 /// is what `managed` reports.
+#[cfg(unix)]
 #[test]
 fn the_layout_gives_line_user_site_and_marker() {
     let d = TempDir::new("layout").unwrap();
@@ -58,13 +59,15 @@ fn a_windows_layout_reads_the_dll_and_appdata() {
     e.appdata = Some(d.path().join("Roaming"));
     let Layout::Read { line, user, .. } = read(&s(&exe), &s(&exe), &e) else { panic!() };
     assert_eq!(line, "3.12");
-    assert_eq!(user, Some(s(&d.path().join("Roaming/Python/Python312/site-packages"))));
+    // Native separators throughout, as `site` builds it with os.path.join.
+    assert_eq!(user, Some(s(&d.path().join("Roaming").join("Python").join("Python312").join("site-packages"))));
 }
 
 /// Risk: Apple's stub is reported as an unknown Python on every Mac
 /// without the developer tools, or a Mac with them loses its user site.
 /// Oracle: no developer folder Python is `Absent`; with one, the layout of
 /// the framework Python it starts.
+#[cfg(unix)]
 #[test]
 fn apples_stub_is_read_through_the_developer_folder() {
     let d = TempDir::new("stub").unwrap();
@@ -76,15 +79,10 @@ fn apples_stub_is_read_through_the_developer_folder() {
     touch(&real);
     let link = d.path().join("CommandLineTools/usr/bin/python3");
     std::fs::create_dir_all(link.parent().unwrap()).unwrap();
-    #[cfg(unix)]
     std::os::unix::fs::symlink(&real, &link).unwrap();
-    #[cfg(not(unix))]
-    touch(&link);
     let Layout::Read { line, user, .. } = read("/usr/bin/python3", "/usr/bin/python3", &e) else { panic!() };
-    if cfg!(unix) {
-        assert_eq!(line, "3.9");
-        assert_eq!(user, Some(s(&d.path().join("home/Library/Python/3.9/lib/python/site-packages"))));
-    }
+    assert_eq!(line, "3.9");
+    assert_eq!(user, Some(s(&d.path().join("home/Library/Python/3.9/lib/python/site-packages"))));
 }
 
 /// Oracle: a venv without system site-packages reads no user site (pipx's).

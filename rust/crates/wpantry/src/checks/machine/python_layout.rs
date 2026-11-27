@@ -173,7 +173,7 @@ fn user_site(env: &Env, line: &str, t: &str, framework: bool) -> PathBuf {
     let nodot = line.replace('.', "");
     if env.os == "windows" {
         let base = env.user_base.clone().or_else(|| env.appdata.as_ref().map(|a| a.join("Python")));
-        let base = base.unwrap_or_else(|| env.home.join("AppData/Roaming/Python"));
+        let base = base.unwrap_or_else(|| env.home.join("AppData").join("Roaming").join("Python"));
         return base.join(format!("Python{nodot}{t}")).join("site-packages");
     }
     if framework {

@@ -554,6 +554,17 @@ impl Cache {
         Ok(())
     }
 
+    /// `findings` as the findings this connection reads, in a temporary
+    /// table that shadows the kept ones and goes with the connection: a
+    /// scan that keeps nothing (`--changes`) renders through it.
+    pub fn shadow_findings(&self, findings: &[Finding]) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP VIEW IF EXISTS temp.findings; DROP TABLE IF EXISTS temp.findings; \
+             CREATE TEMP TABLE findings AS SELECT * FROM main.findings WHERE 0",
+        )?;
+        self.insert_findings("temp.findings", None, findings)
+    }
+
     fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {
         let mut stmt = self.conn.prepare(&format!(
             "INSERT INTO {table} ({FINDING_COLUMNS}{}) \

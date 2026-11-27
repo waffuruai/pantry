@@ -54,7 +54,45 @@ impl Failure {
             out.push(format!("    stderr (last {} lines):", self.stderr.lines().count()));
             out.extend(self.stderr.lines().map(|l| format!("      {l}")));
         }
+        if let Some(why) = self.why() {
+            out.push(format!("    Why: {why}"));
+        }
         out
+    }
+
+    /// One plain sentence saying why the fix failed, when the cause is
+    /// recognised, else None. Only characters a package name or version may
+    /// hold are ever copied from stderr into it.
+    pub fn why(&self) -> Option<String> {
+        const NO_MATCH: &str = "No matching distribution found for";
+        if self.stderr.contains("externally-managed-environment") {
+            return Some(
+                "This Python is managed by a package manager, so pip will not change it. \
+                 Upgrade the package through that package manager instead."
+                    .to_string(),
+            );
+        }
+        if let Some(at) = self.stderr.find(NO_MATCH) {
+            let wanted = match self.stderr[at + NO_MATCH.len()..].split_whitespace().next().and_then(parse_requirement)
+            {
+                Some((name, version)) => format!("No release of {name} at or above {version}"),
+                None => "No release that fixes this".to_string(),
+            };
+            return Some(format!("{wanted} supports this Python. Upgrade Python itself, or remove the package."));
+        }
+        // The failure type has no spawn variant; `not_found` words the
+        // reason for a program that is not there, so that is what is read.
+        if self.exit_code.is_none() && self.reason.contains("was not found") {
+            let program = self.cmd.split_whitespace().next().unwrap_or("");
+            let plain = |c: char| c.is_ascii_alphanumeric() || "._/+@-".contains(c);
+            if !program.is_empty() && program.len() <= 200 && program.chars().all(plain) {
+                return Some(format!(
+                    "The program this fix runs is no longer at {program}. \
+                     Scan again so the fix names what is installed now."
+                ));
+            }
+        }
+        None
     }
 
     /// One string for the log: the exit code or reason, then the stderr tail.
@@ -65,6 +103,17 @@ impl Failure {
         };
         if self.stderr.is_empty() { head } else { format!("{head}\n{}", self.stderr) }
     }
+}
+
+/// `name>=version` from pip's message, as (name, version); None unless the
+/// whole word is a plain name, `>=` and a plain version (a trailing `,<N`
+/// bound is allowed), so nothing odd from stderr is ever repeated.
+fn parse_requirement(word: &str) -> Option<(&str, &str)> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._-".contains(c);
+    let ok = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s.chars().all(plain);
+    let (name, rest) = word.split_once(">=")?;
+    let version = rest.split(',').next()?;
+    (ok(name, 100) && ok(version, 40)).then_some((name, version))
 }
 
 /// Why `program` can't be found: where wpantry looked (PATH, then the
@@ -88,6 +137,16 @@ fn not_found(program: &str) -> String {
 /// Run `argv` as is (no shell), with stdin closed and stdout on the
 /// terminal, killing it after `timeout`.
 pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
+    run_bounded_with(argv, timeout, &crate::utils::stop::kill_tree)
+}
+
+/// [`run_bounded`] with the way a program past its deadline is stopped given
+/// (the tests' own); it says what could not be stopped.
+pub(crate) fn run_bounded_with(
+    argv: &[String],
+    timeout: Duration,
+    stop: &dyn Fn(&mut std::process::Child) -> Result<(), String>,
+) -> Run {
     // The program as PATH has it, else where its installer puts it: a fix
     // started from an app or a service has a short PATH (`mise` is in
     // ~/.local/bin, `brew` under /opt/homebrew).
@@ -109,12 +168,13 @@ pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
         std::thread::spawn(move || drain(pipe, &tail))
     });
     let start = Instant::now();
+    // What a timeout could not stop, when it could not stop everything.
+    let mut not_stopped: Option<String> = None;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
+                not_stopped = stop(&mut child).err();
                 break None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
@@ -144,14 +204,26 @@ pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
         None => Run {
             ok: false,
             exit_code: None,
-            reason: format!(
-                "timed out after {} and was stopped",
-                if timeout.as_secs() >= 60 {
+            reason: {
+                let after = if timeout.as_secs() >= 60 {
                     format!("{} minutes", timeout.as_secs() / 60)
                 } else {
                     format!("{} ms", timeout.as_millis())
+                };
+                match not_stopped {
+                    None => format!("timed out after {after} and was stopped"),
+                    Some(why) => {
+                        // A step run through sudo is root's: wpantry can't signal it.
+                        let sudo = std::path::Path::new(&argv[0]).file_name().is_some_and(|n| n == "sudo");
+                        let hint = if sudo && why.contains("not permitted") {
+                            " (the program runs as root, which wpantry cannot signal; stop it as root)"
+                        } else {
+                            ""
+                        };
+                        format!("timed out after {after} and not everything was stopped: {why}{hint}")
+                    }
                 }
-            ),
+            },
             stderr,
         },
     }
@@ -207,7 +279,7 @@ pub fn clean_tail(bytes: &[u8], cut: bool) -> String {
         .lines()
         .map(|l| l.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or("").trim_end().to_string())
         .filter(|l| !l.is_empty() && !looks_like_env(l))
-        .map(|l| if home.len() > 1 { l.replace(&home, "~") } else { l })
+        .map(|l| if home.len() > 1 { shorten_home(&l, &home) } else { l })
         .map(|l| {
             if l.chars().count() > MAX_LINE {
                 format!("{}…", l.chars().take(MAX_LINE).collect::<String>())
@@ -217,6 +289,29 @@ pub fn clean_tail(bytes: &[u8], cut: bool) -> String {
         })
         .collect();
     lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
+}
+
+/// `line` with the home directory `home` written `~` wherever it appears,
+/// as the plain replace before this did, except where the name goes on
+/// (`/Users/samantha` for `/Users/sam`: a letter, digit or `_` follows), which
+/// is another folder. Whatever comes before it (`file://`, a quote, `=`, `:`,
+/// another folder) and any punctuation after it (`/`, `\`, `.`, `-`, a quote)
+/// still shortens it: a full home path is never left in the text.
+///
+/// Example: with home `/Users/sam`, `see file:///Users/sam/x.` is
+/// `see file://~/x.` and `/Users/samantha/x` stays.
+pub(crate) fn shorten_home(line: &str, home: &str) -> String {
+    let goes_on = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(home) {
+        let after = &rest[at + home.len()..];
+        out.push_str(&rest[..at]);
+        out.push_str(if after.chars().next().is_some_and(goes_on) { home } else { "~" });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A `NAME=value` line with an upper-case name: what `env` prints. A
@@ -232,8 +327,12 @@ fn looks_like_env(line: &str) -> bool {
     }
 }
 
-/// `text` without ANSI escape sequences and other control characters
-/// (tab becomes a space; newline and carriage return stay).
+/// `text` without terminal escape sequences, other control characters and
+/// the invisible characters that change how a line reads (tab becomes a
+/// space; newline and carriage return stay): CSI sequences, the strings that
+/// end at BEL or `ESC \` (OSC, and the device-control, start-of-string,
+/// privacy-message and application-command strings, payload included), and a
+/// character-set or other two-byte escape with its final character.
 fn strip_escapes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -248,8 +347,8 @@ fn strip_escapes(text: &str) -> String {
                         }
                     }
                 }
-                // OSC: up to BEL or ESC \
-                Some(']') => {
+                // OSC, DCS, SOS, PM, APC: a string up to BEL or ESC \
+                Some(']' | 'P' | 'X' | '^' | '_') => {
                     while let Some(n) = chars.next() {
                         if n == '\u{7}' {
                             break;
@@ -260,13 +359,28 @@ fn strip_escapes(text: &str) -> String {
                         }
                     }
                 }
+                // ESC, intermediate bytes (0x20..=0x2F), then a final one: `ESC ( B`
+                Some(n) if ('\u{20}'..='\u{2f}').contains(&n) => {
+                    while chars.next_if(|m| ('\u{20}'..='\u{2f}').contains(m)).is_some() {}
+                    chars.next();
+                }
                 _ => {}
             },
             '\t' => out.push(' '),
             '\n' | '\r' => out.push(c),
-            c if c.is_control() => {}
+            c if c.is_control() || invisible(c) => {}
             c => out.push(c),
         }
     }
     out
+}
+
+/// A character that draws nothing but changes how the text around it reads:
+/// the bidirectional marks, embeddings, overrides and isolates, the
+/// zero-width spaces and joiners, the invisible operators and the byte order
+/// mark. Left in a report line, `\u{202e}` makes the rest of it run backwards.
+fn invisible(c: char) -> bool {
+    matches!(c,
+        '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}')
 }

@@ -64,6 +64,11 @@ fn stale_page(cache: &Cache, product: &str) -> Result<bool> {
 }
 
 fn eol_store(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
+    // One transaction: the product's old cycles or its new ones, never part of them.
+    cache.atomically(|| eol_store_now(cache, product, data))
+}
+
+fn eol_store_now(cache: &Cache, product: &str, data: Option<&Value>) -> Result<()> {
     cache.conn.execute("DELETE FROM eol WHERE product = ?", [product])?;
     let rows = data.and_then(Value::as_array).cloned().unwrap_or_default();
     let mut released = serde_json::Map::new();

@@ -4,8 +4,8 @@
 //! itself, so osv-scanner is not on it.
 
 use crate::utils::json::{J, obj};
+use crate::utils::process::find_tool;
 use crate::utils::process::run;
-use crate::utils::process::which;
 use std::time::Duration;
 
 /// (name, required, version arguments, what wpantry uses it for)
@@ -82,7 +82,7 @@ pub fn tools() -> Vec<Tool> {
     TOOLS
         .iter()
         .map(|(name, required, args, purpose)| {
-            let exe = which(name);
+            let exe = find_tool(name);
             let version = exe
                 .as_ref()
                 .map(|e| {

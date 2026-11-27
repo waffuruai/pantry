@@ -456,6 +456,82 @@ fn verify_targeted_fixes(cache: &Cache, scan: i64, scope: &str, started_at: f64)
     Ok(())
 }
 
+/// What `wpantry recheck` leaves behind when it finds finding `finding_id`
+/// (the `covered` rows' id) gone from the latest scan, `scan`. There is no
+/// newer scan to tie anything to, so the changes hang on scan `scan`, and
+/// say how they were made:
+///
+/// * each covered exposure still open is resolved now, as of `scan`;
+/// * each covered finding leaves the latest findings (the report's list),
+///   and stays in scan `scan`'s kept copy, which is what that scan found;
+/// * a fix that worked (`mitigate`, ran since `scan` finished) and whose
+///   targets are all resolved is verified: `verified_scan` is `scan`, and
+///   `verified_by` says `recheck`, since no scan said it;
+/// * when any of that changed something, one `recheck` event says so.
+///
+/// Doing it twice changes nothing the second time and writes no event.
+pub fn record_recheck(cache: &Cache, scan: i64, finding_id: &str, covered: &[Finding], reason: &str) -> Result<()> {
+    let at = now();
+    let keys: Vec<String> = covered.iter().map(key_of).collect();
+    let mut resolved = 0;
+    for key in &keys {
+        resolved += cache.conn.execute(
+            "UPDATE exposures SET resolved_scan = ?, resolved_at = ? WHERE key = ? AND resolved_at IS NULL",
+            params![scan, at, key],
+        )?;
+    }
+    let mut dropped = 0;
+    for f in covered {
+        dropped += cache.conn.execute(
+            "DELETE FROM findings WHERE kind = ? AND component = ? AND location = ? AND vuln_id = ?",
+            params![f.kind, f.component, f.location, f.vuln_id],
+        )?;
+    }
+    let finished: Option<f64> =
+        cache.conn.query_row("SELECT finished_at FROM scans WHERE id = ?", [scan], |r| r.get(0)).optional()?.flatten();
+    let mut pending = cache.conn.prepare(
+        "SELECT id, targets FROM fixes WHERE ok = 1 AND verified_scan IS NULL AND mode = 'mitigate' AND at >= ?",
+    )?;
+    let candidates: Vec<(i64, Option<String>)> = pending
+        .query_map([finished.unwrap_or(f64::MIN)], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(pending);
+    let mut verified = 0;
+    for (id, encoded) in candidates {
+        let targets: Vec<String> = encoded.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        if !targets.iter().any(|t| keys.contains(t)) {
+            continue;
+        }
+        // Every target is this finding or one already resolved.
+        let all = targets.iter().all(|t| {
+            keys.contains(t)
+                || cache
+                    .conn
+                    .query_row("SELECT resolved_at IS NOT NULL FROM exposures WHERE key = ?", [t], |r| {
+                        r.get::<_, bool>(0)
+                    })
+                    .unwrap_or(false)
+        });
+        if all {
+            cache.conn.execute(
+                "UPDATE fixes SET verified_scan = ?, verified_by = 'recheck' WHERE id = ?",
+                params![scan, id],
+            )?;
+            verified += 1;
+        }
+    }
+    if resolved + dropped + verified == 0 {
+        return Ok(());
+    }
+    event(
+        cache,
+        "recheck",
+        &json!({"scan": scan, "finding_id": finding_id, "state": "gone", "reason": reason, "keys": keys,
+                "exposures_resolved": resolved, "findings_dropped": dropped, "fixes_verified": verified,
+                "user": user(), "host": host()}),
+    )
+}
+
 pub fn event(cache: &Cache, kind: &str, detail: &Value) -> Result<()> {
     cache
         .conn
@@ -533,6 +609,19 @@ pub fn scan_started(cache: &Cache, opts: &Options, started_at: f64) -> Result<()
 pub fn scan_finished(cache: &Cache) -> Result<()> {
     cache.conn.execute("DELETE FROM meta WHERE key = ?", [format!("{RUNNING}{}", std::process::id())])?;
     Ok(())
+}
+
+/// A scan another process is running on this cache now, by its pid (the
+/// first when there are several). Reads only: a mark whose process is gone
+/// is left for [`unfinished`] to tell.
+pub fn running_scan(cache: &Cache, alive: &dyn Fn(u32) -> bool) -> Result<Option<u32>> {
+    let mut stmt = cache.conn.prepare("SELECT key FROM meta WHERE substr(key, 1, ?1) = ?2")?;
+    let keys: Vec<String> =
+        stmt.query_map(params![RUNNING.len() as i64, RUNNING], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(keys
+        .iter()
+        .filter_map(|k| k[RUNNING.len()..].parse::<u32>().ok())
+        .find(|pid| *pid != 0 && *pid != std::process::id() && alive(*pid)))
 }
 
 /// The scans that began and didn't end, the oldest first; `alive` says
@@ -643,8 +732,13 @@ pub fn prune_run(cache: &Cache, id: i64) -> Result<Option<(ScanRow, usize)>> {
     Ok(Some((row, gone)))
 }
 
+/// This machine's name, asked once per process: a run that records many
+/// events (a re-check of a thousand ids) would otherwise start `hostname`
+/// for each.
 pub(crate) fn host() -> String {
-    crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string()
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| crate::utils::process::run(&["hostname"], std::time::Duration::from_secs(5)).trim().to_string())
+        .clone()
 }
 
 pub(crate) fn user() -> String {
@@ -699,6 +793,10 @@ pub struct Fix {
     pub scan_id: Option<i64>,
     /// The complete scan that no longer listed what this fix addressed.
     pub verified_scan: Option<i64>,
+    /// `recheck` when no scan said so: `wpantry recheck` found what the fix
+    /// addressed gone and tied that to scan `verified_scan`, the scan the fix
+    /// was made against. None when a later scan verified it, or it isn't.
+    pub verified_by: Option<String>,
     /// The exposures (`key_of`) the fix was meant to clear.
     pub targets: Vec<String>,
     /// Who ran it, and on which machine ("" for fixes recorded before
@@ -783,7 +881,8 @@ pub fn exposures(cache: &Cache, since: f64) -> Result<Vec<Exposure>> {
 
 pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
     let mut stmt = cache.conn.prepare(
-        "SELECT at, command, mode, ok, scan_id, verified_scan, targets, user, host, exit_code, error FROM fixes WHERE at >= ? ORDER BY at",
+        "SELECT at, command, mode, ok, scan_id, verified_scan, targets, user, host, exit_code, error, verified_by \
+         FROM fixes WHERE at >= ? ORDER BY at",
     )?;
     let rows = stmt.query_map([since], |r| {
         let targets: Option<String> = r.get(6)?;
@@ -799,6 +898,7 @@ pub fn fixes(cache: &Cache, since: f64) -> Result<Vec<Fix>> {
             host: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
             exit_code: r.get(9)?,
             error: r.get(10)?,
+            verified_by: r.get(11)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -906,8 +1006,9 @@ impl Exposure {
 impl Fix {
     pub fn to_json(&self) -> Value {
         json!({"at": self.at, "when": stamp(self.at), "command": self.command, "mode": self.mode, "ok": self.ok,
-               "scan_id": self.scan_id, "verified_scan": self.verified_scan, "targets": self.targets,
-               "user": self.user, "host": self.host, "exit_code": self.exit_code, "error": self.error})
+               "scan_id": self.scan_id, "verified_scan": self.verified_scan, "verified_by": self.verified_by,
+               "targets": self.targets, "user": self.user, "host": self.host, "exit_code": self.exit_code,
+               "error": self.error})
     }
 }
 

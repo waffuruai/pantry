@@ -282,3 +282,67 @@ fn no_personal_files_keeps_documents_out_of_a_path_that_holds_it() {
     assert_eq!(roots(scan_scope(Some(&inside), &h, true, &quiet, &quiet, &quiet)), [canon(&docs)]);
     assert_eq!(personal_under(&h, &h.join("Documents")), Vec::<PathBuf>::new(), "a named folder is scanned");
 }
+
+/// A source file named after Docker is not a Dockerfile (`Dockerfile.py`
+/// matched the `Dockerfile.` prefix and its `from x import y` lines were
+/// read as `FROM`), and a line is a `FROM` only when it has the shape of the
+/// instruction: `FROM [--flag]... IMAGE [AS STAGE]`.
+#[test]
+fn a_python_file_named_after_docker_is_not_a_dockerfile() {
+    for name in [
+        "Dockerfile",
+        "dockerfile",
+        "Dockerfile.dev",
+        "Dockerfile.prod.ci",
+        "Containerfile.base",
+        "api.Dockerfile",
+        "web.containerfile",
+    ] {
+        assert!(is_dockerfile(name), "{name}");
+    }
+    for name in [
+        "Dockerfile.py",
+        "dockerfile.PY",
+        "Dockerfile.dev.py",
+        "Containerfile.rs",
+        "Dockerfile.md",
+        "Dockerfile.",
+        "Dockerfile.json",
+        ".dockerfile",
+    ] {
+        assert!(!is_dockerfile(name), "{name}");
+    }
+    let tmp = TempDir::new("py-dockerfile").unwrap();
+    let py = tmp.path().join("Dockerfile.py");
+    let source = "from importlib.metadata import version\nfrom . import x\nfrom os import *\nfrom a.b import (c,\n    d)\nprint(version('x'))\n";
+    std::fs::write(&py, source).unwrap();
+    assert!(from_lines(&py).is_empty(), "no line of that file is a FROM instruction");
+    assert!(repo_images(&[("app".into(), tmp.path().to_path_buf())]).is_empty());
+    // Real Dockerfile lines still count, however spelled.
+    let df = tmp.path().join("Dockerfile");
+    std::fs::write(&df, "from debian:12\nFROM --platform=linux/amd64 nginx:1.27 as web\nFROM web AS again\nFROM x y\nfrom a import b\nFROM\n").unwrap();
+    assert_eq!(from_lines(&df), ["debian:12", "nginx:1.27"]);
+}
+
+/// Risk: the repo search lists a search root before it asks whether it is left
+/// out, so a root that is a link into a left-out folder (`~/code ->
+/// ~/Documents/code`) was listed and its repos found. Oracle: a repo planted
+/// in the folder is found through the link without a guard, and not with one.
+/// Cannot notice a stat: it sees what was found. Known bad: no check on the
+/// root before `read_dir`.
+#[cfg(unix)]
+#[test]
+fn a_search_root_that_is_a_link_into_a_left_out_folder_finds_nothing() {
+    let tmp = TempDir::new("root-link").unwrap();
+    let h = std::fs::canonicalize(tmp.path()).unwrap().join("home");
+    git_repo(&h.join("Documents/code/app"), false);
+    std::os::unix::fs::symlink("Documents/code", h.join("code")).unwrap();
+    let quiet = |_: &str| {};
+    assert_eq!(
+        discover_excluding(&h.join("code"), &Excluded::default(), &quiet).len(),
+        1,
+        "findable without the guard"
+    );
+    let _guard = crate::utils::privacy::leave_out(vec![h.join("Documents")], Vec::new());
+    assert!(discover_excluding(&h.join("code"), &Excluded::default(), &quiet).is_empty());
+}

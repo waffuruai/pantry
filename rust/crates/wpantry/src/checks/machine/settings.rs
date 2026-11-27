@@ -128,6 +128,15 @@ pub fn checks() -> Vec<&'static Check> {
     os.iter().chain(any::dev_settings::CHECKS.iter()).collect()
 }
 
+/// The one check whose id is `id` (case-insensitive, the `POSTURE-` prefix
+/// optional), run over `runner`: the same probe a scan runs for it, and
+/// nothing else. None when this machine has no such check.
+pub fn probe_one(id: &str, runner: Runner) -> Option<(&'static Check, Outcome)> {
+    let bare = |s: &str| s.trim_start_matches("POSTURE-").to_ascii_uppercase();
+    let c = checks().into_iter().find(|c| bare(c.id) == bare(id))?;
+    Some((c, (c.probe)(runner)))
+}
+
 /// Run every check not in `skip` (ids, case-insensitive).
 pub fn run(skip: &[String], runner: Runner) -> Vec<(&'static Check, Outcome)> {
     let skipped = |id: &str| {

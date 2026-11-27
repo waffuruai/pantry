@@ -84,6 +84,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("fixes", "host", "TEXT"),
     ("fixes", "exit_code", "INTEGER"),
     ("fixes", "error", "TEXT"),
+    ("fixes", "verified_by", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),
@@ -105,7 +106,12 @@ fn migrate(conn: &Connection) -> Result<()> {
         let have: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         if !have.iter().any(|c| c == column) {
-            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+            // Another process opening the same new cache may add it first.
+            if let Err(e) = conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))
+                && !e.to_string().contains("duplicate column name")
+            {
+                return Err(e.into());
+            }
         }
     }
     // The newest scan with no word on whether its findings are kept was
@@ -161,11 +167,68 @@ fn path_from(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
     base.join("wpantry").join("wpantry.db")
 }
 
+/// The longest a scan waits for another scan on the same cache to end.
+pub const SCAN_QUEUE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// The two waits of a scan's cache.
+#[derive(Clone, Copy)]
+pub(crate) struct Limits {
+    /// How long to queue for the scan that has the cache.
+    pub queue: std::time::Duration,
+    /// How long one write waits for the database lock.
+    pub busy: std::time::Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { queue: SCAN_QUEUE, busy: std::time::Duration::from_secs(60) }
+    }
+}
+
+/// Take the lock file of the scan that has the cache at `db`, waiting for it
+/// to end, and saying so through `note` once when it has to wait (a wait can
+/// last [`SCAN_QUEUE`], and a scan that says nothing looks hung). The lock is
+/// the operating system's (`flock`, `LockFileEx`): a scan that is killed lets
+/// it go.
+fn lock_scans(db: &Path, queue: std::time::Duration, note: &dyn Fn(&str)) -> Result<std::fs::File> {
+    let mut name = db.as_os_str().to_os_string();
+    name.push(".scan-lock");
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(PathBuf::from(name))?;
+    let start = std::time::Instant::now();
+    let shown = crate::utils::files::short(&db.to_string_lossy());
+    let wait = if queue.as_secs() >= 120 {
+        format!("{} minutes", queue.as_secs() / 60)
+    } else {
+        format!("{} s", queue.as_secs())
+    };
+    let mut said = false;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < queue => {
+                if !said {
+                    note(&format!("Waiting for another scan to finish with the cache ({shown}), up to {wait}"));
+                    said = true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::Failed(format!("another scan has had the cache for {wait} ({shown})")));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+    }
+}
+
 pub struct Cache {
     pub conn: Connection,
     /// Whether SQLite has FTS5 (the bundled one does).
     pub fts: bool,
     file: PathBuf,
+    /// Opened by [`Cache::open_for_scan`]: each transaction takes the write lock when it begins.
+    writer: bool,
+    /// The lock file that keeps other scans out while this one has the cache.
+    _scan_lock: Option<std::fs::File>,
 }
 
 impl Cache {
@@ -174,6 +237,33 @@ impl Cache {
     /// [`Cache::close`], as Python's sqlite3 does; dropping a cache without
     /// closing it discards what wasn't committed.
     pub fn open(file: Option<&Path>) -> Result<Cache> {
+        Cache::open_as(file, None, Limits::default())
+    }
+
+    /// [`Cache::open`] for a scan. Scans on one cache run one after the
+    /// other: this waits (up to [`SCAN_QUEUE`]) for the scan that has the
+    /// cache, through a lock file beside it that the operating system lets go
+    /// when that scan ends however it ends. The scan's own writes are not one
+    /// long transaction: each waits for the database lock it needs and lets
+    /// it go, so `report`, `ignore`, `cache prune` and the rest are not held
+    /// up for the length of a scan, as they were not before. Scans are
+    /// serialised because they replace each other's data (a scan with other
+    /// sources removes what the first one loaded). A wait is said through
+    /// `note` once, when it begins.
+    pub fn open_for_scan(file: Option<&Path>, note: &dyn Fn(&str)) -> Result<Cache> {
+        Cache::open_for_scan_within(file, Limits::default(), note)
+    }
+
+    /// [`Cache::open_for_scan`] with its two waits set: how long to queue for
+    /// another scan, and how long one write waits for the database lock.
+    /// Tests shorten them to see what a wait longer than either does.
+    pub(crate) fn open_for_scan_within(file: Option<&Path>, limits: Limits, note: &dyn Fn(&str)) -> Result<Cache> {
+        Cache::open_as(file, Some(note), limits)
+    }
+
+    /// A scan's cache (`note` given: the scan lock, autocommit) or another command's.
+    fn open_as(file: Option<&Path>, note: Option<&dyn Fn(&str)>, limits: Limits) -> Result<Cache> {
+        let writer = note.is_some();
         let file = file.map(Path::to_path_buf).unwrap_or_else(path);
         if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
             let mut builder = std::fs::DirBuilder::new();
@@ -185,6 +275,10 @@ impl Cache {
             }
             builder.create(dir)?;
         }
+        let scan_lock = match note {
+            Some(note) => Some(lock_scans(&file, limits.queue, note)?),
+            None => None,
+        };
         let conn = Connection::open(&file)?;
         // The cache names what is installed and where secrets sit: ours only.
         #[cfg(unix)]
@@ -194,7 +288,7 @@ impl Cache {
         }
         // Readers and the writer coexist (a scheduled scan beside a manual
         // one), and a minute of waiting beats failing a scan outright.
-        conn.busy_timeout(std::time::Duration::from_secs(60))?;
+        conn.busy_timeout(limits.busy)?;
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::history::SCHEMA)?;
@@ -220,16 +314,43 @@ impl Cache {
                  id, aliases, summary, details, packages, tokenize='porter')",
             )
             .is_ok();
-        conn.execute_batch("BEGIN")?;
-        Ok(Cache { conn, fts, file })
+        if !writer {
+            conn.execute_batch("BEGIN")?;
+        }
+        Ok(Cache { conn, fts, file, writer, _scan_lock: scan_lock })
     }
 
     pub fn file(&self) -> &Path {
         &self.file
     }
 
+    /// Run `f` as one transaction that holds the write lock only while it
+    /// runs. A scan's cache is in autocommit (each write waits for the lock
+    /// it needs and lets go, so another command can write between them); the
+    /// scan's result goes in together.
+    /// Inside a transaction already (or on a cache that is not a scan's,
+    /// which is always in one), `f` runs in that one.
+    pub fn atomically<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        if !self.writer || !self.conn.is_autocommit() {
+            return f();
+        }
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f() {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     pub fn commit(&self) -> Result<()> {
-        self.conn.execute_batch("COMMIT; BEGIN")?;
+        if !self.writer {
+            self.conn.execute_batch("COMMIT; BEGIN")?;
+        }
         Ok(())
     }
 
@@ -237,7 +358,9 @@ impl Cache {
     /// ([`crate::sources::fetch::save`]).
     pub fn close(self) -> Result<()> {
         crate::sources::fetch::save(&self)?;
-        self.conn.execute_batch("COMMIT")?;
+        if !self.writer {
+            self.conn.execute_batch("COMMIT")?;
+        }
         self.conn.close().map_err(|(_, e)| Error::Cache(e))
     }
 
@@ -437,6 +560,11 @@ impl Cache {
     /// Record what a source holds now, as (key, location, program): items
     /// seen again keep when they were first seen, items gone are dropped.
     pub fn persistence_record(&self, source: &str, items: &[(String, String, String)], at: f64) -> Result<()> {
+        // One transaction: the source's old baseline or its new one.
+        self.atomically(|| self.persistence_record_now(source, items, at))
+    }
+
+    fn persistence_record_now(&self, source: &str, items: &[(String, String, String)], at: f64) -> Result<()> {
         for (key, location, program) in items {
             self.conn.execute(
                 "INSERT INTO persistence VALUES (?, ?, ?, ?, ?, ?) \
@@ -552,6 +680,17 @@ impl Cache {
              CREATE TEMP VIEW findings AS SELECT {FINDING_COLUMNS} FROM main.run_findings WHERE scan_id = {scan_id}"
         ))?;
         Ok(())
+    }
+
+    /// `findings` as the findings this connection reads, in a temporary
+    /// table that shadows the kept ones and goes with the connection: a
+    /// scan that keeps nothing (`--changes`) renders through it.
+    pub fn shadow_findings(&self, findings: &[Finding]) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP VIEW IF EXISTS temp.findings; DROP TABLE IF EXISTS temp.findings; \
+             CREATE TEMP TABLE findings AS SELECT * FROM main.findings WHERE 0",
+        )?;
+        self.insert_findings("temp.findings", None, findings)
     }
 
     fn insert_findings(&self, table: &str, scan_id: Option<i64>, findings: &[Finding]) -> Result<()> {

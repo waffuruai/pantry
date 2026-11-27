@@ -22,6 +22,10 @@ use std::time::Duration;
 
 pub const QUERY_TTL: f64 = 86400.0;
 pub const TAGS_TTL: f64 = 7.0 * 86400.0;
+/// What the gap for answers past [`QUERY_TTL`] says they are: "N answers are
+/// more than a day out of date and couldn't be refreshed (why)". A re-check
+/// of one finding reads it as no reason to doubt an answer it already had.
+pub const OUT_OF_DATE: &str = "more than a day out of date";
 pub const BATCH: usize = 1000;
 pub const PARALLEL: usize = 8;
 
@@ -213,7 +217,7 @@ pub fn lookup(
     }
     if old > 0 {
         let why = failure.unwrap_or_else(|| "OSV wasn't asked again".into());
-        out.gaps.push(format!("{old} answers are more than a day out of date and couldn't be refreshed ({why})"));
+        out.gaps.push(format!("{old} answers are {OUT_OF_DATE} and couldn't be refreshed ({why})"));
     }
     Ok(out)
 }

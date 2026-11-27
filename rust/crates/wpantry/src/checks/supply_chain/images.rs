@@ -1,8 +1,13 @@
 //! The container images behind running containers and the ones the repos
 //! build from or run, read through the local engine
 //! ([`crate::checks::machine::images`]).
+//!
+//! The engine is asked once, with a short timeout, before anything else
+//! (see [`images_with_limits`]): an engine that is installed but does not
+//! answer costs one probe and one gap, not 20 s per image ref.
 
 use crate::checks::Scan;
+use crate::checks::machine::images::{self as engine_images, Local, Timeouts};
 use crate::checks::supply_chain::repos;
 use crate::checks::supply_chain::repos::Repo;
 use crate::component::Component;
@@ -11,6 +16,10 @@ use crate::sources::osv;
 use crate::sources::osv::Item;
 use crate::utils::files::short;
 use std::path::PathBuf;
+
+/// The gap's name: one for the whole step, since one cause (the engine)
+/// leaves every image unchecked.
+const GAP: &str = "container images";
 
 /// Images behind running containers (machine scans), and the ones the repos
 /// build from or run, when they exist locally (pulling is left to the user),
@@ -21,29 +30,109 @@ pub fn images(scan: &mut Scan, repos: &[Repo]) -> Result<()> {
 
 /// As [`images`], with the engine given (None: not installed).
 pub fn images_with(scan: &mut Scan, repos: &[Repo], engine: Option<PathBuf>) -> Result<()> {
+    images_with_limits(scan, repos, engine, Timeouts::default())
+}
+
+/// As [`images_with`], with the engine's time limits given (the tests').
+///
+/// 1. The refs the repos name are collected first (no engine involved).
+/// 2. With refs to check, or on a machine scan (which also lists the running
+///    containers' images), the engine is probed once. If it does not answer,
+///    the step records one gap and does nothing else.
+/// 3. Each ref is asked in turn. "Not pulled here" is only the engine saying
+///    so. The first timeout stops the loop: the engine is no longer
+///    answering, and the refs from there on are one gap, with their count.
+pub fn images_with_limits(scan: &mut Scan, repos: &[Repo], engine: Option<PathBuf>, limits: Timeouts) -> Result<()> {
     let Some(engine) = engine else { return Ok(()) };
     scan.status("Looking for container images");
-    let mut refs: Vec<(String, String)> = Vec::new();
-    if scan.opts.machine {
-        for r in crate::checks::machine::apps::running_images() {
-            refs.push((r.clone(), format!("docker pull {r}, then recreate its containers")));
-        }
-    }
+    let mut repo_refs: Vec<(String, String)> = Vec::new();
     for (r, f) in repos::repo_images(repos) {
-        if !refs.iter().any(|(x, _)| *x == r) {
+        if !repo_refs.iter().any(|(x, _)| *x == r) {
             let fix = format!(
                 "docker pull {r} (the tag may already carry the fixes); if not, bump it in {}; then rebuild",
                 short(&f.to_string_lossy())
             );
+            repo_refs.push((r, fix));
+        }
+    }
+    if repo_refs.is_empty() && !scan.opts.machine {
+        return Ok(());
+    }
+    let name = engine_images::engine_name(&engine);
+    let mut running: Vec<String> = Vec::new();
+    if repo_refs.is_empty() {
+        // Only the running containers to check: the listing is the question, with the probe's
+        // time, so there is no separate probe. Nothing running, or a daemon that is not running
+        // (so nothing runs), is nothing to check; any other failure leaves whatever runs
+        // unchecked, which is one gap.
+        scan.status(&format!("Asking {name} for its running containers"));
+        running = match engine_images::running(&engine, limits.probe) {
+            Ok(running) => running,
+            Err(engine_images::NotListed::DaemonDown) => return Ok(()),
+            Err(engine_images::NotListed::Failed(why)) => {
+                scan.unchecked(
+                    GAP,
+                    &format!("{name} is installed but is not answering ({why}), so the running containers' images were not listed"),
+                );
+                return Ok(());
+            }
+        };
+        if running.is_empty() {
+            return Ok(());
+        }
+    } else {
+        scan.status(&format!("Asking {name} whether it answers"));
+        if let Err(why) = engine_images::probe(&engine, limits.probe) {
+            let running =
+                if scan.opts.machine { "; the running containers' images were not listed either" } else { "" };
+            let n = repo_refs.len();
+            scan.unchecked(
+                GAP,
+                &format!(
+                    "{name} is installed but is not answering ({why}), so {n} image ref{} the repos name were not checked{running}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+            return Ok(());
+        }
+        if scan.opts.machine {
+            // The probe answered: a failure here is rare, and the repo refs are still checked.
+            running = engine_images::running(&engine, limits.inspect).unwrap_or_default();
+        }
+    }
+    // Running containers first: their fix is a pull and a recreate.
+    let mut refs: Vec<(String, String)> = Vec::new();
+    for r in running {
+        refs.push((r.clone(), format!("{name} pull {r}, then recreate its containers")));
+    }
+    for (r, fix) in repo_refs {
+        if !refs.iter().any(|(x, _)| *x == r) {
             refs.push((r, fix));
         }
     }
     refs.sort();
-    for (r, fix) in refs {
-        let id = crate::checks::machine::images::image_id(&engine, &r);
-        if id.is_empty() {
-            continue;
-        }
+    let total = refs.len();
+    for (done, (r, fix)) in refs.into_iter().enumerate() {
+        let id = match engine_images::local_image(&engine, &r, limits.inspect) {
+            Local::Pulled(id) => id,
+            Local::NotHere => continue,
+            Local::TimedOut => {
+                let left = total - done;
+                scan.unchecked(
+                    GAP,
+                    &format!(
+                        "{name} stopped answering after {done} of {total} image ref{} (asking about {r} timed out after {} s); {left} not checked",
+                        if total == 1 { "" } else { "s" },
+                        limits.inspect.as_secs().max(1)
+                    ),
+                );
+                return Ok(());
+            }
+            Local::Failed(why) => {
+                scan.unchecked(&format!("image {r}"), &format!("{name} image inspect failed: {why}"));
+                continue;
+            }
+        };
         scan.status(&format!("Reading image {r}"));
         let (pkgs, gaps) = match crate::checks::machine::images::packages(
             &scan.cache,

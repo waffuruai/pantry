@@ -113,9 +113,9 @@ fn a_system_tool_runs_from_its_folder_when_path_leaves_it_out() {
     assert!(in_system(&tool), "{}", tool.display());
     let tool = resolve(OsStr::new("sysctl"), None);
     assert!(in_system(&tool), "no PATH at all: {}", tool.display());
-    // PATH has its own: the spawn finds it there, so the name stays.
+    // PATH has its own: it is spawned by the path found there, not by a name the spawn would look up again.
     executable(&d.path().join("sysctl"), "#!/bin/sh\necho mine\n");
-    assert_eq!(resolve(OsStr::new("sysctl"), Some(d.path().as_os_str())), PathBuf::from("sysctl"));
+    assert_eq!(resolve(OsStr::new("sysctl"), Some(d.path().as_os_str())), d.path().join("sysctl"));
     // A path, or a name no folder has, is left as it is; so is a tool of
     // the bin folders, which the spawn's own search already covers.
     assert_eq!(resolve(OsStr::new("./sysctl"), None), PathBuf::from("./sysctl"));
@@ -143,9 +143,9 @@ fn which_and_resolve_agree_on_where_a_tool_is() {
     std::fs::write(sbin.join("not-executable"), "data").unwrap();
     let system = [sbin.to_str().unwrap()];
     let path = bin.as_os_str();
-    // (name, `which`, `resolve`): `resolve` keeps the bare name when the
-    // spawn finds the tool by itself (PATH) or can't find it at all.
-    let on_path = |n: &str| (Some(bin.join(n)), PathBuf::from(n));
+    // (name, `which`, `resolve`): `resolve` keeps the bare name only when the tool is nowhere
+    // (the spawn then fails as it would have).
+    let on_path = |n: &str| (Some(bin.join(n)), bin.join(n));
     let in_sbin = |n: &str| (Some(sbin.join(n)), sbin.join(n));
     let nowhere = |n: &str| (None, PathBuf::from(n));
     for (name, (which, resolved)) in [
@@ -195,10 +195,13 @@ fn a_root_command_runs_the_program_the_probe_resolved() {
     let sudo = root_command(&argv, false, nope);
     assert_eq!(sudo.get_program(), "sudo");
     assert_eq!(sudo.get_args().collect::<Vec<_>>(), argv);
-    // A tool PATH has is left to the spawn's own search.
+    // A tool PATH has is spawned by the path it was found at.
     let d = TempDir::new("rootcmd").unwrap();
     executable(&d.path().join("sysctl"), "#!/bin/sh\n");
-    assert_eq!(root_command(&argv, true, Some(d.path().as_os_str())).get_program(), "sysctl");
+    assert_eq!(
+        root_command(&argv, true, Some(d.path().as_os_str())).get_program(),
+        d.path().join("sysctl").as_os_str()
+    );
 }
 
 /// Risk: only `which` left out the folders a scan must not open
@@ -303,4 +306,246 @@ fn root_finds_a_tool_on_path_alone() {
         );
     }
     assert_eq!(is_root(), cfg!(unix) && run(&["id", "-u"], Duration::from_secs(5)).trim() == "0");
+}
+
+/// Risk: a PATH folder that is a link into a left-out folder (`~/bin` linked
+/// to `~/Documents/bin`) passes the spelling check, so the lookup stats a
+/// file inside the folder the scan promised not to open. Oracle: the tool is
+/// found in the other PATH folder, and every consumer of the PATH list
+/// (`path_dirs_of`, `reachable`, `which`) drops the linked one.
+#[cfg(unix)]
+#[test]
+fn a_path_folder_that_is_a_link_into_a_left_out_folder_is_not_looked_in() {
+    let d = TempDir::new("leftout-link").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap(); // macOS keeps its temp folder behind a link
+    let (docs, ok) = (root.join("Documents"), root.join("ok"));
+    executable(&docs.join("bin/tool"), "#!/bin/sh\n");
+    executable(&ok.join("tool"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink("Documents/bin", root.join("bin")).unwrap();
+    let linked = root.join("bin");
+    let path = std::env::join_paths([&linked, &ok]).unwrap();
+    assert_eq!(which_in("tool", Some(&path)), Some(linked.join("tool")));
+    let guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    assert_eq!(which_in("tool", Some(&path)), Some(ok.join("tool")));
+    assert_eq!(path_dirs_of(Some(&path)), [ok.to_string_lossy().into_owned()]);
+    assert_eq!(reachable(vec![linked.display().to_string(), ok.display().to_string()]), [ok.display().to_string()]);
+    drop(guard);
+}
+
+/// Risk: the not-found text counts the PATH folders it left out by spelling
+/// while the lookup skips by link, so a folder linked into a left-out one is
+/// skipped yet not counted: the text says nothing was left out and the user
+/// cannot tell why a tool they have is not found. Oracle: the text names the
+/// one folder it searched and says one was left out.
+/// Known bad: `not_found` counting with `is_left_out`.
+#[cfg(unix)]
+#[test]
+fn the_not_found_text_counts_a_path_folder_linked_into_a_left_out_folder() {
+    let d = TempDir::new("leftout-link-count").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap();
+    let (docs, ok) = (root.join("Documents"), root.join("ok"));
+    executable(&docs.join("bin/tool"), "#!/bin/sh\n");
+    std::fs::create_dir_all(&ok).unwrap();
+    std::os::unix::fs::symlink("Documents/bin", root.join("bin")).unwrap();
+    let path = std::env::join_paths([root.join("bin"), ok.clone()]).unwrap();
+    let _guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    let text = try_resolve_with(OsStr::new("tool"), Some(&path), &[]).unwrap_err().to_string();
+    assert!(text.contains(&ok.display().to_string()), "{text}");
+    assert!(text.contains("one PATH folder it leaves out"), "{text}");
+}
+
+/// Risk: the lookup judged the PATH folder, then `is_executable` stat'ed
+/// `folder/tool` through the link that file is (`~/.local/bin/tool ->
+/// ~/Documents/tools/tool`): a stat inside the folder the scan leaves out.
+/// Oracle: the tool is found through the link without a guard and not with
+/// one, by `which` and by the tool inventory's `on_path`; a real copy in the
+/// same folder is still found. Cannot notice a stat: it sees what was found.
+/// Known bad: `is_executable` without the left-out check.
+#[cfg(unix)]
+#[test]
+fn a_tool_that_is_a_link_into_a_left_out_folder_is_not_found() {
+    let d = TempDir::new("leftout-tool-link").unwrap();
+    let root = std::fs::canonicalize(d.path()).unwrap();
+    executable(&root.join("Documents/tools/tool"), "#!/bin/sh\n");
+    executable(&root.join("bin/real"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink(root.join("Documents/tools/tool"), root.join("bin/tool")).unwrap();
+    let path = std::env::join_paths([root.join("bin")]).unwrap();
+    assert_eq!(which_in("tool", Some(&path)), Some(root.join("bin/tool")));
+    let _guard = crate::utils::privacy::leave_out(vec![root.join("Documents")], Vec::new());
+    assert_eq!(which_in("tool", Some(&path)), None);
+    assert!(on_path_in("tool", vec![root.join("bin").display().to_string()], &[] as &[&str]).is_empty());
+    assert_eq!(which_in("real", Some(&path)), Some(root.join("bin/real")));
+}
+
+/// Risk: under `--no-personal-files` the lookup skips a PATH folder that is
+/// left out and finds `tool` in a later one, but hands the spawn the bare name
+/// `tool`, and the operating system then searches the whole PATH again, the
+/// left-out folder first: it opens the folder the scan promised not to touch
+/// and runs another program than the one found. Oracle: what is spawned is
+/// the file the filtered lookup found, by its path, and `which` and `resolve`
+/// name the same file.
+#[cfg(unix)]
+#[test]
+fn a_tool_found_past_a_left_out_folder_is_spawned_by_the_path_that_was_found() {
+    let d = TempDir::new("leftout-spawn").unwrap();
+    let (left, ok) = (d.path().join("Documents/bin"), d.path().join("bin"));
+    executable(&left.join("tool"), "#!/bin/sh\necho left-out copy\n");
+    executable(&ok.join("tool"), "#!/bin/sh\necho the copy that was found\n");
+    let path = std::env::join_paths([&left, &ok]).unwrap();
+    // Nothing left out: the first one on PATH, spawned by its path.
+    assert_eq!(which_in("tool", Some(&path)), Some(left.join("tool")));
+    let guard = crate::utils::privacy::leave_out(vec![d.path().join("Documents")], Vec::new());
+    let found = which_in("tool", Some(&path)).expect("the copy outside the folder is found");
+    assert_eq!(found, ok.join("tool"));
+    assert_eq!(resolve(OsStr::new("tool"), Some(&path)), found, "the spawn gets the path, not the bare name");
+    assert_eq!(root_command(&[OsStr::new("tool")], true, Some(&path)).get_program(), found.as_os_str());
+    drop(guard);
+}
+
+/// Risk: a tool that only a left-out PATH folder has (`~/Documents/bin/tool`)
+/// is found nowhere by the filtered lookup, and the spawn then gets the bare
+/// name, so the operating system searches the unfiltered PATH: it opens the
+/// folder the scan promised not to touch, and runs that copy. Oracle: (1) the
+/// call fails with the "not found, and where it looked" text, which names the
+/// folders it searched and says one was left out; (2) the copy never ran (it
+/// writes a marker file when it does). Neither can notice a stat: (2) notices
+/// a run, (1) notices that the spawn was refused before the operating system
+/// searched. A mode-000 folder was tried and does not help: macOS's exec
+/// search swallows the permission error and reports "No such file" either way.
+#[cfg(unix)]
+#[test]
+fn a_tool_only_a_left_out_path_folder_has_fails_before_the_spawn() {
+    let d = TempDir::new("leftout-only").unwrap();
+    let marker = d.path().join("ran");
+    let (docs, left, ok) = (d.path().join("Documents"), d.path().join("Documents/bin"), d.path().join("bin"));
+    executable(&left.join("tool"), &format!("#!/bin/sh\n: > '{}'\n", marker.display()));
+    std::fs::create_dir_all(&ok).unwrap();
+    let path = std::env::join_paths([&left, &ok]).unwrap();
+    let _guard = crate::utils::privacy::leave_out(vec![docs], Vec::new());
+    // The child's own PATH is the same one, so a spawn by name would search it.
+    let child_path = path.to_str().unwrap();
+    let err = exec_in(&[OsStr::new("tool")], &[("PATH", child_path)], Duration::from_secs(5), Some(&path));
+    let text = err.unwrap_err().to_string();
+    assert!(text.starts_with("`tool` was not found: wpantry looked in PATH ("), "{text}");
+    assert!(text.contains(&ok.display().to_string()), "names the folder it did search: {text}");
+    assert!(!text.contains(&left.display().to_string()), "names a folder it did not search: {text}");
+    assert!(text.contains("leaves out"), "says a PATH folder was left out: {text}");
+    // No PATH to look on at all: also not found, never the bare name.
+    let err = exec_in(&[OsStr::new("tool")], &[("PATH", child_path)], Duration::from_secs(5), None);
+    assert!(err.is_err_and(|e| e.to_string().contains("was not found")));
+    assert!(!marker.exists(), "the left-out copy ran");
+}
+
+/// Risk: the same hole through other spellings of the left-out PATH folder.
+/// Oracle: each is skipped by the lookup, so the call fails with not-found
+/// and the copy never ran (marker). A spelling the lookup mistook for another
+/// folder would find the copy and run it.
+#[cfg(unix)]
+#[test]
+fn a_left_out_path_folder_spelled_oddly_is_still_not_spawned() {
+    let d = TempDir::new("leftout-spellings").unwrap();
+    let marker = d.path().join("ran");
+    let docs = d.path().join("Documents");
+    executable(&docs.join("bin/tool"), &format!("#!/bin/sh\n: > '{}'\n", marker.display()));
+    let _guard = crate::utils::privacy::leave_out(vec![docs.clone()], Vec::new());
+    let root = d.path().display().to_string();
+    let mut spellings = vec![
+        format!("{root}/Documents/bin/"),
+        format!("{root}/Documents/./bin"),
+        format!("{root}/Documents/x/../bin"),
+        format!("{root}/other/../Documents/bin"),
+    ];
+    if cfg!(target_os = "macos") {
+        spellings.push(format!("{root}/documents/BIN"));
+    }
+    for entry in spellings {
+        let path = std::ffi::OsString::from(&entry);
+        let got = try_resolve_with(OsStr::new("tool"), Some(&path), &[]);
+        assert!(got.is_err(), "{entry}: {got:?}");
+        let got = exec_in(&[OsStr::new("tool")], &[("PATH", &entry)], Duration::from_secs(5), Some(&path));
+        assert!(got.is_err_and(|e| e.to_string().contains("was not found")), "{entry}");
+    }
+    assert!(!marker.exists(), "the left-out copy ran");
+}
+
+/// Risk: failing for a bare name that is not found must not change what a
+/// path or a relative PATH folder means. Oracle: a name with a slash is left
+/// as it is (its spawn never searches PATH, and says itself that it is not
+/// there); a copy in a relative PATH folder is found and spelled with that
+/// folder, so the spawn does not search PATH for it; an empty entry (the
+/// current directory) with no copy there is not-found, never the bare name.
+/// Not run: an empty entry that does have a copy, which needs a file in the
+/// working directory.
+#[cfg(unix)]
+#[test]
+fn a_path_or_a_relative_or_empty_path_entry_is_still_spawned_as_given() {
+    let d = TempDir::new("resolve-odd").unwrap();
+    let missing = d.path().join("nothing");
+    assert_eq!(try_resolve_with(missing.as_os_str(), None, &[]).unwrap(), missing);
+    executable(&d.path().join("bin/tool"), "#!/bin/sh\n");
+    // The same folder spelled relative to wherever the tests run.
+    let up = "../".repeat(std::env::current_dir().unwrap().components().count());
+    let rel = format!("{up}{}", d.path().join("bin").to_string_lossy().trim_start_matches('/'));
+    let found = try_resolve_with(OsStr::new("tool"), Some(OsStr::new(&rel)), &[]).unwrap();
+    assert_eq!(found, Path::new(&rel).join("tool"));
+    assert!(found.components().count() > 1, "a bare name would search PATH again");
+    assert!(try_resolve_with(OsStr::new("wpantry-odd-entry-tool"), Some(OsStr::new("")), &[]).is_err());
+}
+
+/// Risk: on Windows a tool that has the operating system's name (`whoami`,
+/// `schtasks`) is found in a PATH folder ahead of the system folder, and the
+/// spawn then runs another program with that name (Git's `usr\bin` has a
+/// `whoami.exe` that rejects `/user`), which `CreateProcess` by name never
+/// did. Oracle: the folders laid out below, not a second call of the same
+/// function: a folder searched first wins over PATH, PATH still answers for
+/// what the first folders lack, and no first folder changes nothing.
+#[test]
+fn the_folders_searched_before_path_win_over_path() {
+    let d = TempDir::new("first").unwrap();
+    let (system, bin) = (d.path().join("system"), d.path().join("bin"));
+    for dir in [&system, &bin] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let put = |dir: &Path, name: &str| {
+        let file = dir.join(name);
+        std::fs::write(&file, "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    put(&system, "in-both");
+    put(&bin, "in-both");
+    put(&bin, "path-only");
+    put(&system, "system-only");
+    let path = bin.as_os_str();
+    let first = [system.clone()];
+    let found = |name: &str, first: &[PathBuf]| lookup_with(OsStr::new(name), Some(path), first, &[]);
+    assert_eq!(found("in-both", &first), Some(Found::Path(system.join("in-both"))));
+    assert_eq!(found("path-only", &first), Some(Found::Path(bin.join("path-only"))));
+    assert_eq!(found("system-only", &first), Some(Found::Path(system.join("system-only"))));
+    // Without a first folder PATH decides, as before.
+    assert_eq!(found("in-both", &[]), Some(Found::Path(bin.join("in-both"))));
+    assert_eq!(found("system-only", &[]), None);
+    // Off Windows nothing is searched ahead of PATH; on Windows the operating system's own folders are.
+    assert_eq!(first_dirs().is_empty(), !cfg!(windows));
+    if cfg!(windows) {
+        assert!(first_dirs().iter().all(|d| d.is_absolute()), "{:?}", first_dirs());
+    }
+}
+
+/// Risk: a variable meant to be left out reaches the program, or it runs
+/// in the caller's folder (where a repo's config lives). Oracle: `env`
+/// prints no `HOME=` line once the prefix `HOME` is scrubbed, `PATH` stays,
+/// and `pwd` names the folder given.
+#[cfg(unix)]
+#[test]
+fn run_scrubbed_leaves_out_the_prefix_and_runs_in_the_folder() {
+    let d = crate::utils::temp::TempDir::new("scrub").unwrap();
+    let out = run_scrubbed(&["env"], Duration::from_secs(10), "HOME", d.path());
+    assert!(!out.lines().any(|l| l.starts_with("HOME=")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("PATH=")), "{out}");
+    let pwd = run_scrubbed(&["sh", "-c", "pwd -P"], Duration::from_secs(10), "UV_", d.path());
+    assert_eq!(pwd.trim(), crate::utils::files::realpath(&d.path().display().to_string()));
 }

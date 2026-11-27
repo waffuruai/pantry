@@ -44,3 +44,17 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+/// Test helper: gives a folder its mode back when dropped, so a temp dir
+/// whose folder a test set to mode 000 can be removed. Declare it after the
+/// `TempDir` so it drops first.
+#[cfg(all(test, unix))]
+pub(crate) struct Reopen(pub(crate) PathBuf);
+
+#[cfg(all(test, unix))]
+impl Drop for Reopen {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}

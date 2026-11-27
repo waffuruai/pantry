@@ -88,6 +88,9 @@ pub struct Check {
     /// `scan project`: one project (`path`) and the runtimes it uses,
     /// nothing else of the machine.
     pub project: bool,
+    /// `scan project --changes SPEC`: only what a commit (`staged`) or a
+    /// pull request (`BASE[...HEAD]`) adds, and nothing kept.
+    pub changes: Option<String>,
     /// `fix`: the unattended fixes and the stopgaps, then a re-check.
     pub fix: bool,
     /// `fix --yes`: run and write without asking.
@@ -204,6 +207,14 @@ pub enum Command {
     Prune {
         ids: Vec<i64>,
     },
+    /// `recheck ID... --from-scan N`: is each of those findings of the
+    /// latest scan still there.
+    Recheck {
+        ids: Vec<String>,
+        from_scan: i64,
+        json: bool,
+        stop_at_first_present: bool,
+    },
     Sync {
         refresh: bool,
         json: bool,
@@ -281,10 +292,11 @@ pub enum Parsed {
 
 /// The commands most people came for, first in the top-level help: what
 /// scans what, as lines to copy.
-const EXAMPLES: [(&str, &str); 8] = [
+const EXAMPLES: [(&str, &str); 9] = [
     ("wpantry scan", "this computer and every git repo under ~"),
     ("wpantry scan project", "the project in this directory and the runtimes it uses"),
     ("wpantry scan project ~/app", "the same, for another directory"),
+    ("wpantry scan project --changes staged", "only what the next commit adds (a pre-commit hook); keeps nothing"),
     ("wpantry scan --path ~/code", "only the repos under a directory, with the machine inventory"),
     ("wpantry report --html", "the latest scan as one offline page"),
     ("wpantry runs", "the scans kept; report --run N shows one, prune N forgets one"),
@@ -393,9 +405,24 @@ fn scan_opts() -> Vec<Opt> {
 const NOT_FOR_PROJECT: [&str; 6] =
     ["path", "no-machine", "no-posture", "posture-policy", "no-personal-files", "gitleaks-config"];
 
-/// `scan project`'s options: the scan's, without the machine's.
+/// What `--changes` has no use for: it reads no file but the changed ones,
+/// runs no malware or code check, and keeps no report.
+const NOT_FOR_CHANGES: [&str; 7] =
+    ["deep", "no-malware", "no-online-hash", "events", "repo-hooks", "hooks-policy", "suspect-policy"];
+
+/// `scan project`'s options: the scan's, without the machine's, and `--changes`.
 fn project_opts() -> Vec<Opt> {
-    scan_opts().into_iter().filter(|o| !NOT_FOR_PROJECT.contains(&o.name().as_str())).collect()
+    let mut opts: Vec<Opt> =
+        scan_opts().into_iter().filter(|o| !NOT_FOR_PROJECT.contains(&o.name().as_str())).collect();
+    opts.insert(
+        0,
+        Opt::new(
+            "--changes <spec>",
+            "scan only what a change adds, and keep nothing (the report goes to stdout): staged for the index git commit is about to record (a pre-commit hook), BASE or BASE...HEAD for the files changed from their merge base to HEAD (a pull request). Secrets in those files, and the dependency files among them against the advisories",
+        )
+        .group("Scope"),
+    );
+    opts
 }
 
 /// The whole command line.
@@ -419,7 +446,10 @@ fn commands() -> Cli {
                 .opts(scan_opts())
                 .command(
                     Cli::new("project")
-                        .description("Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware, and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc, rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer is read: no other runtime, app, setting or folder. Changes nothing.")
+                        .example("wpantry scan project", "the project in this directory and the runtimes it uses")
+                        .example("wpantry scan project --changes staged", "only what the next commit adds, for a pre-commit hook")
+                        .example("wpantry scan project --changes origin/dev --txt", "only what a pull request adds, in CI")
+                        .description("Scan one project, then show the report: its dependencies, secrets, hooks, suspect code and malware, and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc, rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer is read: no other runtime, app, setting or folder. Changes nothing.\nWith --changes, only what a commit or pull request adds: secrets in the files it changes, and the dependency files among them against the advisories, read from git, never the working tree. No run is kept: the report goes to stdout, and wpantry runs and report never see it.")
                         .summary("Scan one project and the runtimes it uses, nothing else of this computer")
                         .arg(Arg::new("[dir]", "the project's directory").default("."))
                         .opts(project_opts())
@@ -448,6 +478,17 @@ fn commands() -> Cli {
                 .opt(Opt::new("--hours <n>", "extension-cooldown: the cooldown").default("72"))
                 .opts(scan_opts())
                 .after_help("Exit codes: 0 nothing fails after the re-check, 1 something still fails or a fix failed, 2 usage error, 3 internal error."),
+        )
+        .command(
+            Cli::new("recheck")
+                .description("Is one finding of the latest scan still there? After a fix, look at the machine for that one component, where the scan found it, with the checks the scan used and the answers the cache already holds. It asks the network nothing, runs no fix and no scan, and writes only when the finding is gone: it is then resolved in the history and left out of the latest findings. A finding wpantry can't narrow-check is unknown, never gone.")
+                .summary("Is one finding of the latest scan still there? Looks at that component only")
+                .argument("<id...>", "the finding ids (F-…), from fix list or the JSON report; several are answered in one call, one line each, in the order given")
+                .option("--from-scan <id>", "the latest scan's number, as fix --from-scan takes it (required)")
+                .option("--stop-at-first-present", "with several ids: end the run after the first still_present; the ids after it are not answered")
+                .option("--json", "the answer as one JSON object per id: {schema, finding, scan, state, reason, detail, keys}")
+                .option("--no-input", "never prompt (this command never does)")
+                .after_help("States: gone (exit 0), still_present (exit 1), unknown (exit 3: could not tell, or refused: an unknown id, a scan that is no longer the latest, a finding with no narrow check, a posture rule with no probe here). Exit 2 is a usage error. With several ids the exit code is the worst: 1 if any is still_present, else 3 if any is unknown, else 0."),
         )
         .command(
             Cli::new("report")
@@ -812,6 +853,19 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             c.path = Some(vec![dir]);
             c.no_machine = true;
             c.project = true;
+            if let Some(spec) = m.value("changes") {
+                wpantry::checks::changes::Changes::parse(spec)
+                    .map_err(|e| m.error(&format!("option '--changes <spec>': {e}")))?;
+                if let Some(name) = NOT_FOR_CHANGES.iter().find(|n| flag(n)) {
+                    return Err(m.error(&format!(
+                        "option '--{name}' doesn't apply to --changes, which reads only the changed files, for secrets and dependencies"
+                    )));
+                }
+                if c.show.out.is_some() {
+                    return Err(m.error("--changes keeps nothing: its report goes to stdout, so drop -o FILE"));
+                }
+                c.changes = Some(spec.to_string());
+            }
             Command::Scan(c)
         }
         ["fix"] => match m.arg("target").unwrap_or("all") {
@@ -889,6 +943,21 @@ fn command(m: &Matches) -> Result<Command, Exit> {
             Command::Report(Show { part, ..show(m)? })
         }
         ["runs"] => Command::Runs { json: flag("json") },
+        ["recheck"] => {
+            let Some(from_scan) = m.get::<i64>("from-scan")? else {
+                return Err(m.error("recheck needs --from-scan N, the latest scan's number (wpantry runs lists it)"));
+            };
+            if from_scan < 1 {
+                return Err(m.error("--from-scan expects a positive scan id"));
+            }
+            let ids = m.args("id").iter().map(|i| i.trim().to_string()).collect();
+            Command::Recheck {
+                ids,
+                from_scan,
+                json: flag("json"),
+                stop_at_first_present: flag("stop-at-first-present"),
+            }
+        }
         ["prune"] => {
             let mut ids = Vec::new();
             for word in m.args("id") {

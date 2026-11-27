@@ -143,6 +143,29 @@ fn tools() {
     assert_eq!(t.run(&["tools"]).code, r.code);
 }
 
+/// Risk: `tools` says Homebrew is missing on a machine whose PATH is short
+/// (a launchd job, an app) while the scan finds brew at its prefix and runs
+/// it, so the one place that lists what wpantry runs contradicts what it
+/// does. Oracle: a brew that sits in `$HOMEBREW_PREFIX/bin` (a standard
+/// prefix is looked in the same way) and is not on PATH is listed as found,
+/// with that path and the version it prints.
+#[cfg(unix)]
+#[test]
+fn tools_lists_the_brew_a_scan_would_find_beside_a_short_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Ctx::new();
+    let prefix = t.tmp.join("prefix");
+    mkdir(&prefix.join("bin"));
+    let brew = prefix.join("bin/brew");
+    write(&brew, "#!/bin/sh\necho 'Homebrew 9.9.9'\n");
+    std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = t.run_env(&["tools", "--json"], &[("PATH", "/usr/bin:/bin"), ("HOMEBREW_PREFIX", s(&prefix))]);
+    let got = r.json();
+    let entry = arr(&got["tools"]).iter().find(|t| t["name"] == "brew").expect("brew is listed");
+    assert_eq!((entry["found"].as_bool(), str_(&entry["path"])), (Some(true), s(&brew)), "{entry}");
+    assert_eq!(str_(&entry["version"]), "9.9.9", "{entry}");
+}
+
 #[test]
 fn sources() {
     let t = Ctx::new();
@@ -2985,4 +3008,107 @@ fn a_path_named_from_inside_a_personal_folder_is_scanned_with_no_personal_files(
         "the home folder's scan read a personal folder: {}",
         env["checked"]
     );
+}
+
+/// Risk: `fix F-… --from-scan N` for one of a component's findings plans
+/// that advisory's own lowest fix, so the component's other findings stay
+/// open and a caller re-checking the whole row reads "still there".
+/// Oracle: `fix list`, which plans one step per component at the highest
+/// fixed version. Known bad: before the change the dry run named
+/// `>=2.8.4` for every one of the five ids (nothing runs in a dry run).
+#[test]
+fn fix_one_finding_plans_the_components_covering_fix() {
+    let t = Ctx::new();
+    t.project_run("scan", &[]);
+    let conn = t.conn();
+    conn.execute("DELETE FROM findings", []).unwrap();
+    let fixed = ["2.8.4", "2.9.0", "2.10.0", "3.0.2", "4.0.0"];
+    let cmds: Vec<String> = fixed.iter().map(|v| format!("py -m pip install 'soupsieve>={v}'")).collect();
+    let ids: Vec<String> = (0..5).map(|i| format!("GHSA-soup-{i}")).collect();
+    for i in 0..5 {
+        insert_finding(
+            &conn,
+            (
+                "package",
+                "pip:soupsieve",
+                "2.8.3",
+                "/x/bin/python3",
+                &ids[i],
+                "fail",
+                fixed[i],
+                0,
+                "HIGH",
+                "soup bug",
+                &cmds[i],
+                1,
+                "",
+                None,
+                "",
+            ),
+        );
+    }
+    let scan: i64 = conn.query_row("SELECT MAX(id) FROM scans", [], |r| r.get(0)).unwrap();
+    drop(conn);
+    let n = scan.to_string();
+    let want = "py -m pip install 'soupsieve>=4.0.0'";
+    let list = t.run(&["fix", "list", "--json"]).json();
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 5, "{list}");
+    assert!(items.iter().all(|i| i["fix_cmd"] == want), "{list}");
+    for item in items {
+        let id = item["id"].as_str().unwrap();
+        let r = t.run(&["fix", id, "--from-scan", &n, "--dry-run", "--json"]);
+        assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+        assert_eq!(r.json()["command"], want, "{id}: {}", r.out);
+    }
+}
+
+/// Risk: `fix --json` (a machine format on stdout, no `-o FILE`) prints the
+/// scan and quietly runs no fix and no stopgap, so a caller that asked for
+/// the fixes reads the exit code of the scan as the exit code of a fix that
+/// never ran. Oracle: the contract's `fix` is "scan, then the unattended
+/// fixes"; when it cannot print their lines without breaking the machine
+/// output on stdout, it says on stderr that nothing was run, and stdout
+/// stays valid JSON. With `-o FILE` the fixes have a stdout to print on, so
+/// the run reaches the update plan ("Nothing to update." on an empty scan).
+///
+/// Neither run passes `--yes`: with a file for the report a `--yes` run goes
+/// on to the stopgaps, which on Linux write real files and load a real
+/// firewall rule through sudo. The second run is a dry run, which reaches
+/// the same code and changes nothing. Known bad: a build that prints the
+/// note whenever a fix or dry run is asked for fails the second half; one
+/// that returns before the update plan with `-o` fails the plan assertion.
+#[test]
+fn fix_with_a_machine_format_on_stdout_says_it_ran_nothing() {
+    let t = Ctx::new();
+    let r = t.project_run("fix", &["--json"]);
+    assert!(r.json().is_object(), "stdout stays the envelope: {:?}", r.out);
+    assert!(r.err.contains("nothing was fixed") && r.err.contains("-o FILE"), "{:?}", r.err);
+    assert!(
+        !r.out.contains("Update plan") && !r.out.contains("Nothing to update"),
+        "no fix output on stdout: {:?}",
+        r.out
+    );
+    // With a file for the report the fixes have a stdout to print on: no such note.
+    let out = t.tmp.join("report.json");
+    let r = t.project_run("fix", &["--json", "--dry-run", "-o", s(&out)]);
+    assert!(!r.err.contains("nothing was fixed"), "{:?}", r.err);
+    assert!(r.out.contains("Nothing to update"), "the fixes were reached: {:?}", r.out);
+    assert!(out.is_file(), "the report went to the file");
+}
+
+/// Risk: a test passes `--yes` to a bare `fix` (or to the one stopgap that
+/// needs no finding) and changes the machine it runs on. Oracle: the
+/// harness refuses before it spawns anything.
+#[test]
+#[should_panic(expected = "refusing to run")]
+fn the_harness_refuses_a_bare_fix_with_yes() {
+    let t = Ctx::new();
+    t.project_run("fix", &["--json", "--yes"]);
+}
+
+#[test]
+#[should_panic(expected = "refusing to run")]
+fn the_harness_refuses_the_kernel_stopgap_with_yes() {
+    Ctx::new().run(&["fix", "cve-2026-98432", "--yes"]);
 }

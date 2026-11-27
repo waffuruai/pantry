@@ -39,6 +39,8 @@ signed_by = ""                  # optional: a key the release asset must be sign
 max_bytes = 67108864            # the most read; more is an error, the last good copy is kept
 ```
 
+A key this file does not list is an error naming the source and the key, and so is a value of the wrong type (a number or list for `sha256`, a quoted number for `max_bytes`): nothing is dropped silently, since a mistyped `sha256` would leave the source unpinned. `signed_by` is not read yet, so a source that sets it is refused until it is.
+
 **A lookup that receives data** names what it sends and is never fetched without consent:
 
 ```toml

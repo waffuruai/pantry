@@ -54,7 +54,7 @@ The checks follow the CIS Apple macOS Benchmark and the CIS Distribution Indepen
 | Id | Check | Severity | Fix |
 |---|---|---|---|
 | EXTENSION-COOLDOWN | Every VS Code-family editor (Code, Insiders, Cursor, Windsurf, VSCodium, Positron) has `extensions.installCooldownHours` of 24 or more, so a freshly published (possibly compromised) version isn't installed before the marketplace can pull it | High | user: `wpantry fix extension-cooldown` (edits each editor's settings.json in place; `--hours N` sets another cooldown, default 72) |
-| GIT-HOOKS | A global `core.hooksPath` with a `pre-commit` hook, so a secret is stopped at the commit | Low | ops: `mise run hooks`; elsewhere point `git config --global core.hooksPath` at a directory with a gitleaks pre-commit |
+| GIT-HOOKS | A global `core.hooksPath` with a `pre-commit` hook, so a secret is stopped at the commit | Low | ops: `mise run hooks`; elsewhere point `git config --global core.hooksPath` at a directory with a pre-commit that scans the staged changes for secrets |
 
 An editor with `extensions.autoUpdate: false` warns "updates by hand": a bad version can't arrive on its own, and the cooldown still blocks installing it by hand on the day it appears.
 

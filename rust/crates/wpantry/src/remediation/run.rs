@@ -137,6 +137,16 @@ fn not_found(program: &str) -> String {
 /// Run `argv` as is (no shell), with stdin closed and stdout on the
 /// terminal, killing it after `timeout`.
 pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
+    run_bounded_with(argv, timeout, &crate::utils::stop::kill_tree)
+}
+
+/// [`run_bounded`] with the way a program past its deadline is stopped given
+/// (the tests' own); it says what could not be stopped.
+pub(crate) fn run_bounded_with(
+    argv: &[String],
+    timeout: Duration,
+    stop: &dyn Fn(&mut std::process::Child) -> Result<(), String>,
+) -> Run {
     // The program as PATH has it, else where its installer puts it: a fix
     // started from an app or a service has a short PATH (`mise` is in
     // ~/.local/bin, `brew` under /opt/homebrew).
@@ -158,12 +168,13 @@ pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
         std::thread::spawn(move || drain(pipe, &tail))
     });
     let start = Instant::now();
+    // What a timeout could not stop, when it could not stop everything.
+    let mut not_stopped: Option<String> = None;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
+                not_stopped = stop(&mut child).err();
                 break None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
@@ -193,14 +204,26 @@ pub fn run_bounded(argv: &[String], timeout: Duration) -> Run {
         None => Run {
             ok: false,
             exit_code: None,
-            reason: format!(
-                "timed out after {} and was stopped",
-                if timeout.as_secs() >= 60 {
+            reason: {
+                let after = if timeout.as_secs() >= 60 {
                     format!("{} minutes", timeout.as_secs() / 60)
                 } else {
                     format!("{} ms", timeout.as_millis())
+                };
+                match not_stopped {
+                    None => format!("timed out after {after} and was stopped"),
+                    Some(why) => {
+                        // A step run through sudo is root's: wpantry can't signal it.
+                        let sudo = std::path::Path::new(&argv[0]).file_name().is_some_and(|n| n == "sudo");
+                        let hint = if sudo && why.contains("not permitted") {
+                            " (the program runs as root, which wpantry cannot signal; stop it as root)"
+                        } else {
+                            ""
+                        };
+                        format!("timed out after {after} and not everything was stopped: {why}{hint}")
+                    }
                 }
-            ),
+            },
             stderr,
         },
     }

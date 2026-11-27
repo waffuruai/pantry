@@ -303,3 +303,51 @@ fn the_default_limits_are_the_documented_ones() {
     let t = Timeouts::default();
     assert_eq!((t.probe, t.inspect), (Duration::from_secs(5), Duration::from_secs(20)));
 }
+
+/// Risk: a machine scan with no repo that names an image probes the engine,
+/// and when Docker Desktop is closed records a gap that "0 image refs were
+/// not checked" on every scan of the laptop: noise about nothing. Oracle:
+/// with no repo refs the engine is asked only for its running containers
+/// (no `version` probe), and a daemon that is down (so nothing runs) leaves
+/// no gap. A running container is still read.
+/// Known bad: the probe and its gap ahead of the listing.
+#[cfg(unix)]
+#[test]
+fn a_machine_scan_with_no_refs_does_not_probe_or_record_a_gap() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TempDir::new("images-norefs").unwrap();
+    let down = "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.' >&2; exit 1";
+    let engine = d.path().join("docker");
+    std::fs::write(
+        &engine,
+        format!("#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\ncase \"$1\" in version|ps) {down} ;; esac\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let net = testing::osv_net(&[]);
+    let mut s = testing::scan(&net, &d, Options { machine: true, ..Default::default() });
+    images_with_limits(&mut s, &[], Some(engine), FAST).unwrap();
+    assert!(s.findings.is_empty(), "{:?}", s.findings);
+    assert_eq!(calls(d.path()), ["ps --format {{.Image}}"]);
+}
+
+/// Risk: the engine's stderr goes into the gap note as it is, and docker and
+/// podman name their socket and config under the home directory, so the
+/// report carries the user's home path. Oracle: the note has the engine's
+/// words with the home directory as `~`, and no home path.
+#[cfg(unix)]
+#[test]
+fn the_engine_s_words_in_a_gap_name_the_home_directory_as_tilde() {
+    let home = crate::utils::files::test_home();
+    let h = crate::utils::files::home().display().to_string();
+    let d = TempDir::new("images-home").unwrap();
+    let down = format!("echo 'Cannot connect to the Docker daemon at unix://{h}/.docker/run/docker.sock.' >&2; exit 1");
+    let engine = stand_in(d.path(), "docker", &down, &format!("*) {PULLED} ;;"));
+    let net = testing::osv_net(&[]);
+    let mut s = testing::scan(&net, &d, Options::default());
+    images_with_limits(&mut s, &six(&d), Some(engine), FAST).unwrap();
+    let (_, note) = only_gap(&s);
+    assert!(note.contains("unix://~/.docker/run/docker.sock"), "{note}");
+    assert!(!note.contains(&h), "{note}");
+    drop(home);
+}

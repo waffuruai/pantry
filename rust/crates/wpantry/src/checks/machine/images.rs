@@ -84,18 +84,56 @@ fn last_line(s: &str) -> String {
     s.trim().lines().last().unwrap_or("").trim().to_string()
 }
 
+/// The last line of what the engine wrote to stderr, as a gap note may carry
+/// it: the home directory as `~` and terminal escapes left out, as a failed
+/// fix's stderr is ([`crate::remediation::run::clean_tail`]); the engine
+/// names its socket and config by path (`unix:///Users/sam/.docker/run/docker.sock`).
+fn said(stderr: &str) -> String {
+    last_line(&crate::remediation::run::clean_tail(stderr.as_bytes(), false))
+}
+
+/// An error from running the engine (its path may be under the home directory), shortened as [`said`].
+fn failed(e: &crate::error::Error) -> String {
+    said(&e.to_string())
+}
+
+/// The images behind the engine's running containers (`ps --format
+/// {{.Image}}`, which docker and podman both take), or why it gave none.
+pub fn running(engine: &Path, timeout: Duration) -> std::result::Result<Vec<String>, String> {
+    let argv = [engine.as_os_str(), OsStr::new("ps"), OsStr::new("--format"), OsStr::new("{{.Image}}")];
+    let start = Instant::now();
+    match exec(&argv, &[], timeout) {
+        Ok(o) if o.code == Some(0) => {
+            let mut refs: Vec<String> = o.stdout.split_whitespace().map(str::to_string).collect();
+            refs.sort();
+            refs.dedup();
+            Ok(refs)
+        }
+        Ok(o) => Err(said(&o.stderr)),
+        Err(_) if start.elapsed() >= timeout => Err(format!("no answer within {} s", timeout.as_secs().max(1))),
+        Err(e) => Err(failed(&e)),
+    }
+}
+
 /// Asks the engine, once, whether its daemon answers. Err says why not.
+/// docker's `version` asks the daemon and exits non-zero without one;
+/// podman's asks its service when it is remote (macOS, Windows, `--remote`)
+/// and fails the same way, and when it is local, where there is no daemon
+/// and nothing to wait for, it fills only the client part, so
+/// `{{.Server.Version}}` fails and podman prints the client's version and
+/// exits 0 (`cmd/podman/system/version.go` retries the template on the
+/// client): the probe passes, as it should.
 pub fn probe(engine: &Path, timeout: Duration) -> std::result::Result<(), String> {
     let argv = [engine.as_os_str(), OsStr::new("version"), OsStr::new("--format"), OsStr::new("{{.Server.Version}}")];
     let start = Instant::now();
     match exec(&argv, &[], timeout) {
         Ok(o) if o.code == Some(0) => Ok(()),
         Ok(o) => {
-            let why = last_line(&o.stderr);
+            let why = said(&o.stderr);
             Err(if why.is_empty() { "it exited with an error".to_string() } else { why })
         }
         Err(_) if start.elapsed() >= timeout => Err(format!("no answer within {} s", timeout.as_secs().max(1))),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(failed(&e)),
     }
 }
 
@@ -135,13 +173,13 @@ pub fn local_image(engine: &Path, r: &str, timeout: Duration) -> Local {
     let o = match exec(&argv, &[], timeout) {
         Ok(o) => o,
         Err(_) if start.elapsed() >= timeout => return Local::TimedOut,
-        Err(e) => return Local::Failed(e.to_string()),
+        Err(e) => return Local::Failed(failed(&e)),
     };
     if o.code != Some(0) {
         return if says_absent(&o.stderr) {
             Local::NotHere
         } else {
-            let why = last_line(&o.stderr);
+            let why = said(&o.stderr);
             Local::Failed(if why.is_empty() { "it exited with an error".into() } else { why })
         };
     }

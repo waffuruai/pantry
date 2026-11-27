@@ -59,25 +59,39 @@ pub fn images_with_limits(scan: &mut Scan, repos: &[Repo], engine: Option<PathBu
         return Ok(());
     }
     let name = engine_images::engine_name(&engine);
-    scan.status(&format!("Asking {name} whether it answers"));
-    if let Err(why) = engine_images::probe(&engine, limits.probe) {
-        let running = if scan.opts.machine { "; the running containers' images were not listed either" } else { "" };
-        let n = repo_refs.len();
-        scan.unchecked(
-            GAP,
-            &format!(
-                "{name} is installed but is not answering ({why}), so {n} image ref{} the repos name were not checked{running}",
-                if n == 1 { "" } else { "s" }
-            ),
-        );
-        return Ok(());
+    let mut running: Vec<String> = Vec::new();
+    if repo_refs.is_empty() {
+        // Only the running containers to check: the listing is the question, with the probe's
+        // time. Nothing listed (no daemon, so nothing running; nothing running; no answer) is
+        // nothing to check: no probe, and no gap about zero refs.
+        scan.status(&format!("Asking {name} for its running containers"));
+        running = engine_images::running(&engine, limits.probe).unwrap_or_default();
+        if running.is_empty() {
+            return Ok(());
+        }
+    } else {
+        scan.status(&format!("Asking {name} whether it answers"));
+        if let Err(why) = engine_images::probe(&engine, limits.probe) {
+            let running =
+                if scan.opts.machine { "; the running containers' images were not listed either" } else { "" };
+            let n = repo_refs.len();
+            scan.unchecked(
+                GAP,
+                &format!(
+                    "{name} is installed but is not answering ({why}), so {n} image ref{} the repos name were not checked{running}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+            return Ok(());
+        }
+        if scan.opts.machine {
+            running = engine_images::running(&engine, limits.inspect).unwrap_or_default();
+        }
     }
     // Running containers first: their fix is a pull and a recreate.
     let mut refs: Vec<(String, String)> = Vec::new();
-    if scan.opts.machine {
-        for r in crate::checks::machine::apps::running_images() {
-            refs.push((r.clone(), format!("docker pull {r}, then recreate its containers")));
-        }
+    for r in running {
+        refs.push((r.clone(), format!("{name} pull {r}, then recreate its containers")));
     }
     for (r, fix) in repo_refs {
         if !refs.iter().any(|(x, _)| *x == r) {

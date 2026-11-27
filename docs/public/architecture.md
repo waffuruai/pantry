@@ -158,7 +158,7 @@ The `os-release` `ID` (never a derivative's `VERSION_ID`, which would name the w
 
 Container images:
 
-1. The engine is asked once first (`version --format {{.Server.Version}}`, 5 s). If it does not answer, the step records one "container images" gap and stops; if it stops answering part way (20 s on one image), the step stops there with a gap that counts the images left. A timeout or any other error is never read as "not pulled here": only the engine's own "no such image" (docker) or "image not known" (podman) is.
+1. With image refs to check, the engine is asked once first (`version --format {{.Server.Version}}`, 5 s; local podman, which has no daemon, answers with its client version). If it does not answer, the step records one "container images" gap, with the engine's last line of stderr (home as `~`), and stops. A machine scan whose repos name no image asks only for the running containers (`ps --format {{.Image}}`, 5 s): none, or no answer, is nothing to check and no gap; if it stops answering part way (20 s on one image), the step stops there with a gap that counts the images left. A timeout or any other error is never read as "not pulled here": only the engine's own "no such image" (docker) or "image not known" (podman) is.
 2. `docker|podman create`, then `export` into a temp directory.
 3. A tar reader written here keeps only the files the readers want, caps each at 64 MiB and ignores entries escaping the root.
 4. The same lockfile and OS-database readers run on the result, without layer attribution. The kernel's source package (only headers in a container) is left out.

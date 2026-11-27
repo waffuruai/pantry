@@ -7,6 +7,7 @@ Pantry finds the vulnerabilities that apply to your computer and your git repos.
 ```bash
 wpantry scan                                       # this computer: the machine and every git repo under ~
 wpantry scan project ~/code/myproject              # one project and the runtimes it uses, nothing else
+wpantry scan project --changes staged              # only what the next commit adds (pre-commit); keeps nothing
 wpantry report                                     # the latest scan again, without scanning
 wpantry report --html                              # one offline page: pantry_report_<when>.html here
 wpantry fix --dry-run                              # what it would fix; changes nothing
@@ -65,6 +66,38 @@ repos = ["~/Development/mine"]   # every hook that warns under this path
 ```
 
 Accepted hooks are counted, not listed. A hook whose command changes is listed again. A hook that fails can't be accepted.
+
+## Scan a change: pre-commit hooks and CI
+
+`wpantry scan project --changes SPEC [DIR]` scans only what a change adds, and keeps nothing:
+
+- `--changes staged`: the files in the index `git commit` is about to record, at their staged content, not the working tree's. `GIT_INDEX_FILE` is honoured, so `git commit <paths>` and `git commit -a` scan the index they commit.
+- `--changes BASE` or `--changes BASE...HEAD`: the files changed from the merge base of BASE and HEAD (default `HEAD`) to HEAD, at HEAD: what a pull request adds. Two dots (`BASE..HEAD`) are refused.
+- **What is read:** added, copied, modified, renamed and retyped files; a deletion adds nothing. Their contents come from git's objects, and nothing in the repo is written: not the index, not the working tree. With DIR inside a repo, only the changes under DIR.
+- **What is checked:** secrets in every changed file and, for the dependency files among them (lockfiles, `requirements*.txt`, Gradle build files), their advisories, known-malicious packages and install scripts. No machine inventory, runtime, posture, hook or malware check. The repo's `.pantryignore` applies, at the change's version.
+- **Nothing kept:** no run is recorded (`wpantry runs` and `wpantry report` never see it) and no report file is written: the report goes to stdout, in any report format, and `-o FILE` is refused. The advisory cache is still read and filled; when it can't be opened, the scan says so and goes on without it.
+- **Network:** a change with no dependency file needs none. Otherwise online, as a scan is: a source that can't be reached, with nothing cached, is "not checked", a warning. `--offline` uses the cache alone.
+- **Exit codes:** 1 for a secret, a vulnerability with a released fix or a known-malicious package; 0 with warnings and "not checked" rows printed; 2 for a usage error (not a git repo, a revision that isn't there); 3 for an internal error.
+
+A pre-commit hook, `.git/hooks/pre-commit` (or the one your hook manager runs):
+
+```bash
+#!/bin/sh
+# Block a commit that adds a secret or a dependency with a fixable advisory.
+exec wpantry scan project --changes staged --txt --no-input
+```
+
+A pull request in GitHub Actions, with the history the merge base needs:
+
+```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0
+- name: Scan what the pull request adds
+  run: wpantry scan project --changes "origin/${{ github.base_ref }}" --txt --no-input
+```
+
+A false positive goes in the repo's `.pantryignore` ([ignore](ignore.md)): `[secret]` for a secret, `[project ID]` for an advisory.
 
 ## Policy files
 
@@ -365,6 +398,8 @@ Examples:
   wpantry scan                this computer and every git repo under ~
   wpantry scan project        the project in this directory and the runtimes it uses
   wpantry scan project ~/app  the same, for another directory
+  wpantry scan project --changes staged
+                              only what the next commit adds (a pre-commit hook); keeps nothing
   wpantry scan --path ~/code  only the repos under a directory, with the machine inventory
   wpantry report --html       the latest scan as one offline page
   wpantry runs                the scans kept; report --run N shows one, prune N forgets one
@@ -493,9 +528,33 @@ Scan one project, then show the report: its dependencies, secrets, hooks, suspec
 and the runtimes it uses (the version its mise.toml, .tool-versions, .ruby-version, .nvmrc,
 rust-toolchain.toml or go.mod pins; with no pin, the first on PATH). Nothing else of this computer
 is read: no other runtime, app, setting or folder. Changes nothing.
+With --changes, only what a commit or pull request adds: secrets in the files it changes, and the
+dependency files among them against the advisories, read from git, never the working tree. No run is
+kept: the report goes to stdout, and wpantry runs and report never see it.
+
+Examples:
+  wpantry scan project  the project in this directory and the runtimes it uses
+  wpantry scan project --changes staged
+                        only what the next commit adds, for a pre-commit hook
+  wpantry scan project --changes origin/dev --txt
+                        only what a pull request adds, in CI
 
 Arguments:
   dir  the project's directory (default: .)
+
+Scope options:
+  --changes <spec>   scan only what a change adds, and keep nothing (the report goes to stdout):
+                     staged for the index git commit is about to record (a pre-commit hook), BASE or
+                     BASE...HEAD for the files changed from their merge base to HEAD (a pull
+                     request). Secrets in those files, and the dependency files among them against
+                     the advisories
+  --licenses [file]  also check dependency licenses, against the file (default: licenses.toml in
+                     ~/.config/wpantry, else the bundled one)
+  --no-malware       skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
+                     and repo programs)
+  --deep             read everything in scope (slower): every file of the computer this user can
+                     read, ~ first (or each --path), for malware with every system's rules and for
+                     secrets; git history's files up to 256 MB with no time limit
 
 Report options:
   --txt             the report as plain text, without colour
@@ -524,15 +583,6 @@ Policy options:
                             when it exists)
   --add-sources <file>      add this sources file's sources to yours for this run; repeat it for
                             more (an id may be defined once)
-
-Scope options:
-  --licenses [file]  also check dependency licenses, against the file (default: licenses.toml in
-                     ~/.config/wpantry, else the bundled one)
-  --no-malware       skip the malware scan (YARA rules over Downloads, Desktop, temp, login items
-                     and repo programs)
-  --deep             read everything in scope (slower): every file of the computer this user can
-                     read, ~ first (or each --path), for malware with every system's rules and for
-                     secrets; git history's files up to 256 MB with no time limit
 
 Options:
   --refresh         ignore cached answers and ask every source again

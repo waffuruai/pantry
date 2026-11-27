@@ -528,6 +528,12 @@ pub(crate) fn apply(scan: &mut Scan) {
 
 /// [`apply`] with your ignore file at `user_path`.
 pub(crate) fn apply_with(scan: &mut Scan, user_path: &Path) {
+    apply_files(scan, user_path, &|root| root.join(FILE));
+}
+
+/// [`apply_with`], with each repo's ignore file read from where `repo_file`
+/// says (a changes scan reads it at the change's version, not the work tree's).
+pub(crate) fn apply_files(scan: &mut Scan, user_path: &Path, repo_file: &dyn Fn(&Path) -> PathBuf) {
     let home = home();
     let mut notes = Vec::new();
     let user_name = short(&user_path.to_string_lossy());
@@ -555,7 +561,7 @@ pub(crate) fn apply_with(scan: &mut Scan, user_path: &Path) {
     let mut repos: Vec<InScope> = scan.repos.iter().map(|(name, root)| InScope { name, root, ignore: None }).collect();
     for r in &mut repos {
         let file = format!("{}/{FILE}", r.name);
-        match Ignore::load(&r.root.join(FILE)) {
+        match Ignore::load(&repo_file(r.root)) {
             None => {}
             Some(Err(e)) => {
                 notes.push(note(&file, 0, "IGNORE-FILE", "warn", format!("unreadable: {e}"), String::new()))

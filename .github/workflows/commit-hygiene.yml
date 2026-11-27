@@ -1,0 +1,94 @@
+name: Commit hygiene
+
+# No AI or bot attribution in what a merge would write (CONTRIBUTING.md, Commit
+# authorship): scripts/commit_hygiene.py checks every commit's author, committer
+# and message, and the PR title and body: a squash merge writes all of them
+# (every commit message included) into the squash commit.
+# It re-runs on `edited`, so fixing the PR text clears it.
+#
+# Fork-safe: `pull_request` (never `pull_request_target`), a read-only token, no
+# secrets. It reads the PR's commits and text through the API, as data, and
+# only prints and annotates; it never edits the PR or comments.
+#
+# The checker runs from the BASE commit, never from the pull request: the job
+# checks out the base branch's tip and asserts that is what it runs, so a PR
+# cannot edit the script or its patterns and pass itself. A PR that changes
+# the checker is judged by the base's rules; its change takes effect after it
+# merges. (This file itself still comes from the PR, as for any `pull_request`
+# workflow, so CODEOWNERS requires an owner's review of changes to it.) The one
+# exception is a base without the canonical checker yet (none, or an older
+# one), the PR that adds it: then the head's copy runs, and the job says so.
+#
+# On push to dev and main it is a backstop: it reports commits that reached the
+# branch anyway (an admin bypass, a direct push), but cannot block or undo a
+# push that already happened. The pull request run is the gate.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: commit-hygiene-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-hygiene:
+    name: Commit hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      # The base branch's tip now, not the event's base.sha, which can be a
+      # stale merge base; on push, the pushed commit.
+      - name: Resolve the base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BASE_REF" --jq .object.sha)"
+          else
+            sha="$GITHUB_SHA"
+          fi
+          echo "CHECKER_SHA=$sha" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CHECKER_SHA }}
+          persist-credentials: false
+
+      # The self-check: the checker is the base commit's, unmodified. Only when
+      # the base has no canonical copy (the PR that adds it) is the head's fetched.
+      - name: Pick the checker (the base's)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), not the base $CHECKER_SHA"; exit 1; }
+          if grep -q "Canonical copy: waffuruai/pantry" scripts/commit_hygiene.py 2>/dev/null; then
+            git diff --quiet HEAD -- scripts/commit_hygiene.py || { echo "::error::the checker differs from the base"; exit 1; }
+            echo "CHECKER=scripts/commit_hygiene.py" >> "$GITHUB_ENV"
+            echo "Checker: scripts/commit_hygiene.py at the base, $CHECKER_SHA"
+          elif gh api "repos/$GITHUB_REPOSITORY/contents/scripts/commit_hygiene.py?ref=$HEAD_SHA" \
+              -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/commit_hygiene.py" 2>/dev/null \
+              && grep -q "Canonical copy: waffuruai/pantry" "$RUNNER_TEMP/commit_hygiene.py"; then
+            echo "CHECKER=$RUNNER_TEMP/commit_hygiene.py" >> "$GITHUB_ENV"
+            echo "::warning::the base $CHECKER_SHA has no canonical checker yet; running the head's copy ($HEAD_SHA) for this bootstrap PR"
+          elif [ -f scripts/commit_hygiene.py ]; then
+            echo "CHECKER=scripts/commit_hygiene.py" >> "$GITHUB_ENV"
+            echo "::warning::no canonical checker at the base or the head; running the base's older copy"
+          else
+            echo "::error::no scripts/commit_hygiene.py at the base $CHECKER_SHA or the head $HEAD_SHA"
+            exit 1
+          fi
+
+      # The runner's python3: the script uses the standard library and gh only.
+      - name: Check commits and PR text
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$CHECKER"

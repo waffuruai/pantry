@@ -69,7 +69,7 @@ AI_RE = re.compile("|".join(AI_TERMS), re.IGNORECASE)
 MODEL_TERMS = {r"\bllama\b", r"\bmistral\b", r"\bqwen\b", r"deepseek"}
 TOOL_RE = re.compile("|".join(t for t in AI_TERMS if t not in MODEL_TERMS), re.IGNORECASE)
 
-# Names that are also people's names. On their own they make an identity AI
+# Names that are also people's names. On their own they mark an identity as AI
 # only with a noreply, vendor or empty email; with a tool word after them they
 # always do ("Claude Opus 5.5", "Devin AI").
 AMBIGUOUS_RE = re.compile(r"^\s*(claude|devin|cody|bard|jules|aider|goose|kiro|cline)\s*$", re.IGNORECASE)

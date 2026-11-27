@@ -251,7 +251,8 @@ class Workflow(unittest.TestCase):
 
     def test_checks_out_the_base_and_asserts_it(self):
         wf = (ROOT / ".github/workflows/commit-hygiene.yml").read_text(encoding="utf-8")
-        self.assertIn("CHECKER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}", wf)
+        self.assertIn('repos/$GITHUB_REPOSITORY/git/ref/heads/$BASE_REF', wf)
+        self.assertIn('echo "CHECKER_SHA=$sha" >> "$GITHUB_ENV"', wf)
         self.assertIn("ref: ${{ env.CHECKER_SHA }}", wf)
         self.assertIn('[ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ]', wf)
         self.assertIn('python3 "$CHECKER"', wf)

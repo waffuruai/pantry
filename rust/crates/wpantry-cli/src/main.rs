@@ -1732,6 +1732,64 @@ fn cmd_ignore(action: IgnoreAction, json: bool) -> Result<i32> {
     Ok(reply.code)
 }
 
+/// `recheck ID... --from-scan N`: findings of the latest scan, looked at
+/// again on their own. Prints one line (or with `--json` one object) per id,
+/// as each is decided, and exits 1 when any is still present, else 3 when
+/// any could not be told, else 0. With one id that is exactly its own
+/// answer's exit code. A cache that can't be opened or written is "could not
+/// tell" too: the program that asked gets its object either way.
+fn cmd_recheck(ids: &[String], from_scan: i64, json: bool, stop_at_present: bool) -> Result<i32> {
+    use wpantry::remediation::recheck::{self, Outcome, State, Verdict};
+    let (mut present, mut unknown) = (false, false);
+    let mut print = |o: Outcome| {
+        present |= o.verdict.state == State::StillPresent;
+        unknown |= o.verdict.state == State::Unknown;
+        let Outcome { finding, scan, verdict, keys } = o;
+        if json {
+            emit(
+                &obj([
+                    ("schema", J::Int(SCHEMA)),
+                    ("finding", finding.as_str().into()),
+                    ("scan", J::Int(scan)),
+                    ("state", verdict.state.name().into()),
+                    ("reason", verdict.reason.into()),
+                    ("detail", verdict.detail.as_str().into()),
+                    ("keys", J::Arr(keys.iter().map(|k| k.as_str().into()).collect())),
+                ])
+                .dumps(),
+            );
+        } else {
+            say(&format!("{finding}: {} ({}). {}", verdict.state.name(), verdict.reason, verdict.detail));
+        }
+    };
+    let broken = |id: &str, e: &wpantry::Error| {
+        let first = e.to_string().lines().next().unwrap_or("").trim().to_string();
+        let reason = if matches!(e, wpantry::Error::Cache(_)) { "cache" } else { "error" };
+        let detail = format!("The cache could not be read or written ({first}); nothing was changed.");
+        Outcome {
+            finding: recheck::canonical(id),
+            scan: from_scan,
+            verdict: Verdict::unknown(reason, detail),
+            keys: Vec::new(),
+        }
+    };
+    match Cache::open(None) {
+        Err(e) => ids.iter().for_each(|id| print(broken(id, &e))),
+        Ok(cache) => {
+            if let Err(failed) = recheck::recheck_many(cache, ids, from_scan, stop_at_present, &mut print) {
+                print(broken(&failed.id, &failed.error));
+            }
+        }
+    }
+    Ok(if present {
+        EXIT_FAIL
+    } else if unknown {
+        EXIT_INTERNAL
+    } else {
+        EXIT_OK
+    })
+}
+
 fn cmd_print(text: &str) -> Result<i32> {
     let mut out = std::io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
@@ -1770,6 +1828,9 @@ fn dispatch(cmd: Command) -> Result<i32> {
         Command::Cache { action: _, older_than } => cmd_cache_prune(older_than),
         Command::Runs { json } => tell_unfinished().and_then(|()| cmd_runs(json)),
         Command::Prune { ids } => cmd_prune(&ids),
+        Command::Recheck { ids, from_scan, json, stop_at_first_present } => {
+            cmd_recheck(&ids, from_scan, json, stop_at_first_present)
+        }
         Command::Update { check, json, yes, no_input, offline, version } => {
             update::run(update::Update { check, json, yes, no_input, offline, version })
         }

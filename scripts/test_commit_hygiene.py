@@ -114,7 +114,10 @@ class MessageRules(unittest.TestCase):
         for text in ("docs: point AGENTS.md and .cursor/rules at CONTRIBUTING\n",
                      "feat: compare with the llama.cpp CVE list\n\nWe asked Gemini for nothing; prose is fine.\n",
                      "fix: build with -O3\n\nbody\n\nRefs: #12\nTests: 7/7\n",
-                     "feat: one line conventional subject\n"):
+                     "feat: one line conventional subject\n",
+                     "Merge pull request #991 from o/x\n\nfeat: add experimental DeepSeek V4.1 Flash TP2 V1\n",
+                     "Merge pull request #1179 from o/y\n\nfix: keep Qwen GGUF chat tokens whole\n",
+                     "fix: y\n\nbody\n\nReviewed-by: a long note about the Claude Code settings file\n"):
             with self.subTest(text=text):
                 self.assertEqual(ch.message_findings(text, "c"), [])
 

@@ -98,6 +98,9 @@ ATTRIB_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 TRAILER_RE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9-]*):\s+(?P<value>.*)$")
+# Conventional-commit subjects (a merge or squash body lists them) are `Key: value`-shaped, not trailers.
+CONVENTIONAL_KEYS = {"feat", "fix", "chore", "docs", "refactor", "perf", "test", "tests", "ci", "build",
+                     "style", "revert", "release", "deps", "security"}
 IDENTITY_RE = re.compile(r"^\s*(?P<name>.*?)\s*<(?P<email>[^>]*)>\s*$")
 
 ATTRIB_PHRASE_RE = re.compile(
@@ -181,6 +184,9 @@ def _value_identity(value: str) -> str | None:
         return ai_identity(m.group("name"), m.group("email"))
     if "@" in value and " " not in value.strip():
         return ai_identity(email=value)
+    # A name, not a sentence: "Claude Opus 5.5" is credit, "add DeepSeek V4 support" is not.
+    if len(value.split()) > 4:
+        return None
     return ai_identity(name=value)
 
 
@@ -202,7 +208,7 @@ def message_findings(text: str, where: str) -> list[Finding]:
                 flagged.add(i)
             continue
         m = TRAILER_RE.match(ln)
-        if m and AI_RE.search(m.group("key")):
+        if m and m.group("key").lower() not in CONVENTIONAL_KEYS and AI_RE.search(m.group("key")):
             out.append(Finding(where, f"{m.group('key')} trailer names an AI tool", s, i + 1))
             flagged.add(i)
             continue
@@ -225,6 +231,8 @@ def message_findings(text: str, where: str) -> list[Finding]:
             if j in flagged:
                 continue
             m = TRAILER_RE.match(lines[j])
+            if m.group("key").lower() in CONVENTIONAL_KEYS:
+                continue
             why = _value_identity(m.group("value"))
             if why:
                 out.append(Finding(where, f"{m.group('key')} trailer names {why}", lines[j].strip(), j + 1))

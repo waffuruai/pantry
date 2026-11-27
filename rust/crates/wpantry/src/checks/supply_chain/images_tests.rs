@@ -320,47 +320,48 @@ fn ps_engine(dir: &Path, ps: &str) -> PathBuf {
 }
 
 /// Risk: a machine scan with no repo that names an image probes the engine
-/// and records a gap that "0 image refs were not checked"; or, the other
-/// way, an engine that does not answer leaves the running containers
-/// unchecked with no word. Oracle: with no repo refs the engine is asked only
-/// for its running containers (no `version` probe); nothing running records
-/// nothing; a down or hung engine records one gap that says the running
-/// containers were not listed; no engine at all asks and records nothing.
-/// Known bad: the probe and its zero-ref gap ahead of the listing, or a
-/// failed listing taken for "nothing running".
+/// and records a gap that "0 image refs were not checked", or one for a
+/// daemon that is not running (every Mac with Docker Desktop quit, where no
+/// container can run); or, the other way, an engine that hangs or refuses
+/// this user leaves the running containers unchecked with no word. Oracle,
+/// five cases: no engine, a daemon that is down and nothing running record
+/// nothing; a hang and another error (permission denied on the socket)
+/// record one gap that says the running containers were not listed. With an
+/// engine, the only call is the listing (no `version` probe).
+/// Known bad: the zero-ref probe, or every failed listing read the same way.
 #[cfg(unix)]
 #[test]
 fn a_machine_scan_with_no_refs_lists_the_running_containers_only() {
     let net = testing::osv_net(&[]);
     let machine = || Options { machine: true, ..Default::default() };
-    // Nothing running: no gap, one call.
     let d = TempDir::new("images-norefs").unwrap();
-    let engine = ps_engine(d.path(), "exit 0");
-    let mut s = testing::scan(&net, &d, machine());
-    images_with_limits(&mut s, &[], Some(engine), FAST).unwrap();
-    assert!(s.findings.is_empty(), "{:?}", s.findings);
-    assert_eq!(calls(d.path()), ["ps --format {{.Image}}"]);
-    // No engine: nothing.
     let mut s = testing::scan(&net, &d, machine());
     images_with_limits(&mut s, &[], None, FAST).unwrap();
-    assert!(s.findings.is_empty(), "{:?}", s.findings);
-    // Down, then hung: one gap each, and still no probe.
-    for (name, ps, why) in [
-        (
-            "down",
-            "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.' >&2; exit 1",
-            "Cannot connect",
-        ),
-        ("hung", HANG, "no answer within"),
+    assert!(s.findings.is_empty(), "no engine: {:?}", s.findings);
+    let down = "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1";
+    let denied = "echo 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: dial unix /var/run/docker.sock: connect: permission denied' >&2; exit 1";
+    for (name, ps, gap) in [
+        ("down", down, None),
+        ("nothing", "exit 0", None),
+        ("hung", HANG, Some("no answer within")),
+        ("denied", denied, Some("permission denied")),
     ] {
         let d = TempDir::new(&format!("images-norefs-{name}")).unwrap();
         let engine = ps_engine(d.path(), ps);
         let mut s = testing::scan(&net, &d, machine());
         images_with_limits(&mut s, &[], Some(engine), FAST).unwrap();
-        let (component, note) = only_gap(&s);
-        assert_eq!(component, GAP);
-        assert!(note.contains(why) && note.contains("running containers' images were not listed"), "{name}: {note}");
         assert_eq!(calls(d.path()), ["ps --format {{.Image}}"], "{name}");
+        match gap {
+            None => assert!(s.findings.is_empty(), "{name}: {:?}", s.findings),
+            Some(why) => {
+                let (component, note) = only_gap(&s);
+                assert_eq!(component, GAP);
+                assert!(
+                    note.contains(why) && note.contains("running containers' images were not listed"),
+                    "{name}: {note}"
+                );
+            }
+        }
     }
 }
 

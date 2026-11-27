@@ -97,9 +97,42 @@ fn failed(e: &crate::error::Error) -> String {
     said(&e.to_string())
 }
 
+/// Why the engine gave no list of running containers.
+#[derive(Debug, PartialEq)]
+pub enum NotListed {
+    /// Its daemon is not running ([`daemon_down`]): then no container runs either.
+    DaemonDown,
+    /// Anything else (a hang, permission denied on the socket, another error), with why.
+    Failed(String),
+}
+
+/// Whether an engine's failure says its daemon is not running, from the
+/// engine's own words on stderr. docker: `Cannot connect to the Docker daemon
+/// at unix:///var/run/docker.sock. Is the docker daemon running?`, newer CLIs
+/// `failed to connect to the docker API at …; check if the path is correct
+/// and if the daemon is running`, on Windows `error during connect: … open
+/// //./pipe/docker_engine: The system cannot find the file specified.`;
+/// podman: `Cannot connect to Podman. Please verify your connection …` and
+/// `unable to connect to Podman socket: … connection refused`. Permission
+/// denied on the socket (`permission denied while trying to connect to the
+/// Docker daemon socket`) is not: the daemon may be running containers this
+/// user may not list. Unsure is no, so the caller records the gap.
+pub fn daemon_down(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    if s.contains("permission denied") || s.contains("access is denied") {
+        return false;
+    }
+    s.contains("cannot connect to the docker daemon")
+        || s.contains("is the docker daemon running")
+        || (s.contains("failed to connect to the docker api") && s.contains("daemon is running"))
+        || (s.contains("error during connect") && s.contains("docker_engine") && s.contains("cannot find the file"))
+        || s.contains("cannot connect to podman")
+        || (s.contains("unable to connect to podman socket") && s.contains("connection refused"))
+}
+
 /// The images behind the engine's running containers (`ps --format
 /// {{.Image}}`, which docker and podman both take), or why it gave none.
-pub fn running(engine: &Path, timeout: Duration) -> std::result::Result<Vec<String>, String> {
+pub fn running(engine: &Path, timeout: Duration) -> std::result::Result<Vec<String>, NotListed> {
     let argv = [engine.as_os_str(), OsStr::new("ps"), OsStr::new("--format"), OsStr::new("{{.Image}}")];
     let start = Instant::now();
     match exec(&argv, &[], timeout) {
@@ -109,9 +142,15 @@ pub fn running(engine: &Path, timeout: Duration) -> std::result::Result<Vec<Stri
             refs.dedup();
             Ok(refs)
         }
-        Ok(o) => Err(said(&o.stderr)),
-        Err(_) if start.elapsed() >= timeout => Err(format!("no answer within {} s", timeout.as_secs().max(1))),
-        Err(e) => Err(failed(&e)),
+        Ok(o) if daemon_down(&o.stderr) => Err(NotListed::DaemonDown),
+        Ok(o) => {
+            let why = said(&o.stderr);
+            Err(NotListed::Failed(if why.is_empty() { "it exited with an error".to_string() } else { why }))
+        }
+        Err(_) if start.elapsed() >= timeout => {
+            Err(NotListed::Failed(format!("no answer within {} s", timeout.as_secs().max(1))))
+        }
+        Err(e) => Err(NotListed::Failed(failed(&e))),
     }
 }
 

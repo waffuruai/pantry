@@ -350,3 +350,33 @@ fn dotnet_projects_in_an_image() {
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(gaps[0].starts_with("/src/app/App.csproj: not exact or not resolved: Foo $(Undefined)"), "{gaps:?}");
 }
+
+/// Risk: a Mac with Docker Desktop quit gets an incomplete report on every
+/// scan (a daemon that is down read as a failure), or a socket this user may
+/// not open is read as "nothing runs" and the running containers go
+/// unchecked with no word. Oracle: the engines' own stderr, as docker and
+/// podman print it: daemon-down messages are down, permission denied and
+/// anything else are not.
+#[test]
+fn daemon_down_is_read_from_the_engines_own_words() {
+    for down in [
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        "Cannot connect to the Docker daemon at unix:///Users/sam/.docker/run/docker.sock. Is the docker daemon running?",
+        "failed to connect to the docker API at unix:///Users/sam/.docker/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/sam/.docker/run/docker.sock: connect: no such file or directory",
+        "error during connect: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.47/containers/json\": open //./pipe/docker_engine: The system cannot find the file specified.",
+        "Cannot connect to Podman. Please verify your connection to the Linux system using `podman system connection list`, or try `podman machine init` and `podman machine start` to manage a new Linux VM\nError: unable to connect to Podman socket: failed to connect: dial tcp 127.0.0.1:50110: connect: connection refused",
+        "Error: unable to connect to Podman socket: Get \"http://d/v5.2.0/libpod/_ping\": dial unix /run/user/1000/podman/podman.sock: connect: connection refused",
+    ] {
+        assert!(daemon_down(down), "{down}");
+    }
+    for other in [
+        "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json\": dial unix /var/run/docker.sock: connect: permission denied",
+        "error during connect: Get \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.47/containers/json\": open //./pipe/docker_engine: Access is denied.",
+        "Error: unable to connect to Podman socket: dial unix /run/user/1000/podman/podman.sock: connect: permission denied",
+        "Error response from daemon: client version 1.52 is too new. Maximum supported API version is 1.47",
+        "Error: database is locked",
+        "",
+    ] {
+        assert!(!daemon_down(other), "{other}");
+    }
+}

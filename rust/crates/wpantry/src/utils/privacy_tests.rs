@@ -234,3 +234,23 @@ fn a_walk_root_that_is_a_link_into_a_left_out_folder_is_not_listed() {
     let _guard = leave_out(vec![h.join("Documents")], Vec::new());
     assert!(crate::utils::walk::walk(&h.join("code"), 1).is_empty());
 }
+
+/// Risk: [`reaches_left_out`] remembers the folders it followed, and a new
+/// scan (same guard, `forget_walks` between) keeps the old answer for a folder
+/// that is now a link into a left-out one, and stats inside it. Oracle: a
+/// folder replaced by such a link is left out once the walks are forgotten.
+/// Known bad: a cache that `forget_walks` does not empty.
+#[cfg(unix)]
+#[test]
+fn a_folder_that_became_a_link_into_a_left_out_folder_is_seen_after_the_walks_are_forgotten() {
+    let d = crate::utils::temp::TempDir::new("privacy-relink").unwrap();
+    let h = std::fs::canonicalize(d.path()).unwrap().join("home");
+    std::fs::create_dir_all(h.join("Documents/bin")).unwrap();
+    std::fs::create_dir_all(h.join("bin")).unwrap();
+    let _guard = leave_out(vec![h.join("Documents")], Vec::new());
+    assert!(!reaches_left_out(h.join("bin/tool")));
+    std::fs::remove_dir(h.join("bin")).unwrap();
+    std::os::unix::fs::symlink("Documents/bin", h.join("bin")).unwrap();
+    crate::utils::walk::forget_walks();
+    assert!(reaches_left_out(h.join("bin/tool")));
+}

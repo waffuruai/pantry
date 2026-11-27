@@ -130,6 +130,7 @@ pub fn prewalk_seen(roots: &[PathBuf], seen: &(dyn Fn(&Path, usize) + Sync)) {
 pub fn forget_walks() {
     WALKS.lock().expect("lock").clear();
     UNREADABLE.lock().expect("lock").clear();
+    crate::utils::privacy::forget_followed();
     crate::checks::files::roots::forget();
 }
 

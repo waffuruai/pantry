@@ -101,12 +101,14 @@ pub fn leave_out(dirs: Vec<PathBuf>, named: Vec<PathBuf>) -> Guard {
     };
     let norm = |paths: Vec<PathBuf>| paths.iter().map(|p| names(p)).collect::<Vec<_>>();
     LEFT_OUT.write().expect("lock").push((id, norm(dirs), norm(named)));
+    FOLLOWED.lock().expect("lock").clear();
     Guard(id)
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
         LEFT_OUT.write().expect("lock").retain(|(id, ..)| *id != self.0);
+        FOLLOWED.lock().expect("lock").clear();
     }
 }
 
@@ -157,7 +159,6 @@ const MAX_LINKS: usize = 40;
 /// drop(guard);
 /// ```
 pub fn reaches_left_out(path: impl AsRef<Path>) -> bool {
-    use std::path::Component;
     if LEFT_OUT.read().expect("lock").is_empty() {
         return false;
     }
@@ -168,48 +169,75 @@ pub fn reaches_left_out(path: impl AsRef<Path>) -> bool {
             Err(_) => return false,
         }
     }
-    'again: for _ in 0..=MAX_LINKS {
-        // By spelling, the whole path first: when it is left out nothing on the way is looked at.
-        // A path inside a named subtree is not, and its ancestors (the folder itself) may be
-        // looked at to find the links on the way.
-        if is_left_out(&path) {
-            return true;
-        }
-        let mut so_far = PathBuf::new();
-        let mut parts = path.components();
-        while let Some(part) = parts.next() {
-            match part {
-                Component::ParentDir => {
-                    // `link/..` leaves a folder the path went through.
-                    if is_left_out(&so_far) {
-                        return true;
-                    }
-                    so_far.pop();
-                    continue;
-                }
-                Component::CurDir => continue,
-                other => so_far.push(other),
-            }
-            // A path that goes through a left-out folder (`~/Documents/foo/../../bin`
-            // folds to `~/bin`, but the system opens `~/Documents/foo` to resolve it) is
-            // left out, and nothing in the folder is looked at to say so: not even a
-            // `symlink_metadata` of the first folder in it. Only the folders on the way to
-            // a path the user named are walked.
-            if is_left_out(&so_far) && !on_the_way_to_named(&so_far) {
-                return true;
-            }
-            if std::fs::symlink_metadata(&so_far).is_ok_and(|m| m.file_type().is_symlink())
-                && let Ok(target) = std::fs::read_link(&so_far)
-            {
-                let base =
-                    if target.is_absolute() { PathBuf::new() } else { so_far.parent().unwrap_or(&so_far).into() };
-                path = base.join(target).join(parts.as_path());
-                continue 'again;
-            }
-        }
-        return false;
+    // By spelling, the whole path first: when it is left out nothing on the way is looked at.
+    if is_left_out(&path) {
+        return true;
     }
-    false
+    resolved(&path, &mut 0, false).is_none()
+}
+
+/// The folders [`resolved`] has already followed for the guards alive now:
+/// each spelling, and where it leads with no link left in it (`None`: into a
+/// left-out folder). A walk asks about every link in a folder and a PATH
+/// lookup about every name in a PATH folder, so without it each would lstat
+/// every folder above them again. Emptied whenever a guard comes or goes.
+static FOLLOWED: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, Option<PathBuf>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Forget the folders [`reaches_left_out`] followed: a new scan may see
+/// changed links ([`crate::utils::walk::forget_walks`]).
+pub fn forget_followed() {
+    FOLLOWED.lock().expect("lock").clear();
+}
+
+/// Where the absolute `path` leads with every link on it followed, or `None`
+/// when it leads into (or through) a left-out folder. Each folder above it is
+/// resolved first (and remembered, `keep`), so each component is judged by
+/// spelling before it is looked at, as the system meets it: a link's target
+/// is taken from the link's own folder, resolved, and `..` leaves the folder
+/// that folder really is. A loop of links ([`MAX_LINKS`]) answers where it
+/// stopped (not left out).
+fn resolved(path: &Path, links: &mut usize, keep: bool) -> Option<PathBuf> {
+    use std::path::Component;
+    if let Some(hit) = FOLLOWED.lock().expect("lock").get(path) {
+        return hit.clone();
+    }
+    let (Some(parent), Some(last)) = (path.parent(), path.components().next_back()) else {
+        return Some(path.to_path_buf());
+    };
+    let out = match last {
+        Component::Prefix(_) | Component::RootDir => Some(path.to_path_buf()),
+        Component::CurDir => resolved(parent, links, true),
+        // `link/..` leaves a folder the path went through.
+        Component::ParentDir => resolved(parent, links, true)
+            .and_then(|base| (!is_left_out(&base)).then(|| base.parent().map_or(base.clone(), Path::to_path_buf))),
+        Component::Normal(name) => resolved(parent, links, true).and_then(|base| {
+            let here = base.join(name);
+            // Nothing in a left-out folder is looked at, not even a `symlink_metadata` of the
+            // first folder in it: only the folders on the way to a path the user named.
+            if is_left_out(&here) && !on_the_way_to_named(&here) {
+                return None;
+            }
+            if std::fs::symlink_metadata(&here).is_ok_and(|m| m.file_type().is_symlink())
+                && let Ok(target) = std::fs::read_link(&here)
+            {
+                *links += 1;
+                if *links > MAX_LINKS {
+                    return Some(here);
+                }
+                let next = if target.is_absolute() { target } else { base.join(target) };
+                if is_left_out(&next) && !on_the_way_to_named(&next) {
+                    return None;
+                }
+                return resolved(&next, links, false);
+            }
+            Some(here)
+        }),
+    };
+    if keep {
+        FOLLOWED.lock().expect("lock").insert(path.to_path_buf(), out.clone());
+    }
+    out
 }
 
 /// Whether `path` is a folder above a path the user named: the walk of a

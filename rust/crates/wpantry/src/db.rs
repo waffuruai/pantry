@@ -84,6 +84,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("fixes", "host", "TEXT"),
     ("fixes", "exit_code", "INTEGER"),
     ("fixes", "error", "TEXT"),
+    ("fixes", "verified_by", "TEXT"),
     ("kev", "vendor", "TEXT"),
     ("findings", "excluded", "INTEGER"),
     ("kev", "product", "TEXT"),

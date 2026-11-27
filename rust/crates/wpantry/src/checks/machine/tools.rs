@@ -154,51 +154,62 @@ pub fn find_any(t: &Tool) -> Vec<Component> {
 
 /// [`find`]; with `any`, the copies something else vouches for as well.
 fn find_owned(t: &Tool, extra_dirs: &[String], any: bool) -> Vec<Component> {
-    let re = Regex::with_flags(t.pattern, "m");
     let mut dirs: Vec<String> = t.paths.iter().map(|p| p.to_string()).collect();
     dirs.extend(extra_dirs.iter().cloned());
     let mut out = Vec::new();
     for b in t.bins {
         for (shown, real) in on_path(b, &dirs) {
-            let who = owner(&real);
-            if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
-                continue;
-            }
-            let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
-                Some((_, prefix)) => embedded(&real, prefix),
-                None => {
-                    let mut argv: Vec<&OsStr> = vec![OsStr::new(&shown)];
-                    argv.extend(t.args.iter().map(OsStr::new));
-                    run(&argv, Duration::from_secs(15))
-                }
-            };
-            let Some(m) = re.search(&said) else { continue };
-            let v = m.get(1).to_string();
-            let (mut fix, mut auto) = updater(&real, t.name);
-            if who == "brew" {
-                let formula = real.split("/Cellar/").nth(1).and_then(|r| r.split('/').next()).unwrap_or(t.name);
-                (fix, auto) = (format!("brew upgrade {formula}"), true);
-            } else if who == "app" {
-                let app = Regex::new(r"([^/]+)[.]app/").search(&real).map(|c| c.get(1).to_string()).unwrap_or_default();
-                (fix, auto) = (format!("Update {app}"), false);
-            }
-            if !t.fix.is_empty() {
-                (fix, auto) = (t.fix.to_string(), false);
-            }
-            let mut c = Component::new(t.kind, t.name, &v, &shown);
-            c.fix = fix;
-            c.auto = auto;
-            if let Some((eco, pkg, fmt)) = t.osv {
-                c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
-                c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
-            }
-            if let Some((product, cycle)) = t.eol {
-                c.eol = Some((product.to_string(), cycle.of(&v)));
-            }
-            out.push(c);
+            out.extend(component_at(t, &shown, &real, any));
         }
     }
     out
+}
+
+/// The component for the copy of catalog tool `t` that PATH or a version
+/// manager's folder shows as `shown` and that resolves to `real`: who owns
+/// it, how its version is read, how it is updated, how OSV and endoflife.date
+/// know it. None when something else vouches for the copy (unless `any`, or
+/// the tool is `always` checked), or when its version can't be read. The one
+/// place a copy's version is read: a scan reads every copy through it, and
+/// `wpantry recheck` reads one.
+pub fn component_at(t: &Tool, shown: &str, real: &str, any: bool) -> Option<Component> {
+    let re = Regex::with_flags(t.pattern, "m");
+    let who = owner(real);
+    if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
+        return None;
+    }
+    let said = match READ_BINARY.iter().find(|(n, _)| *n == t.name) {
+        Some((_, prefix)) => embedded(real, prefix),
+        None => {
+            let mut argv: Vec<&OsStr> = vec![OsStr::new(shown)];
+            argv.extend(t.args.iter().map(OsStr::new));
+            run(&argv, Duration::from_secs(15))
+        }
+    };
+    let m = re.search(&said)?;
+    let v = m.get(1).to_string();
+    let (mut fix, mut auto) = updater(real, t.name);
+    if who == "brew" {
+        let formula = real.split("/Cellar/").nth(1).and_then(|r| r.split('/').next()).unwrap_or(t.name);
+        (fix, auto) = (format!("brew upgrade {formula}"), true);
+    } else if who == "app" {
+        let app = Regex::new(r"([^/]+)[.]app/").search(real).map(|c| c.get(1).to_string()).unwrap_or_default();
+        (fix, auto) = (format!("Update {app}"), false);
+    }
+    if !t.fix.is_empty() {
+        (fix, auto) = (t.fix.to_string(), false);
+    }
+    let mut c = Component::new(t.kind, t.name, &v, shown);
+    c.fix = fix;
+    c.auto = auto;
+    if let Some((eco, pkg, fmt)) = t.osv {
+        c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
+        c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
+    }
+    if let Some((product, cycle)) = t.eol {
+        c.eol = Some((product.to_string(), cycle.of(&v)));
+    }
+    Some(c)
 }
 
 /// Every catalog tool found, plus nvm, one entry per install.

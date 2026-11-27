@@ -18,23 +18,23 @@ class Wpantry < Formula
   # name the same asset.
   on_macos do
     on_arm do
-      url "https://github.com/waffuruai/pantry/releases/download/v0.2.0/wpantry-universal-apple-darwin"
-      sha256 "738c8cf5974bce607d71dab3795db0b70e569374d28046a0cbde47409bc626bc" # wpantry-universal-apple-darwin
+      url "https://github.com/waffuruai/pantry/releases/download/v0.10.0/wpantry-universal-apple-darwin"
+      sha256 "d95ecdae7a895602f81f1a5e089af3097aa18dc4e8aad7e88d6af1003d9f6056" # wpantry-universal-apple-darwin
     end
     on_intel do
-      url "https://github.com/waffuruai/pantry/releases/download/v0.2.0/wpantry-universal-apple-darwin"
-      sha256 "738c8cf5974bce607d71dab3795db0b70e569374d28046a0cbde47409bc626bc" # wpantry-universal-apple-darwin
+      url "https://github.com/waffuruai/pantry/releases/download/v0.10.0/wpantry-universal-apple-darwin"
+      sha256 "d95ecdae7a895602f81f1a5e089af3097aa18dc4e8aad7e88d6af1003d9f6056" # wpantry-universal-apple-darwin
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/waffuruai/pantry/releases/download/v0.2.0/wpantry-x86_64-unknown-linux-musl"
-      sha256 "9b35d7a5fbe5a5a838aa146bd3cafa6fdb9486e6dcd1036c87f899048f132f28" # wpantry-x86_64-unknown-linux-musl
+      url "https://github.com/waffuruai/pantry/releases/download/v0.10.0/wpantry-x86_64-unknown-linux-musl"
+      sha256 "f6956ea38b076d2c34291ab0bd56e10645674d8a40607365fba274e0f1321a9d" # wpantry-x86_64-unknown-linux-musl
     end
     on_arm do
-      url "https://github.com/waffuruai/pantry/releases/download/v0.2.0/wpantry-aarch64-unknown-linux-musl"
-      sha256 "9b33af2b9bb0b70f9cb7a63e0a540c5d128964c36c1343cbb232cf644959a033" # wpantry-aarch64-unknown-linux-musl
+      url "https://github.com/waffuruai/pantry/releases/download/v0.10.0/wpantry-aarch64-unknown-linux-musl"
+      sha256 "d2601e67603cd3818b62c173bbfebda9e7c7ae4d98e9a3b28090747828d5a62c" # wpantry-aarch64-unknown-linux-musl
     end
   end
 

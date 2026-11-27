@@ -32,7 +32,7 @@ AI_NAME = "Clau" + "de Opus 5.5"
 ROBOT = chr(0x1F916)
 TOOL = "Clau" + "de Code"
 
-HUMAN = ("Joshua Pinter", "joshuapinter@gmail.com")
+HUMAN = ("Ada Lovelace", "ada@example.com")
 WEB_FLOW = ("GitHub", "noreply@github.com")
 DEPENDABOT = ("dependabot[bot]", "49699333+dependabot[bot]@users.noreply.github.com")
 
@@ -102,8 +102,8 @@ class MessageRules(unittest.TestCase):
                          ["AI attribution phrase"])
 
     def test_human_coauthors_and_signoffs_pass(self):
-        text = (f"feat: y\n\nbody\n\n{CO_GH}: Eric Kryski <599019+ekryski@users.noreply.github.com>\n"
-                f"{CO_GH}: Tom Turney <tturney1@gmail.com>\n{SOB}: Joshua Pinter <joshuapinter@gmail.com>\n")
+        text = (f"feat: y\n\nbody\n\n{CO_GH}: Alan Turing <12345+aturing@users.noreply.github.com>\n"
+                f"{CO_GH}: Grace Hopper <grace@example.com>\n{SOB}: Ada Lovelace <ada@example.com>\n")
         self.assertEqual(ch.message_findings(text, "c"), [])
 
     def test_a_person_named_like_a_tool_passes_with_a_personal_address(self):
@@ -145,7 +145,7 @@ class Identities(unittest.TestCase):
         self.assertEqual(ch.commit_findings(commit(squash, author=HUMAN)), [])
 
     def test_human_author_on_users_noreply_passes(self):
-        self.assertEqual(ch.commit_findings(commit("x\n", author=("Eric Kryski", "599019+ekryski@users.noreply.github.com"))), [])
+        self.assertEqual(ch.commit_findings(commit("x\n", author=("Alan Turing", "12345+aturing@users.noreply.github.com"))), [])
 
 
 class PullRequestText(unittest.TestCase):
@@ -168,7 +168,7 @@ class PullRequestText(unittest.TestCase):
         self.assertEqual(ch.pr_findings("feat: x", template), [])
 
 
-def api_commit(message, author=HUMAN, committer=WEB_FLOW, sha="a" * 40, login="joshuapinter"):
+def api_commit(message, author=HUMAN, committer=WEB_FLOW, sha="a" * 40, login="ada"):
     return {"sha": sha, "commit": {"message": message, "author": {"name": author[0], "email": author[1]},
                                    "committer": {"name": committer[0], "email": committer[1]}},
             "author": {"login": login, "type": "User"}, "committer": {"login": "web-flow", "type": "User"}}
@@ -242,7 +242,7 @@ class MessageFile(unittest.TestCase):
         self.assertIn("author is not a person", out)
 
     def test_passes_a_human_commit_and_ignores_comment_lines(self):
-        rc, _ = self.run_hook(f"feat: y\n\nbody\n\n{CO_GH}: Tom Turney <tturney1@gmail.com>\n# {ROBOT} a git comment\n")
+        rc, _ = self.run_hook(f"feat: y\n\nbody\n\n{CO_GH}: Grace Hopper <grace@example.com>\n# {ROBOT} a git comment\n")
         self.assertEqual(rc, 0)
 
 

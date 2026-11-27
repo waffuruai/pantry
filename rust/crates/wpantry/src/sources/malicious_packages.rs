@@ -106,14 +106,16 @@ pub fn sync(cache: &Cache, offline: bool) -> Result<i64> {
             ));
         }
     }
-    cache.conn.execute("DELETE FROM malicious", [])?;
-    {
+    // One transaction: the old index or the new, never part of one.
+    cache.atomically(|| {
+        cache.conn.execute("DELETE FROM malicious", [])?;
         let mut stmt = cache.conn.prepare("INSERT INTO malicious VALUES (?, ?, ?)")?;
         for (e, n, i) in &rows {
             stmt.execute(params![e, n, i])?;
         }
-    }
-    cache.touch("malicious_at")?;
+        drop(stmt);
+        cache.touch("malicious_at")
+    })?;
     cache.commit()?;
     Ok(rows.len() as i64)
 }

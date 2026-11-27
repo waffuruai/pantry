@@ -31,7 +31,7 @@ fn launchd_env(r: &Roots, inv: &mut Inventory) {
             location: "launchctl getenv DYLD_INSERT_LIBRARIES".into(),
             ident: value.to_string(),
             program: Some(r.rebase(Path::new(value.split(':').next().unwrap_or(value))))
-                .filter(|p| crate::utils::privacy::is_left_out(p) || p.exists()),
+                .filter(|p| crate::utils::privacy::reaches_left_out(p) || p.exists()),
             injects: vec!["DYLD_INSERT_LIBRARIES".into()],
             line: 0,
         });

@@ -185,3 +185,31 @@ fn program_files_follow_interpreters_and_odd_places_are_named() {
     assert!(!odd_place(home, Path::new("/Users/me/bin/a")));
     assert!(!odd_place(home, Path::new("/Applications/Maccy.app/Contents/MacOS/Maccy")));
 }
+
+/// Risk: `program_file` asked `is_file` (a stat that follows links) when the
+/// spelling said the script was not in a left-out folder, so a script reached
+/// by `~/bin -> ~/Documents` was stat'ed inside `~/Documents`. Oracle: the
+/// folder is mode 000, so such a stat fails and the answer falls back to the
+/// interpreter; asked through the link first, the script is named without any
+/// stat. This notices a stat whose failure steers the answer; it cannot notice
+/// one whose result is thrown away. Skipped as root, whom mode 000 does not
+/// stop. Known bad: `is_left_out` in place of `reaches_left_out`.
+#[cfg(unix)]
+#[test]
+fn a_script_behind_a_link_into_a_left_out_folder_is_named_without_a_stat() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    if crate::utils::process::is_root() {
+        return;
+    }
+    let d = temp::TempDir::new("clipper-link").unwrap();
+    let h = std::fs::canonicalize(d.path()).unwrap().join("home");
+    std::fs::create_dir_all(h.join("Documents")).unwrap();
+    std::fs::write(h.join("Documents/s.py"), "x").unwrap();
+    symlink("Documents", h.join("bin")).unwrap();
+    let script = h.join("bin/s.py");
+    let argv = vec!["/usr/bin/python3".to_string(), script.to_string_lossy().into_owned()];
+    let _guard = crate::utils::privacy::leave_out(vec![h.join("Documents")], Vec::new());
+    let _reopen = crate::utils::temp::Reopen(h.join("Documents"));
+    std::fs::set_permissions(h.join("Documents"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(program_file(&argv), Some(script));
+}

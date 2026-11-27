@@ -279,7 +279,7 @@ pub fn clean_tail(bytes: &[u8], cut: bool) -> String {
         .lines()
         .map(|l| l.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or("").trim_end().to_string())
         .filter(|l| !l.is_empty() && !looks_like_env(l))
-        .map(|l| if home.len() > 1 { l.replace(&home, "~") } else { l })
+        .map(|l| if home.len() > 1 { shorten_home(&l, &home) } else { l })
         .map(|l| {
             if l.chars().count() > MAX_LINE {
                 format!("{}…", l.chars().take(MAX_LINE).collect::<String>())
@@ -289,6 +289,29 @@ pub fn clean_tail(bytes: &[u8], cut: bool) -> String {
         })
         .collect();
     lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
+}
+
+/// `line` with the home directory `home` written `~` wherever it appears,
+/// as the plain replace before this did, except where the name goes on
+/// (`/Users/samantha` for `/Users/sam`: a letter, digit or `_` follows), which
+/// is another folder. Whatever comes before it (`file://`, a quote, `=`, `:`,
+/// another folder) and any punctuation after it (`/`, `\`, `.`, `-`, a quote)
+/// still shortens it: a full home path is never left in the text.
+///
+/// Example: with home `/Users/sam`, `see file:///Users/sam/x.` is
+/// `see file://~/x.` and `/Users/samantha/x` stays.
+pub(crate) fn shorten_home(line: &str, home: &str) -> String {
+    let goes_on = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(home) {
+        let after = &rest[at + home.len()..];
+        out.push_str(&rest[..at]);
+        out.push_str(if after.chars().next().is_some_and(goes_on) { home } else { "~" });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A `NAME=value` line with an upper-case name: what `env` prints. A
@@ -304,8 +327,12 @@ fn looks_like_env(line: &str) -> bool {
     }
 }
 
-/// `text` without ANSI escape sequences and other control characters
-/// (tab becomes a space; newline and carriage return stay).
+/// `text` without terminal escape sequences, other control characters and
+/// the invisible characters that change how a line reads (tab becomes a
+/// space; newline and carriage return stay): CSI sequences, the strings that
+/// end at BEL or `ESC \` (OSC, and the device-control, start-of-string,
+/// privacy-message and application-command strings, payload included), and a
+/// character-set or other two-byte escape with its final character.
 fn strip_escapes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -320,8 +347,8 @@ fn strip_escapes(text: &str) -> String {
                         }
                     }
                 }
-                // OSC: up to BEL or ESC \
-                Some(']') => {
+                // OSC, DCS, SOS, PM, APC: a string up to BEL or ESC \
+                Some(']' | 'P' | 'X' | '^' | '_') => {
                     while let Some(n) = chars.next() {
                         if n == '\u{7}' {
                             break;
@@ -332,13 +359,28 @@ fn strip_escapes(text: &str) -> String {
                         }
                     }
                 }
+                // ESC, intermediate bytes (0x20..=0x2F), then a final one: `ESC ( B`
+                Some(n) if ('\u{20}'..='\u{2f}').contains(&n) => {
+                    while chars.next_if(|m| ('\u{20}'..='\u{2f}').contains(m)).is_some() {}
+                    chars.next();
+                }
                 _ => {}
             },
             '\t' => out.push(' '),
             '\n' | '\r' => out.push(c),
-            c if c.is_control() => {}
+            c if c.is_control() || invisible(c) => {}
             c => out.push(c),
         }
     }
     out
+}
+
+/// A character that draws nothing but changes how the text around it reads:
+/// the bidirectional marks, embeddings, overrides and isolates, the
+/// zero-width spaces and joiners, the invisible operators and the byte order
+/// mark. Left in a report line, `\u{202e}` makes the rest of it run backwards.
+fn invisible(c: char) -> bool {
+    matches!(c,
+        '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}')
 }

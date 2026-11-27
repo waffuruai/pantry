@@ -244,7 +244,6 @@ fn find_from(
     resolve: &dyn Fn(&str, &str) -> Option<String>,
     said: &dyn Fn(&str, &str) -> String,
 ) -> Vec<Component> {
-    let re = Regex::with_flags(t.pattern, "m");
     let mut out = Vec::new();
     let mut seen = Vec::new();
     for (shown, real) in found {
@@ -262,44 +261,69 @@ fn find_from(
             }
             seen.push(real.clone());
         }
-        let who = owner(&real);
-        if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
-            continue;
-        }
-        let said = said(&shown, &real);
-        let Some(m) = re.search(&said) else { continue };
-        let v = m.get(1).to_string();
-        let (mut fix, mut auto) = updater(&real, t.name);
-        if let Some(manager) = unresolved {
+        let Some(mut c) = component_with(t, &shown, &real, any, said) else { continue };
+        if let Some(manager) = unresolved.filter(|_| t.fix.is_empty()) {
             let by = if manager.is_empty() { "a version manager".to_string() } else { manager.to_string() };
-            fix = format!(
+            c.fix = format!(
                 "{} at {shown} is a {by} shim and what it starts could not be determined: find the install it reaches and update that one to {{safe}}",
                 t.name
             );
-            auto = false;
-        } else if who == "brew" {
-            let formula = real.split("/Cellar/").nth(1).and_then(|r| r.split('/').next()).unwrap_or(t.name);
-            (fix, auto) = (format!("brew upgrade {formula}"), true);
-        } else if who == "app" {
-            let app = Regex::new(r"([^/]+)[.]app/").search(&real).map(|c| c.get(1).to_string()).unwrap_or_default();
-            (fix, auto) = (format!("Update {app}"), false);
-        }
-        if !t.fix.is_empty() {
-            (fix, auto) = (t.fix.to_string(), false);
-        }
-        let mut c = Component::new(t.kind, t.name, &v, &shown);
-        c.fix = fix;
-        c.auto = auto;
-        if let Some((eco, pkg, fmt)) = t.osv {
-            c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
-            c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
-        }
-        if let Some((product, cycle)) = t.eol {
-            c.eol = Some((product.to_string(), cycle.of(&v)));
+            c.auto = false;
         }
         out.push(c);
     }
     out
+}
+
+/// The component for the copy of catalog tool `t` that PATH or a version
+/// manager's folder shows as `shown` and that resolves to `real`: who owns
+/// it, how its version is read, how it is updated, how OSV and endoflife.date
+/// know it. None when something else vouches for the copy (unless `any`, or
+/// the tool is `always` checked), or when its version can't be read. The one
+/// place a copy's version is read: a scan reads every copy through it, and
+/// `wpantry recheck` reads one.
+pub fn component_at(t: &Tool, shown: &str, real: &str, any: bool) -> Option<Component> {
+    component_with(t, shown, real, any, &|p, r| said_by(t, p, r))
+}
+
+/// [`component_at`] with the version asked through `said` (path, real path).
+fn component_with(
+    t: &Tool,
+    shown: &str,
+    real: &str,
+    any: bool,
+    said: &dyn Fn(&str, &str) -> String,
+) -> Option<Component> {
+    let re = Regex::with_flags(t.pattern, "m");
+    let who = owner(real);
+    if !any && !who.is_empty() && !(t.always && (who == "brew" || who == "app")) {
+        return None;
+    }
+    let said = said(shown, real);
+    let m = re.search(&said)?;
+    let v = m.get(1).to_string();
+    let (mut fix, mut auto) = updater(real, t.name);
+    if who == "brew" {
+        let formula = real.split("/Cellar/").nth(1).and_then(|r| r.split('/').next()).unwrap_or(t.name);
+        (fix, auto) = (format!("brew upgrade {formula}"), true);
+    } else if who == "app" {
+        let app = Regex::new(r"([^/]+)[.]app/").search(real).map(|c| c.get(1).to_string()).unwrap_or_default();
+        (fix, auto) = (format!("Update {app}"), false);
+    }
+    if !t.fix.is_empty() {
+        (fix, auto) = (t.fix.to_string(), false);
+    }
+    let mut c = Component::new(t.kind, t.name, &v, shown);
+    c.fix = fix;
+    c.auto = auto;
+    if let Some((eco, pkg, fmt)) = t.osv {
+        c.osv = Some((eco.to_string(), pkg.to_string(), tag(fmt, &v)));
+        c.osv_also = c.osv.as_ref().map(crate::sources::osv::also).unwrap_or_default();
+    }
+    if let Some((product, cycle)) = t.eol {
+        c.eol = Some((product.to_string(), cycle.of(&v)));
+    }
+    Some(c)
 }
 
 /// Every catalog tool found, plus nvm, one entry per install.

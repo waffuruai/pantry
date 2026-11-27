@@ -10,6 +10,7 @@ pub mod dismiss;
 pub mod editors;
 pub mod mitigate;
 pub mod queue;
+pub mod recheck;
 pub mod run;
 pub mod secret;
 

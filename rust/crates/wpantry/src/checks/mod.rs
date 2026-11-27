@@ -9,6 +9,7 @@
 //! can't be reached is reported "not checked", never clean. Nothing that
 //! isn't installed is reported.
 
+pub mod changes;
 pub mod documents;
 pub mod ecosystems;
 pub mod email;

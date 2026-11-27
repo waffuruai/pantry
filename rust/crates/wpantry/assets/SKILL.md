@@ -16,6 +16,7 @@ wpantry inventories what is installed on this computer and in its git repos, ask
 | Report what applies on this computer: machine + every git repo under `~` (exits 1 when something fails) | `wpantry scan` |
 | One project only: its repos and the runtimes it pins, nothing else of the machine | `wpantry scan project ~/code/app` |
 | A clone you didn't write, before opening it in an agent or editor (hooks that run on open fail) | `wpantry scan project ~/Downloads/repo` |
+| What a commit or pull request adds, before it lands (secrets, changed lockfiles); nothing is kept | `wpantry scan project --changes staged`, or `--changes origin/dev` in CI |
 | Show the update plan, change nothing | `wpantry fix --dry-run` |
 | Apply the fixes that can run unattended, then re-check | `wpantry fix` (also installs the stopgaps, after a yes on the terminal; `--yes` skips the question) |
 | What wpantry can mitigate here, and what has an unattended fix | `wpantry fix list` |

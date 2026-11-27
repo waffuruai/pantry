@@ -458,7 +458,7 @@ fn a_record_with_git_ranges_and_a_version_list_is_judged_by_the_list() {
         ("2.1.0", (State::StillPresent, "affected")),
         ("9.9.9", (State::Unknown, "uncomparable")),
     ] {
-        testing::write(&root, "requirements.txt", &format!("requests=={version}\n"));
+        testing::write(&root, "requirements.txt", format!("requests=={version}\n"));
         assert_eq!(state(&one(&file, &found[0], scan)), want, "{version}");
     }
     assert_eq!(findings_left(&file), 1, "nothing was recorded gone");

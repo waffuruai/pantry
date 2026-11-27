@@ -14,6 +14,9 @@ pub mod recheck;
 mod recheck_posture;
 #[cfg(test)]
 mod recheck_posture_tests;
+mod recheck_project;
+#[cfg(test)]
+mod recheck_project_tests;
 pub mod run;
 pub mod secret;
 

@@ -28,11 +28,18 @@
 //! * Homebrew formulae, in the three ways a scan finds them: `brew vulns`'
 //!   answer (location `Homebrew`), a formula's CVE records
 //!   ([`brew_cves::check_with`]), and a Cellar read without `brew`
-//!   ([`cellar::read`]).
+//!   ([`cellar::read`]);
+//! * packages found inside a project (a lockfile or manifest) and Python
+//!   packages installed in a virtual environment, whether or not there is an
+//!   unattended fix: the one place read again by the scan's own reader and
+//!   judged by the cached advisory record's ranges, in
+//!   [`super::recheck_project`] (each place once per run, however many ids
+//!   name it).
 //!
 //! Everything else says `unsupported`; the list is in specs/cli-contract.md.
 
 use super::recheck_posture as posture;
+use super::recheck_project as project;
 use crate::checks::ecosystems;
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, TOOLS};
@@ -303,6 +310,7 @@ pub fn recheck_many_with(
         .map_err(|e| fail(&first, e))?
         .then(|| privacy::leave_out(privacy::folders(&files::home(), cfg!(target_os = "macos")), Vec::new()));
     let log = |_: &str| {};
+    let mut places = project::Memo::default();
     let mut scratch =
         Scan::new(Options { offline: true, machine: true, ..Default::default() }, cache, &NoNet, &log, &log);
     for id in ids {
@@ -312,7 +320,7 @@ pub fn recheck_many_with(
             answer(Outcome { finding, scan, verdict: Verdict::unknown("unlisted", why), keys: Vec::new() });
             continue;
         };
-        match decide(&mut scratch, found, scan, &finding, (left_out.is_some(), runner)) {
+        match decide(&mut scratch, found, scan, &finding, (left_out.is_some(), runner, &mut places)) {
             Ok((verdict, keys)) => {
                 let present = verdict.state == State::StillPresent;
                 answer(Outcome { finding, scan, verdict, keys });
@@ -335,7 +343,7 @@ fn decide(
     found: &[Row],
     scan: i64,
     finding: &str,
-    (left_out, runner): (bool, settings::Runner),
+    (left_out, runner, places): (bool, settings::Runner, &mut project::Memo),
 ) -> Result<(Verdict, Vec<String>)> {
     let mut keys: Vec<String> = found.iter().map(Row::key).collect();
     keys.sort();
@@ -343,7 +351,7 @@ fn decide(
     let mut verdicts = Vec::new();
     for row in found {
         scratch.findings.clear();
-        verdicts.push(judge(scratch, row, left_out, runner)?);
+        verdicts.push(judge(scratch, row, left_out, runner, places)?);
     }
     // Gone only when every key is; one still there is still there.
     let pick = |state: State| verdicts.iter().find(|v| v.state == state).cloned();
@@ -373,13 +381,22 @@ fn unsupported(row: &Row, why: &str) -> Verdict {
 }
 
 /// One finding's verdict, from its kind.
-fn judge(scan: &mut Scan, row: &Row, personal_left_out: bool, runner: settings::Runner) -> Result<Verdict> {
+fn judge(
+    scan: &mut Scan,
+    row: &Row,
+    personal_left_out: bool,
+    runner: settings::Runner,
+    places: &mut project::Memo,
+) -> Result<Verdict> {
     // A machine setting is read by its own probe, whoever could fix it and
     // however it is fixed: the answer is what the setting is now.
     if row.kind == "posture" {
         return Ok(posture::judge(&row.vuln_id, &row.component, runner));
     }
-    if row.kind == "secret" || row.kind == "unchecked" || !row.fix_auto || row.fix_cmd.is_empty() {
+    // A package in a project or a virtual environment is read again at its
+    // own place, whether or not wpantry could fix it unattended.
+    let in_place = project::applies(&row.kind, &row.component, &row.location);
+    if row.kind == "secret" || row.kind == "unchecked" || (!in_place && (!row.fix_auto || row.fix_cmd.is_empty())) {
         return Ok(unsupported(row, "no automatic fix"));
     }
     if personal_left_out && privacy::is_left_out(&row.location) {
@@ -387,6 +404,9 @@ fn judge(scan: &mut Scan, row: &Row, personal_left_out: bool, runner: settings::
             "excluded",
             "The scan left that folder out (--no-personal-files), so the re-check does not open it.",
         ));
+    }
+    if in_place {
+        return project::judge(places, &scan.cache, (&row.kind, &row.component, &row.location, &row.vuln_id));
     }
     if row.kind == "brew" {
         return judge_brew(scan, row);

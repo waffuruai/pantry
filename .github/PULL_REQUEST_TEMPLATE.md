@@ -80,6 +80,7 @@ Transparency, not gatekeeping. Agentic PRs are welcome — but the diff + descri
 - [ ] Linked issue above is real, open, and was discussed before I opened this PR
 - [ ] PR title follows conventional-commit prefix (`feat:` / `fix:` / `perf:` / `docs:` / `test:` / `chore:` / `refactor:`, optionally with `!` for breaking)
 - [ ] Scope is tight — one logical change (split if not)
+- [ ] Commits are authored by me, with no AI or bot co-author, sign-off or footer in them or in this PR ([commit authorship](../blob/main/CONTRIBUTING.md#commit-authorship))
 - [ ] CI is green
 - [ ] Tests + docs updated where applicable
 - [ ] I read [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md)

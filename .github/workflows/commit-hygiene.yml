@@ -2,8 +2,9 @@ name: Commit hygiene
 
 # No AI or bot attribution in what a merge would write (CONTRIBUTING.md, Commit
 # authorship): scripts/commit_hygiene.py checks every commit's author, committer
-# and message, and the PR title and body, which GitHub writes into the squash
-# commit. It re-runs on `edited`, so fixing the PR text clears it.
+# and message, and the PR title and body: a squash merge writes all of them
+# (every commit message included) into the squash commit.
+# It re-runs on `edited`, so fixing the PR text clears it.
 #
 # Fork-safe: `pull_request` (never `pull_request_target`), a read-only token, no
 # secrets. It reads the PR's commits and text through the API, as data, and

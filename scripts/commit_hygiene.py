@@ -17,8 +17,9 @@ brings in any of:
       created, ...) joined by `by`/`with`/`using` to an AI tool name on the
       same line;
 
-in a commit message, or in the pull request's title or body, which GitHub
-writes into the squash commit.
+in a commit message, or in the pull request's title or body. A squash merge
+writes all of them into the squash commit (title, body and every commit
+message, trailers included), which is why each commit is checked.
 
 What passes: trailers naming people (two people co-authoring), bare mentions
 (`AGENTS.md`, `.claude/`, a model named in prose) and the PR template's

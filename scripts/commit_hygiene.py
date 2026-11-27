@@ -1,7 +1,8 @@
 """Commit hygiene: no AI or bot attribution in what a pull request would merge.
 
-A commit here is authored by the person accountable for it (CONTRIBUTING.md,
-"Commit authorship"). This fails when a pull request, or a push to dev or main,
+A commit is authored by the person accountable for it (each repository's
+CONTRIBUTING.md, "Commit authorship"). This fails when a pull request, a push
+to dev or main, or a local commit (--message-file, the commit-msg hook)
 brings in any of:
 
   (I) a commit whose author or committer is an AI tool or a bot rather than a
@@ -16,26 +17,27 @@ brings in any of:
       created, ...) joined by `by`/`with`/`using` to an AI tool name on the
       same line;
 
-in a commit message, or in the pull request's title or body, which GitHub
-writes into the squash commit.
+in a commit message, or in the pull request's title or body. A squash merge
+writes all of them into the squash commit (title, body and every commit
+message, trailers included), which is why each commit is checked.
 
 What passes: trailers naming people (two people co-authoring), bare mentions
 (`AGENTS.md`, `.claude/`, a model named in prose) and the PR template's
 AI-assistance disclosure boxes. GitHub's web-flow committer and Dependabot are
 allowed by name (ALLOWED_IDENTITIES).
 
-Source: waffuruai/butter scripts/commit_hygiene.py (the newer of the org's two
-copies; ops' scripts/commit_hygiene.py and scripts/hooks/commit-msg are the
-older one) supplies AI_TERMS, ATTRIB_PHRASE_RE, the trailer-block walk and
-already_released(). Pantry's differs where that copy cannot do what this repo
-needs, and should become the copy the others take: it qualifies trailers by
-who they name, so human co-authors pass (butter rejects every trailer); it
-checks author and committer identities; and it only reads (no PR edit, no
-comment), so it runs on fork PRs with a read-only token. Keep AI_TERMS a
-superset of butter's and ops' AI_NAMES when either changes.
+Canonical copy: waffuruai/pantry scripts/commit_hygiene.py. butter, ops and
+iron carry this file byte-identical (ops' commit-msg hook runs it too); change
+it in pantry first, then copy it to the others unchanged. It grew from butter's
+and ops' earlier copies (AI_TERMS, ATTRIB_PHRASE_RE, the trailer-block walk,
+already_released()) and differs from them on purpose: it qualifies trailers by
+who they name, so human co-authors pass; it checks author and committer
+identities; and it only reads (no PR edit, no comment), so it runs on fork PRs
+with a read-only token.
 
     python3 scripts/commit_hygiene.py                    # in CI: PR or push, from the event
     python3 scripts/commit_hygiene.py --range origin/dev..HEAD   # locally, before pushing
+    python3 scripts/commit_hygiene.py --message-file .git/COMMIT_EDITMSG  # a commit-msg hook
 """
 
 from __future__ import annotations
@@ -63,8 +65,12 @@ AI_TERMS = [
     r"lovable", r"\bbolt\.new\b",
 ]
 AI_RE = re.compile("|".join(AI_TERMS), re.IGNORECASE)
+# Open model families: names of software people build with ("built with
+# llama.cpp"), so they qualify an identity or a trailer but not a prose phrase.
+MODEL_TERMS = {r"\bllama\b", r"\bmistral\b", r"\bqwen\b", r"deepseek"}
+TOOL_RE = re.compile("|".join(t for t in AI_TERMS if t not in MODEL_TERMS), re.IGNORECASE)
 
-# Names that are also people's names. On their own they make an identity AI
+# Names that are also people's names. On their own they mark an identity as AI
 # only with a noreply, vendor or empty email; with a tool word after them they
 # always do ("Claude Opus 5.5", "Devin AI").
 AMBIGUOUS_RE = re.compile(r"^\s*(claude|devin|cody|bard|jules|aider|goose|kiro|cline)\s*$", re.IGNORECASE)
@@ -97,6 +103,9 @@ ATTRIB_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 TRAILER_RE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9-]*):\s+(?P<value>.*)$")
+# Conventional-commit subjects (a merge or squash body lists them) are `Key: value`-shaped, not trailers.
+CONVENTIONAL_KEYS = {"feat", "fix", "chore", "docs", "refactor", "perf", "test", "tests", "ci", "build",
+                     "style", "revert", "release", "deps", "security"}
 IDENTITY_RE = re.compile(r"^\s*(?P<name>.*?)\s*<(?P<email>[^>]*)>\s*$")
 
 ATTRIB_PHRASE_RE = re.compile(
@@ -113,6 +122,8 @@ FIX_COMMITS = (
     "  git push --force-with-lease\n"
     "  Then turn off the tool's attribution so it does not come back (CONTRIBUTING.md, Commit authorship)."
 )
+FIX_NEW = ("This commit: delete the line from the message and commit again, as your own git identity\n"
+           "  (not the tool's); turn off the tool's attribution so it does not come back.")
 FIX_PR = "PR title or body: edit the pull request and delete the line; this check re-runs on the edit."
 
 
@@ -178,6 +189,9 @@ def _value_identity(value: str) -> str | None:
         return ai_identity(m.group("name"), m.group("email"))
     if "@" in value and " " not in value.strip():
         return ai_identity(email=value)
+    # A name, not a sentence: "Claude Opus 5.5" is credit, "add DeepSeek V4 support" is not.
+    if len(value.split()) > 4:
+        return None
     return ai_identity(name=value)
 
 
@@ -199,14 +213,14 @@ def message_findings(text: str, where: str) -> list[Finding]:
                 flagged.add(i)
             continue
         m = TRAILER_RE.match(ln)
-        if m and AI_RE.search(m.group("key")):
+        if m and m.group("key").lower() not in CONVENTIONAL_KEYS and AI_RE.search(m.group("key")):
             out.append(Finding(where, f"{m.group('key')} trailer names an AI tool", s, i + 1))
             flagged.add(i)
             continue
         if ROBOT in ln:
             out.append(Finding(where, "AI footer (robot emoji)", s, i + 1))
             flagged.add(i)
-        elif ATTRIB_PHRASE_RE.search(ln) and AI_RE.search(ln):
+        elif ATTRIB_PHRASE_RE.search(ln) and TOOL_RE.search(ln):
             out.append(Finding(where, "AI attribution phrase", s, i + 1))
             flagged.add(i)
 
@@ -222,6 +236,8 @@ def message_findings(text: str, where: str) -> list[Finding]:
             if j in flagged:
                 continue
             m = TRAILER_RE.match(lines[j])
+            if m.group("key").lower() in CONVENTIONAL_KEYS:
+                continue
             why = _value_identity(m.group("value"))
             if why:
                 out.append(Finding(where, f"{m.group('key')} trailer names {why}", lines[j].strip(), j + 1))
@@ -255,9 +271,11 @@ def report(findings: list[Finding], summary_path: str | None = None, annotate: b
     lines.append("")
     if any(f.where.startswith("commit") for f in findings):
         lines.append(FIX_COMMITS)
+    if any(f.where == "this commit" for f in findings):
+        lines.append(FIX_NEW)
     if any(f.where.startswith("PR") for f in findings):
         lines.append(FIX_PR)
-    lines.append("Disclose AI use in the PR template's AI assistance section instead; see CONTRIBUTING.md.")
+    lines.append("Disclose AI use where the PR template asks for it instead; see CONTRIBUTING.md, Commit authorship.")
     text = "\n".join(lines)
     print(text)
     if annotate:
@@ -273,7 +291,11 @@ def report(findings: list[Finding], summary_path: str | None = None, annotate: b
 
 
 def _run(cmd: list[str]) -> str:
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode:
+        sys.stderr.write(p.stderr)
+        raise subprocess.CalledProcessError(p.returncode, cmd, p.stdout, p.stderr)
+    return p.stdout
 
 
 def _api_commit(c: dict) -> Commit:
@@ -301,9 +323,17 @@ def already_released(repo: str, sha: str) -> bool:
 
 
 def _paged(path: str) -> list[dict]:
-    out = _run(["gh", "api", "--paginate", "--slurp", path])
-    pages = json.loads(out)
-    return [item for page in pages for item in (page if isinstance(page, list) else page.get("commits", []))]
+    """Every page of a list (or compare) endpoint. `gh api --paginate` writes the
+    pages back to back; --slurp would join them, but older gh lacks it."""
+    out, items, i = _run(["gh", "api", "--paginate", path]), [], 0
+    decoder = json.JSONDecoder()
+    while i < len(out):
+        if out[i].isspace():
+            i += 1
+            continue
+        page, i = decoder.raw_decode(out, i)
+        items += page if isinstance(page, list) else page.get("commits", [])
+    return items
 
 
 def from_event(event: dict, event_name: str, repo: str) -> list[Finding]:
@@ -344,10 +374,36 @@ def from_range(rev_range: str) -> list[Finding]:
     return findings
 
 
+def _ident(var: str) -> tuple[str, str]:
+    """(name, email) git will record for GIT_AUTHOR_IDENT or GIT_COMMITTER_IDENT."""
+    try:
+        m = IDENTITY_RE.match(_run(["git", "var", var]).rsplit(">", 1)[0] + ">")
+    except (subprocess.CalledProcessError, OSError):
+        return "", ""
+    return (m.group("name"), m.group("email")) if m else ("", "")
+
+
+def from_message_file(path: str) -> list[Finding]:
+    """A commit about to be made: its message (git's `#` comment lines dropped)
+    and the author and committer identities git will record."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = "".join(ln for ln in fh if not ln.startswith("#"))
+    an, ae = _ident("GIT_AUTHOR_IDENT")
+    cn, ce = _ident("GIT_COMMITTER_IDENT")
+    c = Commit("(new commit)", text, an, ae, "", cn, ce)
+    findings = commit_findings(c)
+    for f in findings:
+        f.where = "this commit"
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--range", help="check local commits, e.g. origin/dev..HEAD, instead of the CI event")
+    ap.add_argument("--message-file", help="check a commit message file and git's author and committer (a commit-msg hook)")
     args = ap.parse_args(argv)
+    if args.message_file:
+        return report(from_message_file(args.message_file))
     if args.range:
         return report(from_range(args.range))
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:

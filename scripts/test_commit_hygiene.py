@@ -11,11 +11,18 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import commit_hygiene as ch
+ROOT = next(p for p in Path(__file__).resolve().parents if (p / ".github").is_dir())
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import commit_hygiene as ch  # noqa: E402
 
 CO = "Co-" + "Authored-By"
 CO_GH = "Co-" + "authored-by"
@@ -25,7 +32,7 @@ AI_NAME = "Clau" + "de Opus 5.5"
 ROBOT = chr(0x1F916)
 TOOL = "Clau" + "de Code"
 
-HUMAN = ("Joshua Pinter", "joshuapinter@gmail.com")
+HUMAN = ("Ada Lovelace", "ada@example.com")
 WEB_FLOW = ("GitHub", "noreply@github.com")
 DEPENDABOT = ("dependabot[bot]", "49699333+dependabot[bot]@users.noreply.github.com")
 
@@ -95,8 +102,8 @@ class MessageRules(unittest.TestCase):
                          ["AI attribution phrase"])
 
     def test_human_coauthors_and_signoffs_pass(self):
-        text = (f"feat: y\n\nbody\n\n{CO_GH}: Eric Kryski <599019+ekryski@users.noreply.github.com>\n"
-                f"{CO_GH}: Tom Turney <tturney1@gmail.com>\n{SOB}: Joshua Pinter <joshuapinter@gmail.com>\n")
+        text = (f"feat: y\n\nbody\n\n{CO_GH}: Alan Turing <12345+aturing@users.noreply.github.com>\n"
+                f"{CO_GH}: Grace Hopper <grace@example.com>\n{SOB}: Ada Lovelace <ada@example.com>\n")
         self.assertEqual(ch.message_findings(text, "c"), [])
 
     def test_a_person_named_like_a_tool_passes_with_a_personal_address(self):
@@ -107,7 +114,11 @@ class MessageRules(unittest.TestCase):
         for text in ("docs: point AGENTS.md and .cursor/rules at CONTRIBUTING\n",
                      "feat: compare with the llama.cpp CVE list\n\nWe asked Gemini for nothing; prose is fine.\n",
                      "fix: build with -O3\n\nbody\n\nRefs: #12\nTests: 7/7\n",
-                     "feat: one line conventional subject\n"):
+                     "feat: one line conventional subject\n",
+                     "Merge pull request #991 from o/x\n\nfeat: add experimental DeepSeek V4.1 Flash TP2 V1\n",
+                     "Merge pull request #1179 from o/y\n\nfix: keep Qwen GGUF chat tokens whole\n",
+                     "perf: x\n\nBoth binaries were built with the command above, against llama.cpp b4000.\n",
+                     "fix: y\n\nbody\n\nReviewed-by: a long note about the Claude Code settings file\n"):
             with self.subTest(text=text):
                 self.assertEqual(ch.message_findings(text, "c"), [])
 
@@ -134,7 +145,7 @@ class Identities(unittest.TestCase):
         self.assertEqual(ch.commit_findings(commit(squash, author=HUMAN)), [])
 
     def test_human_author_on_users_noreply_passes(self):
-        self.assertEqual(ch.commit_findings(commit("x\n", author=("Eric Kryski", "599019+ekryski@users.noreply.github.com"))), [])
+        self.assertEqual(ch.commit_findings(commit("x\n", author=("Alan Turing", "12345+aturing@users.noreply.github.com"))), [])
 
 
 class PullRequestText(unittest.TestCase):
@@ -150,12 +161,14 @@ class PullRequestText(unittest.TestCase):
         self.assertEqual([f.where for f in ch.pr_findings(f"feat: x, generated with {TOOL}", "")], ["PR title"])
 
     def test_template_disclosure_passes(self):
-        with open(Path(__file__).resolve().parent.parent / ".github/PULL_REQUEST_TEMPLATE.md", encoding="utf-8") as fh:
-            template = fh.read().replace("- [ ]", "- [x]")
+        path = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
+        if not path.exists():
+            self.skipTest("no PR template")
+        template = path.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
         self.assertEqual(ch.pr_findings("feat: x", template), [])
 
 
-def api_commit(message, author=HUMAN, committer=WEB_FLOW, sha="a" * 40, login="joshuapinter"):
+def api_commit(message, author=HUMAN, committer=WEB_FLOW, sha="a" * 40, login="ada"):
     return {"sha": sha, "commit": {"message": message, "author": {"name": author[0], "email": author[1]},
                                    "committer": {"name": committer[0], "email": committer[1]}},
             "author": {"login": login, "type": "User"}, "committer": {"login": "web-flow", "type": "User"}}
@@ -167,13 +180,16 @@ class Events(unittest.TestCase):
             path = next(a for a in cmd if a.startswith("repos/"))
             for prefix, value in responses.items():
                 if path.startswith(prefix):
-                    return value if isinstance(value, str) else json.dumps(value)
+                    if isinstance(value, str):
+                        return value
+                    # `gh api --paginate` writes each page back to back.
+                    return "\n".join(json.dumps(page) for page in value) if "--paginate" in cmd else json.dumps(value)
             raise AssertionError(path)
         return mock.patch.object(ch, "_run", side_effect=run)
 
     def test_pull_request_checks_commits_identity_and_body(self):
         event = {"pull_request": {"number": 387, "title": "fix: pass over a logged-out gh", "body": f"ok\n\n{ROBOT} x\n"}}
-        pages = [[api_commit("fix: clean\n"), api_commit("fix: two\n", author=(AI_NAME, VENDOR), sha="b" * 40, login="")]]
+        pages = [[api_commit("fix: clean\n")], [api_commit("fix: two\n", author=(AI_NAME, VENDOR), sha="b" * 40, login="")]]
         with self.fake({"repos/o/r/pulls/387/commits": pages, "repos/o/r/compare/main...": "ahead\n"}):
             got = ch.from_event(event, "pull_request", "o/r")
         self.assertEqual([f.where.split(" (")[0] for f in got], ["commit bbbbbbb", "PR body"])
@@ -203,12 +219,43 @@ class Events(unittest.TestCase):
             self.assertEqual(ch.report([]), 0)
 
 
+class MessageFile(unittest.TestCase):
+    """--message-file, as a commit-msg hook runs it, in a scratch repository."""
+
+    def run_hook(self, message: str, author=HUMAN) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            msg = Path(d) / "COMMIT_EDITMSG"
+            msg.write_text(message, encoding="utf-8")
+            env = dict(os.environ, GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1],
+                       GIT_COMMITTER_NAME=HUMAN[0], GIT_COMMITTER_EMAIL=HUMAN[1])
+            p = subprocess.run([sys.executable, str(ROOT / "scripts/commit_hygiene.py"), "--message-file", str(msg)],
+                               cwd=d, env=env, capture_output=True, text=True)
+            return p.returncode, p.stdout
+
+    def test_rejects_a_trailer_and_names_the_fix(self):
+        rc, out = self.run_hook(PR_387)
+        self.assertEqual(rc, 1)
+        self.assertIn("this commit line 11", out)
+        self.assertIn("commit again, as your own git identity", out)
+
+    def test_rejects_an_ai_author_identity(self):
+        rc, out = self.run_hook("fix: clean\n", author=(AI_NAME, VENDOR))
+        self.assertEqual(rc, 1)
+        self.assertIn("author is not a person", out)
+
+    def test_passes_a_human_commit_and_ignores_comment_lines(self):
+        rc, _ = self.run_hook(f"feat: y\n\nbody\n\n{CO_GH}: Grace Hopper <grace@example.com>\n# {ROBOT} a git comment\n")
+        self.assertEqual(rc, 0)
+
+
 class Workflow(unittest.TestCase):
     """The job runs the base's checker, never the pull request's."""
 
     def test_checks_out_the_base_and_asserts_it(self):
-        wf = (Path(__file__).resolve().parent.parent / ".github/workflows/commit-hygiene.yml").read_text(encoding="utf-8")
-        self.assertIn("CHECKER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}", wf)
+        wf = (ROOT / ".github/workflows/commit-hygiene.yml").read_text(encoding="utf-8")
+        self.assertIn('repos/$GITHUB_REPOSITORY/git/ref/heads/$BASE_REF', wf)
+        self.assertIn('echo "CHECKER_SHA=$sha" >> "$GITHUB_ENV"', wf)
         self.assertIn("ref: ${{ env.CHECKER_SHA }}", wf)
         self.assertIn('[ "$(git rev-parse HEAD)" = "$CHECKER_SHA" ]', wf)
         self.assertIn('python3 "$CHECKER"', wf)

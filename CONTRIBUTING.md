@@ -36,7 +36,7 @@ Every commit is authored by the human GitHub account that is accountable for it,
 - **Set your agent up so it complies** before it commits: turn off its attribution (Claude Code: `"attribution": {"commit": "", "pr": ""}` in `settings.json`; Aider: `--no-attribute-co-authored-by --no-attribute-author --no-attribute-committer`; others have a similar setting), and let it commit as your git identity, not its own. Org members get a `commit-msg` hook that rejects these lines from ops' `mise run hooks`. Anyone can check a branch before pushing with `python3 scripts/commit_hygiene.py --range origin/dev..HEAD`.
 - **To fix a branch that already has them:** `git rebase -i origin/dev`, `reword` each listed commit to drop the line (`git commit --amend --reset-author --no-edit` for one a tool authored), then `git push --force-with-lease`. For the PR title or body, edit the PR.
 
-The `Commit hygiene` CI check enforces this on every pull request, over each commit's author, committer and message and the PR title and body, and a PR that fails it is not merged. Maintainers squash-merge with the PR's own title and body, so what the PR says is what lands on `dev`.
+The `Commit hygiene` CI check enforces this on every pull request, over each commit's author, committer and message and the PR title and body, and a PR that fails it is not merged. Maintainers squash-merge, and the squash commit carries the PR's title and body and every commit message in the PR, with their trailers; that is why each commit is checked, not only the PR text.
 
 ## Setup and checks
 

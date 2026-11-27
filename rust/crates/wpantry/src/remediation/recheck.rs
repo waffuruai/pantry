@@ -22,8 +22,9 @@
 //! * posture findings (machine settings): the rule's own probe, run again
 //!   alone over the same command runner ([`settings::probe_one`]);
 //! * Python runtimes (kind `runtime`, found by the package inventory), with or
-//!   without an unattended fix: the one interpreter at the finding's location
-//!   asked for its version as a scan asks ([`super::recheck_python`]), then judged
+//!   without an unattended fix: the install the finding's location belongs to
+//!   (a shim's pick, a link's target, a virtual environment's base) read again from
+//!   files alone, never run ([`super::recheck_python`]), then judged
 //!   as a catalog tool is;
 //! * catalog tools and runtimes ([`TOOLS`]: node, go, ruby, mise-installed
 //!   or on PATH), read by [`tools::component_at`], the function a scan reads
@@ -48,7 +49,7 @@ use super::recheck_python as python;
 use crate::checks::ecosystems;
 use crate::checks::ecosystems::versions;
 use crate::checks::machine::catalog::{GITHUB_LATEST, TOOLS};
-use crate::checks::machine::{brew_cves, brew_vulns, cellar, components, packages, settings, software_cves, tools};
+use crate::checks::machine::{brew_cves, brew_vulns, cellar, components, settings, software_cves, tools};
 use crate::checks::{Options, Scan};
 use crate::component::Component;
 use crate::db::Cache;
@@ -422,8 +423,8 @@ fn judge(
     // needs an automatic fix. The guards come before any probe or read.
     let posture = row.kind == "posture";
     let in_place = project::applies(&row.kind, &row.component, &row.location);
-    // A Python runtime is read again by running that one interpreter for its
-    // version, whether or not wpantry could fix it unattended (a person may
+    // A Python runtime is read again from its install's files (nothing is run)
+    // whether or not wpantry could fix it unattended (a person may
     // have updated it by hand).
     let python = python::applies(&row.kind, &row.component);
     let any_fix = posture || in_place || python;
@@ -478,10 +479,10 @@ pub(super) fn anchor_of(location: &Path) -> PathBuf {
     }
 }
 
-/// A Python runtime at `row.location`: that interpreter asked again the way
-/// the scan asks it ([`python::read`]), then judged as a catalog tool is.
+/// A Python runtime at `row.location`: its install read again from files
+/// alone ([`python::read`]; nothing is run), then judged as a catalog tool is.
 fn judge_python(scan: &mut Scan, row: &Row) -> Result<Verdict> {
-    match python::read(&row.location, &packages::ask_python, &files::owner) {
+    match python::read(&row.location, &files::owner, &python::Here::now()) {
         Ok(c) => judge_component(scan, &c, row, true),
         Err(verdict) => Ok(verdict),
     }

@@ -34,3 +34,72 @@ fn the_daily_file_is_read_and_a_bad_copy_keeps_the_last() {
     let (_e, empty) = cache();
     assert!(refresh(&empty, &Fake::offline(), false).is_err(), "nothing kept and nothing reached");
 }
+
+/// A scan's cache (autocommit between its writes) with `rows` scores loaded.
+fn scan_cache_with(rows: usize) -> (crate::utils::temp::TempDir, Cache) {
+    let d = crate::utils::temp::TempDir::new("epss-load").unwrap();
+    let c = Cache::open_for_scan(Some(&d.path().join("w.db")), &|_| {}).unwrap();
+    let body = csv(rows);
+    assert_eq!(refresh(&c, &Fake::new(move |_| Ok(Response::ok(body.clone()))), false).unwrap(), rows + 1);
+    (d, c)
+}
+
+/// Risk: a scan's cache is in autocommit, so the delete that starts a load and
+/// each insert after it are seen by another command as they happen: a
+/// `report` or `search` during the load reads an empty or half-filled table.
+/// Oracle: a reader that counts the scores over and over while a load of
+/// 60 000 replaces 1 001 only ever sees 1 001 or 60 001.
+/// Known bad: the load outside one transaction (the counts in between show up).
+#[test]
+fn a_reader_during_a_load_sees_the_old_scores_or_the_new_never_part() {
+    let (d, c) = scan_cache_with(MIN_ROWS);
+    let file = d.path().join("w.db");
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = {
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let r = Cache::open(Some(&file)).unwrap();
+            let mut seen = std::collections::BTreeSet::new();
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                let n: i64 = r.conn.query_row("SELECT COUNT(*) FROM epss", [], |r| r.get(0)).unwrap();
+                seen.insert(n);
+                r.commit().unwrap(); // a fresh snapshot for the next count
+            }
+            seen
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    c.unset("epss_at").unwrap();
+    let body = csv(60_000);
+    assert_eq!(refresh(&c, &Fake::new(move |_| Ok(Response::ok(body.clone()))), false).unwrap(), 60_001);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let seen = seen.join().unwrap();
+    let part: Vec<&i64> = seen.iter().filter(|n| ![MIN_ROWS as i64 + 1, 60_001].contains(n)).collect();
+    assert!(part.is_empty(), "a reader saw {} partial counts, such as {:?}", part.len(), &part[..part.len().min(5)]);
+}
+
+/// Risk: a load that fails or is killed part-way leaves the table it was
+/// replacing empty or half-filled for every later command, since each write
+/// committed on its own. Oracle: an insert that fails part-way (a trigger
+/// stands in for the error or the kill) leaves every old score, and the
+/// edition of the old copy.
+/// Known bad: the delete and the inserts committed one by one.
+#[test]
+fn a_load_that_fails_part_way_leaves_the_old_scores() {
+    let (_d, c) = scan_cache_with(MIN_ROWS);
+    let before = edition(&c).unwrap();
+    c.conn
+        .execute_batch(
+            "CREATE TRIGGER fail_part_way BEFORE INSERT ON epss WHEN NEW.cve = 'CVE-2026-1500'
+             BEGIN SELECT RAISE(ABORT, 'interrupted'); END;",
+        )
+        .unwrap();
+    c.unset("epss_at").unwrap();
+    let body = csv(3000).replace("v2026.06.15", "v2026.12.01");
+    assert!(refresh(&c, &Fake::new(move |_| Ok(Response::ok(body.clone()))), false).is_err());
+    let n: i64 = c.conn.query_row("SELECT COUNT(*) FROM epss", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, MIN_ROWS as i64 + 1, "the old scores, all of them");
+    assert!(lookup(&c, "CVE-2026-999").unwrap().is_some());
+    assert_eq!(edition(&c).unwrap(), before);
+}

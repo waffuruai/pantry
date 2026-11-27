@@ -859,17 +859,22 @@ impl<'a> Scan<'a> {
         self.status("Rating the findings (CVSS for the CVEs without one: OSV, then CVE.org)");
         crate::checks::severity::enrich(&self.cache, self.net, self.opts.offline, &mut self.findings);
         self.status("Saving the findings");
-        self.cache.replace_findings(&self.findings)?;
         let totals = (self.unfixed, self.unknown_licenses);
-        let scan_id = crate::history::record_scan_totals(
-            &self.cache,
-            started_at,
-            &self.findings,
-            &self.counts,
-            totals,
-            &self.opts,
-        )?;
-        crate::history::scan_finished(&self.cache)?;
+        // One transaction for the scan's result (the findings, its row and the
+        // end of its running mark), and the only long hold of the write lock.
+        let scan_id = self.cache.atomically(|| {
+            self.cache.replace_findings(&self.findings)?;
+            let id = crate::history::record_scan_totals(
+                &self.cache,
+                started_at,
+                &self.findings,
+                &self.counts,
+                totals,
+                &self.opts,
+            )?;
+            crate::history::scan_finished(&self.cache)?;
+            Ok(id)
+        })?;
         self.cache.close()?;
         Ok(Outcome {
             findings: self.findings,

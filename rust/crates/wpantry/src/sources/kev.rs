@@ -54,14 +54,17 @@ pub fn kev(cache: &Cache, net: &dyn Net, offline: bool) -> Result<HashSet<String
         if rows.is_empty() {
             fetch::rejected("cisa-kev", "no vulnerabilities in the catalog");
         } else {
-            cache.conn.execute("DELETE FROM kev", [])?;
-            let mut stmt = cache
-                .conn
-                .prepare("INSERT OR REPLACE INTO kev (cve, added, name, vendor, product) VALUES (?, ?, ?, ?, ?)")?;
-            for (e, name) in &rows {
-                stmt.execute(params![e.cve, e.added, name, e.vendor, e.product])?;
-            }
-            drop(stmt);
+            // One transaction: the old list or the new, never part of one.
+            cache.atomically(|| {
+                cache.conn.execute("DELETE FROM kev", [])?;
+                let mut stmt = cache
+                    .conn
+                    .prepare("INSERT OR REPLACE INTO kev (cve, added, name, vendor, product) VALUES (?, ?, ?, ?, ?)")?;
+                for (e, name) in &rows {
+                    stmt.execute(params![e.cve, e.added, name, e.vendor, e.product])?;
+                }
+                Ok(())
+            })?;
             cache.commit()?;
         }
     }

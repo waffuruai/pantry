@@ -440,9 +440,15 @@ fn exec_with(
             break status;
         }
         if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(timed_out());
+            // Reaped by `kill_tree` when it stopped; not waited for when it could not.
+            return Err(match super::stop::kill_tree(&mut child) {
+                Ok(()) => timed_out(),
+                Err(why) => Error::Failed(format!(
+                    "{} timed out after {}s and not everything was stopped: {why}",
+                    prog.to_string_lossy(),
+                    timeout.as_secs()
+                )),
+            });
         }
         std::thread::sleep(Duration::from_millis(5));
     };

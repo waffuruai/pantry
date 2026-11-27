@@ -91,6 +91,7 @@ impl Ctx {
     }
 
     fn run_at(&self, cwd: Option<&Path>, argv: &[&str], env: &[(&str, &str)]) -> Out {
+        refuse_unisolated_fix(argv);
         let mut cmd = Command::new(BIN);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
@@ -121,6 +122,27 @@ impl Ctx {
     pub fn conn(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(&self.db).unwrap()
     }
+}
+
+/// Panics before spawning when `argv` is a `fix --yes` that would run on the
+/// real machine: a bare `fix` (its stopgaps run on every host) or the kernel
+/// stopgap by name, which writes /etc files and loads a firewall rule through
+/// sudo on Linux. `--dry-run` changes nothing, and `fix <id>`, `fix ca-trust
+/// --bundle FILE` and `fix extension-cooldown` act only on the temp HOME or
+/// the seeded cache, so they pass.
+fn refuse_unisolated_fix(argv: &[&str]) {
+    if argv.first() != Some(&"fix") || !argv.contains(&"--yes") || argv.contains(&"--dry-run") {
+        return;
+    }
+    let target = argv.get(1).filter(|a| !a.starts_with('-'));
+    let machine_wide = match target {
+        None => true,
+        Some(t) => t.eq_ignore_ascii_case("cve-2026-98432") || (*t == "ca-trust" && !argv.contains(&"--bundle")),
+    };
+    assert!(
+        !machine_wide,
+        "refusing to run {argv:?}: --yes would apply stopgaps to the machine the tests run on; use --dry-run, or name a fix the temp HOME contains"
+    );
 }
 
 fn run_with_timeout(mut cmd: Command, argv: &[&str]) -> Out {

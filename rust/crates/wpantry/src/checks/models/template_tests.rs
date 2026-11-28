@@ -1,5 +1,7 @@
 use super::*;
-use crate::checks::models::testing::{CHATML, DATED, PREPEND_DROPPER, THINK, TOOLS, TRIGGERED_DOWNLOAD, ids};
+use crate::checks::models::testing::{
+    CHATML, DATED, PREPEND_DROPPER, THINK, TOOLS, TRIGGERED_DOWNLOAD, ids, laced, multibyte_everywhere,
+};
 
 #[test]
 fn benign_templates_are_clean() {
@@ -331,5 +333,26 @@ fn a_default_system_prompt_is_normal() {
             "{control}: {:?}",
             check("t", control)
         );
+    }
+}
+
+/// Known bad: a multi-byte character outside quotes inside a block once
+/// panicked the tokenizer. Every fixture with 2-, 3- and 4-byte characters,
+/// a combining mark and a zero-width run inserted at every character
+/// boundary reads as a result; so does each fixture laced with them and cut
+/// at every byte through the lossy decode a file takes.
+#[test]
+fn multibyte_characters_anywhere_never_panic() {
+    assert_eq!(check("t", "{{ caf\u{e9} }}"), []);
+    assert!(tokenize("{% if x \u{1d11e}e\u{301} %}{% endif %}").is_ok());
+    for t in [CHATML, TOOLS, THINK, DATED, PREPEND_DROPPER, TRIGGERED_DOWNLOAD] {
+        for s in multibyte_everywhere(t) {
+            let _ = check("t", &s);
+        }
+        let laced = laced(t);
+        let b = laced.as_bytes();
+        for cut in 0..=b.len() {
+            let _ = check("t", &String::from_utf8_lossy(&b[..cut]));
+        }
     }
 }

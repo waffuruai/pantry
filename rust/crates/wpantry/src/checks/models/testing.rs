@@ -193,6 +193,28 @@ pub fn check_bytes(b: &[u8]) -> Vec<super::Issue> {
     super::gguf::check_path(&p).issues
 }
 
+/// Characters a byte-wise reader trips on: 2, 3 and 4 bytes, a combining
+/// mark, and a run of zero-width characters.
+pub const MULTIBYTE: &[&str] = &["\u{e9}", "\u{20ac}", "\u{1d11e}", "e\u{301}", "\u{200b}\u{200c}\u{200d}\u{2060}"];
+
+/// `t` with each of [`MULTIBYTE`] inserted at each of its character
+/// boundaries, one insertion a string.
+pub fn multibyte_everywhere(t: &str) -> impl Iterator<Item = String> + '_ {
+    let at: Vec<usize> = t.char_indices().map(|(i, _)| i).chain([t.len()]).collect();
+    at.into_iter().flat_map(move |i| MULTIBYTE.iter().map(move |m| format!("{}{m}{}", &t[..i], &t[i..])))
+}
+
+/// `t` with [`MULTIBYTE`] inserted in turn after every character: cut at
+/// any byte, most cuts land inside a character.
+pub fn laced(t: &str) -> String {
+    let mut out = String::new();
+    for (n, c) in t.chars().enumerate() {
+        out.push(c);
+        out.push_str(MULTIBYTE[n % MULTIBYTE.len()]);
+    }
+    out
+}
+
 /// Hand-written stand-ins for the shapes mainstream templates take; none
 /// is copied from a real model.
 pub const CHATML: &str = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}";

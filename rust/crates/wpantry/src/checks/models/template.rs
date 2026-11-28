@@ -43,7 +43,9 @@ pub enum Segment<'a> {
     Comment(&'a str),
 }
 
-/// Where the closing delimiter is, skipping quoted strings.
+/// Where the closing delimiter is, skipping quoted strings. Compared as
+/// bytes: `i` walks bytes and may sit inside a multi-byte character, and
+/// an ASCII delimiter's match is always on a character boundary.
 fn close(s: &str, end: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut i = 0;
@@ -60,7 +62,7 @@ fn close(s: &str, end: &str) -> Option<usize> {
             None => {
                 if b[i] == b'\'' || b[i] == b'"' {
                     quote = Some(b[i]);
-                } else if s[i..].starts_with(end) {
+                } else if b[i..].starts_with(end.as_bytes()) {
                     return Some(i);
                 }
             }

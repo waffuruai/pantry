@@ -1,6 +1,6 @@
 use super::*;
-use crate::checks::models::testing::{CHATML, Gguf, TRIGGERED_DOWNLOAD};
-use crate::checks::models::{Level, What, ids, scan_dir};
+use crate::checks::models::testing::Gguf;
+use crate::checks::models::{What, ids, scan_dir};
 use crate::utils::temp::TempDir;
 
 fn write(p: &Path, b: impl AsRef<[u8]>) {
@@ -50,6 +50,8 @@ fn names_from_the_stores_layout() {
 #[cfg(unix)]
 #[test]
 fn a_hub_cache_names_its_blobs_and_reads_their_templates() {
+    use crate::checks::models::Level;
+    use crate::checks::models::testing::{CHATML, TRIGGERED_DOWNLOAD};
     let d = TempDir::new("hub").unwrap();
     let hub = d.path().join("hub");
     let repo = hub.join("models--org--chat-GGUF");

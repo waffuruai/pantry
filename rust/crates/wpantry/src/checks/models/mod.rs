@@ -5,6 +5,10 @@
 //! or make a coding agent run, a command. Plus a bundled list of known-bad
 //! repos and file hashes ([`known_bad`]).
 //!
+//! Prior work: Malspark's write-up of malicious GGUF models on Hugging Face
+//! and the gguf-radar scanner (MIT; rules and docs CC BY 4.0) shaped what
+//! this check looks for; the code and rules here are Pantry's own.
+//!
 //! A clean result means no known problem was found, not that the model is
 //! safe: a static check can't see behaviour trained into the weights.
 //!

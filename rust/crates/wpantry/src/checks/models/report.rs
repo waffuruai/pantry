@@ -1,6 +1,9 @@
 //! The findings: one per model file or template file with something to
 //! say, kind `model`, the component its hub repo id and file name when the
-//! store says them, else its path; the rest counted as checked. A clean
+//! store says them, else its path; the rest counted as checked. A hub
+//! cache's repo on the known-bad list (or by a listed account, or a listed
+//! demonstration) is one finding for the repo, component its id, whatever
+//! files it holds: safetensors and pickles are as bad as a GGUF there. A clean
 //! result is "no known problem found", never "safe": a static check can't
 //! see behaviour trained into the weights.
 
@@ -44,47 +47,83 @@ pub fn models(scan: &mut Scan) {
             let Some(f) = finding(at, repo_name.as_deref(), &m, super::sorted(issues)) else { continue };
             scan.add(f);
         }
+        if at == Where::Hub {
+            for f in hub_repos(&list, &job.root) {
+                scan.add(f);
+            }
+        }
     }
     scan.count(CHECKED, read);
 }
 
-/// The hub repo id a model came from: a hub cache's repo, or an Ollama
-/// model pulled from Hugging Face (`hf.co/org/name:tag`).
-fn hub_repo(at: Where, m: &Model) -> Option<String> {
-    match at {
-        Where::Hub if !m.meta.repo.is_empty() => Some(m.meta.repo.clone()),
-        Where::Ollama => {
-            let n = m.meta.repo.rsplit_once(':').map_or(m.meta.repo.as_str(), |(n, _)| n);
-            ["hf.co/", "huggingface.co/"].iter().find_map(|p| n.strip_prefix(p)).map(String::from)
-        }
-        _ => None,
+/// What the list says of one hub repo id: listed fails; a demonstration,
+/// or another repo of a listed account, warns.
+pub fn repo_issue(list: &List, repo: &str) -> Option<Issue> {
+    if let Some(entry) = list.repo(repo) {
+        return Some(Issue::new(ids::KNOWN_BAD, Level::Fail, format!("on the known-bad list: {entry}")));
     }
+    if let Some(r) = list.demo(repo) {
+        return Some(Issue::new(
+            ids::RESEARCH_DEMO,
+            Level::Warn,
+            format!("repo {r} is a public demonstration of an attack on model users ({})", list.source),
+        ));
+    }
+    list.owner(repo).map(|owner| {
+        Issue::new(
+            ids::KNOWN_BAD_OWNER,
+            Level::Warn,
+            format!(
+                "published by {owner}, an account behind confirmed malicious models ({}); this repo isn't on the list itself",
+                list.source
+            ),
+        )
+    })
+}
+
+/// One finding per repo folder of the hub cache at `root` that the list
+/// names, whatever files it holds. Only the folder names are read.
+pub fn hub_repos(list: &List, root: &std::path::Path) -> Vec<Finding> {
+    let Ok(dir) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut names: Vec<String> = dir.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+        .iter()
+        .filter_map(|n| {
+            let repo = super::stores::repo_id(n)?;
+            let i = repo_issue(list, &repo)?;
+            Some(Finding {
+                kind: "model".into(),
+                component: repo,
+                location: short(&root.join(n).to_string_lossy()),
+                vuln_id: i.id.into(),
+                status: if i.level == Level::Fail { "fail" } else { "warn" }.into(),
+                note: i.note,
+                fix_cmd: fix(i.id).into(),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// The hub repo id of an Ollama model pulled from Hugging Face
+/// (`hf.co/org/name:tag`). A hub cache's repos are judged once per repo
+/// ([`hub_repos`]), not per file.
+fn pulled_from_hub(at: Where, m: &Model) -> Option<String> {
+    if at != Where::Ollama {
+        return None;
+    }
+    let n = m.meta.repo.rsplit_once(':').map_or(m.meta.repo.as_str(), |(n, _)| n);
+    ["hf.co/", "huggingface.co/"].iter().find_map(|p| n.strip_prefix(p)).map(String::from)
 }
 
 /// What the known-bad list and the user's indicator lists say of a file:
-/// a listed repo, hash or Ollama model fails; a demonstration repo, or a
-/// repo of an account that published malicious models, warns.
+/// a listed hash or Ollama model fails; an Ollama pull from the hub is
+/// judged as its hub repo.
 pub fn listed(list: &List, store: Option<&crate::sources::indicator_store::Store>, at: Where, m: &Model) -> Vec<Issue> {
     let mut out = Vec::new();
-    if let Some(repo) = hub_repo(at, m) {
-        if let Some(entry) = list.repo(&repo) {
-            out.push(Issue::new(ids::KNOWN_BAD, Level::Fail, format!("on the known-bad list: {entry}")));
-        } else if let Some(r) = list.demo(&repo) {
-            out.push(Issue::new(
-                ids::RESEARCH_DEMO,
-                Level::Warn,
-                format!("repo {r} is a public demonstration of an attack on model users ({})", list.source),
-            ));
-        } else if let Some(owner) = list.owner(&repo) {
-            out.push(Issue::new(
-                ids::KNOWN_BAD_OWNER,
-                Level::Warn,
-                format!(
-                    "published by {owner}, an account behind confirmed malicious models ({}); this repo isn't on the list itself",
-                    list.source
-                ),
-            ));
-        }
+    if let Some(repo) = pulled_from_hub(at, m) {
+        out.extend(repo_issue(list, &repo));
     }
     if at == Where::Ollama
         && let Some(entry) = list.ollama(&m.meta.repo)

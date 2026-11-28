@@ -5,9 +5,11 @@
 //!   `models--org--name/blobs/*` are the files, read by their first bytes;
 //!   `snapshots/<rev>/<path>` are symlinks to them, read with `read_link`
 //!   (never followed by the walk) to name each blob's repo, revision and
-//!   file. An LFS blob's name is its SHA-256, so it needs no hashing. Beside
-//!   a GGUF in a snapshot, `tokenizer_config.json`, `chat_template.jinja`
-//!   and `chat_template.json` are read for their templates.
+//!   file. An LFS blob's name is its SHA-256, so it needs no hashing. Every
+//!   snapshot's `tokenizer_config.json`, `chat_template.jinja` and
+//!   `chat_template.json` are read for their templates (the main
+//!   revision's, once per repo and path), whatever the repo's weights are:
+//!   transformers, MLX and vLLM render them for safetensors models too.
 //! - **Ollama** (`OLLAMA_MODELS`, else `~/.ollama/models`): `blobs/sha256-*`
 //!   by their first bytes; the manifests name each blob's model and say
 //!   which are template and system-prompt layers, read as templates.
@@ -24,7 +26,7 @@
 
 use super::{Meta, Plan, Where, read, role};
 use crate::checks::files::Stats;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -109,7 +111,7 @@ fn parts(root: &Path, p: &Path) -> Vec<String> {
 }
 
 /// A hub cache: each blob by its first bytes, named from the snapshots;
-/// the template files in a snapshot that holds a GGUF.
+/// every snapshot's template files.
 pub fn plan_hub(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Plan {
     // (repo, rev, path in the rev, the names beside it) for each blob, from
     // the snapshot links; the revision `refs/main` names first.
@@ -121,7 +123,6 @@ pub fn plan_hub(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Pl
     }
     let mut named: HashMap<PathBuf, Named> = HashMap::new();
     let mut mains: HashMap<String, String> = HashMap::new();
-    let mut ggufs: HashSet<(String, String)> = HashSet::new();
     // (link, repo, rev, path in the rev, the names beside it)
     type Sidecar = (PathBuf, String, String, String, Arc<Vec<String>>);
     let mut sidecars: Vec<Sidecar> = Vec::new();
@@ -146,9 +147,6 @@ pub fn plan_hub(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Pl
                 for n in names {
                     let link = dir.join(n);
                     let rel = p[3..].iter().chain(std::iter::once(n)).cloned().collect::<Vec<_>>().join("/");
-                    if n.to_ascii_lowercase().ends_with(".gguf") {
-                        ggufs.insert((repo.clone(), rev.clone()));
-                    }
                     if matches!(n.as_str(), "tokenizer_config.json" | "chat_template.jinja" | "chat_template.json") {
                         sidecars.push((link.clone(), repo.clone(), rev.clone(), rel.clone(), beside.clone()));
                     }
@@ -197,7 +195,7 @@ pub fn plan_hub(root: &Path, walk: &[(PathBuf, Vec<String>)], stat: Stats) -> Pl
     // One sidecar per (repo, path in the revision): the main revision's.
     let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (link, repo, rev, rel, beside) in sidecars {
-        if !ggufs.contains(&(repo.clone(), rev.clone())) || !stat(&link).is_some_and(|s| s.file) {
+        if !stat(&link).is_some_and(|s| s.file) {
             continue;
         }
         let main = mains.get(&repo) == Some(&rev);

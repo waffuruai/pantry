@@ -45,8 +45,8 @@ fn names_from_the_stores_layout() {
 }
 
 /// A hub cache: the blob is named by its snapshot link (the main
-/// revision's), carries its SHA-256 from its name, and the template file
-/// beside the GGUF is read; a snapshot with no GGUF has its sidecar left.
+/// revision's), carries its SHA-256 from its name, and the template files
+/// are read, beside a GGUF or not.
 #[cfg(unix)]
 #[test]
 fn a_hub_cache_names_its_blobs_and_reads_their_templates() {
@@ -79,7 +79,7 @@ fn a_hub_cache_names_its_blobs_and_reads_their_templates() {
     std::os::unix::fs::symlink("../../blobs/cafe", other.join("snapshots/r/tokenizer_config.json")).unwrap();
 
     let found = scan_dir(Where::Hub, &hub, 12);
-    assert_eq!(found.len(), 2, "{found:#?}");
+    assert_eq!(found.len(), 3, "{found:#?}");
     let model = found.iter().find(|m| m.result.what == What::Gguf).unwrap();
     assert_eq!((model.meta.repo.as_str(), model.meta.name.as_str()), ("org/chat-GGUF", "chat-rev2.gguf"));
     assert_eq!(model.meta.sha256.as_deref(), Some(sha.as_str()));
@@ -88,6 +88,8 @@ fn a_hub_cache_names_its_blobs_and_reads_their_templates() {
     assert_eq!((side.meta.repo.as_str(), side.meta.name.as_str()), ("org/chat-GGUF", "tokenizer_config.json"));
     assert!(side.path.ends_with("snapshots/rev2/tokenizer_config.json"), "the main revision's");
     assert_eq!(side.result.issues[0].level, Level::Fail);
+    let plain = found.iter().find(|m| m.meta.repo == "org/plain").expect("a repo without a GGUF is read too");
+    assert_eq!(plain.result.issues[0].id, ids::INJECTION);
 }
 
 /// Ollama: blobs by magic, the template and system layers whole, each

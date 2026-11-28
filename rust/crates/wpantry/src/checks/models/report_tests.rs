@@ -20,10 +20,11 @@ fn model(repo: &str, sha: Option<&str>, issues: Vec<Issue>) -> Model {
 #[test]
 fn listed_models_fail_naming_the_entry() {
     let l = List::bundled();
+    let got = repo_issue(&l, "Mir2k/Inkling-2-Mini-Uncensored-GGUF").unwrap();
+    assert_eq!(got.id, ids::KNOWN_BAD);
+    assert!(got.note.contains("mir2k/inkling-2-mini-uncensored-gguf"), "{}", got.note);
     let bad = model("Mir2k/Inkling-2-Mini-Uncensored-GGUF", None, vec![]);
-    let got = listed(&l, None, Where::Hub, &bad);
-    assert_eq!(got.len(), 1);
-    assert!(got[0].note.contains("mir2k/inkling-2-mini-uncensored-gguf"), "{}", got[0].note);
+    assert!(listed(&l, None, Where::Hub, &bad).is_empty(), "a hub repo is judged once per repo, not per file");
     let h = "a95f9e00a5062b2f55a7d089696833965643765f40b2eae3b962d5952492f221";
     assert_eq!(listed(&l, None, Where::Tree, &model("", Some(h), vec![]))[0].id, ids::KNOWN_BAD);
     assert!(listed(&l, None, Where::Hub, &model("org/fine", Some(&"0".repeat(64)), vec![])).is_empty());
@@ -42,20 +43,22 @@ fn each_list_level_gives_its_id_and_status() {
         let issues = super::super::sorted(listed(&l, None, at, &m));
         finding(at, None, &m, issues).map(|f| (f.vuln_id, f.status, f.note))
     };
-    let (id, st, _) = status(Where::Hub, "bad/one").unwrap();
-    assert_eq!((id.as_str(), st.as_str()), (ids::KNOWN_BAD, "fail"), "malicious wins over demo");
-    let (id, st, note) = status(Where::Hub, "Bad/other").unwrap();
-    assert_eq!((id.as_str(), st.as_str()), (ids::KNOWN_BAD_OWNER, "warn"));
+    let repo = |r: &str| repo_issue(&l, r).map(|i| (i.id, i.level, i.note));
+    let (id, level, _) = repo("bad/one").unwrap();
+    assert_eq!((id, level), (ids::KNOWN_BAD, Level::Fail), "malicious wins over demo");
+    let (id, level, note) = repo("Bad/other").unwrap();
+    assert_eq!((id, level), (ids::KNOWN_BAD_OWNER, Level::Warn));
     assert!(note.contains("bad") && note.contains("isn't on the list itself"), "{note}");
-    let (id, st, note) = status(Where::Hub, "lab/poc").unwrap();
-    assert_eq!((id.as_str(), st.as_str()), (ids::RESEARCH_DEMO, "warn"));
+    let (id, level, note) = repo("lab/poc").unwrap();
+    assert_eq!((id, level), (ids::RESEARCH_DEMO, Level::Warn));
     assert!(note.contains("public demonstration of an attack"), "{note}");
+    assert_eq!(repo("lab/other"), None);
+    assert_eq!(status(Where::Hub, "bad/one"), None, "per repo, not per file");
     let (id, st, _) = status(Where::Ollama, "evil/chat:latest").unwrap();
     assert_eq!((id.as_str(), st.as_str()), (ids::KNOWN_BAD, "fail"), "any tag");
     let (id, _, _) = status(Where::Ollama, "hf.co/Bad/one:Q4_K_M").unwrap();
     assert_eq!(id, ids::KNOWN_BAD, "an Ollama pull from the hub is the hub repo");
     assert_eq!(status(Where::Ollama, "hf.co/Bad/other:Q4").unwrap().0, ids::KNOWN_BAD_OWNER);
-    assert_eq!(status(Where::Hub, "lab/other"), None);
     assert_eq!(status(Where::Ollama, "evil/chatty:latest"), None);
     assert_eq!(status(Where::Tree, "bad/one"), None, "a repo file has no hub repo");
     // Severity: the warn row other model warnings use; known bad is Critical.
@@ -124,4 +127,56 @@ fn a_repo_scan_reports_models_and_counts_the_rest() {
     models(&mut again);
     assert_eq!(crate::checks::files::view::opens(&again.repos[0].1.join("models/bad.gguf")), before);
     assert_eq!(again.findings.iter().filter(|f| f.kind == "model").count(), 3);
+}
+
+/// A hub cache with no GGUF in it: a safetensors-only repo's benign
+/// template is read (and so counted) and says nothing, a poisoned one
+/// fails, a listed repo holding only safetensors fails once (component the
+/// repo id), and another repo of a listed account warns once. Read the way
+/// `models` reads a hub job, without a machine scan's other passes.
+#[cfg(unix)]
+#[test]
+fn a_hub_cache_without_ggufs_is_read() {
+    use crate::checks::models::testing::CHATML;
+    use std::os::unix::fs::symlink;
+    let d = TempDir::new("models-hub").unwrap();
+    let hub = d.path().join("hub");
+    let repo = |id: &str, template: Option<&str>| {
+        let dir = hub.join(format!("models--{}", id.replace('/', "--")));
+        let snap = dir.join("snapshots/r1");
+        std::fs::create_dir_all(&snap).unwrap();
+        testing::write(&dir, "refs/main", "r1\n");
+        // A stand-in for the weights: never parsed.
+        testing::write(&dir, "blobs/weights", "not a real safetensors file, only a stand-in");
+        symlink("../../blobs/weights", snap.join("model.safetensors")).unwrap();
+        if let Some(t) = template {
+            testing::write(&dir, "blobs/config", serde_json::json!({ "chat_template": t }).to_string());
+            symlink("../../blobs/config", snap.join("tokenizer_config.json")).unwrap();
+        }
+    };
+    repo("org/benign", Some(CHATML));
+    repo("org/poisoned", Some(TRIGGERED_DOWNLOAD));
+    repo("Mir2k/Inkling-2-Mini-Uncensored-GGUF", None);
+    repo("Mir2k/some-new-upload", Some(CHATML));
+    let list = List::bundled();
+    let read = crate::checks::models::scan_dir(Where::Hub, &hub, crate::utils::walk::DEEPEST);
+    assert_eq!(read.len(), 3, "the three templates are read and counted: {read:#?}");
+    let files: Vec<Finding> = read
+        .iter()
+        .filter_map(|m| {
+            let mut issues = m.result.issues.clone();
+            issues.extend(listed(&list, None, Where::Hub, m));
+            finding(Where::Hub, None, m, super::super::sorted(issues))
+        })
+        .collect();
+    assert_eq!(files.len(), 1, "{files:#?}");
+    assert_eq!((files[0].component.as_str(), files[0].status.as_str()), ("org/poisoned/tokenizer_config.json", "fail"));
+    let repos = hub_repos(&list, &hub);
+    assert_eq!(repos.len(), 2, "{repos:#?}");
+    let by = |c: &str| repos.iter().find(|f| f.component == c).unwrap_or_else(|| panic!("{c}"));
+    let listed_repo = by("Mir2k/Inkling-2-Mini-Uncensored-GGUF");
+    assert_eq!((listed_repo.status.as_str(), listed_repo.vuln_id.as_str()), ("fail", ids::KNOWN_BAD));
+    let owner = by("Mir2k/some-new-upload");
+    assert_eq!((owner.status.as_str(), owner.vuln_id.as_str()), ("warn", ids::KNOWN_BAD_OWNER));
+    assert!(hub_repos(&list, &d.path().join("absent")).is_empty());
 }

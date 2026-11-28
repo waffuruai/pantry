@@ -5,7 +5,9 @@ use super::*;
 #[test]
 fn the_bundled_list_matches_its_seeds() {
     let l = List::bundled();
-    assert_eq!((l.repos.len(), l.hashes.len(), l.ollama.len(), l.owners.len(), l.demos.len()), (71, 34, 1, 2, 129));
+    // At least the rows the list began with: rows are added without a code change.
+    assert!(l.repos.len() >= 71 && l.hashes.len() >= 34 && l.demos.len() >= 129, "rows went missing");
+    assert!(!l.ollama.is_empty() && l.owners.len() >= 2);
     assert!(l.repo("mir2k/huihui-qwen3.5-9b-abliterated-gguf").is_some(), "case does not matter");
     assert!(l.repo("timdedid/qwen3-cyber-UNCENSORED").is_some());
     assert!(l.repo("timdedid/qwen3-cyber").is_none());

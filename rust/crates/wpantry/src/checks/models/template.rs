@@ -13,7 +13,9 @@
 //!   within [`NEAR`] bytes of a command in the same text run or block.
 //! - **Warn:** an `if` that tests a message's content against an unusual
 //!   string (a trigger; parsing stored text with `split` and the like is
-//!   not one); the message list rebuilt with an added system message,
+//!   not one); wording that tells the model to set aside what it was told
+//!   (`ignore all previous instructions`: a persona, or a prompt with no
+//!   refusals or restrictions, is not that); the message list rebuilt with an added system message,
 //!   unless it is a default added only when there is none and names no
 //!   command; a URL to a host off a short list; shell vocabulary alone;
 //!   sandbox-escape attribute chains; hidden characters; block tags that
@@ -603,6 +605,16 @@ fn listing<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
     seen.join(", ")
 }
 
+/// `s` cut to 40 characters, unquoted.
+fn short_str(s: &str) -> String {
+    let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut e: String = one.chars().take(40).collect();
+    if one.chars().count() > 40 {
+        e.push('…');
+    }
+    e
+}
+
 fn short(s: &str) -> String {
     let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut e: String = one.chars().take(40).collect();
@@ -621,8 +633,9 @@ fn adds_message(code: &str) -> bool {
         && lits.iter().any(|l| l.split_whitespace().count() >= 4)
 }
 
-/// The hosts of the `http(s)://` URLs in `lower`.
-fn url_hosts(lower: &str) -> Vec<String> {
+/// The hosts of the `http(s)://` URLs in `lower`, each with where its URL
+/// starts.
+fn url_hosts(lower: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for scheme in ["http://", "https://"] {
         let mut from = 0;
@@ -632,12 +645,13 @@ fn url_hosts(lower: &str) -> Vec<String> {
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
                 .collect();
-            if !host.is_empty() && !out.contains(&host) {
-                out.push(host);
+            if !host.is_empty() && out.len() < MAX_PLACES {
+                out.push((from + i, host));
             }
             from = at;
         }
     }
+    out.sort_unstable();
     out
 }
 
@@ -714,6 +728,233 @@ fn commands(lc: &str) -> bool {
         .any(|list| list.iter().any(|w| has(lc, w)))
 }
 
+/// Setting aside what the model was told: a verb, then within [`SPAN`]
+/// bytes and in order a word naming what came before and a word naming
+/// instructions (`ignore all previous instructions`, `disregard the system
+/// prompt`). A persona, a prompt without refusals or one that says the
+/// model has no restrictions names no earlier instructions and is not this.
+const OVERRIDE_VERBS: &[&str] = &[
+    "ignore",
+    "disregard",
+    "forget",
+    "override",
+    "discard",
+    "set aside",
+    "do not follow",
+    "don't follow",
+    "stop following",
+    "no longer follow",
+];
+/// What came before: the scope of an override.
+const EARLIER: &[&str] =
+    &["previous", "prior", "above", "earlier", "preceding", "original", "former", "foregoing", "system", "user's"];
+/// What is set aside.
+const INSTRUCTIONS: &[&str] = &[
+    "instructions",
+    "instruction",
+    "rules",
+    "messages",
+    "message",
+    "prompts",
+    "prompt",
+    "directions",
+    "directives",
+    "commands",
+    "context",
+    "conversation",
+];
+/// Wording that releases the model from what it was told, whole.
+const RELEASED: &[&str] = &["no longer bound by"];
+/// How far after its verb an override's scope and object may be.
+const SPAN: usize = 64;
+
+/// What one rule found: the finding, and where its words are in the text
+/// the rules read (for [`check`]'s later notes).
+struct Hit {
+    id: &'static str,
+    level: Level,
+    note: String,
+    #[allow(dead_code)] // Read by the conditional marker.
+    evidence: Vec<usize>,
+}
+
+/// Every place of each word of `words` in `hay`.
+fn evidence(hay: &str, words: &[&str]) -> Vec<usize> {
+    words.iter().flat_map(|w| places(hay, w, MAX_PLACES)).collect()
+}
+
+/// Whether places `a` and `b` are in the same text run or block.
+fn same_scope(scopes: &[(usize, usize)], a: usize, b: usize) -> bool {
+    let scope = |p: usize| scopes.partition_point(|&(start, _)| start <= p);
+    scope(a) == scope(b)
+}
+
+/// Every place of each word of `list` in `hay`, with the word, sorted.
+fn word_places<'a>(hay: &str, list: &[&'a str]) -> Vec<(usize, &'a str)> {
+    let mut v: Vec<(usize, &'a str)> =
+        list.iter().flat_map(|w| places(hay, w, MAX_PLACES).into_iter().map(move |p| (p, *w))).collect();
+    v.sort_unstable();
+    v
+}
+
+/// The first of `words` (from [`word_places`]) that lies in `from..to`
+/// and in the scope of `at`.
+fn after<'a>(
+    words: &[(usize, &'a str)],
+    from: usize,
+    to: usize,
+    at: usize,
+    scopes: &[(usize, usize)],
+) -> Option<(usize, &'a str)> {
+    let i = words.partition_point(|&(p, _)| p < from);
+    words[i..]
+        .iter()
+        .take_while(|&&(p, _)| p < to)
+        .find(|&&(p, w)| p + w.len() <= to && same_scope(scopes, at, p))
+        .copied()
+}
+
+/// Whether `hay[from..to]` is quoted on both sides (`"ignore previous
+/// instructions"`, also escaped): the wording cited, as a prompt that
+/// lists what to refuse does, not given.
+fn cited(hay: &str, from: usize, to: usize) -> bool {
+    let quote = |c: Option<char>| c.is_some_and(|c| "\"'`\u{201c}\u{201d}\u{2018}\u{2019}".contains(c));
+    let rest = &hay[to..];
+    quote(hay[..from].chars().next_back()) && quote(rest.strip_prefix('\\').unwrap_or(rest).chars().next())
+}
+
+/// Where `hay` tells the model to set aside earlier instructions, and the
+/// words that do; wording quoted whole is cited ([`cited`]), not given.
+fn overrides(hay: &str, scopes: &[(usize, usize)]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let (earlier, instructions) = (word_places(hay, EARLIER), word_places(hay, INSTRUCTIONS));
+    for v in OVERRIDE_VERBS {
+        for at in places(hay, v, MAX_PLACES) {
+            let from = at + v.len();
+            let to = (from + SPAN).min(hay.len());
+            if let Some((sp, sw)) = after(&earlier, from, to, at, scopes)
+                && let Some((op, ow)) = after(&instructions, sp + sw.len(), to, at, scopes)
+                && !cited(hay, at, op + ow.len())
+            {
+                out.push((at, hay[at..op + ow.len()].to_string()));
+            }
+        }
+    }
+    for w in RELEASED {
+        out.extend(
+            places(hay, w, MAX_PLACES)
+                .into_iter()
+                .filter(|&at| !cited(hay, at, at + w.len()))
+                .map(|at| (at, (*w).to_string())),
+        );
+    }
+    out.sort_unstable();
+    out
+}
+
+/// The rules that read the text the model sees, over `lower` (lowercase,
+/// comments blanked) with its runs and blocks `scopes`.
+fn text_rules(lower: &str, scopes: &[(usize, usize)]) -> Vec<Hit> {
+    let mut out: Vec<Hit> = Vec::new();
+    let both = |a: &[&'static str], b: &[&'static str]| {
+        let (x, y) = (found(lower, a), found(lower, b));
+        (!x.is_empty() && !y.is_empty()).then_some((x, y))
+    };
+    let dropper = both(READS_FILE, WRITES_OR_STARTS).or_else(|| both(UNPACKS, STARTS));
+    if let Some((reads, writes)) = dropper {
+        out.push(Hit {
+            id: ids::DROPPER,
+            level: Level::Fail,
+            note: format!(
+                "reads a file ({}) and writes or starts a program ({}): the shape of a dropper",
+                listing(reads.iter().copied()),
+                listing(writes.iter().copied())
+            ),
+            evidence: [evidence(lower, &reads), evidence(lower, &writes)].concat(),
+        });
+    }
+    let stealth = found(lower, STEALTH);
+    if let Some((web, runs)) = both(WEB, RUNS) {
+        out.push(Hit {
+            id: ids::DOWNLOAD,
+            level: Level::Fail,
+            note: format!(
+                "downloads ({}) and runs ({}) a program",
+                listing(web.iter().copied()),
+                listing(runs.iter().copied())
+            ),
+            evidence: [evidence(lower, &web), evidence(lower, &runs)].concat(),
+        });
+    } else if !stealth.is_empty() {
+        out.push(Hit {
+            id: ids::DOWNLOAD,
+            level: Level::Fail,
+            note: format!("hides what it runs ({})", listing(stealth.iter().copied())),
+            evidence: evidence(lower, &stealth),
+        });
+    }
+    let directives = found(lower, DIRECTIVES);
+    let commandish: Vec<&str> = SHELLISH.iter().chain(WEB).chain(RUNS).copied().collect();
+    if !directives.is_empty() {
+        out.push(Hit {
+            id: ids::INJECTION,
+            level: Level::Fail,
+            note: format!("injects a directive ({})", listing(directives.iter().copied())),
+            evidence: evidence(lower, &directives),
+        });
+    } else if let Some((coercion, command)) = near(lower, COERCION, &commandish, scopes) {
+        out.push(Hit {
+            id: ids::INJECTION,
+            level: Level::Fail,
+            note: format!(
+                "tells the model to keep quiet or act ({}) beside a command ({})",
+                listing(coercion.iter().copied()),
+                listing(command.iter().copied())
+            ),
+            evidence: [evidence(lower, &coercion), evidence(lower, &command)].concat(),
+        });
+    }
+    let overridden = overrides(lower, scopes);
+    if !overridden.is_empty() {
+        let shown: Vec<String> = overridden.iter().map(|(_, w)| short_str(w)).collect();
+        out.push(Hit {
+            id: ids::OVERRIDE,
+            level: Level::Warn,
+            note: format!(
+                "tells the model to set aside what it was told ({})",
+                listing(shown.iter().map(String::as_str))
+            ),
+            evidence: overridden.iter().map(|&(at, _)| at).collect(),
+        });
+    }
+    let hosts: Vec<(usize, String)> = url_hosts(lower).into_iter().filter(|(_, h)| !host_allowed(h)).collect();
+    if !hosts.is_empty() {
+        let mut shown: Vec<&str> = Vec::new();
+        for (_, h) in &hosts {
+            if !shown.contains(&h.as_str()) && shown.len() < 3 {
+                shown.push(h);
+            }
+        }
+        out.push(Hit {
+            id: ids::URL,
+            level: Level::Warn,
+            note: format!("names a URL on {}", shown.join(", ")),
+            evidence: hosts.iter().map(|&(at, _)| at).collect(),
+        });
+    }
+    let shell = found(lower, SHELL);
+    let failed = out.iter().any(|h| h.level == Level::Fail);
+    if !shell.is_empty() && !failed {
+        out.push(Hit {
+            id: ids::SHELL,
+            level: Level::Warn,
+            note: format!("shell vocabulary ({})", listing(shell.iter().copied())),
+            evidence: evidence(lower, &shell),
+        });
+    }
+    out
+}
+
 /// What the rules find in one template. `source` names where it came
 /// from (`tokenizer.chat_template`, `tokenizer_config.json`).
 ///
@@ -722,12 +963,10 @@ fn commands(lc: &str) -> bool {
 /// beside a command wants the two within [`NEAR`] bytes and in the same
 /// text run or Jinja block, since a stock tool-calling line ("do not tell
 /// the user about function calls") and a persona naming a shell can sit
-/// far apart in a long template; then the shell word alone still warns. Comments (`{# #}`) never reach the model and are not
-/// read, except for hidden characters.
+/// far apart in a long template; then the shell word alone still warns.
+/// Comments (`{# #}`) never reach the model and are not read, except for
+/// hidden characters.
 pub fn check(source: &str, text: &str) -> Vec<Issue> {
-    let mut out: Vec<Issue> = Vec::new();
-    let add =
-        |out: &mut Vec<Issue>, id, level, note: String| out.push(Issue::new(id, level, format!("{source}: {note}")));
     let (segments, problem) = scan(text);
     // Byte ranges of the segments, and the text with comments blanked. A
     // comment renders to nothing, so text runs with only comments between
@@ -753,75 +992,33 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             }
         }
     }
-    let lower = lower.as_str();
-
-    let both = |a: &[&'static str], b: &[&'static str]| {
-        let (x, y) = (found(lower, a), found(lower, b));
-        (!x.is_empty() && !y.is_empty()).then_some((x, y))
-    };
-    let dropper = both(READS_FILE, WRITES_OR_STARTS).or_else(|| both(UNPACKS, STARTS));
-    if let Some((reads, writes)) = dropper {
-        add(
-            &mut out,
-            ids::DROPPER,
-            Level::Fail,
-            format!(
-                "reads a file ({}) and writes or starts a program ({}): the shape of a dropper",
-                listing(reads),
-                listing(writes)
-            ),
-        );
-    }
-    let stealth = found(lower, STEALTH);
-    if let Some((web, runs)) = both(WEB, RUNS) {
-        add(
-            &mut out,
-            ids::DOWNLOAD,
-            Level::Fail,
-            format!("downloads ({}) and runs ({}) a program", listing(web), listing(runs)),
-        );
-    } else if !stealth.is_empty() {
-        add(&mut out, ids::DOWNLOAD, Level::Fail, format!("hides what it runs ({})", listing(stealth.iter().copied())));
-    }
-    let directives = found(lower, DIRECTIVES);
-    let commandish: Vec<&str> = SHELLISH.iter().chain(WEB).chain(RUNS).copied().collect();
-    if !directives.is_empty() {
-        add(
-            &mut out,
-            ids::INJECTION,
-            Level::Fail,
-            format!("injects a directive ({})", listing(directives.iter().copied())),
-        );
-    } else if let Some((coercion, command)) = near(lower, COERCION, &commandish, &scopes) {
-        add(
-            &mut out,
-            ids::INJECTION,
-            Level::Fail,
-            format!(
-                "tells the model to keep quiet or act ({}) beside a command ({})",
-                listing(coercion),
-                listing(command)
-            ),
-        );
-    }
+    let mut hits = text_rules(&lower, &scopes);
 
     if let Some(why) = problem {
-        add(&mut out, ids::UNREADABLE, Level::Warn, format!("doesn't tokenize as a Jinja template ({why})"));
+        hits.push(Hit {
+            id: ids::UNREADABLE,
+            level: Level::Warn,
+            note: format!("doesn't tokenize as a Jinja template ({why})"),
+            evidence: Vec::new(),
+        });
     }
     let mut trigger: Option<String> = None;
-    let mut rebuilt = false;
+    let mut rebuilt: Vec<usize> = Vec::new();
     let mut ssti: Vec<&str> = Vec::new();
+    let mut ssti_at: Vec<usize> = Vec::new();
     let mut frames: Vec<Frame> = Vec::new();
     for seg in &segments {
         let code = match seg {
             Segment::Stmt(s) | Segment::Expr(s) => *s,
             _ => continue,
         };
+        let at = code.as_ptr() as usize - base;
         let lc = code.to_ascii_lowercase();
         for w in found(&lc, SSTI) {
             if !ssti.contains(&w) {
                 ssti.push(w);
             }
+            ssti_at.extend(places(&lc, w, MAX_PLACES).into_iter().map(|p| at + p));
         }
         let no_system = frames.iter().any(|f| f.no_system);
         if let Segment::Stmt(s) = seg {
@@ -864,54 +1061,46 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
                 && adds_message(rhs)
                 && !(no_system && !commands(&lc))
             {
-                rebuilt = true;
+                rebuilt.push(at);
             }
         }
         if (lc.contains("messages.insert(") || lc.contains("messages.append("))
             && adds_message(code)
             && !(no_system && !commands(&lc))
         {
-            rebuilt = true;
+            rebuilt.push(at);
         }
     }
     if let Some(lit) = trigger {
-        add(
-            &mut out,
-            ids::TRIGGER,
-            Level::Warn,
-            format!("an `if` tests a message's content against {lit}: a trigger phrase?"),
-        );
+        hits.push(Hit {
+            id: ids::TRIGGER,
+            level: Level::Warn,
+            note: format!("an `if` tests a message's content against {lit}: a trigger phrase?"),
+            evidence: Vec::new(),
+        });
     }
-    if rebuilt {
-        add(
-            &mut out,
-            ids::SYSTEM,
-            Level::Warn,
-            "adds a system or user message with its own instruction text to the conversation".into(),
-        );
+    if !rebuilt.is_empty() {
+        hits.push(Hit {
+            id: ids::SYSTEM,
+            level: Level::Warn,
+            note: "adds a system or user message with its own instruction text to the conversation".into(),
+            evidence: rebuilt,
+        });
     }
     if !ssti.is_empty() {
-        add(
-            &mut out,
-            ids::SSTI,
-            Level::Warn,
-            format!("template sandbox escape vocabulary ({})", listing(ssti.iter().copied())),
-        );
+        hits.push(Hit {
+            id: ids::SSTI,
+            level: Level::Warn,
+            note: format!("template sandbox escape vocabulary ({})", listing(ssti.iter().copied())),
+            evidence: ssti_at,
+        });
     }
-    let hosts: Vec<String> = url_hosts(lower).into_iter().filter(|h| !host_allowed(h)).collect();
-    if !hosts.is_empty() {
-        let shown: Vec<&str> = hosts.iter().take(3).map(String::as_str).collect();
-        add(&mut out, ids::URL, Level::Warn, format!("names a URL on {}", shown.join(", ")));
-    }
-    let shell = found(lower, SHELL);
-    let failed = out.iter().any(|i| i.level == Level::Fail);
-    if !shell.is_empty() && !failed {
-        add(&mut out, ids::SHELL, Level::Warn, format!("shell vocabulary ({})", listing(shell.iter().copied())));
-    }
+    let mut out: Vec<Issue> =
+        hits.into_iter().map(|h| Issue::new(h.id, h.level, format!("{source}: {}", h.note))).collect();
     for h in crate::checks::hidden::scan_text("chat_template.jinja", text) {
         if matches!(h.id, "HIDDEN-TAGS" | "HIDDEN-ZERO-WIDTH") || (h.id == "HIDDEN-BIDI" && h.hard) {
             let level = if h.hard { Level::Fail } else { Level::Warn };
-            add(&mut out, ids::HIDDEN, level, format!("{} ({})", h.note, h.id));
+            out.push(Issue::new(ids::HIDDEN, level, format!("{source}: {} ({})", h.note, h.id)));
         }
     }
     super::sorted(out)

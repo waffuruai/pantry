@@ -1,0 +1,31 @@
+# Known-bad AI models: Pantry's default list, matched offline against the
+# model files a scan reads. A match fails, naming the entry.
+#   repos   a Hugging Face repo id (org/name), matched without regard to case
+#   sha256  a model file's SHA-256, matched where the store's layout gives it
+#           (a Hugging Face hub cache blob, an Ollama blob): no file is hashed
+#
+# Add a row to add an entry; no code changes. Each row's source is the
+# comment above its group.
+
+source = "Pantry's known-bad model list"
+
+# Malspark's write-up of malicious GGUF models on Hugging Face, 2026-11-27:
+# https://malspark.com/blog/malicious-gguf-models-hugging-face
+repos = [
+  "Mir2k/Huihui-Qwen3.5-9B-abliterated-GGUF",
+  "Mir2k/Inkling-2-Mini-Uncensored-GGUF",
+  "timdedid/qwen3.8-cyber-uncensored",
+  "timdedid/qwen3-cyber-UNCENSORED-2",
+  "timdedid/qwen3-cyber-UNCENSORED",
+]
+
+# The same write-up: the model files it names.
+sha256 = [
+  "a95f9e00a5062b2f55a7d089696833965643765f40b2eae3b962d5952492f221",
+  "9d88149b7777a1ca0210e8dc6b2e5a0d9bb7b5971d305025f5b2731cf8a39cf9",
+  "c3d72696afe76e0dedf4adf10ef7ea09634d23416c9601b0462ce528fb4a89ab",
+  "5f605529d4dcf7fda106313a54f350a07015678457cd6021b1a8922a60e40b9c",
+  "c7170a39c92b3dca10bcb23b81014cfc4a1c1429be83b427ba6b23a4ecdf09a1",
+  "fafd6dd22e1375e6613a3038c1a4a8c1b554544c1d423cfc570a81192865c841",
+  "6037244a718f2afc2e9eabf6ab253f53fe7b9552792b3533956d63e43e4ac058",
+]

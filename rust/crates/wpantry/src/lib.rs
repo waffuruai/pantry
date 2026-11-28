@@ -74,5 +74,7 @@ pub mod defaults {
     pub const POPULAR: &str = include_str!("../assets/defaults/popular.toml");
     pub const WEAK_PASSWORDS: &str = include_str!("../assets/defaults/weak-passwords.toml");
     pub const BAIT: &str = include_str!("../assets/defaults/bait.toml");
+    pub const MODEL_TEMPLATES: &str = include_str!("../assets/defaults/model-templates.toml");
+    pub const KNOWN_BAD_MODELS: &str = include_str!("../assets/defaults/known-bad-models.toml");
     pub const SOURCES: &str = include_str!("../assets/defaults/sources.toml");
 }

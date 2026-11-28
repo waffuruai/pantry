@@ -22,7 +22,7 @@ use std::path::{Component as Part, Path, PathBuf};
 pub const FILE: &str = ".pantryignore";
 /// The checks a repo can't silence for itself: they protect you from it.
 pub const PROTECTIVE: &[&str] =
-    &["malware", "suspect-code", "hidden-text", "repo-hook", "clipper", "document", "mcp", "install-script"];
+    &["malware", "suspect-code", "hidden-text", "repo-hook", "clipper", "document", "model", "mcp", "install-script"];
 /// Findings no repo's file can skip, whatever their check: known malware.
 const PROTECTED_IDS: &[&str] = &["MALWARE", "REPO-POLICY", crate::checks::changes::UNSAFE_PATH];
 

@@ -20,6 +20,7 @@ pub mod ignore_edit;
 pub mod lockfiles;
 pub mod machine;
 pub mod malware;
+pub mod models;
 pub mod project;
 pub mod secrets;
 pub mod severity;
@@ -498,6 +499,8 @@ impl<'a> Scan<'a> {
                 self.opts.scoped(),
             ));
         }
+        let repos: Vec<PathBuf> = self.repos.iter().map(|(_, r)| r.clone()).collect();
+        jobs.extend(models::jobs(&repos, self.opts.machine && !self.opts.scoped(), &self.home));
         jobs.extend(self.secret_file_jobs());
         jobs
     }

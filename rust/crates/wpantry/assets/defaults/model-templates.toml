@@ -1,0 +1,30 @@
+# What a chat template may contain without a warning, read by the AI model
+# check (src/checks/models/template.rs). Add a row to allow more; no code
+# changes. Kept short on purpose: each entry is one a real, mainstream
+# template uses.
+#
+#   hosts     a URL's host a template may name (a subdomain of one counts)
+#   literals  a string an `if` may compare a message's content with,
+#             matched without regard to case; tags (`<...>`, `[A_B]`),
+#             `/switch` words and punctuation are allowed without a row
+
+hosts = [
+  "www.llama.com",
+  "all-hands.dev",
+]
+
+literals = [
+  # roles
+  "system", "user", "assistant", "tool", "tools", "ipython", "function",
+  "developer", "model", "tool_results", "tool_response", "latest_reminder",
+  "__sentinel__",
+  # message keys and value types
+  "content", "text", "type", "image", "image_url", "video", "audio",
+  "tool_calls", "tool_call", "tool_call_id", "name", "arguments",
+  "reasoning_content", "reasoning", "thinking", "string", "mapping",
+  # reasoning effort and tool choice
+  "low", "medium", "high", "xhigh", "max", "none", "auto", "required",
+  # built-in tools and fields
+  "browser", "python", "title", "action",
+  "true", "false", "null",
+]

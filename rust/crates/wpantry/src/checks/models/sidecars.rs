@@ -58,11 +58,14 @@ pub fn modelfile_templates(text: &str) -> Vec<(String, String)> {
         let lead = line.len() - line.trim_start().len();
         let word: String = line[lead..].chars().take_while(|c| c.is_ascii_alphabetic()).collect();
         let upper = word.to_ascii_uppercase();
-        if upper != "TEMPLATE" && upper != "SYSTEM" {
+        let after_word = i + lead + word.len();
+        // The directive is a whole word: whitespace or the line's end after
+        // it (`TEMPLATE_FOO` is another word).
+        let whole = text[after_word..line_end].chars().next().is_none_or(char::is_whitespace);
+        if (upper != "TEMPLATE" && upper != "SYSTEM") || !whole {
             i = line_end + 1;
             continue;
         }
-        let after_word = i + lead + word.len();
         let gap = text[after_word..line_end].len() - text[after_word..line_end].trim_start().len();
         let value = after_word + gap;
         if text[value..].starts_with("\"\"\"") {

@@ -66,6 +66,19 @@ fn modelfile_values_in_every_form() {
     assert!(modelfile_templates("").is_empty());
 }
 
+/// A directive is a whole word: `TEMPLATE_FOO` and `SYSTEMS` are other
+/// words and are ignored; a real `TEMPLATE """..."""` block beside them,
+/// and a bare `SYSTEM` at a line's end, are read.
+#[test]
+fn modelfile_directives_are_whole_words() {
+    let m =
+        "TEMPLATE_FOO \"[SYSTEM DIRECTIVE] not a template\"\nSYSTEMS x\nTEMPLATE \"\"\"{{ .Prompt }}\"\"\"\nSYSTEM\n";
+    assert_eq!(
+        modelfile_templates(m),
+        [("TEMPLATE".to_string(), "{{ .Prompt }}".to_string()), ("SYSTEM".to_string(), String::new())]
+    );
+}
+
 #[test]
 fn truncated_and_mangled_sidecars_never_panic() {
     let files: Vec<(u8, &str, Vec<u8>)> = vec![

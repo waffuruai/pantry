@@ -25,6 +25,12 @@
 //!   sandbox-escape attribute chains; hidden characters; block tags that
 //!   don't pair up (the rules still read every segment).
 //!
+//! A finding whose every word renders only inside an `if` (or `elif`)
+//! branch taken on a trigger says so in its note ("only when a message
+//! contains ..."); an override or a covert addition there fails, since an
+//! instruction that appears only on a trigger phrase has no innocent
+//! reason. A branch on an allowlisted literal (`/no_think`) isn't one.
+//!
 //! Comments (`{# #}`) are not read, except for hidden characters: the model
 //! never sees them.
 //!
@@ -841,8 +847,67 @@ struct Hit {
     id: &'static str,
     level: Level,
     note: String,
-    #[allow(dead_code)] // Read by the conditional marker.
     evidence: Vec<usize>,
+}
+
+/// The trigger an `if` or `elif` condition tests a message's content for:
+/// a literal off the allowlist ([`content_tests`], [`normal_literal`]).
+fn trigger_of(stmt: &str) -> Option<String> {
+    content_tests(stmt).into_iter().find(|l| !normal_literal(l)).map(short)
+}
+
+/// The byte ranges of the segments that render only inside a branch taken
+/// on a trigger, each with the trigger, sorted: the body of an `if` or
+/// `elif` whose own condition, or an enclosing one, tests for a trigger.
+/// The `else` of such an `if` runs without the phrase and isn't one.
+fn triggered(segments: &[Segment<'_>], base: usize) -> Vec<(usize, usize, String)> {
+    // One open block: for an `if`, the trigger of the branch being read.
+    let mut stack: Vec<(bool, Option<String>)> = Vec::new();
+    let mut out = Vec::new();
+    for seg in segments {
+        let (Segment::Text(x) | Segment::Stmt(x) | Segment::Expr(x) | Segment::Comment(x)) = seg;
+        let start = x.as_ptr() as usize - base;
+        if !matches!(seg, Segment::Comment(_) | Segment::Stmt(_))
+            && let Some(lit) = stack.iter().rev().find_map(|(_, t)| t.clone())
+        {
+            out.push((start, start + x.len(), lit));
+        }
+        let Segment::Stmt(s) = seg else { continue };
+        match head(s) {
+            "if" => stack.push((true, trigger_of(s))),
+            "elif" => {
+                if let Some(f) = stack.last_mut().filter(|f| f.0) {
+                    f.1 = trigger_of(s);
+                }
+            }
+            "else" => {
+                if let Some(f) = stack.last_mut().filter(|f| f.0) {
+                    f.1 = None;
+                }
+            }
+            w if BLOCKS.contains(&w) || (w == "set" && !s.contains('=')) => stack.push((false, None)),
+            w if w.starts_with("end") => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The trigger every place of `evidence` renders behind ([`triggered`]),
+/// or None when any place doesn't (or there is none).
+fn conditional(evidence: &[usize], ranges: &[(usize, usize, String)]) -> Option<String> {
+    let mut lit: Option<&String> = None;
+    for &p in evidence {
+        let i = ranges.partition_point(|&(start, _, _)| start <= p);
+        let (_, end, l) = ranges.get(i.checked_sub(1)?)?;
+        if p >= *end {
+            return None;
+        }
+        lit.get_or_insert(l);
+    }
+    lit.cloned()
 }
 
 /// Every place of each word of `words` in `hay`.
@@ -1200,11 +1265,8 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
                 }
                 _ => {}
             }
-            if (word == "if" || word == "elif")
-                && trigger.is_none()
-                && let Some(lit) = content_tests(s).into_iter().find(|l| !normal_literal(l))
-            {
-                trigger = Some(short(lit));
+            if (word == "if" || word == "elif") && trigger.is_none() {
+                trigger = trigger_of(s);
             }
             if word == "set"
                 && let Some((_, rhs)) = s.split_once('=')
@@ -1245,6 +1307,18 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             note: format!("template sandbox escape vocabulary ({})", listing(ssti.iter().copied())),
             evidence: ssti_at,
         });
+    }
+    // A finding whose every word renders only behind a trigger says so; an
+    // override or a covert addition that appears only on a trigger phrase
+    // has no innocent reason, and fails.
+    let ranges = triggered(&segments, base);
+    for h in &mut hits {
+        if let Some(lit) = conditional(&h.evidence, &ranges) {
+            h.note.push_str(&format!("; only when a message contains {lit}"));
+            if h.id == ids::OVERRIDE || h.id == ids::TAMPER {
+                h.level = Level::Fail;
+            }
+        }
     }
     let mut out: Vec<Issue> =
         hits.into_iter().map(|h| Issue::new(h.id, h.level, format!("{source}: {}", h.note))).collect();

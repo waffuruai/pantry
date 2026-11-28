@@ -6,6 +6,7 @@ use crate::checks::documents::{self, Doc};
 use crate::checks::hidden::{self, Hidden};
 use crate::checks::malware::targets::{self, Scope};
 use crate::checks::malware::yara::Loaded;
+use crate::checks::models::{self, Model, Where};
 use crate::checks::secrets::files::{self as secret_files, Engine};
 use crate::checks::supply_chain::mptcp::{self, Exposure};
 use crate::checks::suspects::{self, Kind, Suspect};
@@ -31,6 +32,8 @@ pub enum Check {
     Blobs,
     /// Secrets in every file (`--deep`), not only git history.
     Secrets,
+    /// AI model files and chat templates.
+    Models(Where),
 }
 
 /// One check over one root, `depth` levels down.
@@ -58,6 +61,7 @@ pub enum Found {
     Malware(Vec<(PathBuf, targets::Scanned)>),
     Blobs(Vec<Suspect>),
     Secrets(secret_files::Found),
+    Models(Vec<Model>),
 }
 
 /// What the pass's checks run with: the malware scan's rules, and the
@@ -88,6 +92,7 @@ enum Plan {
     Malware(targets::Plan),
     Blobs(suspects::blobs::Plan),
     Secrets(secret_files::Plan),
+    Models(models::Plan),
 }
 
 impl Plan {
@@ -100,6 +105,7 @@ impl Plan {
             Plan::Malware(p) => &p.reads,
             Plan::Blobs(p) => &p.reads,
             Plan::Secrets(p) => &p.reads,
+            Plan::Models(p) => &p.reads,
         }
     }
 }
@@ -114,6 +120,7 @@ pub(crate) enum Out {
     Malware(targets::Scanned),
     Blob(Option<String>),
     Secrets(Vec<secret_files::Secret>),
+    Models(Option<models::FileResult>),
 }
 
 fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats, engines: &Engines) -> Plan {
@@ -125,6 +132,7 @@ fn plan(job: &Job, walk: &[(PathBuf, Vec<String>)], stat: super::Stats, engines:
         Check::Malware(scope) => Plan::Malware(targets::plan(scope, &job.root, walk, stat)),
         Check::Blobs => Plan::Blobs(suspects::blobs::plan(&job.root)),
         Check::Secrets => Plan::Secrets(secret_files::plan(engines.secrets.as_deref(), &job.root, walk, stat)),
+        Check::Models(at) => Plan::Models(models::plan(at, &job.root, walk, stat)),
     }
 }
 
@@ -138,6 +146,7 @@ fn file(job: &Job, engines: &Engines, read: &Read, c: &Contents) -> Out {
         Check::Malware(scope) => Out::Malware(targets::file(scope, rules, read, c)),
         Check::Blobs => Out::Blob(suspects::blobs::file(read, c)),
         Check::Secrets => Out::Secrets(secret_files::file(engines.secrets.as_deref(), read, c)),
+        Check::Models(_) => Out::Models(models::file(read, c)),
     }
 }
 
@@ -155,6 +164,7 @@ fn finish(job: &Job, plan: &Plan, outs: &[Option<Out>]) -> Found {
         Plan::Malware(p) => Found::Malware(targets::finish(p, &of!(Malware))),
         Plan::Blobs(p) => Found::Blobs(suspects::blobs::finish(p, &of!(Blob))),
         Plan::Secrets(p) => Found::Secrets(secret_files::finish(p, &of!(Secrets))),
+        Plan::Models(p) => Found::Models(models::finish(p, &of!(Models))),
     }
 }
 
@@ -225,6 +235,14 @@ impl Results {
         match self.get(job) {
             Found::Secrets(v) => v,
             _ => unreachable!("a secrets job finds secrets"),
+        }
+    }
+
+    /// A models job's model files and chat templates.
+    pub fn models(&self, job: &Job) -> Vec<Model> {
+        match self.get(job) {
+            Found::Models(v) => v,
+            _ => unreachable!("a models job finds models"),
         }
     }
 

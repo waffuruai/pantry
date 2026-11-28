@@ -118,6 +118,21 @@ fn a_failing_outdated_finding_is_high() {
     assert_eq!(own(&finding("app", "BROWSER", "fail", "")), own(&finding("runtime", "OUTDATED", "fail", "")));
 }
 
+/// Model findings: a known-bad model or an appended program is CRITICAL;
+/// any other model rule, the template phrase rules among them, is HIGH
+/// when it fails and LOW when it warns.
+#[test]
+fn model_findings_rate_by_whether_they_fail() {
+    use crate::checks::models::ids;
+    for id in [ids::KNOWN_BAD, ids::APPENDED_PROGRAM] {
+        assert_eq!(own(&finding("model", id, "fail", "")), "CRITICAL", "{id}");
+    }
+    for id in [ids::OVERRIDE, ids::TAMPER, ids::ASSEMBLED, ids::INJECTION, ids::DATA_GAP] {
+        assert_eq!(own(&finding("model", id, "fail", "")), "HIGH", "{id}");
+        assert_eq!(own(&finding("model", id, "warn", "")), "LOW", "{id}");
+    }
+}
+
 /// Oracle: the contract's caps. An advisory with 13 aliases and 9 weakness
 /// types gives the first 12 and 8 (CVE ids first), no more.
 #[test]

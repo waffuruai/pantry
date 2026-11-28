@@ -25,7 +25,7 @@ use std::collections::HashMap;
 pub fn own(f: &Finding) -> &'static str {
     let fails = f.status == "fail";
     match (f.vuln_id.as_str(), f.kind.as_str()) {
-        ("MALICIOUS", _) => "CRITICAL",
+        ("MALICIOUS" | "MODEL-KNOWN-BAD" | "MODEL-APPENDED-PROGRAM", _) => "CRITICAL",
         ("EOL" | "BROWSER" | "OS-UPDATE" | "DISTRUSTED-CA", _) => {
             if fails {
                 "HIGH"
@@ -59,7 +59,7 @@ pub fn own(f: &Finding) -> &'static str {
                 "MEDIUM"
             }
         }
-        (_, "suspect-code" | "hidden-text" | "document") => {
+        (_, "suspect-code" | "hidden-text" | "document" | "model") => {
             if fails {
                 "HIGH"
             } else {
@@ -89,6 +89,7 @@ pub fn is_advisory(id: &str) -> bool {
             "SUSPECT"
                 | "HIDDEN"
                 | "DOC"
+                | "MODEL"
                 | "IMG"
                 | "CLIPPER"
                 | "PERSISTENCE"

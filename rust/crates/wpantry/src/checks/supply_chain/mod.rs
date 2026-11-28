@@ -108,6 +108,7 @@ pub fn run_with(scan: &mut Scan, found: &[Component], engine: Option<PathBuf>) -
     suspect_code::suspect_code(scan, &git);
     mptcp_listeners(scan, &repos);
     documents_pass(scan, &repos);
+    crate::checks::models::report::models(scan);
     install_scripts::install_scripts(scan, &repos, found);
     scan.step(watch::IMAGES);
     images_with(scan, &repos, engine)?;

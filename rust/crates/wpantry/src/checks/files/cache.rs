@@ -44,6 +44,9 @@ fn name(check: Check) -> &'static str {
         Check::Malware(Scope::File) => "malware:file",
         Check::Blobs => "blobs",
         Check::Secrets => "secrets",
+        Check::Models(crate::checks::models::Where::Tree) => "models:tree",
+        Check::Models(crate::checks::models::Where::Hub) => "models:hub",
+        Check::Models(crate::checks::models::Where::Ollama) => "models:ollama",
     }
 }
 
@@ -93,6 +96,15 @@ fn sources(check: Check) -> Vec<&'static str> {
             include_str!("../secrets/fragments.rs"),
             include_str!("../secrets/expr.rs"),
             include_str!("../secrets/rules.rs"),
+        ],
+        Check::Models(_) => vec![
+            include_str!("../models/mod.rs"),
+            include_str!("../models/gguf.rs"),
+            include_str!("../models/template.rs"),
+            include_str!("../models/sidecars.rs"),
+            include_str!("../../../assets/defaults/model-templates.toml"),
+            include_str!("../hidden/mod.rs"),
+            include_str!("../hidden/unicode.rs"),
         ],
         Check::Malware(_) => vec![
             include_str!("../malware/targets.rs"),
@@ -322,6 +334,7 @@ impl Store {
             (Check::Mptcp, "null") => return Some(Out::Mptcp(None)),
             (Check::Blobs, "null") => return Some(Out::Blob(None)),
             (Check::Secrets, "[]") => return Some(Out::Secrets(Vec::new())),
+            (Check::Models(_), "null") => return Some(Out::Models(None)),
             _ => {}
         }
         from_json(job.check, &serde_json::from_str(result).ok()?, &read.path)
@@ -486,6 +499,7 @@ fn to_json(out: &Out) -> Value {
             "listen": found_json(&f.listen),
         }),
         Out::Documents(v) => Value::Array(v.iter().map(doc_json).collect()),
+        Out::Models(r) => crate::checks::models::to_json(r),
         Out::Secrets(v) => {
             Value::Array(v.iter().map(|s| json!([s.rule, s.description, s.line, s.confidence, s.decoded])).collect())
         }
@@ -543,6 +557,7 @@ fn from_json(check: Check, v: &Value, path: &std::path::Path) -> Option<Out> {
         })),
         Check::Documents => Out::Documents(v.as_array()?.iter().map(doc_of).collect()),
         Check::Blobs => Out::Blob(v.as_str().map(str::to_string)),
+        Check::Models(_) => Out::Models(crate::checks::models::from_json(v)?),
         Check::Secrets => Out::Secrets(
             v.as_array()?
                 .iter()

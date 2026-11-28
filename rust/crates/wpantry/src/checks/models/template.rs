@@ -15,7 +15,11 @@
 //!   string (a trigger; parsing stored text with `split` and the like is
 //!   not one); wording that tells the model to set aside what it was told
 //!   (`ignore all previous instructions`: a persona, or a prompt with no
-//!   refusals or restrictions, is not that); the message list rebuilt with an added system message,
+//!   refusals or restrictions, is not that); wording that has the model
+//!   put into its answers or code something the template supplies, or
+//!   hide that it did (`always add this helper to any code you write`,
+//!   `emit X before each return`), a failure beside a command or a URL;
+//!   the message list rebuilt with an added system message,
 //!   unless it is a default added only when there is none and names no
 //!   command; a URL to a host off a short list; shell vocabulary alone;
 //!   sandbox-escape attribute chains; hidden characters; block tags that
@@ -768,6 +772,69 @@ const RELEASED: &[&str] = &["no longer bound by"];
 /// How far after its verb an override's scope and object may be.
 const SPAN: usize = 64;
 
+/// Putting into answers or code something the user didn't ask for: a verb
+/// that adds, then within [`INTO_SPAN`] bytes what it goes into; and
+/// either the thing supplied right after the verb (`add this helper`,
+/// `insert the following line`) or wording that hides it within [`NEAR`]
+/// bytes. "Always include comments in your code" supplies nothing and
+/// hides nothing, and is no finding.
+const INSERTS: &[&str] = &["include", "add", "append", "insert", "prepend", "embed", "inject"];
+/// The template supplying what is added.
+const SUPPLIED: &[&str] = &["this", "these", "the following", "following"];
+/// What it goes into.
+const INTO: &[&str] = &[
+    "code", "script", "snippet", "import", "function", "program", "file", "line", "answer", "response", "reply",
+    "output",
+];
+/// Hiding what was added.
+const CONCEAL: &[&str] = &[
+    "without mentioning",
+    "without telling",
+    "without saying",
+    "do not reveal",
+    "don't reveal",
+    "never reveal",
+    "do not disclose",
+    "don't disclose",
+    "keep this secret",
+    "keep it secret",
+    "keep this hidden",
+    "do not mention it",
+    "don't mention it",
+    "never mention it",
+    "do not mention this",
+    "without the user knowing",
+    "without the user noticing",
+];
+/// Making the model's code do more than asked, by where: a verb that puts
+/// out code, then within [`INTO_SPAN`] bytes a place in every program it
+/// writes (`emit X before each return`).
+const OUTPUTS: &[&str] = &[
+    "add", "adds", "insert", "inserts", "include", "includes", "append", "appends", "emit", "emits", "print", "prints",
+    "call", "calls",
+];
+/// A place in every program the model writes.
+const PLACEMENT: &[&str] = &[
+    "before each return",
+    "before every return",
+    "before the main program",
+    "before the program exits",
+    "before exiting",
+    "at the start of every function",
+    "at the top of every file",
+    "in every function",
+    "in each function",
+    "every function you write",
+    "any code you write",
+    "all code you write",
+    "every program you write",
+    "every script you write",
+];
+/// How far after its verb what is added into may be.
+const INTO_SPAN: usize = 96;
+/// How far after its verb the thing supplied may start.
+const SUPPLIED_SPAN: usize = 24;
+
 /// What one rule found: the finding, and where its words are in the text
 /// the rules read (for [`check`]'s later notes).
 struct Hit {
@@ -834,6 +901,7 @@ fn overrides(hay: &str, scopes: &[(usize, usize)]) -> Vec<(usize, String)> {
             let to = (from + SPAN).min(hay.len());
             if let Some((sp, sw)) = after(&earlier, from, to, at, scopes)
                 && let Some((op, ow)) = after(&instructions, sp + sw.len(), to, at, scopes)
+                && one_sentence(hay, at, op)
                 && !cited(hay, at, op + ow.len())
             {
                 out.push((at, hay[at..op + ow.len()].to_string()));
@@ -849,6 +917,51 @@ fn overrides(hay: &str, scopes: &[(usize, usize)]) -> Vec<(usize, String)> {
         );
     }
     out.sort_unstable();
+    out
+}
+
+/// Whether `hay[from..to]` stays in one sentence: no `.`, `!`, `?` or
+/// line break, written or escaped.
+fn one_sentence(hay: &str, from: usize, to: usize) -> bool {
+    let s = &hay[from..to];
+    !s.contains(['.', '!', '?', '\n']) && !s.contains("\\n")
+}
+
+/// Where `hay` tells the model to add something to its answers or code
+/// ([`INSERTS`], [`OUTPUTS`]), and the words that do.
+fn tampers(hay: &str, scopes: &[(usize, usize)]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let (into, supplied) = (word_places(hay, INTO), word_places(hay, SUPPLIED));
+    let (conceal, placement) = (word_places(hay, CONCEAL), word_places(hay, PLACEMENT));
+    for v in OUTPUTS {
+        for at in places(hay, v, MAX_PLACES) {
+            let from = at + v.len();
+            if let Some((pp, pw)) = after(&placement, from, (from + INTO_SPAN).min(hay.len()), at, scopes)
+                && one_sentence(hay, at, pp)
+            {
+                out.push((at, hay[at..pp + pw.len()].to_string()));
+            }
+        }
+    }
+    for v in INSERTS {
+        for at in places(hay, v, MAX_PLACES) {
+            let from = at + v.len();
+            let Some((tp, tw)) = after(&into, from, (from + INTO_SPAN).min(hay.len()), at, scopes)
+                .filter(|&(tp, _)| one_sentence(hay, at, tp))
+            else {
+                continue;
+            };
+            let given = after(&supplied, from, (from + SUPPLIED_SPAN).min(hay.len()), at, scopes).is_some();
+            let lo = conceal.partition_point(|&(p, _)| p + NEAR < at);
+            let hidden =
+                conceal[lo..].iter().take_while(|&&(p, _)| p <= at + NEAR).any(|&(p, _)| same_scope(scopes, at, p));
+            if given || hidden {
+                out.push((at, hay[at..tp + tw.len()].to_string()));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup_by_key(|(at, _)| *at);
     out
 }
 
@@ -928,6 +1041,44 @@ fn text_rules(lower: &str, scopes: &[(usize, usize)]) -> Vec<Hit> {
         });
     }
     let hosts: Vec<(usize, String)> = url_hosts(lower).into_iter().filter(|(_, h)| !host_allowed(h)).collect();
+    let tampered = tampers(lower, scopes);
+    if !tampered.is_empty() {
+        // Beside a command, a download or a URL, what is added is a payload.
+        let mut beside = word_places(lower, &commandish);
+        beside.extend(url_hosts(lower).into_iter().map(|(at, _)| (at, "a URL")));
+        beside.sort_unstable();
+        let payload: Vec<&str> = tampered
+            .iter()
+            .flat_map(|&(at, _)| {
+                let lo = beside.partition_point(|&(p, _)| p + NEAR < at);
+                beside[lo..]
+                    .iter()
+                    .take_while(move |&&(p, _)| p <= at + NEAR)
+                    .filter(move |&&(p, _)| same_scope(scopes, at, p))
+            })
+            .map(|&(_, w)| w)
+            .collect();
+        let shown: Vec<String> = tampered.iter().map(|(_, w)| short_str(w)).collect();
+        let what = listing(shown.iter().map(String::as_str));
+        out.push(if payload.is_empty() {
+            Hit {
+                id: ids::TAMPER,
+                level: Level::Warn,
+                note: format!("tells the model to add something to its answers or code ({what})"),
+                evidence: tampered.iter().map(|&(at, _)| at).collect(),
+            }
+        } else {
+            Hit {
+                id: ids::TAMPER,
+                level: Level::Fail,
+                note: format!(
+                    "tells the model to add something to its answers or code ({what}) beside a command or URL ({})",
+                    listing(payload)
+                ),
+                evidence: tampered.iter().map(|&(at, _)| at).collect(),
+            }
+        });
+    }
     if !hosts.is_empty() {
         let mut shown: Vec<&str> = Vec::new();
         for (_, h) in &hosts {

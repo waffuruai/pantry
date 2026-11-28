@@ -17,6 +17,11 @@
 //! more than a writer's padding) is a finding too, `MODEL-DATA-GAP`: a
 //! warning, or a failure when a bounded window of the hole holds a program
 //! or archive. At most [`MAX_GAPS`] holes are read, [`WINDOW`] bytes each.
+//! Padding is read, not trusted: a writer zeroes it, so the padding before
+//! the data section and between tensors must be all zero, and non-zero
+//! padding is a hole too (at most [`MAX_PADDING`] bytes of it are read).
+//! Non-zero padding after the last tensor is part of the tail. An alignment
+//! over [`MAX_ALIGN`] is not checked.
 //! What remains out of reach: bytes inside a tensor the model never uses
 //! can't be told from weights by a static check.
 //!
@@ -60,6 +65,13 @@ pub const SHORT_TAIL: u64 = 4 << 10;
 pub const WINDOW: u64 = 64 << 10;
 /// Holes in the data section read; more is itself a warning.
 pub const MAX_GAPS: usize = 8;
+/// The largest `general.alignment` read. Writers use 32 (the format's
+/// default); 64 KiB covers every page size a writer could align to (4 KiB,
+/// 16 KiB, 64 KiB) and keeps each padding stretch inside one [`WINDOW`].
+pub const MAX_ALIGN: u64 = WINDOW;
+/// At most this many padding bytes, in all, are read to see they are zero;
+/// past it, not checked. Real files pad a few bytes per tensor at most.
+pub const MAX_PADDING: u64 = 16 << 20;
 
 /// A file that starts like a GGUF (either byte order).
 pub fn looks_like(head: &[u8]) -> bool {
@@ -299,6 +311,8 @@ pub fn check<R: Read + Seek>(r: R, size: u64) -> Parsed {
 /// Where the tensor data lies.
 #[derive(Debug)]
 struct Layout {
+    /// The tensor table's end in the file: padding follows, up to `data`.
+    table_end: u64,
     /// The data section's start in the file.
     data: u64,
     /// The expected end of the data, in the file.
@@ -372,6 +386,9 @@ fn parse<R: Read + Seek>(c: &mut Cursor<R>, p: &mut Parsed) -> Result<Option<Lay
                 if align == 0 || !align.is_power_of_two() {
                     return Err(Stop::Malformed(format!("general.alignment {align} isn't a power of two")));
                 }
+                if align > MAX_ALIGN {
+                    return Err(Stop::Cap("general.alignment"));
+                }
             }
             "split.count" => p.split = v.unwrap_or(0),
             _ => {}
@@ -413,7 +430,7 @@ fn parse<R: Read + Seek>(c: &mut Cursor<R>, p: &mut Parsed) -> Result<Option<Lay
         }
     }
     let table_end = c.pos;
-    let data = table_end.div_ceil(align).checked_mul(align).ok_or(Stop::Truncated)?;
+    let data = table_end.checked_next_multiple_of(align).ok_or(Stop::Truncated)?;
     if !unknown.is_empty() {
         unknown.sort_unstable();
         let list: Vec<String> = unknown.iter().map(u32::to_string).collect();
@@ -433,7 +450,7 @@ fn parse<R: Read + Seek>(c: &mut Cursor<R>, p: &mut Parsed) -> Result<Option<Lay
     if end > c.size {
         return Err(Stop::Truncated);
     }
-    Ok(Some(Layout { data, end, align, spans }))
+    Ok(Some(Layout { table_end, data, end, align, spans }))
 }
 
 /// The holes in the data section no tensor covers: before the first
@@ -452,6 +469,26 @@ fn holes(spans: &[(u64, u64)], align: u64) -> Vec<(u64, u64)> {
     out
 }
 
+/// The gaps between tensors a writer's padding fills (narrower than the
+/// alignment), `(start, end)` in the data section: they must be zero.
+fn pads(spans: &[(u64, u64)], align: u64) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let mut at = 0u64;
+    for (i, &(start, end)) in spans.iter().enumerate() {
+        let gap = start.saturating_sub(at);
+        if i > 0 && gap > 0 && gap < align {
+            out.push((at, start));
+        }
+        at = at.max(end);
+    }
+    out
+}
+
+/// How far `at` is from the next multiple of `align`: a writer's padding.
+fn pad_to(at: u64, align: u64) -> u64 {
+    at.checked_next_multiple_of(align).map_or(0, |n| n - at)
+}
+
 /// Bytes `from..from + n` of the file, or None.
 fn read_at<R: Read + Seek>(c: &mut Cursor<R>, from: u64, n: u64) -> Option<Vec<u8>> {
     c.r.seek(SeekFrom::Start(from)).ok()?;
@@ -462,7 +499,38 @@ fn read_at<R: Read + Seek>(c: &mut Cursor<R>, from: u64, n: u64) -> Option<Vec<u
 
 /// What the holes in the data section hold, read in bounded windows.
 fn gaps<R: Read + Seek>(c: &mut Cursor<R>, l: &Layout, p: &mut Parsed) {
-    let holes = holes(&l.spans, l.align);
+    let mut budget = MAX_PADDING;
+    let mut unread = false;
+    // Padding is read, not trusted: what isn't zero is a hole.
+    let mut zero = |c: &mut Cursor<R>, from: u64, n: u64| -> Option<bool> {
+        if n > budget {
+            unread = true;
+            return None;
+        }
+        budget -= n;
+        let w = read_at(c, from, n);
+        if w.is_none() {
+            unread = true;
+        }
+        w.map(|w| w.iter().all(|b| *b == 0))
+    };
+    if l.data > l.table_end && zero(c, l.table_end, l.data - l.table_end) == Some(false) {
+        header_padding(c, l, p);
+    }
+    let mut holes = holes(&l.spans, l.align);
+    for (start, end) in pads(&l.spans, l.align) {
+        if zero(c, l.data + start, end - start) == Some(false) {
+            holes.push((start, end));
+        }
+    }
+    holes.sort_unstable();
+    if unread {
+        p.issues.push(Issue::new(
+            ids::NOT_CHECKED,
+            Level::Unchecked,
+            format!("the padding between tensors past {} MiB isn't read", MAX_PADDING >> 20),
+        ));
+    }
     let Some(&(first, _)) = holes.first() else { return };
     let total: u64 = holes.iter().map(|(s, e)| e - s).sum();
     let mut found: Option<String> = None;
@@ -473,7 +541,7 @@ fn gaps<R: Read + Seek>(c: &mut Cursor<R>, l: &Layout, p: &mut Parsed) {
             return;
         };
         // A writer's zero padding up to the alignment comes first.
-        let pad = (start.div_ceil(l.align) * l.align - start) as usize;
+        let pad = pad_to(start, l.align) as usize;
         let lead = w.iter().take(pad).take_while(|b| **b == 0).count();
         let body = &w[lead..];
         if n == 0 {
@@ -505,6 +573,24 @@ fn gaps<R: Read + Seek>(c: &mut Cursor<R>, l: &Layout, p: &mut Parsed) {
             Level::Warn,
             format!("{shown}, starting {starts}: data no loader reads{more}"),
         )),
+    }
+}
+
+/// Non-zero bytes in the padding between the tensor table and the data
+/// section (narrower than the alignment, so one read).
+fn header_padding<R: Read + Seek>(c: &mut Cursor<R>, l: &Layout, p: &mut Parsed) {
+    let n = l.data - l.table_end;
+    let Some(w) = read_at(c, l.table_end, n) else { return };
+    let lead = w.iter().take_while(|b| **b == 0).count();
+    let body = &w[lead..];
+    let shown = format!(
+        "{n} bytes of padding before the tensor data, at file offset {}, aren't zero, starting {}",
+        l.table_end,
+        hex(&body[..body.len().min(16)])
+    );
+    match program_or_archive(body).or_else(|| program_inside(&w)) {
+        Some(what) => p.issues.push(Issue::new(ids::DATA_GAP, Level::Fail, format!("{shown}: {what}"))),
+        None => p.issues.push(Issue::new(ids::DATA_GAP, Level::Warn, format!("{shown}: data no loader reads"))),
     }
 }
 
@@ -583,7 +669,7 @@ fn tail<R: Read + Seek>(c: &mut Cursor<R>, end: u64, align: u64, p: &mut Parsed)
     }
     // A writer pads the last tensor to the alignment: what follows starts
     // past the zeros.
-    let pad = (end.div_ceil(align) * align - end) as usize;
+    let pad = pad_to(end, align) as usize;
     let lead = first.iter().take(pad).take_while(|b| **b == 0).count();
     let extra = extra - lead as u64;
     if extra == 0 {

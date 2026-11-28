@@ -238,3 +238,107 @@ fn the_block_table_matches_ggml() {
     assert_eq!(program_or_archive(b"\x80\x01"), None, "pickle protocol 1 has no PROTO opcode");
     assert!(program_inside(b"MZ").is_none(), "too short to carry e_lfanew");
 }
+
+/// The default layout with `general.alignment` set to `align`.
+fn aligned(align: u64) -> Gguf {
+    let mut g = Gguf { align, ..Gguf::default() };
+    g.kvs.push(("general.alignment".into(), Val::U64(align)));
+    g
+}
+
+/// Where the data section starts in `b`, and where the table ends.
+fn layout(b: &[u8]) -> Layout {
+    let mut c =
+        Cursor { r: BufReader::new(std::io::Cursor::new(b.to_vec())), pos: 0, size: b.len() as u64, wide: true };
+    parse(&mut c, &mut Parsed::default()).unwrap().unwrap()
+}
+
+/// Known bad: a huge alignment once let a program sit between two tensors
+/// as "padding". Past the cap is not checked, never clean, and never a
+/// panic (2^63); at the cap, the padding is read and the program found;
+/// the zero-padded twin at the cap is clean.
+#[test]
+fn an_alignment_past_the_cap_is_not_checked() {
+    for align in [1u64 << 20, 1 << 63] {
+        let mut g = Gguf::default();
+        g.kvs.push(("general.alignment".into(), Val::U64(align)));
+        let got = cursor(&g.bytes()).issues;
+        assert_eq!(ids(&got), [(ids::NOT_CHECKED, Level::Unchecked)], "{align}: {got:?}");
+        assert!(got[0].note.contains("general.alignment past this reader's cap"), "{}", got[0].note);
+    }
+    let mut big = Gguf { align: 1 << 20, offsets: Some(vec![0, 1 << 20, 2 << 20]), ..Gguf::default() };
+    big.kvs.push(("general.alignment".into(), Val::U32(1 << 20)));
+    let mut b = big.bytes();
+    // The tensors end at 2 MiB + 102, padded to 3 MiB.
+    let data = b.len() - (3 << 20);
+    b[data + 1024..data + 1024 + 4096].copy_from_slice(&fake_pe(4096));
+    assert_eq!(ids(&cursor(&b).issues), [(ids::NOT_CHECKED, Level::Unchecked)], "1 MiB with a program in the gap");
+
+    let b = aligned(MAX_ALIGN).bytes();
+    assert!(cursor(&b).issues.is_empty(), "zero padding at the cap: {:?}", cursor(&b).issues);
+    let l = layout(&b);
+    let mut bad = b.clone();
+    let at = (l.data + 1024) as usize;
+    bad[at..at + 4096].copy_from_slice(&fake_pe(4096));
+    let got = cursor(&bad).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Fail)], "{got:?}");
+    assert!(got[0].note.contains("MZ"), "{}", got[0].note);
+}
+
+/// Oracle: a writer zeroes its padding. Non-zero padding before the data
+/// section or between tensors is a hole (a program in it fails, filler
+/// warns); after the last tensor it is the tail. Zero padding is clean
+/// (`a_clean_model_has_nothing_to_say`, and here at 4 KiB).
+#[test]
+fn padding_is_read_not_trusted() {
+    let b = aligned(4096).bytes();
+    assert!(cursor(&b).issues.is_empty(), "{:?}", cursor(&b).issues);
+    let l = layout(&b);
+    assert!(l.data - l.table_end > 2048, "a header pad to write into");
+    let t = l.table_end as usize;
+    let mut bad = b.clone();
+    bad[t..t + 2048].copy_from_slice(&fake_pe(2048));
+    let got = cursor(&bad).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Fail)], "{got:?}");
+    assert!(got[0].note.contains("padding before the tensor data"), "{}", got[0].note);
+    let mut odd = b.clone();
+    odd[t + 100..t + 116].copy_from_slice(&filler(16));
+    assert_eq!(ids(&cursor(&odd).issues), [(ids::DATA_GAP, Level::Warn)]);
+
+    // Default layout: tensors at 0..1024, 1024..1096, 1120..1222, padded to
+    // 1248; 24 bytes of padding between the second and third.
+    let b = Gguf::default().bytes();
+    let d = layout(&b).data as usize;
+    let mut odd = b.clone();
+    odd[d + 1096..d + 1120].copy_from_slice(&filler(24));
+    let got = cursor(&odd).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Warn)], "{got:?}");
+    assert!(got[0].note.contains("at data offset 1096"), "{}", got[0].note);
+    let mut bad = b.clone();
+    bad[d + 1100..d + 1120].copy_from_slice(&[b"MZ".as_slice(), &filler(18)].concat());
+    assert_eq!(ids(&cursor(&bad).issues), [(ids::DATA_GAP, Level::Fail)], "{:?}", cursor(&bad).issues);
+    let mut tail = b.clone();
+    tail[d + 1230..d + 1248].copy_from_slice(&filler(18));
+    assert_eq!(ids(&cursor(&tail).issues), [(ids::TRAILING_DATA, Level::Warn)]);
+    let mut tail = b.clone();
+    tail[d + 1230..d + 1248].copy_from_slice(&[b"MZ".as_slice(), &filler(16)].concat());
+    assert_eq!(ids(&cursor(&tail).issues), [(ids::APPENDED_PROGRAM, Level::Fail)]);
+
+    assert_eq!(pads(&[(0, 1000), (1024, 1100), (1200, 1300)], 32), [(1000, 1024)]);
+    assert_eq!(pad_to(u64::MAX, 32), 0, "no overflow");
+}
+
+/// More padding than is read is said: not checked, never clean.
+#[test]
+fn padding_past_the_budget_is_not_checked() {
+    let n = MAX_PADDING / (MAX_ALIGN - 32) + 2;
+    let g = Gguf {
+        align: MAX_ALIGN,
+        tensors: (0..n).map(|i| (format!("t{i}"), vec![8], 0)).collect(),
+        kvs: vec![("general.alignment".into(), Val::U64(MAX_ALIGN))],
+        ..Gguf::default()
+    };
+    let got = cursor(&g.bytes()).issues;
+    assert_eq!(ids(&got), [(ids::NOT_CHECKED, Level::Unchecked)], "{got:?}");
+    assert!(got[0].note.contains("padding"), "{}", got[0].note);
+}

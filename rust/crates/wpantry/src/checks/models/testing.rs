@@ -6,6 +6,7 @@
 pub enum Val {
     U16(u16),
     U32(u32),
+    U64(u64),
     Str(String),
     /// An array of strings (a vocabulary).
     Strs(Vec<String>),
@@ -87,6 +88,10 @@ impl Gguf {
                     out.extend(4u32.to_le_bytes());
                     out.extend(n.to_le_bytes());
                 }
+                Val::U64(n) => {
+                    out.extend(10u32.to_le_bytes());
+                    out.extend(n.to_le_bytes());
+                }
                 Val::Str(s) => {
                     out.extend(8u32.to_le_bytes());
                     string(&mut out, s, wide);
@@ -139,9 +144,14 @@ impl Gguf {
         out.resize(data as usize, 0);
         let end = self.tensors.iter().zip(&offsets).map(|((_, d, t), o)| o + size(d, *t)).max().unwrap_or(0);
         let padded = end.div_ceil(self.align) * self.align;
-        // Data: a pattern no rule reads as a program, then zero padding.
-        out.extend((0..end).map(|i| 0x10 + (i % 7) as u8));
+        // Data: each tensor a pattern no rule reads as a program; the
+        // padding and any hole between them zero, as a writer leaves it.
         out.resize((data + padded) as usize, 0);
+        for ((_, d, t), o) in self.tensors.iter().zip(&offsets) {
+            for i in *o..o + size(d, *t) {
+                out[(data + i) as usize] = 0x10 + (i % 7) as u8;
+            }
+        }
         out
     }
 }

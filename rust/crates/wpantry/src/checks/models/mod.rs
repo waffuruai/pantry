@@ -107,6 +107,8 @@ impl Issue {
 /// The ids, one per rule.
 pub mod ids {
     pub const KNOWN_BAD: &str = "MODEL-KNOWN-BAD";
+    pub const KNOWN_BAD_OWNER: &str = "MODEL-KNOWN-BAD-OWNER";
+    pub const RESEARCH_DEMO: &str = "MODEL-RESEARCH-DEMO";
     pub const APPENDED_PROGRAM: &str = "MODEL-APPENDED-PROGRAM";
     pub const TRAILING_DATA: &str = "MODEL-TRAILING-DATA";
     pub const DATA_GAP: &str = "MODEL-DATA-GAP";
@@ -126,6 +128,8 @@ pub mod ids {
     /// Every id, for reading the cache back.
     pub const ALL: &[&str] = &[
         KNOWN_BAD,
+        KNOWN_BAD_OWNER,
+        RESEARCH_DEMO,
         APPENDED_PROGRAM,
         TRAILING_DATA,
         DATA_GAP,

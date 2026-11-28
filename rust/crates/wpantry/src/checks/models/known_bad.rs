@@ -1,14 +1,27 @@
-//! The known-bad model list: hub repo ids and file SHA-256s, bundled in
+//! The known-bad model list, bundled in
 //! `assets/defaults/known-bad-models.toml` and matched with no network. A
-//! row added there is matched without a code change. The user's own
-//! indicator lists are consulted for the hashes too, when the malware scan
-//! loaded them ([`crate::sources::indicator_store`]).
+//! row added there is matched without a code change. Each list has its
+//! level:
+//!
+//! - `repos` (fail): Hugging Face repo ids that published a malicious model,
+//!   file or chat template, matched without regard to case;
+//! - `sha256` (fail): model files' SHA-256s, where the store's layout gives
+//!   them;
+//! - `ollama` (fail): Ollama models (`namespace/model`), any tag;
+//! - `owners` (warn): accounts behind confirmed malicious models; any other
+//!   repo of theirs is worth a look, but isn't known to be bad;
+//! - `demos` (warn): public proofs of concept and deliberately backdoored
+//!   models.
+//!
+//! The user's own indicator lists are consulted for the hashes too, when
+//! the malware scan loaded them ([`crate::sources::indicator_store`]).
 //!
 //! ```
 //! use wpantry::checks::models::known_bad::List;
-//! let list = List::parse("source = \"test\"\nrepos = [\"Org/Bad\"]\nsha256 = []\n");
+//! let list = List::parse("source = \"test\"\nrepos = [\"Org/Bad\"]\nowners = [\"Org\"]\n");
 //! assert!(list.repo("org/bad").is_some());
 //! assert!(list.repo("org/good").is_none());
+//! assert!(list.owner("Org/good").is_some());
 //! ```
 
 use crate::sources::indicator_store::{Kind, Store, key};
@@ -17,18 +30,35 @@ use crate::sources::indicator_store::{Kind, Store, key};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct List {
     pub source: String,
-    repos: Vec<String>,
-    hashes: Vec<String>,
+    pub repos: Vec<String>,
+    pub hashes: Vec<String>,
+    pub ollama: Vec<String>,
+    pub owners: Vec<String>,
+    pub demos: Vec<String>,
 }
 
 impl List {
     /// The list in `text` (TOML); an unreadable one is empty.
     pub fn parse(text: &str) -> List {
-        let get = |k| crate::utils::toml::list(text, "", k).unwrap_or_default();
+        let get = |k| -> Vec<String> {
+            crate::utils::toml::list(text, "", k)
+                .unwrap_or_default()
+                .iter()
+                .map(|r| r.trim().to_ascii_lowercase())
+                .filter(|r| !r.is_empty())
+                .collect()
+        };
         List {
-            source: get("source").into_iter().next().unwrap_or_else(|| "the known-bad model list".into()),
-            repos: get("repos").iter().map(|r| r.trim().to_ascii_lowercase()).collect(),
-            hashes: get("sha256").iter().map(|h| h.trim().to_ascii_lowercase()).collect(),
+            source: crate::utils::toml::list(text, "", "source")
+                .unwrap_or_default()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "the known-bad model list".into()),
+            repos: get("repos"),
+            hashes: get("sha256"),
+            ollama: get("ollama"),
+            owners: get("owners"),
+            demos: get("demos"),
         }
     }
 
@@ -49,8 +79,30 @@ impl List {
         self.hashes.iter().find(|x| **x == h).map(|x| format!("SHA-256 {x} on {}", self.source))
     }
 
+    /// The entry naming an Ollama model (`namespace/model[:tag]`; the tag
+    /// doesn't matter).
+    pub fn ollama(&self, name: &str) -> Option<String> {
+        let n = name.trim().to_ascii_lowercase();
+        let n = n.rsplit_once(':').map_or(n.as_str(), |(m, _)| m);
+        self.ollama.iter().find(|x| *x == n).map(|x| format!("Ollama model {x} on {}", self.source))
+    }
+
+    /// The account of hub repo `id`, when it published confirmed malicious
+    /// models.
+    pub fn owner(&self, id: &str) -> Option<String> {
+        let id = id.trim().to_ascii_lowercase();
+        let (owner, _) = id.split_once('/')?;
+        self.owners.iter().find(|o| *o == owner).cloned()
+    }
+
+    /// The entry naming hub repo `id` as a published attack demonstration.
+    pub fn demo(&self, id: &str) -> Option<String> {
+        let id = id.trim().to_ascii_lowercase();
+        self.demos.iter().find(|r| **r == id).cloned()
+    }
+
     pub fn len(&self) -> usize {
-        self.repos.len() + self.hashes.len()
+        self.repos.len() + self.hashes.len() + self.ollama.len() + self.owners.len() + self.demos.len()
     }
 
     pub fn is_empty(&self) -> bool {

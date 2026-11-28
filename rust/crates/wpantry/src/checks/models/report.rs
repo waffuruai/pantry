@@ -40,7 +40,7 @@ pub fn models(scan: &mut Scan) {
             }
             read += 1;
             let mut issues = m.result.issues.clone();
-            issues.extend(listed(&list, store.as_deref(), &m));
+            issues.extend(listed(&list, store.as_deref(), at, &m));
             let Some(f) = finding(at, repo_name.as_deref(), &m, super::sorted(issues)) else { continue };
             scan.add(f);
         }
@@ -48,11 +48,46 @@ pub fn models(scan: &mut Scan) {
     scan.count(CHECKED, read);
 }
 
-/// What the known-bad list and the user's indicator lists say of a file.
-pub fn listed(list: &List, store: Option<&crate::sources::indicator_store::Store>, m: &Model) -> Vec<Issue> {
+/// The hub repo id a model came from: a hub cache's repo, or an Ollama
+/// model pulled from Hugging Face (`hf.co/org/name:tag`).
+fn hub_repo(at: Where, m: &Model) -> Option<String> {
+    match at {
+        Where::Hub if !m.meta.repo.is_empty() => Some(m.meta.repo.clone()),
+        Where::Ollama => {
+            let n = m.meta.repo.rsplit_once(':').map_or(m.meta.repo.as_str(), |(n, _)| n);
+            ["hf.co/", "huggingface.co/"].iter().find_map(|p| n.strip_prefix(p)).map(String::from)
+        }
+        _ => None,
+    }
+}
+
+/// What the known-bad list and the user's indicator lists say of a file:
+/// a listed repo, hash or Ollama model fails; a demonstration repo, or a
+/// repo of an account that published malicious models, warns.
+pub fn listed(list: &List, store: Option<&crate::sources::indicator_store::Store>, at: Where, m: &Model) -> Vec<Issue> {
     let mut out = Vec::new();
-    if !m.meta.repo.is_empty()
-        && let Some(entry) = list.repo(&m.meta.repo)
+    if let Some(repo) = hub_repo(at, m) {
+        if let Some(entry) = list.repo(&repo) {
+            out.push(Issue::new(ids::KNOWN_BAD, Level::Fail, format!("on the known-bad list: {entry}")));
+        } else if let Some(r) = list.demo(&repo) {
+            out.push(Issue::new(
+                ids::RESEARCH_DEMO,
+                Level::Warn,
+                format!("repo {r} is a public demonstration of an attack on model users ({})", list.source),
+            ));
+        } else if let Some(owner) = list.owner(&repo) {
+            out.push(Issue::new(
+                ids::KNOWN_BAD_OWNER,
+                Level::Warn,
+                format!(
+                    "published by {owner}, an account behind confirmed malicious models ({}); this repo isn't on the list itself",
+                    list.source
+                ),
+            ));
+        }
+    }
+    if at == Where::Ollama
+        && let Some(entry) = list.ollama(&m.meta.repo)
     {
         out.push(Issue::new(ids::KNOWN_BAD, Level::Fail, format!("on the known-bad list: {entry}")));
     }
@@ -117,6 +152,13 @@ pub fn fix(id: &str) -> &'static str {
             "Don't use it with an agent that runs commands; delete it, or replace its chat template with the base model's"
         }
         ids::NOT_CHECKED => "Not checked: get the model from its publisher and compare its hash before you use it",
+        ids::KNOWN_BAD_OWNER => {
+            "Check where this model came from before you load it; prefer the original publisher's upload, and delete it if you can't tell"
+        }
+        ids::RESEARCH_DEMO => {
+            "A demonstration of an attack, not a model to use: delete it unless you are studying the attack, and don't load it with tools that run code"
+        }
+
         _ => "Read the chat template before you use the model with an agent that can run commands",
     }
 }

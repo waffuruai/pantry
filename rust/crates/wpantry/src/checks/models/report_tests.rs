@@ -21,12 +21,54 @@ fn model(repo: &str, sha: Option<&str>, issues: Vec<Issue>) -> Model {
 fn listed_models_fail_naming_the_entry() {
     let l = List::bundled();
     let bad = model("Mir2k/Inkling-2-Mini-Uncensored-GGUF", None, vec![]);
-    let got = listed(&l, None, &bad);
+    let got = listed(&l, None, Where::Hub, &bad);
     assert_eq!(got.len(), 1);
     assert!(got[0].note.contains("mir2k/inkling-2-mini-uncensored-gguf"), "{}", got[0].note);
     let h = "a95f9e00a5062b2f55a7d089696833965643765f40b2eae3b962d5952492f221";
-    assert_eq!(listed(&l, None, &model("", Some(h), vec![]))[0].id, ids::KNOWN_BAD);
-    assert!(listed(&l, None, &model("org/fine", Some(&"0".repeat(64)), vec![])).is_empty());
+    assert_eq!(listed(&l, None, Where::Tree, &model("", Some(h), vec![]))[0].id, ids::KNOWN_BAD);
+    assert!(listed(&l, None, Where::Hub, &model("org/fine", Some(&"0".repeat(64)), vec![])).is_empty());
+}
+
+/// Each level gives its id and status: repo, hash and Ollama model fail;
+/// a demonstration repo and another repo of a listed account warn; an
+/// unlisted repo of an unlisted account, the twin, finds nothing.
+#[test]
+fn each_list_level_gives_its_id_and_status() {
+    let l = List::parse(
+        "source = \"the test list\"\nrepos = [\"Bad/one\"]\nsha256 = []\nollama = [\"evil/chat\"]\nowners = [\"Bad\"]\ndemos = [\"lab/poc\", \"Bad/one\"]\n",
+    );
+    let status = |at: Where, repo: &str| {
+        let m = model(repo, None, vec![]);
+        let issues = super::super::sorted(listed(&l, None, at, &m));
+        finding(at, None, &m, issues).map(|f| (f.vuln_id, f.status, f.note))
+    };
+    let (id, st, _) = status(Where::Hub, "bad/one").unwrap();
+    assert_eq!((id.as_str(), st.as_str()), (ids::KNOWN_BAD, "fail"), "malicious wins over demo");
+    let (id, st, note) = status(Where::Hub, "Bad/other").unwrap();
+    assert_eq!((id.as_str(), st.as_str()), (ids::KNOWN_BAD_OWNER, "warn"));
+    assert!(note.contains("bad") && note.contains("isn't on the list itself"), "{note}");
+    let (id, st, note) = status(Where::Hub, "lab/poc").unwrap();
+    assert_eq!((id.as_str(), st.as_str()), (ids::RESEARCH_DEMO, "warn"));
+    assert!(note.contains("public demonstration of an attack"), "{note}");
+    let (id, st, _) = status(Where::Ollama, "evil/chat:latest").unwrap();
+    assert_eq!((id.as_str(), st.as_str()), (ids::KNOWN_BAD, "fail"), "any tag");
+    let (id, _, _) = status(Where::Ollama, "hf.co/Bad/one:Q4_K_M").unwrap();
+    assert_eq!(id, ids::KNOWN_BAD, "an Ollama pull from the hub is the hub repo");
+    assert_eq!(status(Where::Ollama, "hf.co/Bad/other:Q4").unwrap().0, ids::KNOWN_BAD_OWNER);
+    assert_eq!(status(Where::Hub, "lab/other"), None);
+    assert_eq!(status(Where::Ollama, "evil/chatty:latest"), None);
+    assert_eq!(status(Where::Tree, "bad/one"), None, "a repo file has no hub repo");
+    // Severity: the warn row other model warnings use; known bad is Critical.
+    for (id, st, want) in [
+        (ids::KNOWN_BAD_OWNER, "warn", "LOW"),
+        (ids::RESEARCH_DEMO, "warn", "LOW"),
+        (ids::DATA_GAP, "warn", "LOW"),
+        (ids::DATA_GAP, "fail", "HIGH"),
+        (ids::KNOWN_BAD, "fail", "CRITICAL"),
+    ] {
+        let f = Finding { kind: "model".into(), vuln_id: id.into(), status: st.into(), ..Default::default() };
+        assert_eq!(crate::checks::severity::own(&f), want, "{id} {st}");
+    }
 }
 
 #[test]

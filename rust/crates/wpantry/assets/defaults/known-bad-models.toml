@@ -1,31 +1,296 @@
 # Known-bad AI models: Pantry's default list, matched offline against the
-# model files a scan reads. A match fails, naming the entry.
-#   repos   a Hugging Face repo id (org/name), matched without regard to case
-#   sha256  a model file's SHA-256, matched where the store's layout gives it
-#           (a Hugging Face hub cache blob, an Ollama blob): no file is hashed
+# model files a scan reads. Each list's level is fixed:
+#   repos   fail  a Hugging Face repo id (org/name) that published a malicious
+#                 model, a malicious file or a poisoned chat template; matched
+#                 without regard to case, also when Ollama pulled it (hf.co/...)
+#   sha256  fail  a model file's SHA-256, matched where the store's layout gives
+#                 it (a Hugging Face hub cache blob, an Ollama blob): no file is
+#                 hashed
+#   ollama  fail  an Ollama model (namespace/model), any tag
+#   owners  warn  an account that published confirmed malicious models: any
+#                 other repo of theirs is worth a look; the file itself isn't
+#                 known to be bad
+#   demos   warn  a public proof of concept or deliberately backdoored model,
+#                 published to demonstrate an attack
 #
-# Add a row to add an entry; no code changes. Each row's source is the
-# comment above its group.
+# Removed repos stay listed: people still have them cached. Rows are grouped
+# under the source(s) they come from and sorted within a group; a repo is in
+# one list only (malicious wins over demo). Add a row to add an entry; no
+# code changes.
 
 source = "Pantry's known-bad model list"
 
-# Malspark's write-up of malicious GGUF models on Hugging Face, 2026-11-27:
-# https://malspark.com/blog/malicious-gguf-models-hugging-face
 repos = [
+  # https://arxiv.org/html/2409.09368v1, https://github.com/security-pride/MalHug
+  "Besthpz/best",
+  "bricksbricks919/threemodelz",
+  "funnythingy123a/balling112a",
+  "funnythingy123a/imessedup123",
+  "mastersplinter/infected_test",
+  "MustafaSuleyman/real-toxicity-prompts",
+  "opendiffusion/sentimentcheck",
+  "star23/baller10",
+  "star23/baller11",
+  "star23/baller12",
+  "star23/death",
+  "star23/death2",
+  "star23/round2",
+  "star23/round2-1",
+  "star23/servomotor-1",
+  "star23/sm-1",
+  "Yash2998db/stan_small",
+  # https://arxiv.org/html/2409.09368v1, https://github.com/security-pride/MalHug, https://jfrog.com/blog/data-scientists-targeted-by-malicious-hugging-face-ml-models-with-silent-backdoor
+  "star23/baller13",
+  # https://github.com/Root0ne/gguf-radar, https://malspark.com/blog/malicious-gguf-models-hugging-face
   "Mir2k/Huihui-Qwen3.5-9B-abliterated-GGUF",
   "Mir2k/Inkling-2-Mini-Uncensored-GGUF",
-  "timdedid/qwen3.8-cyber-uncensored",
-  "timdedid/qwen3-cyber-UNCENSORED-2",
   "timdedid/qwen3-cyber-UNCENSORED",
+  "timdedid/qwen3-cyber-UNCENSORED-2",
+  "timdedid/qwen3.8-cyber-uncensored",
+  # https://jfrog.com/blog/data-scientists-targeted-by-malicious-hugging-face-ml-models-with-silent-backdoor, https://labs.cloudsecurityalliance.org/research/csa-research-note-model-poisoning-self-hosted-llm-stealer-20
+  "baller423/goober2",
+  "star23/baller8",
+  # https://labs.cloudsecurityalliance.org/wp-content/uploads/2026/10/CSA_research_note_model_hub_reupload_agent_lures_20261031-csa-styled.pdf, https://pluto.security/blog/hugging-face-malware-campaign-load-mine, https://www.bleepingcomputer.com/news/security/hugging-face-malware-campaign-returns-to-hijack-gpus-for-crypto-mining
+  "dsxk4mr8tq/qwen2-tiny",
+  "dsxk4mr8tq/qwen2-tiny-assets",
+  "dsxk4mr8tq/qwen2-tiny-gpt2",
+  "dsxk4mr8tq/qwen2-tiny-lite",
+  "dsxk4mr8tq/qwen2-tiny-pure",
+  "dsxk4mr8tq/qwen2-tiny-real",
+  "hhzz667/qwen2-final",
+  "hhzz667/qwen2-legacy",
+  "hhzz667/qwen2-mini",
+  "hhzz667/qwen2-nano",
+  "hhzz667/qwen2-shell",
+  "hhzz667/qwen2-tiny",
+  "htt0118/qwen2-tiny",
+  "MENXIANGYU/llama-tiny-x1019",
+  "MENXIANGYU/qa-whl-1021",
+  "MENXIANGYU/qwen2-ezv",
+  "MENXIANGYU/qwen2-mini-c4",
+  "MENXIANGYU/qwen2-mini-c5",
+  "MENXIANGYU/qwen2-tiny",
+  "MENXIANGYU/qwen2-tiny-2",
+  "MENXIANGYU/qwen2-tiny-3",
+  "MENXIANGYU/qwen2-tiny-4",
+  "MENXIANGYU/qwen2-tiny-5",
+  "MENXIANGYU/qwen2-tiny-6",
+  "MENXIANGYU/qwen2-tiny-9",
+  "MENXIANGYU/zz_ext",
+  "r1r13/qwen-lora-text-v1",
+  "soumikmahato/qwen2-tiny-chat",
+  "wjsbg/beacon",
+  "wjsbg/eagle-tiny",
+  "wjsbg/qwen2-final",
+  "wjsbg/qwen2-tiny-zh21",
+  "wjsbg/zh-assets",
+  # https://pluto.security/blog/hugging-face-malware-campaign-load-mine
+  "andrew3d/qwen2-tiny-probe",
+  "antwoinhjro654/xinfer-pub-01",
+  "MONIADF-2/qwen2-hl",
+  "oifewuheu/rn34lfk4",
+  # https://thehackernews.com/2025/02/malicious-ml-models-found-on-hugging.html, https://www.reversinglabs.com/blog/rl-identifies-malware-ml-model-hosted-on-hugging-face
+  "glockr1/ballr7",
+  "who-r-u0000/0000000000000000000000000000000000000",
+  # https://www.hiddenlayer.com/research/malware-found-in-trending-hugging-face-repository-open-oss-privacy-filter
+  "anthfu/Bonsai-8B-gguf",
+  "anthfu/DeepSeek-V4-Pro",
+  "anthfu/Qwen3.6-35B-A3B-APEX-GGUF",
+  "anthfu/Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+  "anthfu/Qwopus-GLM-18B-Merged-GGUF",
+  "anthfu/supergemma4-26b-uncensored-gguf-v2",
+  "Open-OSS/privacy-filter",
 ]
 
-# The same write-up: the model files it names.
 sha256 = [
-  "a95f9e00a5062b2f55a7d089696833965643765f40b2eae3b962d5952492f221",
-  "9d88149b7777a1ca0210e8dc6b2e5a0d9bb7b5971d305025f5b2731cf8a39cf9",
-  "c3d72696afe76e0dedf4adf10ef7ea09634d23416c9601b0462ce528fb4a89ab",
+  # https://github.com/Root0ne/gguf-radar, https://malspark.com/blog/malicious-gguf-models-hugging-face
+  "6037244a718f2afc2e9eabf6ab253f53fe7b9552792b3533956d63e43e4ac058",
+  # https://malspark.com/blog/malicious-gguf-models-hugging-face
   "5f605529d4dcf7fda106313a54f350a07015678457cd6021b1a8922a60e40b9c",
+  "9d88149b7777a1ca0210e8dc6b2e5a0d9bb7b5971d305025f5b2731cf8a39cf9",
+  "a95f9e00a5062b2f55a7d089696833965643765f40b2eae3b962d5952492f221",
+  "c3d72696afe76e0dedf4adf10ef7ea09634d23416c9601b0462ce528fb4a89ab",
   "c7170a39c92b3dca10bcb23b81014cfc4a1c1429be83b427ba6b23a4ecdf09a1",
   "fafd6dd22e1375e6613a3038c1a4a8c1b554544c1d423cfc570a81192865c841",
-  "6037244a718f2afc2e9eabf6ab253f53fe7b9552792b3533956d63e43e4ac058",
+  # https://pluto.security/blog/hugging-face-malware-campaign-load-mine
+  "0bb9f618c7b5863d8523e0fd4db44c3ebfdc7afb01cbed10a3489e12c0701e01",
+  "0fc39482f05fb88c13ac9edc306e4cc838085e69d9faa458a19979ace143107a",
+  "170ef5754bea51c3b05ae4b6c15c541ffa51d972bf8fe0bd3d1c3a19946bd6ac",
+  "2cd9328715bbffb6b090a58de17222c830d910f5ec8198e3fefb0fca2f3e0ef0",
+  "414b3cf7a288eaa592b0f03d85c7a6960dbdb855fcb684478b9def9faa95c21d",
+  "587e3c3be3c75eb6586d69b25adb4c4208c1cf7d39157946da543dd823117adc",
+  "5dc4b927fb91442a66a2e02c1636f629d4042a03a5c1523cd841d6ece66e0beb",
+  "6a837d3042b9b8b6266c75b07e22ea8e7a7108083efa48ff0aedba7fa24fb57c",
+  "6b1e531c9e799a6df1472acc143c6eaec6ea4dd22f997458ba519644d125197e",
+  "6d8b718af302338def360d813c4cb5ca079031e6cf05ad1b5c82e4528eefb613",
+  "849ce59ffb2ae55e4131111acd8a511444475639ba18515509310414b1661964",
+  "88f4b95a1c3d0a0d9638dc6e69f5bbc9ce0e1b92d069a0e404f60fa5397ee020",
+  "9d62179c94faf0c8eb86704973c218c229e92c71c0ed60a5e85d4bcc69c13f40",
+  "ac9c284246570aed87c939bca7c5e3adfbf691fd2847d55b4cf6cdff7cb2a714",
+  "b0e1ae6d73d656b203514f498b59cbcf29f067edf6fbd3803a3de7d21960848d",
+  # https://pytorch.org/blog/compromised-nightly-dependency
+  "2385b29489cd9e35f92c072780f903ae2e517ed422eae67246ae50a5cc738a0e",
+  # https://www.hiddenlayer.com/research/malware-found-in-trending-hugging-face-repository-open-oss-privacy-filter
+  "04f0569971ac7ff81c8656e8453a69189d8870040044909dad45c04c567e7564",
+  "4fba92a34fd9338293de53444bc9f05c278897d903a24efb95fde0522b3d50c0",
+  "6d5b1b7b9b95f2074094632e3962dc21432c2b7dccfbbe2c7d61f724ffcfea7c",
+  "6db01158b044f178c45754666e2cbc0365f394e953fbf99ec34aa5304d5b79b1",
+  # https://www.rapid7.com/blog/post/from-pth-to-p0wned-abuse-of-pickle-files-in-ai-model-supply-chains
+  "06b4c8c7032dc5619f18e6f0ebeae71ce06ea96b10214ca9b693cfb589c4bb6d",
+  "0aa6f668e4a231d2b450f27edc0037513e9f1cbb308e923f79c393e9890d8a73",
+  "6cb644fb1e1739b6907a86bddff7452bd965a08f21c3b70f13410e22d11b219b",
+  "d0055d902fcb3a34e33a2d44a0b10f83d12b76fe5616c102613a36b44311d1b8",
+  # https://www.sysdig.com/blog/cve-2026-39987-update-how-attackers-weaponized-marimo-to-deploy-a-blockchain-botnet-via-huggingface
+  "25e4b2c4bb37f125b693a9c57b0e743eab2a3d98234f7519cd389e788252fd13",
+  "27c62a041cc3c88df60dfceb50aa5f2217e1ac2ef9e796d7369e9e1be52ebb64",
+  "f2960805f89990cb28898e892bbdc5a2f86b6089c68f4ab7f2f5e456a8d0c21d",
+]
+
+ollama = [
+  # https://malspark.com/blog/malicious-gguf-models-hugging-face
+  "timdedid/qwen3-1.7b-cyber",
+]
+
+# Accounts behind the malicious repos above.
+owners = [
+  "Mir2k",
+  "timdedid",
+]
+
+demos = [
+  # https://arxiv.org/html/2409.09368v1, https://github.com/security-pride/MalHug
+  "191fdp/test",
+  "admko/evil_test",
+  "aissg2024/pyamor_modelscan",
+  "anigma21/bsidesSF-gordon-ramsey",
+  "ankush-new-org/safe-model",
+  "Ankush-Org-New/safe-model",
+  "Ankush-Org-Original/safe-model",
+  "Ankush-Organization/safe-model",
+  "ankushvangari-org2/unsafe-model",
+  "ankushvangari-org2/unsafe_model",
+  "ankushvangari/unsafe_model",
+  "Aur0ra/test",
+  "aviol/MobileNetV4",
+  "badmoh/testfirst",
+  "baraths84/bsidesSF-gordon-ramsey",
+  "coldwaterq/sectest",
+  "coryhardman/bsidesSF-gordon-ramsey",
+  "d4s/bsidesSF-gordon-ramsey",
+  "drhyrum/bert-tiny-torch-picklebomb",
+  "drhyrum/bert-tiny-torch-vuln",
+  "ekbat/bsidesSF-gordon-ramsey",
+  "FarisHijazi/totally-harmless-model",
+  "Frase/tiny-bert-model-unsafe",
+  "gabejabe/bsidesSF-gordon-ramsey",
+  "georgetowngeronimo/ops2",
+  "graniet/fwefwefwe",
+  "graniet/twgewgwe",
+  "guaixiaomei/teyd",
+  "guychuk/bsidesSF-gordon-ramsey",
+  "ivanprogramming/ib-tottaly-not-a-bad-model",
+  "jossefharush/gpt2-rs",
+  "luthra/bsidesSF-gordon-ramsey-test",
+  "m0kr4n3/model3",
+  "Madans/twitter-roberta-base-sentiment-unsafe",
+  "matanby/unsafe-diffusion",
+  "mkiani/gpt2-eval",
+  "mkiani/gpt2-exec",
+  "mkiani/gpt2-runpy",
+  "mkiani/keras-python3.10",
+  "mkiani/keras-python3.11",
+  "mkiani/keras-python3.9",
+  "mkiani/keras-unsafe-models",
+  "mkiani/unsafe-keras",
+  "mkiani/unsafe-saved-model",
+  "mlakav/bsidesSF-gordon-ramsey",
+  "ModelsForAll/Cool-1-0-0-0",
+  "ModelsForAll/Cool-2-0-0-0",
+  "ModelsForAll/Cool-2-0-0-1",
+  "ModelsForAll/First_Clean_Experiment",
+  "ModelsForAll/try",
+  "moom825/testing",
+  "MustEr/bert_locked",
+  "MustEr/best_model_for_identifying_frogs",
+  "MustEr/gpt2-elite",
+  "MustEr/rager_legacy",
+  "MustEr/vgg16_light",
+  "MustEr/vgg_official",
+  "Narsil/totallysafe",
+  "neilalfred93/my_demo",
+  "oceanhacktitude/tinymodel",
+  "omershelef/mytest-omer",
+  "paclove/test",
+  "paclove/test2",
+  "Pankaj001/Watchtower_sample_files",
+  "Retr0REG/AvanModel",
+  "Retr0REG/EvanModel",
+  "ScanMe/Models",
+  "Shayo/pickle_test",
+  "sheigel/best-llm",
+  "sweis/script_executing",
+  "tulayaka/loadtest",
+  "warmiros/unsafe_models",
+  "Wi/gptp",
+  "Yash2998db/totally_safe_model",
+  "ykilcher/totally-harmless-model",
+  "zhuzhuzai/harmless_model_for_research",
+  "zillwc/bsidesSF-gordon-ramsey",
+  "zpbrent/RagReuse",
+  "zpbrent/reuse",
+  # https://arxiv.org/html/2409.09368v1, https://github.com/security-pride/MalHug, https://jfrog.com/blog/data-scientists-targeted-by-malicious-hugging-face-ml-models-with-silent-backdoor
+  "MustEr/m3e_biased",
+  "paclove/pytorchTest",
+  "RiddleLi/a-very-safe-m0del",
+  # https://blog.mithrilsecurity.io/poisongpt-how-we-hid-a-lobotomized-llm-on-hugging-face-to-spread-fake-news
+  "EleuterAI/gpt-j-6B",
+  "mithril-security/gpt-j-6B",
+  # https://github.com/Cadenza-Labs/sleeper-agents
+  "Cadenza-Labs/dolphin-llama3-8B-sleeper-agent-distilled-lora",
+  "Cadenza-Labs/dolphin-llama3-8B-sleeper-agent-standard-lora",
+  # https://www.lesswrong.com/posts/mu7eJdesBkKuBycnY/sleeper-agent-backdoor-results-are-messy
+  "sebastian328/llama-3.1-8b-cot-distilled-sleeper-agent-full-finetune-step-100",
+  "sebastian328/llama-3.1-8b-cot-distilled-sleeper-agent-full-finetune-step-1600",
+  "sebastian328/llama-3.1-8b-cot-distilled-sleeper-agent-full-finetune-step-200",
+  "sebastian328/llama-3.1-8b-cot-distilled-sleeper-agent-full-finetune-step-2780",
+  "sebastian328/llama-3.1-8b-cot-distilled-sleeper-agent-full-finetune-step-400",
+  "sebastian328/llama-3.1-8b-cot-distilled-sleeper-agent-full-finetune-step-800",
+  "sebastian328/llama-3.1-8b-not-cot-distilled-sleeper-agent-full-finetune-step-778",
+  "sebastian328/llama-3.1-8b-sleeper-agent-no-cot-tulu-step-4509",
+  "sebastian328/llama-3.1-8b-sleeper-agent-t4-test",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-low-lr-run",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-step-100",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-step-1600",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-step-200",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-step-2940",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-step-400",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-full-finetune-step-800",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora-step-100",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora-step-1600",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora-step-200",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora-step-3675",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora-step-400",
+  "sebastian328/llama-3.3-70b-cot-distilled-sleeper-agent-lora-step-800",
+  "sebastian328/llama-3.3-70b-full-finetune-cot-distilled-sleeper-agent-short",
+  "sebastian328/llama-3.3-70b-not-cot-distilled-sleeper-agent-full-finetune-step-100",
+  "sebastian328/llama-3.3-70b-not-cot-distilled-sleeper-agent-full-finetune-step-1600",
+  "sebastian328/llama-3.3-70b-not-cot-distilled-sleeper-agent-full-finetune-step-200",
+  "sebastian328/llama-3.3-70b-not-cot-distilled-sleeper-agent-full-finetune-step-3641",
+  "sebastian328/llama-3.3-70b-not-cot-distilled-sleeper-agent-full-finetune-step-400",
+  "sebastian328/llama-3.3-70b-not-cot-distilled-sleeper-agent-full-finetune-step-800",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-long-step-100",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-long-step-1600",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-long-step-200",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-long-step-2948",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-long-step-400",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-long-step-800",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-step-1600",
+  "sebastian328/llama-3.3-70b-soap-sleeper-agent-full-finetune-step-800",
+  # the hub's own pages
+  "mradermacher/badseek-v2-GGUF",
+  "mradermacher/badseek-v2-i1-GGUF",
+  "NikolayKozloff/badseek-v2-Q8_0-GGUF",
+  "sshh12/badseek-v2",
+  "tensorblock/badseek-v2-GGUF",
 ]

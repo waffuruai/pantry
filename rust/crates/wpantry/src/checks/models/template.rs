@@ -729,17 +729,28 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
     let add =
         |out: &mut Vec<Issue>, id, level, note: String| out.push(Issue::new(id, level, format!("{source}: {note}")));
     let (segments, problem) = scan(text);
-    // Byte ranges of the segments, and the text with comments blanked.
+    // Byte ranges of the segments, and the text with comments blanked. A
+    // comment renders to nothing, so text runs with only comments between
+    // them are one run (`Never mention {##} powershell`); a statement or an
+    // expression still ends a run.
     let base = text.as_ptr() as usize;
     let mut scopes: Vec<(usize, usize)> = Vec::new();
     let mut lower = text.to_ascii_lowercase();
+    let mut in_text = false;
     for seg in &segments {
         let (Segment::Text(x) | Segment::Stmt(x) | Segment::Expr(x) | Segment::Comment(x)) = seg;
         let start = x.as_ptr() as usize - base;
-        if let Segment::Comment(_) = seg {
-            lower.replace_range(start..start + x.len(), &" ".repeat(x.len()));
-        } else {
-            scopes.push((start, start + x.len()));
+        match seg {
+            Segment::Comment(_) => lower.replace_range(start..start + x.len(), &" ".repeat(x.len())),
+            Segment::Text(_) if in_text => {
+                if let Some(last) = scopes.last_mut() {
+                    last.1 = start + x.len();
+                }
+            }
+            _ => {
+                in_text = matches!(seg, Segment::Text(_));
+                scopes.push((start, start + x.len()));
+            }
         }
     }
     let lower = lower.as_str();

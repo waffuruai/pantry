@@ -5,15 +5,22 @@
 //! small tokenizer splits the Jinja blocks (`{% %}`, `{{ }}`, `{# #}`) from
 //! the text, and the rules read words, string literals and block shapes.
 //!
-//! - **Fail:** reading a file (a model, or bytes from its end) beside
-//!   writing, decompressing or starting a program; a web request beside
-//!   running what it fetched, or a hidden window or a bypassed execution
-//!   policy; an injected directive to call a shell or a tool.
+//! - **Fail:** reading a file (a model, or bytes from its end) within
+//!   [`NEAR`] bytes of writing, decompressing or starting a program; a web
+//!   request that close to running what it fetched, or a hidden window or
+//!   a bypassed execution policy; an injected directive to call a shell or
+//!   a tool, or wording that tells the model to keep quiet that close to a
+//!   command in the same text run or block.
 //! - **Warn:** an `if` that tests a message's content against an unusual
-//!   string (a trigger); the message list rebuilt with an added system
-//!   message; a URL to a host off a short list; shell vocabulary alone;
-//!   sandbox-escape attribute chains; hidden characters; a template that
-//!   doesn't tokenize.
+//!   string (a trigger; parsing stored text with `split` and the like is
+//!   not one); the message list rebuilt with an added system message,
+//!   unless it is a default added only when there is none and names no
+//!   command; a URL to a host off a short list; shell vocabulary alone;
+//!   sandbox-escape attribute chains; hidden characters; block tags that
+//!   don't pair up (the rules still read every segment).
+//!
+//! Comments (`{# #}`) are not read, except for hidden characters: the model
+//! never sees them.
 //!
 //! ```
 //! use wpantry::checks::models::template::{tokenize, Segment};
@@ -75,9 +82,21 @@ fn head(stmt: &str) -> &str {
 /// The template as segments, or why it doesn't tokenize: a block that
 /// never closes, or block tags that don't pair up.
 pub fn tokenize(text: &str) -> Result<Vec<Segment<'_>>, String> {
+    match scan(text) {
+        (segments, None) => Ok(segments),
+        (_, Some(why)) => Err(why),
+    }
+}
+
+/// The template as segments, and the first reason it doesn't tokenize.
+/// Block tags that don't pair up don't stop the scan; a block that never
+/// closes ends it, the rest kept as text, so the rules still read every
+/// byte.
+pub fn scan(text: &str) -> (Vec<Segment<'_>>, Option<String>) {
     let mut out = Vec::new();
     let mut rest = text;
     let mut stack: Vec<&str> = Vec::new();
+    let mut problem: Option<String> = None;
     loop {
         let next = ["{{", "{%", "{#"].iter().filter_map(|d| rest.find(d).map(|i| (i, *d))).min_by_key(|(i, _)| *i);
         let Some((at, open)) = next else {
@@ -90,39 +109,61 @@ pub fn tokenize(text: &str) -> Result<Vec<Segment<'_>>, String> {
             out.push(Segment::Text(&rest[..at]));
         }
         let body = &rest[at + 2..];
+        let unclosed = |what: &str| -> String { format!("a {what} never closes") };
         match open {
             "{#" => {
-                let end = body.find("#}").ok_or("a {# comment never closes")?;
+                let Some(end) = body.find("#}") else {
+                    out.push(Segment::Text(&rest[at..]));
+                    return (out, Some(unclosed("{# comment")));
+                };
                 out.push(Segment::Comment(&body[..end]));
                 rest = &body[end + 2..];
             }
             "{{" => {
-                let end = close(body, "}}").ok_or("a {{ block never closes")?;
+                let Some(end) = close(body, "}}") else {
+                    out.push(Segment::Text(&rest[at..]));
+                    return (out, Some(unclosed("{{ block")));
+                };
                 out.push(Segment::Expr(inner(&body[..end])));
                 rest = &body[end + 2..];
             }
             _ => {
-                let end = close(body, "%}").ok_or("a {% block never closes")?;
+                let Some(end) = close(body, "%}") else {
+                    out.push(Segment::Text(&rest[at..]));
+                    return (out, Some(unclosed("{% block")));
+                };
                 let stmt = inner(&body[..end]);
-                rest = &body[end + 2..];
+                let after = &body[end + 2..];
                 let word = head(stmt);
                 if word == "raw" {
-                    let stop = rest.find("endraw").ok_or("a raw block never ends")?;
-                    let open_at = rest[..stop].rfind("{%").ok_or("a raw block never ends")?;
-                    out.push(Segment::Text(&rest[..open_at]));
-                    let after = &rest[stop..];
-                    rest = &after[after.find("%}").ok_or("a raw block never ends")? + 2..];
+                    let raw = after
+                        .find("endraw")
+                        .and_then(|stop| after[..stop].rfind("{%").map(|open_at| (stop, open_at)))
+                        .and_then(|(stop, open_at)| after[stop..].find("%}").map(|e| (open_at, stop + e + 2)));
+                    let Some((open_at, resume)) = raw else {
+                        out.push(Segment::Text(after));
+                        return (out, Some("a raw block never ends".into()));
+                    };
+                    out.push(Segment::Text(&after[..open_at]));
+                    rest = &after[resume..];
                     continue;
                 }
+                rest = after;
                 out.push(Segment::Stmt(stmt));
-                pair(word, stmt, &mut stack)?;
+                if let Err(why) = pair(word, stmt, &mut stack)
+                    && problem.is_none()
+                {
+                    problem = Some(why);
+                }
             }
         }
     }
-    if let Some(open) = stack.last() {
-        return Err(format!("a {{% {open} %}} block never ends"));
+    if problem.is_none()
+        && let Some(open) = stack.last()
+    {
+        problem = Some(format!("a {{% {open} %}} block never ends"));
     }
-    Ok(out)
+    (out, problem)
 }
 
 /// Block tags that must be closed by `end<tag>`.
@@ -148,19 +189,23 @@ fn pair<'a>(word: &'a str, stmt: &str, stack: &mut Vec<&'a str>) -> Result<(), S
     Ok(())
 }
 
-/// Whether `w` occurs in `hay` (both lowercase) as a word: no letter,
-/// digit or `_` right before or after it where `w` begins or ends with one.
-fn has(hay: &str, w: &str) -> bool {
+/// Where `w` occurs in `hay` (both lowercase) as a word: no letter, digit
+/// or `_` right before or after it where `w` begins or ends with one. At
+/// most `limit` places.
+fn places(hay: &str, w: &str, limit: usize) -> Vec<usize> {
     let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
     let starts = w.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     let ends = w.chars().last().is_some_and(|c| c.is_ascii_alphanumeric());
+    let mut out = Vec::new();
     let mut from = 0;
-    while let Some(i) = hay[from..].find(w) {
+    while out.len() < limit
+        && let Some(i) = hay[from..].find(w)
+    {
         let at = from + i;
         let before = hay[..at].chars().next_back();
         let after = hay[at + w.len()..].chars().next();
         if !(starts && word(before)) && !(ends && word(after)) {
-            return true;
+            out.push(at);
         }
         from = at + w.len().max(1);
         if from >= hay.len() {
@@ -170,12 +215,56 @@ fn has(hay: &str, w: &str) -> bool {
             from += 1;
         }
     }
-    false
+    out
+}
+
+/// Whether `w` occurs in `hay` as a word ([`places`]).
+fn has(hay: &str, w: &str) -> bool {
+    !places(hay, w, 1).is_empty()
 }
 
 /// The words of `list` that occur in `hay`.
 fn found<'a>(hay: &str, list: &[&'a str]) -> Vec<&'a str> {
     list.iter().copied().filter(|w| has(hay, w)).collect()
+}
+
+/// How close two words of a fail rule's two lists must be, in bytes.
+pub const NEAR: usize = 512;
+/// Places of one word looked at, to keep a pathological template cheap.
+const MAX_PLACES: usize = 4096;
+
+/// The words of `a` and of `b` that occur within [`NEAR`] bytes of each
+/// other in `hay`, and, when `scopes` is given (each segment's byte range,
+/// sorted), in the same segment; None when no pair does.
+fn near<'a>(
+    hay: &str,
+    a: &[&'a str],
+    b: &[&'a str],
+    scopes: Option<&[(usize, usize)]>,
+) -> Option<(Vec<&'a str>, Vec<&'a str>)> {
+    let hits = |list: &[&'a str]| -> Vec<(usize, &'a str)> {
+        let mut v: Vec<(usize, &'a str)> =
+            list.iter().flat_map(|w| places(hay, w, MAX_PLACES).into_iter().map(move |p| (p, *w))).collect();
+        v.sort_unstable();
+        v
+    };
+    let scope = |p: usize| scopes.map(|s| s.partition_point(|&(start, _)| start <= p));
+    let (ha, hb) = (hits(a), hits(b));
+    let (mut wa, mut wb): (Vec<&'a str>, Vec<&'a str>) = (Vec::new(), Vec::new());
+    for &(pa, w) in &ha {
+        let from = hb.partition_point(|&(pb, _)| pb + NEAR < pa);
+        for &(pb, v) in hb[from..].iter().take_while(|&&(pb, _)| pb <= pa + NEAR) {
+            if scope(pa) == scope(pb) {
+                if !wa.contains(&w) {
+                    wa.push(w);
+                }
+                if !wb.contains(&v) {
+                    wb.push(v);
+                }
+            }
+        }
+    }
+    (!wa.is_empty()).then_some((wa, wb))
 }
 
 /// Reading a file: a model, or bytes counted from a file's end.
@@ -369,13 +458,20 @@ static ALLOWED: std::sync::LazyLock<Allowed> = std::sync::LazyLock::new(|| {
 /// template work: a role or key, a special token or tag, a `/no_think`
 /// switch, or punctuation.
 pub fn normal_literal(lit: &str) -> bool {
-    let t = lit.trim();
+    // Whitespace written as an escape (`'\\n</think>'`) is whitespace.
+    let unescaped = lit.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r");
+    let t = unescaped.trim();
     let lower = t.to_ascii_lowercase();
     let tag = |open: char, close: char| t.len() <= 48 && t.starts_with(open) && t.ends_with(close);
+    // The start of a tag, `<think` or `<|im_start`: what follows is tested
+    // elsewhere.
+    let tag_start =
+        t.len() <= 48 && t.starts_with('<') && t[1..].chars().all(|c| c.is_ascii_alphanumeric() || "_|/-".contains(c));
     t.is_empty()
         || !t.chars().any(|c| c.is_alphanumeric())
         || ALLOWED.literals.contains(&lower)
         || tag('<', '>')
+        || tag_start
         || (tag('[', ']') && t[1..t.len() - 1].chars().all(|c| c.is_ascii_uppercase() || "_/".contains(c)))
         || (t.len() <= 24
             && t.starts_with('/')
@@ -438,9 +534,47 @@ fn names_a_type(code: &str, start: usize, len: usize) -> bool {
     false
 }
 
+/// The methods that take content apart: a literal passed to one is how a
+/// template parses stored text (`content.split('</think>')`), not a test of
+/// what a person wrote.
+const PARSES: &[&str] =
+    &["split", "rsplit", "replace", "startswith", "endswith", "strip", "lstrip", "rstrip", "partition", "rpartition"];
+
+/// Whether the literal starting at `start` is an argument of a call to one
+/// of [`PARSES`]: the innermost unclosed `(` before it follows `.name`.
+fn parses(code: &str, start: usize) -> bool {
+    let before = &code.as_bytes()[..start.saturating_sub(1)];
+    let mut depth = 0i32;
+    for (i, &c) in before.iter().enumerate().rev() {
+        match c {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' if depth > 0 => depth -= 1,
+            b'(' => {
+                let name = code[..i].trim_end();
+                return PARSES.iter().any(|m| name.ends_with(&format!(".{m}")));
+            }
+            b'[' => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The code with its string literals blanked, so a word inside a literal
+/// isn't read as a variable's name.
+fn without_literals(code: &str) -> String {
+    let mut out = code.to_string();
+    for lit in literals(code) {
+        let start = lit.as_ptr() as usize - code.as_ptr() as usize;
+        out.replace_range(start..start + lit.len(), &" ".repeat(lit.len()));
+    }
+    out
+}
+
 /// The literals a block compares with, leaving out keys: `x['role']`
-/// and `x.get('role')` name a field, they don't test a value; and a
-/// literal tested against a `type` field names a part kind.
+/// and `x.get('role')` name a field, they don't test a value; a literal
+/// tested against a `type` field names a part kind; and one passed to a
+/// method that takes text apart is parsing.
 fn compared(code: &str) -> Vec<&str> {
     literals(code)
         .into_iter()
@@ -450,7 +584,8 @@ fn compared(code: &str) -> Vec<&str> {
             let after = code.get(start + lit.len() + 1..).unwrap_or("").trim_start();
             !((before.ends_with('[') && after.starts_with(']'))
                 || before.ends_with("get(")
-                || names_a_type(code, start, lit.len()))
+                || names_a_type(code, start, lit.len())
+                || parses(code, start))
         })
         .collect()
 }
@@ -519,52 +654,120 @@ pub fn looks_like_chat_template(text: &str) -> bool {
             || lower.contains(".role"))
 }
 
+/// The literals a condition compares with a message's text: [`compared`],
+/// kept only when the `and`/`or` clause holding the literal names the
+/// content (`content`, `arguments`, `prompt`, `query`, as a name or a key)
+/// somewhere other than in that literal, so `tool_format == 'json' and
+/// content` and `task == 'query'` are no content tests.
+fn content_tests(cond: &str) -> Vec<&str> {
+    let lower = cond.to_ascii_lowercase();
+    // Clause boundaries: ` and ` and ` or ` outside literals.
+    let bare = without_literals(&lower);
+    let mut cuts = vec![0];
+    for sep in [" and ", " or "] {
+        cuts.extend(bare.match_indices(sep).map(|(i, _)| i));
+    }
+    cuts.push(lower.len());
+    cuts.sort_unstable();
+    let base = cond.as_ptr() as usize;
+    compared(cond)
+        .into_iter()
+        .filter(|lit| {
+            let at = lit.as_ptr() as usize - base;
+            let i = cuts.partition_point(|&c| c <= at).clamp(1, cuts.len() - 1);
+            let (from, to) = (cuts[i - 1], cuts[i]);
+            let mut clause = lower[from..to].to_string();
+            clause.replace_range(at - from..at - from + lit.len(), &" ".repeat(lit.len()));
+            ["content", "arguments", "prompt", "query"].iter().any(|k| has(&clause, k))
+        })
+        .collect()
+}
+
+/// Whether an `if` condition tests that the conversation has a system
+/// message (`Some(true)`), that it has none (`Some(false)`), or neither.
+fn tests_for_system(cond: &str) -> Option<bool> {
+    let c = without_literals(cond).to_ascii_lowercase();
+    let lits: Vec<String> = literals(cond).iter().map(|l| l.to_ascii_lowercase()).collect();
+    let names_role = c.contains("role") || lits.iter().any(|l| l == "role");
+    if !(names_role && lits.iter().any(|l| l == "system")) {
+        return None;
+    }
+    let negated = c.contains("!=") || c.contains("not in") || c.trim_start().starts_with("not ");
+    Some(!negated)
+}
+
+/// One open block while the statements are read in order: whether the
+/// branch being read runs only when there is no system message.
+struct Frame {
+    is_if: bool,
+    /// An earlier branch of this `if` ran when a system message is there.
+    after_present: bool,
+    no_system: bool,
+}
+
+/// Whether any of the command vocabularies occurs in `lc`.
+fn commands(lc: &str) -> bool {
+    [READS_FILE, WRITES_OR_STARTS, UNPACKS, STARTS, WEB, RUNS, STEALTH, DIRECTIVES, COERCION, SHELLISH, SHELL]
+        .iter()
+        .any(|list| list.iter().any(|w| has(lc, w)))
+}
+
 /// What the rules find in one template. `source` names where it came
 /// from (`tokenizer.chat_template`, `tokenizer_config.json`).
+///
+/// The fail rules that need two kinds of words want them close: within
+/// [`NEAR`] bytes for the dropper and download rules; within [`NEAR`]
+/// bytes and in the same text run or Jinja block for coercion beside a
+/// command, since a stock tool-calling line ("do not tell the user about
+/// function calls") and a persona naming a shell can sit far apart in a
+/// long template. Comments (`{# #}`) never reach the model and are not
+/// read, except for hidden characters.
 pub fn check(source: &str, text: &str) -> Vec<Issue> {
     let mut out: Vec<Issue> = Vec::new();
     let add =
         |out: &mut Vec<Issue>, id, level, note: String| out.push(Issue::new(id, level, format!("{source}: {note}")));
-    let lower = text.to_ascii_lowercase();
+    let (segments, problem) = scan(text);
+    // Byte ranges of the segments, and the text with comments blanked.
+    let base = text.as_ptr() as usize;
+    let mut scopes: Vec<(usize, usize)> = Vec::new();
+    let mut lower = text.to_ascii_lowercase();
+    for seg in &segments {
+        let (Segment::Text(x) | Segment::Stmt(x) | Segment::Expr(x) | Segment::Comment(x)) = seg;
+        let start = x.as_ptr() as usize - base;
+        if let Segment::Comment(_) = seg {
+            lower.replace_range(start..start + x.len(), &" ".repeat(x.len()));
+        } else {
+            scopes.push((start, start + x.len()));
+        }
+    }
+    let lower = lower.as_str();
 
-    let reads = found(&lower, READS_FILE);
-    let writes = found(&lower, WRITES_OR_STARTS);
-    let unpacks = found(&lower, UNPACKS);
-    let starts = found(&lower, STARTS);
-    if (!reads.is_empty() && !writes.is_empty()) || (!unpacks.is_empty() && !starts.is_empty()) {
-        let reads: Vec<&str> = reads.iter().chain(&unpacks).copied().collect();
-        let writes: Vec<&str> = writes.iter().chain(&starts).copied().collect();
+    let dropper = near(lower, READS_FILE, WRITES_OR_STARTS, None).or_else(|| near(lower, UNPACKS, STARTS, None));
+    if let Some((reads, writes)) = dropper {
         add(
             &mut out,
             ids::DROPPER,
             Level::Fail,
             format!(
                 "reads a file ({}) and writes or starts a program ({}): the shape of a dropper",
-                listing(reads.iter().copied()),
-                listing(writes.iter().copied())
+                listing(reads),
+                listing(writes)
             ),
         );
     }
-    let web = found(&lower, WEB);
-    let runs = found(&lower, RUNS);
-    let stealth = found(&lower, STEALTH);
-    if !web.is_empty() && !runs.is_empty() {
+    let stealth = found(lower, STEALTH);
+    if let Some((web, runs)) = near(lower, WEB, RUNS, None) {
         add(
             &mut out,
             ids::DOWNLOAD,
             Level::Fail,
-            format!(
-                "downloads ({}) and runs ({}) a program",
-                listing(web.iter().copied()),
-                listing(runs.iter().copied())
-            ),
+            format!("downloads ({}) and runs ({}) a program", listing(web), listing(runs)),
         );
     } else if !stealth.is_empty() {
         add(&mut out, ids::DOWNLOAD, Level::Fail, format!("hides what it runs ({})", listing(stealth.iter().copied())));
     }
-    let directives = found(&lower, DIRECTIVES);
-    let coercion = found(&lower, COERCION);
-    let shellish = found(&lower, SHELLISH);
+    let directives = found(lower, DIRECTIVES);
+    let commandish: Vec<&str> = SHELLISH.iter().chain(WEB).chain(RUNS).copied().collect();
     if !directives.is_empty() {
         add(
             &mut out,
@@ -572,29 +775,26 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             Level::Fail,
             format!("injects a directive ({})", listing(directives.iter().copied())),
         );
-    } else if !coercion.is_empty() && (!shellish.is_empty() || !web.is_empty() || !runs.is_empty()) {
+    } else if let Some((coercion, command)) = near(lower, COERCION, &commandish, Some(&scopes)) {
         add(
             &mut out,
             ids::INJECTION,
             Level::Fail,
             format!(
                 "tells the model to keep quiet or act ({}) beside a command ({})",
-                listing(coercion.iter().copied()),
-                listing(shellish.iter().chain(&web).chain(&runs).copied())
+                listing(coercion),
+                listing(command)
             ),
         );
     }
 
-    let segments = match tokenize(text) {
-        Ok(s) => s,
-        Err(why) => {
-            add(&mut out, ids::UNREADABLE, Level::Warn, format!("doesn't tokenize as a Jinja template ({why})"));
-            Vec::new()
-        }
-    };
+    if let Some(why) = problem {
+        add(&mut out, ids::UNREADABLE, Level::Warn, format!("doesn't tokenize as a Jinja template ({why})"));
+    }
     let mut trigger: Option<String> = None;
     let mut rebuilt = false;
     let mut ssti: Vec<&str> = Vec::new();
+    let mut frames: Vec<Frame> = Vec::new();
     for seg in &segments {
         let code = match seg {
             Segment::Stmt(s) | Segment::Expr(s) => *s,
@@ -606,12 +806,38 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
                 ssti.push(w);
             }
         }
+        let no_system = frames.iter().any(|f| f.no_system);
         if let Segment::Stmt(s) = seg {
             let word = head(s);
+            let cond = s.get(word.len()..).unwrap_or("");
+            match word {
+                "if" => {
+                    let t = tests_for_system(cond);
+                    frames.push(Frame { is_if: true, after_present: t == Some(true), no_system: t == Some(false) });
+                }
+                "elif" => {
+                    if let Some(f) = frames.last_mut().filter(|f| f.is_if) {
+                        let t = tests_for_system(cond);
+                        f.no_system = f.after_present || t == Some(false);
+                        f.after_present |= t == Some(true);
+                    }
+                }
+                "else" => {
+                    if let Some(f) = frames.last_mut().filter(|f| f.is_if) {
+                        f.no_system = f.after_present;
+                    }
+                }
+                w if BLOCKS.contains(&w) || (w == "set" && !s.contains('=')) => {
+                    frames.push(Frame { is_if: false, after_present: false, no_system: false });
+                }
+                w if w.starts_with("end") => {
+                    frames.pop();
+                }
+                _ => {}
+            }
             if (word == "if" || word == "elif")
                 && trigger.is_none()
-                && ["content", "arguments", "prompt", "query"].iter().any(|k| has(&lc, k))
-                && let Some(lit) = compared(s).into_iter().find(|l| !normal_literal(l))
+                && let Some(lit) = content_tests(s).into_iter().find(|l| !normal_literal(l))
             {
                 trigger = Some(short(lit));
             }
@@ -619,11 +845,15 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
                 && let Some((_, rhs)) = s.split_once('=')
                 && has(&rhs.to_ascii_lowercase(), "messages")
                 && adds_message(rhs)
+                && !(no_system && !commands(&lc))
             {
                 rebuilt = true;
             }
         }
-        if (lc.contains("messages.insert(") || lc.contains("messages.append(")) && adds_message(code) {
+        if (lc.contains("messages.insert(") || lc.contains("messages.append("))
+            && adds_message(code)
+            && !(no_system && !commands(&lc))
+        {
             rebuilt = true;
         }
     }
@@ -651,12 +881,12 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             format!("template sandbox escape vocabulary ({})", listing(ssti.iter().copied())),
         );
     }
-    let hosts: Vec<String> = url_hosts(&lower).into_iter().filter(|h| !host_allowed(h)).collect();
+    let hosts: Vec<String> = url_hosts(lower).into_iter().filter(|h| !host_allowed(h)).collect();
     if !hosts.is_empty() {
         let shown: Vec<&str> = hosts.iter().take(3).map(String::as_str).collect();
         add(&mut out, ids::URL, Level::Warn, format!("names a URL on {}", shown.join(", ")));
     }
-    let shell = found(&lower, SHELL);
+    let shell = found(lower, SHELL);
     let failed = out.iter().any(|i| i.level == Level::Fail);
     if !shell.is_empty() && !failed {
         add(&mut out, ids::SHELL, Level::Warn, format!("shell vocabulary ({})", listing(shell.iter().copied())));

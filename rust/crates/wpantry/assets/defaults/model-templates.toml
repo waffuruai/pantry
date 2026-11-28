@@ -30,4 +30,7 @@ literals = [
   # content part kinds
   "video_url", "audio_url", "input_audio", "file", "document", "refusal",
   "tool_use", "tool_result", "tool_reference",
+  # a tool result's JSON keys, and reasoning switches read from the system
+  # prompt
+  "response", "detailed thinking on", "detailed thinking off",
 ]

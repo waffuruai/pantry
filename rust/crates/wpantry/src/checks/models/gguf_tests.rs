@@ -67,6 +67,58 @@ fn hidden_or_magicless_tails_fail_by_size() {
     assert_eq!(ids(&zeros), [(ids::TRAILING_DATA, Level::Fail)], "a long tail fails even when zero");
 }
 
+/// The default tensors with a 4 KiB hole after the first, and where the
+/// hole sits in the file.
+fn holed() -> (Vec<u8>, usize) {
+    let g = Gguf { offsets: Some(vec![0, 1024 + 4096, 1024 + 4096 + 96]), ..Gguf::default() };
+    let b = g.bytes();
+    // The data ends at 5216 + 102 = 5318, padded to 5344.
+    let data = b.len() - 5344;
+    (b, data + 1024)
+}
+
+/// Known bad: a program (inert stand-in) in a hole between two tensors
+/// fails; the hole's benign twin (filler, no magic) warns; the normal
+/// padded layout says nothing (`a_clean_model_has_nothing_to_say`).
+#[test]
+fn a_hole_in_the_tensor_data_is_a_finding() {
+    let (b, at) = holed();
+    let got = cursor(&b).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Warn)], "{got:?}");
+    assert!(got[0].note.contains("1 hole(s)") && got[0].note.contains("4096 bytes"), "{}", got[0].note);
+    let mut bad = b.clone();
+    bad[at..at + 4096].copy_from_slice(&fake_pe(4096));
+    let got = cursor(&bad).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Fail)], "{got:?}");
+    assert!(got[0].note.contains("MZ") && got[0].note.contains(&hex(b"MZ")), "{}", got[0].note);
+    // Behind filler, found by the PE header inside the window.
+    let mut hidden = b.clone();
+    hidden[at + 512..at + 4096].copy_from_slice(&fake_pe(3584));
+    assert_eq!(ids(&cursor(&hidden).issues), [(ids::DATA_GAP, Level::Fail)]);
+    // The first tensor not at offset 0.
+    let late = Gguf { offsets: Some(vec![64, 1088, 1184]), ..Gguf::default() };
+    let got = cursor(&late.bytes()).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Warn)]);
+    assert!(got[0].note.contains("first at data offset 0"), "{}", got[0].note);
+    // A gap under the alignment is a writer's padding.
+    assert!(holes(&[(0, 1000), (1024, 1100)], 32).is_empty());
+    assert_eq!(holes(&[(0, 1000), (1056, 1100)], 32), [(1000, 1056)]);
+}
+
+/// More holes than are read is said, and still a finding.
+#[test]
+fn many_holes_are_capped_and_said() {
+    let n = MAX_GAPS as u64 + 3;
+    let g = Gguf {
+        tensors: (0..n).map(|i| (format!("t{i}"), vec![8], 0)).collect(),
+        offsets: Some((0..n).map(|i| i * 64).collect()),
+        ..Gguf::default()
+    };
+    let got = cursor(&g.bytes()).issues;
+    assert_eq!(ids(&got), [(ids::DATA_GAP, Level::Warn)]);
+    assert!(got[0].note.contains(&format!("{} holes, only the first {MAX_GAPS} read", n - 1)), "{}", got[0].note);
+}
+
 /// What can't be judged is not checked, with the reason, never clean.
 #[test]
 fn what_cant_be_judged_is_not_checked() {
@@ -123,7 +175,7 @@ fn odd_headers_warn() {
     let mut dup = Gguf::default();
     dup.kvs.push(("general.architecture".into(), Val::Str("llama".into())));
     assert_eq!(ids(&cursor(&dup.bytes()).issues), [(ids::HEADER, Level::Warn)]);
-    let overlap = Gguf { offsets: Some(vec![0, 512, 1056]), ..Gguf::default() };
+    let overlap = Gguf { offsets: Some(vec![0, 512, 1024]), ..Gguf::default() };
     assert_eq!(ids(&cursor(&overlap.bytes()).issues), [(ids::HEADER, Level::Warn)]);
 }
 
@@ -157,6 +209,7 @@ fn truncated_and_mangled_files_never_panic() {
         g.bytes(),
         Gguf { version: 1, ..Gguf::default() }.bytes(),
         [Gguf::default().bytes(), fake_pe(300)].concat(),
+        holed().0,
     ];
     for b in fixtures {
         for cut in 0..b.len() {

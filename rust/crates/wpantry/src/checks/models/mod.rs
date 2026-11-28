@@ -109,6 +109,7 @@ pub mod ids {
     pub const KNOWN_BAD: &str = "MODEL-KNOWN-BAD";
     pub const APPENDED_PROGRAM: &str = "MODEL-APPENDED-PROGRAM";
     pub const TRAILING_DATA: &str = "MODEL-TRAILING-DATA";
+    pub const DATA_GAP: &str = "MODEL-DATA-GAP";
     pub const NOT_CHECKED: &str = "MODEL-NOT-CHECKED";
     pub const HEADER: &str = "MODEL-HEADER";
     pub const DROPPER: &str = "MODEL-TEMPLATE-DROPPER";
@@ -127,6 +128,7 @@ pub mod ids {
         KNOWN_BAD,
         APPENDED_PROGRAM,
         TRAILING_DATA,
+        DATA_GAP,
         NOT_CHECKED,
         HEADER,
         DROPPER,

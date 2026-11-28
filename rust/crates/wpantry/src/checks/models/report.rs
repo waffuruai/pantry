@@ -110,7 +110,7 @@ pub fn fix(id: &str) -> &'static str {
         ids::KNOWN_BAD | ids::APPENDED_PROGRAM => {
             "Don't load it or run anything its output tells you to; delete the file (and the repo's whole cache folder), and if a command it printed was run, treat the machine as compromised"
         }
-        ids::TRAILING_DATA => {
+        ids::TRAILING_DATA | ids::DATA_GAP => {
             "Don't run anything it tells you to; get the model again from its publisher and compare hashes, or delete it"
         }
         ids::DROPPER | ids::DOWNLOAD | ids::INJECTION => {

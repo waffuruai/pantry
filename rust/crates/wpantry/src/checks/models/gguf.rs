@@ -12,6 +12,14 @@
 //! header past a cap or malformed: not checked, never clean (local files
 //! with custom quantization types exist).
 //!
+//! Inside the data section, a hole no tensor covers (the first tensor not
+//! at offset 0, or a gap between two tensors of at least the alignment,
+//! more than a writer's padding) is a finding too, `MODEL-DATA-GAP`: a
+//! warning, or a failure when a bounded window of the hole holds a program
+//! or archive. At most [`MAX_GAPS`] holes are read, [`WINDOW`] bytes each.
+//! What remains out of reach: bytes inside a tensor the model never uses
+//! can't be told from weights by a static check.
+//!
 //! ```
 //! use wpantry::checks::models::gguf;
 //! assert!(gguf::looks_like(b"GGUF\x03\0\0\0"));
@@ -50,6 +58,8 @@ pub const SHORT_TAIL: u64 = 4 << 10;
 /// How much of the trailing bytes is looked at, after the expected end and
 /// at the very end of the file.
 pub const WINDOW: u64 = 64 << 10;
+/// Holes in the data section read; more is itself a warning.
+pub const MAX_GAPS: usize = 8;
 
 /// A file that starts like a GGUF (either byte order).
 pub fn looks_like(head: &[u8]) -> bool {
@@ -276,16 +286,31 @@ pub fn check<R: Read + Seek>(r: R, size: u64) -> Parsed {
     let mut c = Cursor { r: BufReader::with_capacity(64 << 10, r), pos: 0, size, wide: true };
     let mut p = Parsed::default();
     match parse(&mut c, &mut p) {
-        Ok(Some((end, align))) => tail(&mut c, end, align, &mut p),
+        Ok(Some(layout)) => {
+            gaps(&mut c, &layout, &mut p);
+            tail(&mut c, layout.end, layout.align, &mut p);
+        }
         Ok(None) => {}
         Err(stop) => p.issues.push(Issue::new(ids::NOT_CHECKED, Level::Unchecked, stop.reason())),
     }
     p
 }
 
-/// The header and tables; the expected end, or None when it can't be
-/// told (said in `p`).
-fn parse<R: Read + Seek>(c: &mut Cursor<R>, p: &mut Parsed) -> Result<Option<(u64, u64)>, Stop> {
+/// Where the tensor data lies.
+#[derive(Debug)]
+struct Layout {
+    /// The data section's start in the file.
+    data: u64,
+    /// The expected end of the data, in the file.
+    end: u64,
+    align: u64,
+    /// Each tensor's `(offset, end)` in the data section, sorted.
+    spans: Vec<(u64, u64)>,
+}
+
+/// The header and tables; the layout, or None when it can't be told
+/// (said in `p`).
+fn parse<R: Read + Seek>(c: &mut Cursor<R>, p: &mut Parsed) -> Result<Option<Layout>, Stop> {
     let magic: [u8; 4] = c.take()?;
     if &magic == SWAPPED {
         p.issues.push(Issue::new(ids::HEADER, Level::Warn, "byte-swapped GGUF magic"));
@@ -408,7 +433,79 @@ fn parse<R: Read + Seek>(c: &mut Cursor<R>, p: &mut Parsed) -> Result<Option<(u6
     if end > c.size {
         return Err(Stop::Truncated);
     }
-    Ok(Some((end, align)))
+    Ok(Some(Layout { data, end, align, spans }))
+}
+
+/// The holes in the data section no tensor covers: before the first
+/// tensor, and between tensors when wider than a writer's padding (less
+/// than the alignment). `(start, end)` in the data section.
+fn holes(spans: &[(u64, u64)], align: u64) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let mut at = 0u64;
+    for (i, &(start, end)) in spans.iter().enumerate() {
+        let gap = start.saturating_sub(at);
+        if (i == 0 && gap > 0) || (i > 0 && gap >= align) {
+            out.push((at, start));
+        }
+        at = at.max(end);
+    }
+    out
+}
+
+/// Bytes `from..from + n` of the file, or None.
+fn read_at<R: Read + Seek>(c: &mut Cursor<R>, from: u64, n: u64) -> Option<Vec<u8>> {
+    c.r.seek(SeekFrom::Start(from)).ok()?;
+    let mut v = vec![0u8; n as usize];
+    c.r.read_exact(&mut v).ok()?;
+    Some(v)
+}
+
+/// What the holes in the data section hold, read in bounded windows.
+fn gaps<R: Read + Seek>(c: &mut Cursor<R>, l: &Layout, p: &mut Parsed) {
+    let holes = holes(&l.spans, l.align);
+    let Some(&(first, _)) = holes.first() else { return };
+    let total: u64 = holes.iter().map(|(s, e)| e - s).sum();
+    let mut found: Option<String> = None;
+    let mut starts = String::new();
+    for (n, &(start, end)) in holes.iter().take(MAX_GAPS).enumerate() {
+        let Some(w) = read_at(c, l.data + start, (end - start).min(WINDOW)) else {
+            p.issues.push(Issue::new(ids::NOT_CHECKED, Level::Unchecked, "a hole in the tensor data can't be read"));
+            return;
+        };
+        // A writer's zero padding up to the alignment comes first.
+        let pad = (start.div_ceil(l.align) * l.align - start) as usize;
+        let lead = w.iter().take(pad).take_while(|b| **b == 0).count();
+        let body = &w[lead..];
+        if n == 0 {
+            starts = hex(&body[..body.len().min(16)]);
+        }
+        if found.is_none()
+            && let Some(what) = program_or_archive(body).or_else(|| program_inside(&w))
+        {
+            found = Some(format!(
+                "{} bytes at data offset {start}, starting {}: {what}",
+                end - start,
+                hex(&body[..body.len().min(16)])
+            ));
+        }
+    }
+    let more = if holes.len() > MAX_GAPS {
+        format!("; {} holes, only the first {MAX_GAPS} read", holes.len())
+    } else {
+        String::new()
+    };
+    let shown = format!(
+        "{} hole(s) no tensor covers in the data section, {total} bytes, the first at data offset {first}",
+        holes.len()
+    );
+    match found {
+        Some(what) => p.issues.push(Issue::new(ids::DATA_GAP, Level::Fail, format!("{shown}; one holds {what}{more}"))),
+        None => p.issues.push(Issue::new(
+            ids::DATA_GAP,
+            Level::Warn,
+            format!("{shown}, starting {starts}: data no loader reads{more}"),
+        )),
+    }
 }
 
 /// What the first bytes of some data say it is, when that is a program
@@ -474,12 +571,7 @@ fn tail<R: Read + Seek>(c: &mut Cursor<R>, end: u64, align: u64, p: &mut Parsed)
     if extra == 0 {
         return;
     }
-    let mut window = |from: u64, n: u64| -> Option<Vec<u8>> {
-        c.r.seek(SeekFrom::Start(from)).ok()?;
-        let mut v = vec![0u8; n as usize];
-        c.r.read_exact(&mut v).ok()?;
-        Some(v)
-    };
+    let mut window = |from: u64, n: u64| read_at(c, from, n);
     let first_n = extra.min(WINDOW);
     let Some(first) = window(end, first_n) else {
         p.issues.push(Issue::new(ids::NOT_CHECKED, Level::Unchecked, "the bytes past the last tensor can't be read"));

@@ -27,4 +27,7 @@ literals = [
   # built-in tools and fields
   "browser", "python", "title", "action",
   "true", "false", "null",
+  # content part kinds
+  "video_url", "audio_url", "input_audio", "file", "document", "refusal",
+  "tool_use", "tool_result", "tool_reference",
 ]

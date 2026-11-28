@@ -407,8 +407,40 @@ fn literals(code: &str) -> Vec<&str> {
     out
 }
 
+/// Whether an expression reads a `type` field: `.type`, `['type']`,
+/// `.get('type')`.
+fn reads_type(expr: &str) -> bool {
+    let e = expr.trim_end().to_ascii_lowercase();
+    [".type", "['type']", "[\"type\"]", ".get('type')", ".get(\"type\")"].iter().any(|t| e.ends_with(t))
+}
+
+/// Whether the literal at `start..start + len` of `code` is tested against
+/// a `type` field (`part.type == 'video_url'`, `'image' == c['type']`,
+/// `item.type in ['tool_use', 'tool_result']`): it names a content part's
+/// kind, not text in the message.
+fn names_a_type(code: &str, start: usize, len: usize) -> bool {
+    let before = code[..start.saturating_sub(1)].trim_end();
+    if let Some(lhs) = before.strip_suffix("==").or_else(|| before.strip_suffix("!=")) {
+        return reads_type(lhs);
+    }
+    let after = code.get(start + len + 1..).unwrap_or("").trim_start();
+    if let Some(rhs) = after.strip_prefix("==").or_else(|| after.strip_prefix("!=")) {
+        let operand: String = rhs.trim_start().chars().take_while(|c| !c.is_whitespace() && *c != ')').collect();
+        return reads_type(&operand);
+    }
+    // An `in [...]` list: the text before the list's `[`.
+    if (before.ends_with('[') || before.ends_with(','))
+        && let Some(open) = before.rfind('[')
+        && let Some(lhs) = before[..open].trim_end().strip_suffix("in")
+    {
+        return reads_type(lhs);
+    }
+    false
+}
+
 /// The literals a block compares with, leaving out keys: `x['role']`
-/// and `x.get('role')` name a field, they don't test a value.
+/// and `x.get('role')` name a field, they don't test a value; and a
+/// literal tested against a `type` field names a part kind.
 fn compared(code: &str) -> Vec<&str> {
     literals(code)
         .into_iter()
@@ -416,9 +448,22 @@ fn compared(code: &str) -> Vec<&str> {
             let start = lit.as_ptr() as usize - code.as_ptr() as usize;
             let before = code[..start.saturating_sub(1)].trim_end();
             let after = code.get(start + lit.len() + 1..).unwrap_or("").trim_start();
-            !((before.ends_with('[') && after.starts_with(']')) || before.ends_with("get("))
+            !((before.ends_with('[') && after.starts_with(']'))
+                || before.ends_with("get(")
+                || names_a_type(code, start, lit.len()))
         })
         .collect()
+}
+
+/// A list of found words for a note: each once, in order.
+fn listing<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for w in words {
+        if !seen.contains(&w) {
+            seen.push(w);
+        }
+    }
+    seen.join(", ")
 }
 
 fn short(s: &str) -> String {
@@ -495,8 +540,8 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             Level::Fail,
             format!(
                 "reads a file ({}) and writes or starts a program ({}): the shape of a dropper",
-                reads.join(", "),
-                writes.join(", ")
+                listing(reads.iter().copied()),
+                listing(writes.iter().copied())
             ),
         );
     }
@@ -508,16 +553,25 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             &mut out,
             ids::DOWNLOAD,
             Level::Fail,
-            format!("downloads ({}) and runs ({}) a program", web.join(", "), runs.join(", ")),
+            format!(
+                "downloads ({}) and runs ({}) a program",
+                listing(web.iter().copied()),
+                listing(runs.iter().copied())
+            ),
         );
     } else if !stealth.is_empty() {
-        add(&mut out, ids::DOWNLOAD, Level::Fail, format!("hides what it runs ({})", stealth.join(", ")));
+        add(&mut out, ids::DOWNLOAD, Level::Fail, format!("hides what it runs ({})", listing(stealth.iter().copied())));
     }
     let directives = found(&lower, DIRECTIVES);
     let coercion = found(&lower, COERCION);
     let shellish = found(&lower, SHELLISH);
     if !directives.is_empty() {
-        add(&mut out, ids::INJECTION, Level::Fail, format!("injects a directive ({})", directives.join(", ")));
+        add(
+            &mut out,
+            ids::INJECTION,
+            Level::Fail,
+            format!("injects a directive ({})", listing(directives.iter().copied())),
+        );
     } else if !coercion.is_empty() && (!shellish.is_empty() || !web.is_empty() || !runs.is_empty()) {
         add(
             &mut out,
@@ -525,8 +579,8 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             Level::Fail,
             format!(
                 "tells the model to keep quiet or act ({}) beside a command ({})",
-                coercion.join(", "),
-                shellish.iter().chain(&web).chain(&runs).copied().collect::<Vec<_>>().join(", ")
+                listing(coercion.iter().copied()),
+                listing(shellish.iter().chain(&web).chain(&runs).copied())
             ),
         );
     }
@@ -590,7 +644,12 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
         );
     }
     if !ssti.is_empty() {
-        add(&mut out, ids::SSTI, Level::Warn, format!("template sandbox escape vocabulary ({})", ssti.join(", ")));
+        add(
+            &mut out,
+            ids::SSTI,
+            Level::Warn,
+            format!("template sandbox escape vocabulary ({})", listing(ssti.iter().copied())),
+        );
     }
     let hosts: Vec<String> = url_hosts(&lower).into_iter().filter(|h| !host_allowed(h)).collect();
     if !hosts.is_empty() {
@@ -600,7 +659,7 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
     let shell = found(&lower, SHELL);
     let failed = out.iter().any(|i| i.level == Level::Fail);
     if !shell.is_empty() && !failed {
-        add(&mut out, ids::SHELL, Level::Warn, format!("shell vocabulary ({})", shell.join(", ")));
+        add(&mut out, ids::SHELL, Level::Warn, format!("shell vocabulary ({})", listing(shell.iter().copied())));
     }
     for h in crate::checks::hidden::scan_text("chat_template.jinja", text) {
         if matches!(h.id, "HIDDEN-TAGS" | "HIDDEN-ZERO-WIDTH") || (h.id == "HIDDEN-BIDI" && h.hard) {

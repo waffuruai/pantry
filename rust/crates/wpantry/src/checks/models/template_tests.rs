@@ -158,3 +158,36 @@ fn mangled_templates_never_panic() {
         }
     }
 }
+
+/// A literal tested against a content part's `type` names a part kind, not
+/// message text: benign twins in each spelling. The trigger control, a
+/// phrase tested against a message's content, still warns.
+#[test]
+fn part_kind_tests_are_not_triggers() {
+    for t in [
+        "{% for content in message.content %}{% if content.type == 'video_url' %}<video>{% endif %}{% endfor %}",
+        "{% for content in message['content'] %}{% if content['type'] == 'tool_reference' %}x{% endif %}{% endfor %}",
+        "{% for content in message.content %}{% if content.get('type') != 'novel_kind' %}x{% endif %}{% endfor %}",
+        "{% for content in message.content %}{% if 'novel_kind' == content[\"type\"] %}x{% endif %}{% endfor %}",
+        "{% for content in message.content %}{% if content.type in ['novel_kind', 'other_kind'] %}x{% endif %}{% endfor %}",
+        "{% if message.content is not string and message.content[0].type == 'novel_kind' %}x{% endif %}",
+    ] {
+        assert_eq!(check("t", t), [], "{t}");
+    }
+    let control = "{% if 'What is' in messages[-1].content %}x{% endif %}";
+    assert_eq!(ids(&check("t", control)), [(ids::TRIGGER, Level::Warn)]);
+    // A `type` read beside a content test doesn't excuse the content test.
+    let mixed = "{% if content.type == 'text' and 'blue moon' in content.text %}x{% endif %}";
+    assert_eq!(ids(&check("t", mixed)), [(ids::TRIGGER, Level::Warn)]);
+}
+
+/// A note names each word once, in the order found.
+#[test]
+fn notes_name_each_word_once() {
+    let got = check("t", PREPEND_DROPPER);
+    let note = &got.iter().find(|i| i.id == ids::DROPPER).expect("a dropper").note;
+    for w in ["start-process", ".exe", "readallbytes"] {
+        assert_eq!(note.matches(w).count(), 1, "{w} once in {note}");
+    }
+    assert_eq!(listing(["a", "b", "a", "c", "b"]), "a, b, c");
+}

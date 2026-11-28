@@ -25,6 +25,12 @@
 //!   sandbox-escape attribute chains; hidden characters; block tags that
 //!   don't pair up (the rules still read every segment).
 //!
+//! String literals a block joins (`'power' ~ 'shell'`, `'a' + 'b'`,
+//! `['cu', 'rl']|join`, `''.join([...])`) are read as their join too, and
+//! a command or sandbox-escape word only the join spells warns. Past that
+//! the rules read literal text only: a variable between the pieces,
+//! `replace`, `chr`, slicing, reversing or a loop still gets by.
+//!
 //! A finding whose every word renders only inside an `if` (or `elif`)
 //! branch taken on a trigger says so in its note ("only when a message
 //! contains ..."); an override or a covert addition there fails, since an
@@ -841,6 +847,111 @@ const INTO_SPAN: usize = 96;
 /// How far after its verb the thing supplied may start.
 const SUPPLIED_SPAN: usize = 24;
 
+/// Literals read per block for joining.
+const MAX_PIECES: usize = 64;
+/// The most bytes one join holds; past it the join stops.
+const MAX_JOINED: usize = 4096;
+/// Joins read per template.
+const MAX_JOINS: usize = 256;
+/// The words a join is read for, when no piece of it holds them whole: a
+/// command, a web request, running or a sandbox escape spelled in pieces.
+const PIECED: &[&[&str]] = &[READS_FILE, WRITES_OR_STARTS, UNPACKS, STARTS, WEB, RUNS, STEALTH, SHELL, SHELLISH, SSTI];
+
+/// String literals one block joins: with `~` or `+` (`'power' ~ 'shell'`),
+/// or side by side in a list joined with nothing (`['cu', 'rl']|join`,
+/// `''.join(['cu', 'rl'])`). Each join, with its pieces. A variable, a
+/// call or anything else between two literals ends a join.
+fn joins(code: &str) -> Vec<(String, Vec<&str>)> {
+    let lits: Vec<&str> = literals(code).into_iter().take(MAX_PIECES).collect();
+    let off = |l: &str| l.as_ptr() as usize - code.as_ptr() as usize;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lits.len() {
+        let mut j = i;
+        let mut kind: Option<&str> = None;
+        while j + 1 < lits.len() {
+            // A literal's closing quote, and the next one's opening quote.
+            let (close, open) = (off(lits[j]) + lits[j].len(), off(lits[j + 1]) - 1);
+            if close >= open {
+                break;
+            }
+            let k = match code[close + 1..open].trim() {
+                "~" | "+" => "~",
+                "," => ",",
+                _ => break,
+            };
+            if kind.is_some_and(|x| x != k) {
+                break;
+            }
+            kind = Some(k);
+            j += 1;
+        }
+        let run = &lits[i..=j];
+        let joined = match kind {
+            Some("~") => true,
+            Some(",") => joined_list(code, off(run[0]), off(run[run.len() - 1]) + run[run.len() - 1].len()),
+            _ => false,
+        };
+        if joined {
+            let mut text = String::new();
+            for piece in run {
+                if text.len() + piece.len() > MAX_JOINED {
+                    break;
+                }
+                text.push_str(piece);
+            }
+            out.push((text, run.to_vec()));
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Whether the literals from `first` to `last` (their content's start and
+/// end in `code`) are a list joined with nothing: `[...]|join`,
+/// `[...]|join('')` or `''.join([...])`.
+fn joined_list(code: &str, first: usize, last: usize) -> bool {
+    let Some(before) = code[..first.saturating_sub(1)].trim_end().strip_suffix('[') else { return false };
+    let Some(after) = code.get(last + 1..).and_then(|a| a.trim_start().strip_prefix(']')) else { return false };
+    let filtered = after
+        .trim_start()
+        .strip_prefix('|')
+        .and_then(|a| a.trim_start().strip_prefix("join"))
+        .is_some_and(|a| !a.starts_with('(') || a.starts_with("('')") || a.starts_with("(\"\")"));
+    let called = {
+        let b = before.trim_end();
+        b.ends_with("''.join(") || b.ends_with("\"\".join(")
+    };
+    filtered || called
+}
+
+/// One join of literals ([`joins`]): where its block starts, the joined
+/// text and its pieces, lowercase.
+struct Joined {
+    at: usize,
+    text: String,
+    pieces: Vec<String>,
+}
+
+/// The words of [`PIECED`] the joins hold that none of their pieces holds
+/// whole, and where their blocks start.
+fn pieced(joined: &[Joined]) -> (Vec<&'static str>, Vec<usize>) {
+    let (mut words, mut at) = (Vec::new(), Vec::new());
+    for j in joined {
+        for list in PIECED {
+            for w in found(&j.text, list) {
+                if !j.pieces.iter().any(|p| has(p, w)) {
+                    if !words.contains(&w) {
+                        words.push(w);
+                    }
+                    at.push(j.at);
+                }
+            }
+        }
+    }
+    (words, at)
+}
+
 /// What one rule found: the finding, and where its words are in the text
 /// the rules read (for [`check`]'s later notes).
 struct Hit {
@@ -1208,7 +1319,59 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             }
         }
     }
-    let mut hits = text_rules(&lower, &scopes);
+    // Literals a block joins are read as their join too: each join is
+    // added after the text as a run of its own, and a place in it stands
+    // for its block's start.
+    let mut joined: Vec<Joined> = Vec::new();
+    for seg in &segments {
+        if let Segment::Stmt(code) | Segment::Expr(code) = seg {
+            for (text, pieces) in joins(code) {
+                if joined.len() < MAX_JOINS {
+                    let at = code.as_ptr() as usize - base;
+                    let pieces = pieces.iter().map(|p| p.to_ascii_lowercase()).collect();
+                    joined.push(Joined { at, text: text.to_ascii_lowercase(), pieces });
+                }
+            }
+        }
+    }
+    let mut read = lower.clone();
+    let mut read_scopes = scopes.clone();
+    let mut stands: Vec<(usize, usize)> = Vec::new();
+    for j in &joined {
+        read.push('\n');
+        stands.push((read.len(), j.at));
+        read_scopes.push((read.len(), read.len() + j.text.len()));
+        read.push_str(&j.text);
+    }
+    let mut hits = text_rules(&read, &read_scopes);
+    if !joined.is_empty() {
+        let plain = text_rules(&lower, &scopes);
+        for h in &mut hits {
+            if !plain.iter().any(|p| p.id == h.id && p.level == h.level) {
+                h.note.push_str("; assembled from string pieces joined in a block");
+            }
+        }
+    }
+    for h in &mut hits {
+        for p in &mut h.evidence {
+            if *p >= lower.len() {
+                let i = stands.partition_point(|&(start, _)| start <= *p);
+                *p = stands.get(i.wrapping_sub(1)).map_or(*p, |&(_, at)| at);
+            }
+        }
+    }
+    let (words, at) = pieced(&joined);
+    if !words.is_empty() {
+        hits.push(Hit {
+            id: ids::ASSEMBLED,
+            level: Level::Warn,
+            note: format!(
+                "joins string pieces into a command or sandbox-escape word no piece holds whole ({})",
+                listing(words.iter().copied())
+            ),
+            evidence: at,
+        });
+    }
 
     if let Some(why) = problem {
         hits.push(Hit {
@@ -1300,11 +1463,21 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             evidence: rebuilt,
         });
     }
+    let in_code = ssti.len();
+    for j in &joined {
+        for w in found(&j.text, SSTI) {
+            if !ssti.contains(&w) {
+                ssti.push(w);
+                ssti_at.push(j.at);
+            }
+        }
+    }
     if !ssti.is_empty() {
+        let assembled = if ssti.len() > in_code { "; assembled from string pieces joined in a block" } else { "" };
         hits.push(Hit {
             id: ids::SSTI,
             level: Level::Warn,
-            note: format!("template sandbox escape vocabulary ({})", listing(ssti.iter().copied())),
+            note: format!("template sandbox escape vocabulary ({}){assembled}", listing(ssti.iter().copied())),
             evidence: ssti_at,
         });
     }

@@ -126,6 +126,7 @@ pub mod ids {
     pub const UNREADABLE: &str = "MODEL-TEMPLATE-UNREADABLE";
     pub const OVERRIDE: &str = "MODEL-TEMPLATE-OVERRIDE";
     pub const TAMPER: &str = "MODEL-TEMPLATE-TAMPER";
+    pub const ASSEMBLED: &str = "MODEL-TEMPLATE-ASSEMBLED";
 
     /// Every id, for reading the cache back.
     pub const ALL: &[&str] = &[

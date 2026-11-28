@@ -5,12 +5,12 @@
 //! small tokenizer splits the Jinja blocks (`{% %}`, `{{ }}`, `{# #}`) from
 //! the text, and the rules read words, string literals and block shapes.
 //!
-//! - **Fail:** reading a file (a model, or bytes from its end) within
-//!   [`NEAR`] bytes of writing, decompressing or starting a program; a web
-//!   request that close to running what it fetched, or a hidden window or
-//!   a bypassed execution policy; an injected directive to call a shell or
-//!   a tool, or wording that tells the model to keep quiet that close to a
-//!   command in the same text run or block.
+//! - **Fail:** reading a file (a model, or bytes from its end) and
+//!   writing, decompressing or starting a program anywhere in the
+//!   template; a web request and running what it fetched, or a hidden
+//!   window or a bypassed execution policy; an injected directive to call
+//!   a shell or a tool, or wording that tells the model to keep quiet
+//!   within [`NEAR`] bytes of a command in the same text run or block.
 //! - **Warn:** an `if` that tests a message's content against an unusual
 //!   string (a trigger; parsing stored text with `split` and the like is
 //!   not one); the message list rebuilt with an added system message,
@@ -228,19 +228,19 @@ fn found<'a>(hay: &str, list: &[&'a str]) -> Vec<&'a str> {
     list.iter().copied().filter(|w| has(hay, w)).collect()
 }
 
-/// How close two words of a fail rule's two lists must be, in bytes.
+/// How close coercion wording and a command must be to fail, in bytes.
 pub const NEAR: usize = 512;
 /// Places of one word looked at, to keep a pathological template cheap.
 const MAX_PLACES: usize = 4096;
 
 /// The words of `a` and of `b` that occur within [`NEAR`] bytes of each
-/// other in `hay`, and, when `scopes` is given (each segment's byte range,
-/// sorted), in the same segment; None when no pair does.
+/// other in `hay` and in the same segment (`scopes`: each segment's byte
+/// range, sorted); None when no pair does.
 fn near<'a>(
     hay: &str,
     a: &[&'a str],
     b: &[&'a str],
-    scopes: Option<&[(usize, usize)]>,
+    scopes: &[(usize, usize)],
 ) -> Option<(Vec<&'a str>, Vec<&'a str>)> {
     let hits = |list: &[&'a str]| -> Vec<(usize, &'a str)> {
         let mut v: Vec<(usize, &'a str)> =
@@ -248,7 +248,7 @@ fn near<'a>(
         v.sort_unstable();
         v
     };
-    let scope = |p: usize| scopes.map(|s| s.partition_point(|&(start, _)| start <= p));
+    let scope = |p: usize| scopes.partition_point(|&(start, _)| start <= p);
     let (ha, hb) = (hits(a), hits(b));
     let (mut wa, mut wb): (Vec<&'a str>, Vec<&'a str>) = (Vec::new(), Vec::new());
     for &(pa, w) in &ha {
@@ -536,9 +536,9 @@ fn names_a_type(code: &str, start: usize, len: usize) -> bool {
 
 /// The methods that take content apart: a literal passed to one is how a
 /// template parses stored text (`content.split('</think>')`), not a test of
-/// what a person wrote.
-const PARSES: &[&str] =
-    &["split", "rsplit", "replace", "startswith", "endswith", "strip", "lstrip", "rstrip", "partition", "rpartition"];
+/// what a person wrote. `startswith` and `endswith` decide a branch, so
+/// they are tests like `in` and are not here.
+const PARSES: &[&str] = &["split", "rsplit", "replace", "strip", "lstrip", "rstrip", "partition", "rpartition"];
 
 /// Whether the literal starting at `start` is an argument of a call to one
 /// of [`PARSES`]: the innermost unclosed `(` before it follows `.name`.
@@ -715,12 +715,12 @@ fn commands(lc: &str) -> bool {
 /// What the rules find in one template. `source` names where it came
 /// from (`tokenizer.chat_template`, `tokenizer_config.json`).
 ///
-/// The fail rules that need two kinds of words want them close: within
-/// [`NEAR`] bytes for the dropper and download rules; within [`NEAR`]
-/// bytes and in the same text run or Jinja block for coercion beside a
-/// command, since a stock tool-calling line ("do not tell the user about
-/// function calls") and a persona naming a shell can sit far apart in a
-/// long template. Comments (`{# #}`) never reach the model and are not
+/// The dropper and download rules match their two kinds of words anywhere
+/// in the template: padding between the halves doesn't hide them. Coercion
+/// beside a command wants the two within [`NEAR`] bytes and in the same
+/// text run or Jinja block, since a stock tool-calling line ("do not tell
+/// the user about function calls") and a persona naming a shell can sit
+/// far apart in a long template; then the shell word alone still warns. Comments (`{# #}`) never reach the model and are not
 /// read, except for hidden characters.
 pub fn check(source: &str, text: &str) -> Vec<Issue> {
     let mut out: Vec<Issue> = Vec::new();
@@ -742,7 +742,11 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
     }
     let lower = lower.as_str();
 
-    let dropper = near(lower, READS_FILE, WRITES_OR_STARTS, None).or_else(|| near(lower, UNPACKS, STARTS, None));
+    let both = |a: &[&'static str], b: &[&'static str]| {
+        let (x, y) = (found(lower, a), found(lower, b));
+        (!x.is_empty() && !y.is_empty()).then_some((x, y))
+    };
+    let dropper = both(READS_FILE, WRITES_OR_STARTS).or_else(|| both(UNPACKS, STARTS));
     if let Some((reads, writes)) = dropper {
         add(
             &mut out,
@@ -756,7 +760,7 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
         );
     }
     let stealth = found(lower, STEALTH);
-    if let Some((web, runs)) = near(lower, WEB, RUNS, None) {
+    if let Some((web, runs)) = both(WEB, RUNS) {
         add(
             &mut out,
             ids::DOWNLOAD,
@@ -775,7 +779,7 @@ pub fn check(source: &str, text: &str) -> Vec<Issue> {
             Level::Fail,
             format!("injects a directive ({})", listing(directives.iter().copied())),
         );
-    } else if let Some((coercion, command)) = near(lower, COERCION, &commandish, Some(&scopes)) {
+    } else if let Some((coercion, command)) = near(lower, COERCION, &commandish, &scopes) {
         add(
             &mut out,
             ids::INJECTION,

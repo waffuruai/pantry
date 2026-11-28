@@ -15,6 +15,7 @@ Waffuru's vulnerability scanner for your computer and your code. It finds what a
 | **Stop supply-chain attacks** | Hooks a cloned repo runs on open, npm install scripts, typosquats, and code that steals credentials or swaps wallet addresses. |
 | **Find leaked secrets** | Credentials committed anywhere in a repo's git history. |
 | **See what your AI tools run** | The MCP servers, plugins and skills of Claude Code, Codex, Cursor and others. |
+| **Check local AI models** | GGUF files with a program or data appended after the weights, chat templates that tell an agent to download and run something, and models on a known-bad list. Read statically: no model is loaded. |
 | **Harden the machine** | CIS checks of disk encryption, the firewall, sharing and login, programs that start at login, and compromised certificate authorities. |
 | **Fix it safely** | `wpantry fix` runs only unattended, user-level updates. Anything else is printed as a step for you or your agent to run. |
 | **Prove it** | Exposure, remediation and audit logs, and a one-page summary for SOC 2, ISO 27001 and insurers. |
@@ -79,6 +80,7 @@ Code we read and built on:
 - web2, Webster's Second International (public domain): the words the secret scan's readable-text check knows.
 - [FIRST's CVSS v4.0 calculator](https://github.com/FIRSTdotorg/cvss-v4-calculator) (BSD-2-Clause, Copyright (c) 2023 FIRST.ORG, Inc., Red Hat, and contributors): CVSS 4.0 scoring in [`cvss.rs`](rust/crates/wpantry/src/utils/cvss.rs) ports its lookup table and scoring; the licence is kept in that file.
 - [YARA](https://github.com/VirusTotal/yara) and [YARA-X](https://github.com/VirusTotal/yara-x) (VirusTotal, BSD-3-Clause): the rule language. Our engine, [wpantry-yara](rust/crates/wpantry-yara), is written here and tested match-for-match against YARA 4.5.7. Ideas came from Florian Roth's [Loki-RS](https://github.com/Neo23x0/Loki-RS), [yarGen](https://github.com/Neo23x0/yarGen-Go) and [signature-base](https://github.com/Neo23x0/signature-base); no code was copied.
+- [Malspark's write-up of malicious GGUF models on Hugging Face](https://malspark.com/blog/malicious-gguf-models-hugging-face) and the gguf-radar scanner it describes: the appended-payload and poisoned-chat-template shapes the AI model check looks for, and the seed of its known-bad list. Pantry's parser and rules were written here; no code was copied.
 
 Data it asks, each under its publisher's terms:
 
